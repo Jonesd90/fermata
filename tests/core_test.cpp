@@ -1517,6 +1517,18 @@ int main()
             CHECK (n >= 1 && e1 < 0.02);
             for (size_t i = 0; i < 99000; ++i) if (x[i] != ref[i]) { CHECK (false); break; }          // nothing else touched
         }
+        // declick: a longer click (a burst of 300 samples) is found and mended; a short stretch chosen by hand is mended as a whole
+        {
+            juce::Random rnd (5);
+            auto x = tone; auto ref = x;
+            for (int i = 0; i < 300; ++i) x[100000 + (size_t) i] += 0.7f * (rnd.nextFloat() * 2.0f - 1.0f) * (float) std::exp (-i / 150.0);
+            auto errOf = [&] (const std::vector<float>& v) { double e = 0; for (size_t i = 99990; i < 100400; ++i) e += std::pow (ref[i] - v[i], 2.0); return e; };
+            const double before = errOf (x);
+            auto y = x; const int n = SpectralRepair::declick (y, 80000, 120000, 9, nullptr, sr);
+            CHECK (n >= 1 && errOf (y) < before * 0.1);
+            auto z = x; SpectralRepair::declick (z, 99990, 100330, 5, nullptr, sr);               // marked by hand
+            CHECK (errOf (z) < before * 0.1);
+        }
         // patch: a burst of noise inside the box is replaced, the rest is left alone
         {
             auto x = tone; auto ref = x; juce::Random rnd (7);
