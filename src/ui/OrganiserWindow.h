@@ -53,7 +53,7 @@ private:
     juce::OwnedArray<OrganiserLayoutButton> choices;
     juce::OwnedArray<juce::Label> slotLabels;
     juce::OwnedArray<juce::ComboBox> slotBoxes;
-    juce::Label heading, hint, status;
+    juce::Label heading, status; InfoNote hint;
     juce::TextButton arrangeButton { "Arrange the windows" }, refreshButton { "Refresh the list" };
     std::vector<std::pair<juce::String, juce::String>> windowList;     // key, title
 };

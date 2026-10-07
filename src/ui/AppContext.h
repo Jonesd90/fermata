@@ -2,6 +2,7 @@
 #include "../core/TalkbackKey.h"
 #include "../core/PreampMemory.h"
 #include "Uikit.h"
+#include "WaveColor.h"
 #include "PluginHost.h"
 #include "../core/SessionClock.h"
 
@@ -35,6 +36,13 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     /** How much the drawn waveforms are enlarged (the . and , keys in the take, edit and trim windows). Display only: the audio is never touched. */
     float waveZoom = 1.0f;
     void changeWaveZoom (float factor) { waveZoom = juce::jlimit (0.25f, 40.0f, waveZoom * factor); project.sendChangeMessage(); }
+
+    /** WaveColour: the waveforms are coloured by what is in them (pitch = hue, tonal = vivid, a thump below 100 Hz = black). Off by default; the rainbow button in the take and edit windows. */
+    bool waveColour = false;
+    WaveColorCache waveColors;
+    void setWaveColour (bool on) { waveColour = on; project.sendChangeMessage(); }
+    /** The colours of this file's waveform, or nothing while it is not wanted or not worked out yet (it is being worked out in the background). */
+    std::shared_ptr<const WaveColorData> waveColourOf (const juce::File& f) { return waveColour ? waveColors.get (f) : nullptr; }
 
     Project project;
     juce::AudioDeviceManager devices;

@@ -179,14 +179,15 @@ public:
                 const auto tc = chan::of (app.project, tracks[ti].id);
                 g.setColour (selected ? chan::clipFill (tc, true) : chan::clipFill (tc));
                 g.fillRect (rr);
-                if (r.waiting.active())
+                if (r.waiting.active() && (r.waiting.tracks.empty() || std::find (r.waiting.tracks.begin(), r.waiting.tracks.end(), rf->trackId) != r.waiting.tracks.end()))
                     drawWaitingBlock (g, rr.reduced (1), r.waiting.name, theme::text);
                 else
                 {
-                    g.setColour (chan::waveColour (tc));
+                    setWaveColour (g, chan::waveColour (tc));
                     juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (rr.reduced (1));
-                    if (! directWave.draw (g, rr.reduced (1), rf->file, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom))
-                        if (auto* th = thumbnailFor (rf->file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom);
+                    const auto wcd = app.waveColourOf (rf->file);
+                    if (! directWave.draw (g, rr.reduced (1), rf->file, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom, wcd.get()))
+                        if (auto* th = thumbnailFor (rf->file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom, wcd.get());
                 }
                 g.setColour (selected ? juce::Colour (0xffc26500) : tc.withAlpha (0.9f));         // the selected piece gets an orange frame
                 g.drawRect (rr, selected ? 2 : 1);
@@ -241,10 +242,11 @@ public:
                 const auto tc = chan::of (app.project, tracks[ti].id);
                 g.setColour (selected ? chan::clipFill (tc, true) : chan::clipFill (tc)); g.fillRect (rr);
                 {
-                    g.setColour (chan::waveColour (tc));
+                    setWaveColour (g, chan::waveColour (tc));
                     juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (rr.reduced (1));
-                    if (! directWave.draw (g, rr.reduced (1), rf->file, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom))
-                        if (auto* th = thumbnailFor (rf->file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom);
+                    const auto wcd = app.waveColourOf (rf->file);
+                    if (! directWave.draw (g, rr.reduced (1), rf->file, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom, wcd.get()))
+                        if (auto* th = thumbnailFor (rf->file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom, wcd.get());
                 }
                 g.setColour (selected ? juce::Colour (0xffc26500) : juce::Colour (0xff6a4cc2)); g.drawRect (rr, selected ? 2 : 1);
             }
@@ -308,7 +310,14 @@ public:
         {
             if (e->fixIn >= 0 && e->fixOut > e->fixIn)
             {
-                g.setColour (juce::Colour (0x22ffa21f)); g.fillRect (xOf (e->fixIn), kRulerH, xOf (e->fixOut) - xOf (e->fixIn), rowsEnd - kRulerH);
+                g.setColour (juce::Colour (0x22ffa21f));
+                if (e->fixTracks.empty()) g.fillRect (xOf (e->fixIn), kRulerH, xOf (e->fixOut) - xOf (e->fixIn), rowsEnd - kRulerH);
+                else                                                                          // Alt + drag: only the rows of the chosen tracks
+                {
+                    g.fillRect (xOf (e->fixIn), kRulerH, xOf (e->fixOut) - xOf (e->fixIn), kLaneH);
+                    for (size_t i = 0; i < tracks.size(); ++i)
+                        if (e->fixUses (tracks[i].id)) { g.setColour (juce::Colour (0x44ffa21f)); g.fillRect (xOf (e->fixIn), top + (int) i * rowH, xOf (e->fixOut) - xOf (e->fixIn), rowH); }
+                }
             }
             g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
             if (e->fixIn >= 0)  { g.setColour (juce::Colour (0xff1e6fd9)); g.fillRect (xOf (e->fixIn), 0, 2, rowsEnd);  g.drawText ("1",  xOf (e->fixIn) + 4, 16, 30, 14, juce::Justification::left); }
@@ -508,6 +517,8 @@ public:
         if (wantMarkDrag)
         {
             markDrag = true; markAnchor = juce::jmax (0.0, t); markStartX = e.x;
+            markAlt = e.mods.isAltDown();                                  // Alt + drag: only the track(s) the mouse covers are marked
+            markRow0 = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
         }
         else if (auto* od = canMove && ed->isOverdub (selectedRegion) ? ed->findAny (selectedRegion) : nullptr)
         {
@@ -571,6 +582,15 @@ public:
             if (! markActive) { markActive = true; selectedRegion = juce::Uuid::null(); selectedRegions.clear(); }     // marking, not selecting: the next drag marks again too
             const double now = juce::jmax (0.0, (e.x - kNameW) / pixelsPerSecond);
             ed->fixIn = juce::jmin (markAnchor, now); ed->fixOut = juce::jmax (markAnchor, now);
+            ed->fixTracks.clear();
+            if (markAlt)
+            {
+                const auto& rt = rowTracks();
+                const int n = (int) rt.size();
+                const int r1 = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
+                const int lo = juce::jlimit (0, juce::jmax (0, n - 1), juce::jmin (markRow0, r1)), hi = juce::jlimit (0, juce::jmax (0, n - 1), juce::jmax (markRow0, r1));
+                if (n > 0) for (int r = lo; r <= hi; ++r) ed->fixTracks.push_back (rt[(size_t) r].id);
+            }
             app.project.markDirty(); repaint();
             return;
         }
@@ -685,6 +705,7 @@ private:
     juce::String describeParam (const juce::String& param, const juce::Uuid& trackId, const juce::Uuid& mixerId) const
     {
         if (param == autoparam::pan) return "Pan";
+        if (param == autoparam::gain) return "Gain";
         if (autoparam::isSend (param)) return "Send: " + nodeName (autoparam::sendDest (param));
         int slot = 0, idx = 0;
         if (autoparam::parsePlugin (param, slot, idx))
@@ -841,7 +862,8 @@ private:
         auto& s = selOf (t.id);
         juce::PopupMenu m, mixers;
         m.addSectionHeader ("Automate");
-        m.addItem (1, "Fader", true, s.param == autoparam::fader);
+        m.addItem (3, "Gain (into the mixer, before the inserts and fader)", true, s.param == autoparam::gain);
+        m.addItem (1, "Fader (through the mixer, after the inserts)", true, s.param == autoparam::fader);
         m.addItem (2, "Pan" + juce::String (t.channelCount() == 1 ? "" : " (mono tracks only)"), t.channelCount() == 1, s.param == autoparam::pan);
         // bus / track sends the strip really has (in the mixer chosen below), and the automatable parameters of its plug-ins
         std::vector<juce::String> keys;
@@ -897,6 +919,7 @@ private:
             auto& sel = selOf (tid);
             if (r == 1) sel.param = autoparam::fader;
             else if (r == 2) sel.param = autoparam::pan;
+            else if (r == 3) sel.param = autoparam::gain;
             else if (r >= 1000) { const auto i = (size_t) (r - 1000); if (i < keys.size()) sel.param = keys[i]; }
             else if (r >= 100) { const auto i = (size_t) (r - 100); if (i < app.project.mixers.size()) sel.mixer = i == 0 ? juce::Uuid::null() : app.project.mixers[i]->id; }
             else if (r == 5) { if (auto* l = e2->findLane (tid, sel.param, sel.mixer)) { l->pts.clear(); app.project.changed(); } }
@@ -974,7 +997,14 @@ private:
         const bool isOver = ed.isOverdub (rid), hasGains = ! piece->gains.empty();
         juce::PopupMenu m;
         m.addSectionHeader (piece->takeName + (isOver ? "  (overdub)" : ""));
-        m.addItem (1, "Volume change here...");
+        // the area between marks 1 and 2 (or the I and O flags), for all tracks or the ones chosen with Alt + drag
+        juce::int64 rangeFrom = 0, rangeTo = 0;
+        if (ed.fixIn >= 0 && ed.fixOut > ed.fixIn) { rangeFrom = (juce::int64) std::llround (ed.fixIn * rate); rangeTo = (juce::int64) std::llround (ed.fixOut * rate); }
+        else if (ed.markIn >= 0 && ed.markOut > ed.markIn) { rangeFrom = (juce::int64) std::llround (ed.markIn * rate); rangeTo = (juce::int64) std::llround (ed.markOut * rate); }
+        const bool haveRange = rangeTo > rangeFrom && ! isOver;
+        m.addItem (7, "Volume change between the marks...", haveRange);
+        m.addSeparator();
+        m.addItem (1, "Volume change from here on...");
         m.addItem (2, "Volume of the whole piece...");
         m.addItem (3, "Remove all volume changes in this piece", hasGains);
         if (isOver) { m.addSeparator(); m.addItem (4, "Delete this overdub"); }
@@ -986,7 +1016,7 @@ private:
         }
         auto* appPtr = &app;
         juce::Component::SafePointer<juce::Component> self (this);
-        m.showMenuAsync (juce::PopupMenu::Options(), [appPtr, eid, rid, rel, self] (int r)
+        m.showMenuAsync (juce::PopupMenu::Options(), [appPtr, eid, rid, rel, self, rangeFrom, rangeTo] (int r)
         {
             auto* ed2 = appPtr->project.findEdit (eid);
             auto* p2 = ed2 ? ed2->findAny (rid) : nullptr;
@@ -994,6 +1024,7 @@ private:
             if (r == 1) showVolumeChange (*appPtr, eid, rid, rel);
             else if (r == 2) showVolumeChange (*appPtr, eid, rid, 0);
             else if (r == 3) { p2->gains.clear(); appPtr->project.changed(); }
+            else if (r == 7) showRangeVolumeChange (*appPtr, eid, rangeFrom, rangeTo);
             else if (r == 5) fixtools::relinkEdit (*appPtr, eid, rid, self.getComponent());
             else if (r == 6) { p2->waiting = WaitingPiece(); appPtr->project.changed(); }
             else if (r == 4) { if (appPtr->isPlaying()) appPtr->stopPlayback(); ed2->removeOverdub (rid); appPtr->project.changed(); }
@@ -1044,7 +1075,7 @@ private:
     DirectWaveCache directWave { formatManager };
     std::map<juce::String, std::unique_ptr<juce::AudioThumbnail>> thumbs;
     bool dragging = false; int dragIndex = -1; std::vector<EditRegion> baseRegions;
-    bool markDrag = false, markActive = false; double markAnchor = 0.0; int markStartX = 0;     // dragging over audio that is not selected sets marks 1 and 2
+    bool markDrag = false, markActive = false, markAlt = false; double markAnchor = 0.0; int markStartX = 0, markRow0 = 0;     // dragging over audio that is not selected sets marks 1 and 2
     bool dragOverdub = false; juce::int64 overdubBase = 0;
     int fadeDrag = 0; juce::Uuid fadeId; double fadeBase = 0.0;      // dragging a piece's fade-in (1) or fade-out (2) from its corner
 };
@@ -1115,7 +1146,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
             if (auto* r = e->findAny (timeline->selectedRegion))
             {
                 const double rt = e->sampleRate > 0 ? e->sampleRate : 48000.0;
-                e->fixIn = (double) r->startSample / rt; e->fixOut = (double) r->endSample() / rt; temp = true;
+                e->fixIn = (double) r->startSample / rt; e->fixOut = (double) r->endSample() / rt; e->fixTracks.clear(); temp = true;
             }
         run();
         if (temp) if (auto* e2 = edit()) { e2->fixIn = -1.0; e2->fixOut = -1.0; }
@@ -1152,6 +1183,11 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     playheadMode.setToggleState (app.playheadFollows, juce::dontSendNotification);
     playheadMode.setWantsKeyboardFocus (false);
     addAndMakeVisible (playheadMode);
+    waveColourBtn.setTooltip ("WaveColour. Lit: the waveforms are coloured by their sound. The hue is the pitch (red low, green middle, blue high); vivid colour is a clear note, pale colour is noise; BLACK is a thump below 100 Hz, such as a kicked mic stand. Off: ordinary waveforms. (The same in every window.)");
+    waveColourBtn.onClick = [this] { app.setWaveColour (! app.waveColour); };
+    waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification);
+    waveColourBtn.setWantsKeyboardFocus (false);
+    addAndMakeVisible (waveColourBtn);
     loopToggle.setTooltip ("Loop: when lit, Play repeats the area between marks 1 and 2 (the same marks the pitch and repair tools use) over and over until you press Stop. Key L.");
     loopToggle.onClick = [this] { loopChanged(); };
     loopToggle.setWantsKeyboardFocus (false);
@@ -1172,7 +1208,7 @@ void EditWindowComponent::resized()
     const std::vector<FlowItem> items
     {
         { &nameCaption, 45 }, { &nameEditor, 240, grid::btnH, 14 },
-        { &startButton, 40, grid::btnH, 2 }, { &backButton, 40, grid::btnH, 2 }, { &playButton }, { &fwdButton, 40, grid::btnH, 2 }, { &endTransportButton, 40, grid::btnH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &loopToggle, 84, grid::btnH, 14 },
+        { &startButton, 40, grid::btnH, 2 }, { &backButton, 40, grid::btnH, 2 }, { &playButton }, { &fwdButton, 40, grid::btnH, 2 }, { &endTransportButton, 40, grid::btnH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 84, grid::btnH, 14 },
         { &trimButton }, { &deleteButton, grid::btnW, grid::btnH, 14 },
         { &leftButton }, { &rightButton }, { &endButton, grid::btnW, grid::btnH, 14 },
         { &bounceButton, grid::btnW, grid::btnH, 14 },
@@ -1506,7 +1542,7 @@ bool EditWindowComponent::keyPressed (const juce::KeyPress& k)
     if ((c == '1' || c == '2') && ! k.getModifiers().isAnyModifierKeyDown()) { setFixMark (c == '1'); return true; }
     if (c == '5' && ! k.getModifiers().isAnyModifierKeyDown())            // 5: take both flags away; a piece selected whole is then what the process windows load
     {
-        if (auto* e = edit()) { e->fixIn = -1.0; e->fixOut = -1.0; app.project.changed(); }
+        if (auto* e = edit()) { e->fixIn = -1.0; e->fixOut = -1.0; e->fixTracks.clear(); app.project.changed(); }
         return true;
     }
     if (c == '.' || c == '>') { app.changeWaveZoom (1.4f);        return true; }          // . bigger waveforms
@@ -1531,6 +1567,7 @@ void EditWindowComponent::timerCallback()
     if (auto* fc = juce::Component::getCurrentlyFocusedComponent(); fc != nullptr && isParentOf (fc)) app.setTransportHandler (this, [this] { togglePlay(); });
     playButton.setButtonText (app.isPlaying() ? "Stop [Space]" : "Play [Space]");
     if (playheadMode.getToggleState() != app.playheadFollows) playheadMode.setToggleState (app.playheadFollows, juce::dontSendNotification);
+    if (waveColourBtn.getToggleState() != app.waveColour) { waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification); repaint(); }
     if (auto* e = edit())
         infoLabel.setText (juce::String ((int) e->regions.size()) + " piece(s)" + (e->overdubs.empty() ? juce::String() : ", " + juce::String ((int) e->overdubs.size()) + " overdub(s)") + ", " + formatTime (e->lengthSeconds()).substring (3, 8)
                            + (e->markIn >= 0 ? "   IN " + formatTime (e->markIn).substring (3, 11) : juce::String())

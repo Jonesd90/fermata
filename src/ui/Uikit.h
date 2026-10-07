@@ -513,6 +513,7 @@ public:
         if (isActiveWindow())
         {
             lastActive = ++counter; grabContentFocus();
+            if (isTransportWindow) lastTransportWindow() = this;
             if (menuBarRaise()) juce::MessageManager::callAsync ([] { if (menuBarRaise()) menuBarRaise()(); });     // the menu bar stays in front of the Fermata windows
         }
     }
@@ -544,8 +545,15 @@ public:
     bool keyPressed (const juce::KeyPress& k) override
     {
         if (globalKeyHook() && globalKeyHook() (k)) return true;
+        if (forwardKeys)                                  // e.g. a mixer: the keys (Space, R, 1, 2 ...) go on to the take / edit window that was last in use
+            if (auto* t = lastTransportWindow().getComponent())
+                if (t != this && t->isVisible())
+                    if (auto* c = t->getContentComponent()) if (c->keyPressed (k)) return true;
         return juce::DocumentWindow::keyPressed (k);
     }
+    bool isTransportWindow = false;                       // a take window or an edit window: it becomes the target of the keys of the windows that forward them
+    bool forwardKeys = false;                             // a mixer, meter bridge ...: keys that it does not use itself are passed to the last take / edit window
+    static juce::Component::SafePointer<ToolWindow>& lastTransportWindow() { static juce::Component::SafePointer<ToolWindow> p; return p; }
 private:
     std::function<void (ToolWindow*)> closeCallback;
 };
@@ -600,6 +608,73 @@ public:
         g.fillRect (c.x - 8.0f, c.y - 6.0f, 2.0f, 12.0f);                                        // the line (where playback began)
         juce::Path tri; tri.addTriangle (c.x - 3.5f, c.y - 6.0f, c.x - 3.5f, c.y + 6.0f, c.x + 7.0f, c.y);
         g.fillPath (tri);
+    }
+};
+
+/** The small blue "i": click it and the explanation of the window or section appears in a box (click anywhere else to close it).
+    setText() takes the text, so it can replace a Label that used to show the explanation all the time. */
+class InfoNote : public juce::Button
+{
+public:
+    InfoNote() : juce::Button ({}) { setClickingTogglesState (false); setMouseCursor (juce::MouseCursor::PointingHandCursor); setWantsKeyboardFocus (false); setSize (20, 20); setTooltip ("Information"); }
+    void setText (const juce::String& t, juce::NotificationType = juce::dontSendNotification) { help = t; setVisible (help.isNotEmpty()); }
+    template <typename... A> void setJustificationType (A&&...) {}
+    template <typename... A> void setFont (A&&...) {}
+    template <typename... A> void setColour (A&&...) {}
+    /** Puts the button (20 x 20) at the right-hand end of 'area', vertically centred. */
+    void placeRightOf (juce::Rectangle<int> area) { setBounds (area.removeFromRight (22).withSizeKeepingCentre (20, 20)); }
+    void placeTopRight (juce::Component& parent, int margin = 4) { setBounds (parent.getWidth() - 20 - margin, margin, 20, 20); toFront (false); }
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        auto b = getLocalBounds().toFloat().reduced (0.5f);
+        g.setColour (down ? juce::Colour (0xff1c5cc0) : over ? juce::Colour (0xff4a8af0) : juce::Colour (0xff2f74e0)); g.fillRoundedRectangle (b, 4.0f);
+        g.setColour (juce::Colour (0xff9cc4ff)); g.drawRoundedRectangle (b, 4.0f, 1.0f);
+        g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+        g.drawText ("i", getLocalBounds(), juce::Justification::centred, false);
+    }
+    void clicked() override
+    {
+        if (help.isEmpty()) return;
+        struct Text : juce::Component
+        {
+            juce::TextLayout layout;
+            explicit Text (const juce::String& t)
+            {
+                juce::AttributedString as; as.setJustification (juce::Justification::topLeft);
+                as.append (t, juce::FontOptions (13.5f), juce::Colours::white);
+                layout.createLayout (as, 420.0f);
+                setSize (452, (int) std::ceil (layout.getHeight()) + 28);
+            }
+            void paint (juce::Graphics& g) override { layout.draw (g, getLocalBounds().reduced (16, 14).toFloat()); }
+        };
+        auto box = std::make_unique<Text> (help);
+        juce::CallOutBox::launchAsynchronously (std::move (box), getScreenBounds(), nullptr);
+    }
+private:
+    juce::String help;
+};
+
+/** The WaveColour button: a small rainbow. Dim = off; click and it brightens and the waveforms are coloured by their sound. */
+class RainbowButton : public juce::Button
+{
+public:
+    RainbowButton() : juce::Button ({}) { setClickingTogglesState (false); }
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        auto b = getLocalBounds().toFloat().reduced (0.5f);
+        const bool on = getToggleState();
+        g.setColour (on ? theme::button.brighter (0.35f) : down ? theme::button.brighter (0.2f) : over ? theme::button.brighter (0.1f) : theme::button); g.fillRoundedRectangle (b, 4.0f);
+        g.setColour (on ? theme::accent : theme::border); g.drawRoundedRectangle (b, 4.0f, on ? 1.6f : 1.0f);
+        const auto c = juce::Point<float> (b.getCentreX(), b.getCentreY() + 5.0f);
+        static const juce::uint32 cols[] = { 0xffe53935, 0xfffb8c00, 0xfffdd835, 0xff43a047, 0xff1e88e5, 0xff8e24aa };
+        for (int i = 0; i < 6; ++i)
+        {
+            const float r = 11.5f - 1.7f * (float) i;
+            juce::Path arc; arc.addCentredArc (c.x, c.y, r, r, 0.0f, -juce::MathConstants<float>::halfPi, juce::MathConstants<float>::halfPi, true);
+            arc.clear(); arc.addCentredArc (c.x, c.y, r, r, 0.0f, -juce::MathConstants<float>::halfPi, juce::MathConstants<float>::halfPi, true);
+            g.setColour (juce::Colour (cols[i]).withAlpha (on ? 1.0f : 0.38f));
+            g.strokePath (arc, juce::PathStrokeType (1.7f));
+        }
     }
 };
 

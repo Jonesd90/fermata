@@ -3,11 +3,11 @@
 
 namespace td
 {
-/** Parameter names of an automation lane: "fader", "pan", "send:<destination id>" (a bus send / track send of the strip),
+/** Parameter names of an automation lane: "gain" (before the strip), "fader", "pan", "send:<destination id>" (a bus send / track send of the strip),
     "plugin:<insert slot>:<parameter number>" (an automatable parameter of the VST3 in that insert slot, value 0..1). */
 namespace autoparam
 {
-inline const juce::String fader = "fader", pan = "pan";
+inline const juce::String fader = "fader", pan = "pan", gain = "gain";      // "gain": the level going INTO the mixer strip (before the inserts and the fader)
 inline juce::String send (const juce::Uuid& dest)            { return "send:" + dest.toString(); }
 inline juce::String plugin (int slot, int index)             { return "plugin:" + juce::String (slot) + ":" + juce::String (index); }
 inline bool isSend (const juce::String& p)                   { return p.startsWith ("send:"); }

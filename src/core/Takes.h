@@ -80,6 +80,8 @@ struct TakeWindowDef
     juce::Uuid   markTake = juce::Uuid::null();   // which take the marks are in (null = none)
     juce::Uuid   editTake = juce::Uuid::null();   // the EDIT marks (keys 1 and 2): the part of a take that 'To edit' sends to the edit window
     double       editIn = -1.0, editOut = -1.0;   // seconds from the start of that take (-1 = not set)
+    std::vector<juce::Uuid> editTracks;            // Alt + drag: only these tracks are marked (empty = every track of the take)
+    bool editUses (const juce::Uuid& track) const { return editTracks.empty() || std::find (editTracks.begin(), editTracks.end(), track) != editTracks.end(); }
     bool         overdub = false;                 // the 'Overdub' box: pieces sent to the edit are laid over it instead of being added to the main track
     juce::Uuid   targetEdit = juce::Uuid::null(); // the edit that this window's 'To edit' button sends to (null = make one)
     double       markIn = -1.0, markOut = -1.0;   // seconds from the start of that take (-1 = not set)

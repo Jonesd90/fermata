@@ -84,7 +84,7 @@ void sendsFromVar (SendList& l, const var& v, const InsertFactory& factory, doub
 var stripToVar (const StripState& s, const juce::Uuid& trackId, bool inserts)
 {
     var so = obj();
-    put (so, "track", trackId.toString()); put (so, "gainDb", s.gainDb.get()); put (so, "pan", s.pan.get());
+    put (so, "track", trackId.toString()); put (so, "gainDb", s.gainDb.get()); if (s.inGainDb.get() != 0.0f) put (so, "inGainDb", s.inGainDb.get()); put (so, "pan", s.pan.get());
     put (so, "panL", s.panL.get()); put (so, "panR", s.panR.get());
     put (so, "mute", s.mute.get()); put (so, "solo", s.solo.get());
     put (so, "outOn", s.outOn.get()); put (so, "outDest", s.outDest.toString());
@@ -96,6 +96,7 @@ var stripToVar (const StripState& s, const juce::Uuid& trackId, bool inserts)
 void stripFromVar (StripState& s, const var& sv, const InsertFactory& factory, double sr, int block, bool inserts, const std::vector<juce::Uuid>& legacyFx)
 {
     s.gainDb.set ((float) (double) sv["gainDb"]); s.pan.set ((float) (double) sv["pan"]);
+    s.inGainDb.set (sv.hasProperty ("inGainDb") ? (float) (double) sv["inGainDb"] : 0.0f);
     if (sv.hasProperty ("panL")) { s.panL.set ((float) (double) sv["panL"]); s.panR.set ((float) (double) sv["panR"]); }
     s.mute.set ((bool) sv["mute"]); s.solo.set ((bool) sv["solo"]);
     s.outOn.set (sv.hasProperty ("outOn") ? (bool) sv["outOn"] : false);          // older projects had no output button: nothing was routed that way
@@ -620,6 +621,7 @@ static var waitingToVar (const WaitingPiece& w, const juce::File& base)
     juce::Array<var> fs;
     for (auto& f : w.files) { var fo = obj(); putFilePath (fo, f, base); put (fo, "channels", 1); fs.add (fo); }      // ("channels" marks it as an audio file for the project copy)
     put (o, "files", fs);
+    if (! w.tracks.empty()) { juce::Array<var> ts; for (auto& t : w.tracks) ts.add (t.toString()); put (o, "tracks", ts); }
     return o;
 }
 /** The file for a saved path: inside the project folder it is found from the relative path (so a moved or copied project uses its OWN files). */
@@ -639,6 +641,7 @@ static WaitingPiece waitingFromVar (const var& o, const juce::File& base)
     WaitingPiece w;
     w.name = o["name"].toString(); w.from = (juce::int64) o["from"]; w.to = (juce::int64) o["to"];
     if (auto* fs = o["files"].getArray()) for (auto& fv : *fs) w.files.push_back (getFilePath (fv, base));
+    if (auto* ts = o["tracks"].getArray()) for (auto& t : *ts) w.tracks.push_back (juce::Uuid (t.toString()));
     return w;
 }
 
@@ -776,6 +779,7 @@ var Project::toVar (bool editorialOnly) const
         put (o, "id", e->id.toString()); put (o, "name", e->name); put (o, "window", e->windowId.toString());
         put (o, "rate", e->sampleRate); put (o, "insertIndex", e->insertIndex); put (o, "markIn", e->markIn); put (o, "markOut", e->markOut);
         put (o, "fixIn", e->fixIn); put (o, "fixOut", e->fixOut);
+        if (! e->fixTracks.empty()) { juce::Array<var> ft; for (auto& t : e->fixTracks) ft.add (t.toString()); put (o, "fixTracks", ft); }
         auto regionToVar = [this] (const EditRegion& r)
         {
             var ro = obj();
@@ -960,6 +964,7 @@ bool Project::fromVar (const var& root)
             e->sampleRate = (double) v["rate"]; e->insertIndex = (int) v["insertIndex"];
             if (v.hasProperty ("markIn")) { e->markIn = (double) v["markIn"]; e->markOut = (double) v["markOut"]; }
             if (v.hasProperty ("fixIn")) { e->fixIn = (double) v["fixIn"]; e->fixOut = (double) v["fixOut"]; }
+            if (auto* ft = v["fixTracks"].getArray()) for (auto& t : *ft) e->fixTracks.push_back (juce::Uuid (t.toString()));
             auto regionFromVar = [this] (const var& rv)
             {
                 EditRegion r;
@@ -1033,7 +1038,7 @@ juce::String Project::undoState() const
     if (auto* a = v["takeWindows"].getArray())
         for (auto& w : *a) strip (w, { "markTake", "markIn", "markOut", "editTake", "editIn", "editOut", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub" });
     if (auto* a = v["edits"].getArray())
-        for (auto& e : *a) strip (e, { "markIn", "markOut", "fixIn", "fixOut", "playhead", "insertIndex" });
+        for (auto& e : *a) strip (e, { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex" });
     if (auto m = v["mastering"]; m.isObject()) strip (m, { "view" });
     return juce::JSON::toString (v, true);
 }
@@ -1064,7 +1069,7 @@ void restoreEditorial (Project& p, const var& snapshot, const juce::Uuid& liveTa
     {
         if (auto* live = p.findEdit (te->id))
         {
-            te->markIn = live->markIn; te->markOut = live->markOut; te->fixIn = live->fixIn; te->fixOut = live->fixOut;
+            te->markIn = live->markIn; te->markOut = live->markOut; te->fixIn = live->fixIn; te->fixOut = live->fixOut; te->fixTracks = live->fixTracks;
             te->playheadSeconds = live->playheadSeconds; te->insertIndex = live->insertIndex;
             *live = std::move (*te);
         }

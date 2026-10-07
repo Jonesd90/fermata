@@ -351,8 +351,7 @@ void TakeDisplayControl::resized()
         }
     }
     r.removeFromTop (4);
-    hint.setBounds (r.removeFromTop (20));
-    previewCaption.setBounds (r.removeFromTop (22));
+    { auto pc = r.removeFromTop (22); hint.placeRightOf (pc); previewCaption.setBounds (pc); }
     auto box = r.reduced (0, 2);
     const int pw = juce::jmin (box.getWidth(), (int) (box.getHeight() * 16.0f / 9.0f));
     preview.setBounds (box.withSizeKeepingCentre (pw, (int) (pw * 9.0f / 16.0f)));

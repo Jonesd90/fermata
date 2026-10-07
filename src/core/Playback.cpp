@@ -226,6 +226,7 @@ std::shared_ptr<AutomationPlan> automationPlanFor (Project& p, const EditDef& e)
         auto* strip = m->stripFor (lane.trackId);
         AutomationPlan::Item it; it.lane = lane;
         if (lane.param == autoparam::fader) it.target = &strip->gainDb;
+        else if (lane.param == autoparam::gain) it.target = &strip->inGainDb;
         else if (lane.param == autoparam::pan && t->channelCount() == 1) it.target = &strip->pan;
         else if (autoparam::isSend (lane.param))
         {

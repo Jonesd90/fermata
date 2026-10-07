@@ -71,6 +71,7 @@ public:
         const double v = db <= -99.0f ? -80.0 : (double) db;
         if (std::abs (slider.getValue() - v) > 0.05) { slider.setValue (v, juce::dontSendNotification); updateLabel(); }
     }
+    bool isBeingDragged() const { return slider.isMouseButtonDown(); }
     void pushPeaks (float l, float r, float rmsL, float rmsR)
     {
         meterL.setLevel (l, rmsL); meterR.setLevel (r, rmsR);
@@ -736,7 +737,11 @@ public:
     }
     int dialCount() const { return dials.size(); }
 
-    void tick() override { fader.pushPeaks (strip.meterL.take(), strip.meterR.take(), strip.rmsL.get(), strip.rmsR.get()); }
+    void tick() override
+    {
+        if (! fader.isBeingDragged()) fader.setDb (strip.gainDb.get());          // the fader follows the level, so automation (and the Stream Deck) moves it on screen
+        fader.pushPeaks (strip.meterL.take(), strip.meterR.take(), strip.rmsL.get(), strip.rmsR.get());
+    }
     void resetPeaks() override { fader.resetPeaks(); }
 
     void resized() override
@@ -875,7 +880,11 @@ public:
         for (auto* d : dials) d->refreshFromModel();
         repaint();
     }
-    void tick() override { fader.pushPeaks (st.meterL.take(), st.meterR.take(), st.rmsL.get(), st.rmsR.get()); }
+    void tick() override
+    {
+        if (! fader.isBeingDragged()) fader.setDb (st.gainDb.get());
+        fader.pushPeaks (st.meterL.take(), st.meterR.take(), st.rmsL.get(), st.rmsR.get());
+    }
     void resetPeaks() override { fader.resetPeaks(); }
     void resized() override
     {
@@ -899,7 +908,7 @@ public:
         wells.push_back (slotArea.expanded (2, 0));
         slots.setBounds (slotArea.reduced (0, 1));
         r.removeFromTop (4);
-        if (external) { note.setBounds (r.removeFromTop (70)); return; }
+        if (external) { note.placeRightOf (r.removeFromTop (22)); return; }
         sections.push_back ({ "SENDS", r.removeFromTop (kSecH) });
         auto sendArea = r.removeFromTop (juce::jmax (1, sendRows) * kSendCellH);
         wells.push_back (sendArea.expanded (2, 0));
@@ -932,7 +941,7 @@ private:
     }
     AppContext& app; MixerState& mixer; juce::Uuid busId; BusState& st; bool external; SlotButtons slots; FaderBlock fader; StripOutputRow outRow;
     bool updating = false; int sendRows = 1, nSlots = kNumSlots;
-    juce::Label note; juce::ComboBox outBox;
+    InfoNote note; juce::ComboBox outBox;
     juce::OwnedArray<SendDial> dials; juce::TextButton toTrackButton;
     juce::OwnedArray<juce::TextButton> toggles; juce::TextButton *mute = nullptr;
 };

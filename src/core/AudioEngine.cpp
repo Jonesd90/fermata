@@ -558,6 +558,10 @@ void AudioEngine::processMixer (MixerPlan& mp, const float* const* in, int numIn
             }
 
             juce::AudioBuffer<float> view (mp.chanBuf.getArrayOfWritePointers(), nc, n);
+            {   // the strip's input gain (automatable "gain"): before the inserts and the fader
+                const float gIn = dbToGain (st->inGainDb.get());
+                if (gIn != 1.0f || st->lastIn != 1.0f) { view.applyGainRamp (0, n, st->lastIn, gIn); st->lastIn = gIn; }
+            }
             for (auto& slot : st->slots) slot.process (view);
 
             // fold to stereo (before the fader, so sends can be taken before or after it)

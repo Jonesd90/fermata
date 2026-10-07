@@ -85,8 +85,8 @@ void OrganiserComponent::chooseLayout (int index)
 void OrganiserComponent::resized()
 {
     auto r = getLocalBounds().reduced (14);
-    heading.setBounds (r.removeFromTop (24));
-    hint.setBounds (r.removeFromTop (34));
+    { auto h = r.removeFromTop (24); hint.setBounds (h.removeFromRight (22).withSizeKeepingCentre (20, 20)); heading.setBounds (h); }
+    r.removeFromTop (6);
     auto row = r.removeFromTop (64);
     for (auto* c : choices) c->setBounds (row.removeFromLeft (72).reduced (2));
     r.removeFromTop (10);

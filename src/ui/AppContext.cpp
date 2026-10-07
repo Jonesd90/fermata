@@ -7,6 +7,7 @@ namespace td
 {
 AppContext::AppContext()
 {
+    waveColors.onReady = [this] { if (waveColour) project.sendChangeMessage(); };          // a file's colours are ready: draw them
     remoteCrKey.holdMs = 1000;                     // the remote Talk key: under 1 second latches, longer is momentary
     project.newStripsToMain = true;
     juce::PropertiesFile::Options o;

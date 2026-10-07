@@ -18,7 +18,7 @@ private:
         Page() { addAndMakeVisible (grid); addAndMakeVisible (note); }      // (without this the list and its note never appeared)
         GridEditor grid;
         juce::OwnedArray<juce::TextButton> buttons;
-        juce::Label note;
+        InfoNote note;
         juce::TextButton* addButton (const juce::String& text, std::function<void()> fn);
         void resized() override;
     };
@@ -26,7 +26,7 @@ private:
     struct IoPage : public juce::Component
     {
         GridEditor ins, outs;
-        juce::Label inCaption, outCaption, note;
+        juce::Label inCaption, outCaption; InfoNote note;
         void resized() override;
     };
 

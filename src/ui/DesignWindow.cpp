@@ -14,7 +14,7 @@ void DesignComponent::Page::resized()
 {
     auto r = getLocalBounds().reduced (6);
     auto bottom = r.removeFromBottom (34);
-    note.setBounds (r.removeFromBottom (36));
+    note.placeRightOf (bottom);
     grid.setBounds (r);
     int x = bottom.getX();
     for (auto* b : buttons)
@@ -28,7 +28,7 @@ void DesignComponent::Page::resized()
 void DesignComponent::IoPage::resized()
 {
     auto r = getLocalBounds().reduced (6);
-    note.setBounds (r.removeFromBottom (40));
+    { auto nb = r.removeFromBottom (24); note.placeRightOf (nb); }
     auto left = r.removeFromLeft (r.getWidth() / 2 - 3);
     r.removeFromLeft (6);
     inCaption.setBounds (left.removeFromTop (22));  ins.setBounds (left);

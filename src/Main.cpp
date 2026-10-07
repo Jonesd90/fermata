@@ -346,6 +346,8 @@ private:
         });
         w->setContentOwned (content, true);
         w->setIcon (makeFermataIcon (256));
+        w->isTransportWindow = key.startsWith ("take:") || key.startsWith ("edit:");
+        w->forwardKeys = key.startsWith ("mixer:") || key.startsWith ("scope:") || key == "bridge" || key == "media" || key == "takedisplay" || key == "organiser";
         {   // where it was left last time (kept in the project), or else centred; never wider than the screen, nor taller (except a mixer, which opens tall enough to show the whole strip)
             const auto& displays = juce::Desktop::getInstance().getDisplays();
             const auto area = (mainWindow != nullptr ? displays.getDisplayForRect (mainWindow->getBounds()) : displays.getPrimaryDisplay())->userArea;

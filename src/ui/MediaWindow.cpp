@@ -121,7 +121,7 @@ void MediaComponent::resized()
     auto top = r.removeFromBottom (grid::rowH);
     revealButton.setBounds (grid::cell (top.removeFromRight (grid::btnW + 30), 0, 1).withWidth (grid::btnW + 30));
     refreshButton.setBounds (grid::cell (top.removeFromRight (grid::btnW + grid::gap), 0));
-    info.setBounds (top);
+    info.placeRightOf (top);
     r.removeFromBottom (4);
     tree.setBounds (r);
     contentWidth = juce::jmax (300, tree.getWidth() - 64);

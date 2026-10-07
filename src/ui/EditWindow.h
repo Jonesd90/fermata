@@ -56,6 +56,7 @@ private:
                      pitchButton { "Pitch..." }, pitchCurveButton { "Pitch curve..." }, repairButton { "Spectral Repair..." }, declickButton { "De-Click..." }, exportProcButton { "Export for Processing..." }, undoFixButton { "Undo fix" }, tracksButton { "Tracks..." }, importButton { "Import..." };
     juce::ToggleButton slipLeftToggle { "Slip Left" }, slipRightToggle { "Slip Right" }, loopToggle { "Loop [L]" };
     PlayheadModeButton playheadMode;
+    RainbowButton waveColourBtn;
     std::unique_ptr<EditTimeline> timeline;
     std::unique_ptr<juce::Viewport> viewportOwner;
     std::unique_ptr<KeepKeysOnTimeline> keysKeeper;           // declared after the viewport: destroyed first

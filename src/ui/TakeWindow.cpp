@@ -227,16 +227,17 @@ public:
                 if (live) drawLiveWave (g, r.reduced (1), tf.trackId);
                 else
                 {
-                    g.setColour (chan::waveColour (tc));
+                    setWaveColour (g, chan::waveColour (tc));
                     juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (r.reduced (1));
                     auto* th = thumbnailFor (tf.file);
                     const double total = th != nullptr ? th->getTotalLength() : 0.0;
-                    if (total > 0.0 && ! directWave.draw (g, r.reduced (1), tf.file, 0.0, total, app.waveZoom))
-                        drawThumbnailEnvelope (g, r.reduced (1), *th, 0.0, total, app.waveZoom);
+                    const auto wcd = app.waveColourOf (tf.file);
+                    if (total > 0.0 && ! directWave.draw (g, r.reduced (1), tf.file, 0.0, total, app.waveZoom, wcd.get()))
+                        drawThumbnailEnvelope (g, r.reduced (1), *th, 0.0, total, app.waveZoom, wcd.get());
                 }
                 if (! live)                                                                          // parts sent out with "Export for Processing": no waveform, a hatched block
                     for (auto& wp : grp.waiting)
-                        if (wp.active() && grp.sampleRate > 0)
+                        if (wp.active() && grp.sampleRate > 0 && (wp.tracks.empty() || std::find (wp.tracks.begin(), wp.tracks.end(), tf.trackId) != wp.tracks.end()))
                         {
                             const int wx0 = x0 + (int) ((double) wp.from / grp.sampleRate * pixelsPerSecond), wx1 = x0 + (int) ((double) wp.to / grp.sampleRate * pixelsPerSecond);
                             auto wr = juce::Rectangle<int> (wx0, r.getY(), juce::jmax (3, wx1 - wx0), r.getHeight()).getIntersection (r);
@@ -287,7 +288,9 @@ public:
                 if (w->editIn >= 0 && w->editOut > w->editIn)
                 {
                     g.setColour (juce::Colour (0x2a3b8cff));
-                    g.fillRect (juce::Rectangle<int> (x0 + (int) (w->editIn * pixelsPerSecond), y0, (int) ((w->editOut - w->editIn) * pixelsPerSecond), y1 - y0));
+                    const int mx = x0 + (int) (w->editIn * pixelsPerSecond), mw = (int) ((w->editOut - w->editIn) * pixelsPerSecond);
+                    if (w->editTracks.empty()) g.fillRect (juce::Rectangle<int> (mx, y0, mw, y1 - y0));
+                    else for (auto& tf : grp.files) { const int row = trackRow (tf.trackId); if (row >= 0 && w->editUses (tf.trackId)) g.fillRect (juce::Rectangle<int> (mx, kRulerH + kLaneH + row * rowH, mw, rowH)); }
                 }
                 auto flag = [&] (double sec, juce::Colour c, const char* t, bool left)
                 {
@@ -496,6 +499,7 @@ public:
             else if (e.y >= kRulerH + kLaneH && e.x >= kNameW && e.getNumberOfClicks() < 2 && ! (app.engine.isRecording() && grp->id == app.engine.currentTakeId()))
             {
                 markDragTake = grp->id; markAnchor = juce::jmax (0.0, (double) (e.x - kNameW) / pixelsPerSecond - grp->startSeconds); markStartX = e.x;
+                markAlt = e.mods.isAltDown(); markRow0 = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);      // Alt + drag: only the track(s) the mouse covers
             }
             // clicking a take only selects it: the playhead stays where it is
         }
@@ -529,6 +533,12 @@ public:
                 markActive = true;
                 const double now = juce::jlimit (0.0, grp->lengthSeconds(), (double) (e.x - kNameW) / pixelsPerSecond - grp->startSeconds);
                 w->editTake = grp->id; w->editIn = juce::jmin (markAnchor, now); w->editOut = juce::jmax (markAnchor, now);
+                w->editTracks.clear();
+                if (markAlt)
+                {
+                    const int r1 = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH), lo = juce::jmin (markRow0, r1), hi = juce::jmax (markRow0, r1);
+                    for (auto& tf : grp->files) { const int row = trackRow (tf.trackId); if (row >= lo && row <= hi) w->editTracks.push_back (tf.trackId); }
+                }
                 app.project.markDirty(); repaint();
             }
             return;
@@ -677,7 +687,7 @@ private:
         const double binSeconds = (double) binSamples / app.engine.getSampleRate();
         const float laneH = (float) r.getHeight() / (float) nc;
         juce::Graphics::ScopedSaveState clipState (g); g.reduceClipRegion (r);
-        g.setColour (juce::Colour (0xffffd6cc));
+        setWaveColour (g, juce::Colour (0xffffd6cc));
         for (int c = 0; c < nc; ++c)                      // one lane per channel, like the finished waveform
         {
             const float mid = (float) r.getY() + laneH * ((float) c + 0.5f), half = laneH * 0.5f - 1.0f;
@@ -914,7 +924,7 @@ private:
     DirectWaveCache directWave { formatManager };
     std::map<juce::String, std::unique_ptr<juce::AudioThumbnail>> thumbs;
     juce::Uuid dragId; bool dragging = false; double dragOriginSeconds = 0.0;
-    juce::Uuid markDragTake; bool markActive = false; double markAnchor = 0.0; int markStartX = 0;     // dragging over a take's tracks sets Edit IN (mouse down) and OUT (mouse up)
+    juce::Uuid markDragTake; bool markActive = false, markAlt = false; double markAnchor = 0.0; int markStartX = 0, markRow0 = 0;     // dragging over a take's tracks sets Edit IN (mouse down) and OUT (mouse up)
     int fadeDrag = 0; juce::Uuid fadeTake; double fadeBase = 0.0;      // dragging a take's fade-in (1) or fade-out (2) from its top corner
 
     /** The take whose top corner (within 12 px of its start or end, in the lane) is under p. A take being recorded has no handles. */
@@ -1009,6 +1019,11 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     playheadMode.setToggleState (app.playheadFollows, juce::dontSendNotification);
     playheadMode.setWantsKeyboardFocus (false);
     addAndMakeVisible (playheadMode);
+    waveColourBtn.setTooltip ("WaveColour. Lit: the waveforms are coloured by their sound. The hue is the pitch (red low, green middle, blue high); vivid colour is a clear note, pale colour is noise; BLACK is a thump below 100 Hz, such as a kicked mic stand. Off: ordinary waveforms. (The same in every window.)");
+    waveColourBtn.onClick = [this] { app.setWaveColour (! app.waveColour); };
+    waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification);
+    waveColourBtn.setWantsKeyboardFocus (false);
+    addAndMakeVisible (waveColourBtn);
     loopToggle.setTooltip ("Loop: when lit, Play and Play marked repeat the marked area (Edit IN / OUT [1] [2] if set, otherwise Bounce IN / OUT [I] [O]) over and over until you press Stop. Key L.");
     loopToggle.onClick = [this] { loopChanged(); };
     loopToggle.setWantsKeyboardFocus (false);
@@ -1032,7 +1047,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
             if (auto* g = w->findGroup (timeline->selectedTakes.front()))
             {
                 oldTake = w->editTake; oldIn = w->editIn; oldOut = w->editOut;
-                w->editTake = g->id; w->editIn = 0.0; w->editOut = g->lengthSeconds(); temp = true;
+                w->editTake = g->id; w->editIn = 0.0; w->editOut = g->lengthSeconds(); w->editTracks.clear(); temp = true;
             }
         run();
         if (temp) if (auto* w2 = def()) { w2->editTake = oldTake; w2->editIn = oldIn; w2->editOut = oldOut; }
@@ -1125,7 +1140,7 @@ void TakeWindowComponent::resized()
     {
         { &nameLabel, 45 }, { &nameEditor, 200, grid::btnH, 10 }, { &takeBox, 84, 58, 14 },
         { &recordButton, grid::btnW, grid::btnH, 6 }, { &timeLabel, 150, 28, 14 },
-        { &startButton, 40, grid::btnH, 2 }, { &backButton, 40, grid::btnH, 2 }, { &playButton }, { &fwdButton, 40, grid::btnH, 2 }, { &endTransportButton, 40, grid::btnH, 6 }, { &playMarkedButton }, { &playheadMode, 34, grid::btnH, 2 }, { &loopToggle, 84, grid::btnH, 14 },
+        { &startButton, 40, grid::btnH, 2 }, { &backButton, 40, grid::btnH, 2 }, { &playButton }, { &fwdButton, 40, grid::btnH, 2 }, { &endTransportButton, 40, grid::btnH, 6 }, { &playMarkedButton }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 84, grid::btnH, 14 },
         { &inButton }, { &outButton, grid::btnW, grid::btnH, 14 },
         { &editInButton }, { &editOutButton }, { &toEditButton }, { &toEditAtButton }, { &overdubBox, grid::btnW - 10, grid::btnH, 14 },
         { &editWindowButton }, { &bounceButton, grid::btnW, grid::btnH, 14 },
@@ -1389,7 +1404,7 @@ bool TakeWindowComponent::keyPressed (const juce::KeyPress& k)
     {
         if (c == '1') { editMarkIn();  return true; }
         if (c == '2') { editMarkOut(); return true; }
-        if (c == '5') { if (auto* w5 = def()) { w5->editTake = juce::Uuid::null(); w5->editIn = w5->editOut = -1.0; app.project.changed(); } return true; }     // 5: take both Edit flags away
+        if (c == '5') { if (auto* w5 = def()) { w5->editTake = juce::Uuid::null(); w5->editIn = w5->editOut = -1.0; w5->editTracks.clear(); app.project.changed(); } return true; }     // 5: take both Edit flags away
         if (c == '3') { toEdit (false); return true; }
         if (c == '4') { toEdit (true);  return true; }
     }
@@ -1413,6 +1428,7 @@ void TakeWindowComponent::timerCallback()
     const bool hereRec = rec && def() != nullptr && def()->findGroup (app.engine.currentTakeId()) != nullptr;
     recordButton.setButtonText (rec ? "STOP [Space]" : "REC [R]");
     if (playheadMode.getToggleState() != app.playheadFollows) playheadMode.setToggleState (app.playheadFollows, juce::dontSendNotification);
+    if (waveColourBtn.getToggleState() != app.waveColour) { waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification); repaint(); }
     if (hereRec) { recStart = def()->findGroup (app.engine.currentTakeId()) != nullptr ? def()->findGroup (app.engine.currentTakeId())->startSeconds : recStart; wasRecordingHere = true; }
     else if (wasRecordingHere && ! rec)                                 // a recording just ended: park the playhead at the start of that take, so Space reviews it
     {

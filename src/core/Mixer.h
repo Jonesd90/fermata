@@ -118,6 +118,7 @@ struct SendList
 struct StripState
 {
     juce::Uuid trackId;
+    Param inGainDb { 0.0f };          // the level going into the strip, before the inserts and the fader (automatable as "gain")
     Param gainDb { 0.0f };
     Param pan { 0.0f };               // mono strips: -1 (left) .. +1 (right)
     Param panL { -1.0f }, panR { 1.0f };   // stereo strips: where the left and the right channel of the track are placed, each -1 .. +1
@@ -130,6 +131,7 @@ struct StripState
     Param meterL, meterR;             // peak since last read (UI resets)
     Param rmsL, rmsR;                 // RMS level (linear, about 300 ms window), updated every block
     float lastGain = 0.0f, lastPre = 0.0f, msL = 0.0f, msR = 0.0f;   // audio thread only
+    float lastIn = 1.0f;              // audio thread only: the input gain of the previous block (for a smooth change)
     StripState() { outSend.gainDb.set (0.0f); }
 };
 

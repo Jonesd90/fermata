@@ -42,7 +42,7 @@ public:
     void resized() override
     {
         auto r = getLocalBounds().reduced (12);
-        intro.setBounds (r.removeFromTop (44));
+        { auto t = r.removeFromTop (22); intro.placeRightOf (t); }
         auto bottom = r.removeFromBottom (grid::rowH);
         findButton.setBounds (bottom.removeFromLeft (grid::btnW + 40));
         closeButton.setBounds (bottom.removeFromRight (grid::btnW));
@@ -195,7 +195,7 @@ private:
     AppContext& app;
     std::vector<PreampDeviceCfg> rows;
     juce::OwnedArray<Row> ui;
-    juce::Label intro, found;
+    InfoNote intro; juce::Label found;
     juce::TextButton findButton, addButton, usualButton, stackButton, applyButton, closeButton;
 };
 

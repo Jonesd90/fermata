@@ -558,7 +558,7 @@ void MainComponent::showProjectMenu()
     juce::PopupMenu m;
     m.addItem (1, "New project...");
     m.addItem (2, "Open project...");
-    m.addItem (3, "Save now");
+    m.addItem (3, "Save");
     m.addItem (6, "Save as...");
     m.addItem (7, "Create copy of entire project...");
     m.addSeparator();

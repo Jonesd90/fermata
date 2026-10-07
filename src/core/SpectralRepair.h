@@ -35,12 +35,14 @@ class SpectralRepair
 {
 public:
     /** The merged spectrogram of all the tracks (each a mono vector of the same length). */
-    static MergedSpectrogram spectrogram (const std::vector<std::vector<float>>& tracks, double sr, int maxFrames = 1600)
+    static MergedSpectrogram spectrogram (const std::vector<std::vector<float>>& tracks, double sr, int maxFrames = 1600, int fftN = 2048)
     {
         MergedSpectrogram s; s.sampleRate = sr;
-        const int N = 2048;
-        s.fftSize = N; s.bins = N / 2 + 1;
         const size_t L = tracks.empty() ? 0 : tracks[0].size();
+        int N = juce::jlimit (2048, 32768, fftN);
+        while (N > 2048 && L < (size_t) N) N /= 2;                       // very short audio: the longest window that fits
+        maxFrames = juce::jmax (400, maxFrames * 2048 / N);               // a longer window costs more per frame, so fewer frames
+        s.fftSize = N; s.bins = N / 2 + 1;
         if (L < (size_t) N) { s.frames = 0; return s; }
         const double hop = juce::jmax (512.0, std::ceil ((double) L / (double) maxFrames));
         s.hopSamples = hop;
@@ -121,13 +123,13 @@ public:
 
     // ------------------------------------------------------------------------------------------------ declick
     /** Mends the samples [t0,t1) by linear prediction from the sound around them. Returns false if the gap is too long for this method. */
-    static bool interpolate (std::vector<float>& x, long t0, long t1, int order = 40)
+    static bool interpolate (std::vector<float>& x, long t0, long t1, int order = 40, double wnc = 1.0e-6)
     {
         const long L = (long) x.size();
         t0 = juce::jlimit (0L, L, t0); t1 = juce::jlimit (0L, L, t1);
         const long m = t1 - t0;
         if (m < 1) return true;
-        if (m > 700) return false;
+        if (m > 1500) return false;
         const long ctx = 2048;
         const long s0 = juce::jmax (0L, t0 - ctx), s1 = juce::jmin (L, t1 + ctx);
         const int p = (int) juce::jmin ((long) order, (t0 - s0 + s1 - t1) / 8);
@@ -137,7 +139,7 @@ public:
         auto accumulate = [&] (long a, long b) { for (int k = 0; k <= p; ++k) for (long n = a + k; n < b; ++n) R[(size_t) k] += (double) x[(size_t) n] * (double) x[(size_t) (n - k)]; };
         accumulate (s0, t0); accumulate (t1, s1);
         if (R[0] < 1.0e-12) return true;
-        R[0] *= 1.0 + 1.0e-9;
+        R[0] *= 1.0 + wnc;                                              // a little 'white noise correction': keeps the predictor stable for very tonal sound
         std::vector<double> a = levinson (R, p);                           // a[0] = 1
         // unknowns u_i = x[t0 + i]
         const long eLo = t0, eHi = t1 + p;                                 // residual positions touched by the gap
@@ -177,13 +179,11 @@ public:
         return true;
     }
 
-    /** Finds clicks in [t0,t1) (samples of x) and mends each one. 'sensitivity' 1..10 (10 = finds the faintest clicks). Returns how many were mended. */
-    static int declick (std::vector<float>& x, long t0, long t1, double sensitivity, std::vector<std::pair<long, long>>* found = nullptr)
+    /** One pass of the click finder over [t0,t1). Returns how many gaps were mended. */
+    static int declickPass (std::vector<float>& x, long t0, long t1, double sensitivity, std::vector<std::pair<long, long>>* found)
     {
         const long L = (long) x.size();
-        t0 = juce::jlimit (0L, L, t0); t1 = juce::jlimit (0L, L, t1);
         const int p = 32;
-        if (t1 - t0 < 256) return 0;
         const long s0 = juce::jmax (0L, t0 - 1024), s1 = juce::jmin (L, t1 + 1024);
         std::vector<double> R ((size_t) p + 1, 0.0);
         for (int k = 0; k <= p; ++k) for (long n = s0 + k; n < s1; ++n) R[(size_t) k] += (double) x[(size_t) n] * (double) x[(size_t) (n - k)];
@@ -192,9 +192,10 @@ public:
         const auto a = levinson (R, p);
         std::vector<double> e ((size_t) (s1 - s0), 0.0);
         for (long n = s0 + p; n < s1; ++n) { double sum = 0.0; for (int k = 0; k <= p; ++k) sum += a[(size_t) k] * (double) x[(size_t) (n - k)]; e[(size_t) (n - s0)] = sum; }
-        const double thresh = juce::jmap (juce::jlimit (1.0, 10.0, sensitivity), 1.0, 10.0, 14.0, 4.5);
-        std::vector<char> flag (e.size(), 0);
-        const long block = 4096;
+        const double hi = juce::jmap (juce::jlimit (1.0, 10.0, sensitivity), 1.0, 10.0, 12.0, 3.0);      // a sample this many 'sigmas' out is a click
+        const double lo = juce::jmax (1.6, hi * 0.45);                                                     // ... and its neighbours are part of it while they are above this
+        std::vector<double> sig (e.size(), 1.0e-9);
+        const long block = 2048;
         for (long b0 = s0; b0 < s1; b0 += block)
         {
             const long b1 = juce::jmin (s1, b0 + block);
@@ -202,20 +203,58 @@ public:
             if (mag.size() < 16) continue;
             auto mid = mag.begin() + (long) mag.size() / 2; std::nth_element (mag.begin(), mid, mag.end());
             const double sigma = juce::jmax (1.0e-9, 1.4826 * *mid);
-            for (long n = b0; n < b1; ++n) if (std::abs (e[(size_t) (n - s0)]) > thresh * sigma && n >= t0 && n < t1) flag[(size_t) (n - s0)] = 1;
+            for (long n = b0; n < b1; ++n) sig[(size_t) (n - s0)] = sigma;
         }
+        auto big = [&] (long n, double k) { return std::abs (e[(size_t) (n - s0)]) > k * sig[(size_t) (n - s0)]; };
+        std::vector<char> flag (e.size(), 0);
+        for (long n = juce::jmax (s0 + p, t0); n < juce::jmin (s1, t1); ++n) if (big (n, hi)) flag[(size_t) (n - s0)] = 1;
+        // a long click does not jump on every sample: follow it outwards while the residual stays clearly above normal
+        for (long n = s0 + p; n < s1; ++n)
+            if (flag[(size_t) (n - s0)] == 1)
+            {
+                for (long m = n + 1; m < s1 && m < n + 400 && big (m, lo); ++m) if (! flag[(size_t) (m - s0)]) flag[(size_t) (m - s0)] = 2;
+                for (long m = n - 1; m >= s0 + p && m > n - 400 && big (m, lo); --m) if (! flag[(size_t) (m - s0)]) flag[(size_t) (m - s0)] = 2;
+            }
         std::vector<std::pair<long, long>> gaps;
         for (long n = s0; n < s1;)
         {
             if (! flag[(size_t) (n - s0)]) { ++n; continue; }
             long first = n, last = n;
-            while (n < s1 && (flag[(size_t) (n - s0)] || (n - last) <= 3 + 0)) { if (n < s1 && flag[(size_t) (n - s0)]) last = n; ++n; }
-            long g0 = first - 1, g1 = juce::jmax (first + 3, last - p / 2 + 1) + 2;       // the damaged samples: where the residual first jumps, to a little after the last big one
-            gaps.push_back ({ juce::jmax (t0, g0), juce::jmin (t1, g1) });
+            while (n < s1 && (flag[(size_t) (n - s0)] || (n - last) <= 12)) { if (n < s1 && flag[(size_t) (n - s0)]) last = n; ++n; }
+            long g0 = first - 2, g1 = juce::jmax (first + 3, last - p / 2) + 4;       // the damaged samples: where the residual first jumps, to a little after the last big one
+            g0 = juce::jmax (t0, g0); g1 = juce::jmin (t1, g1);
+            if (! gaps.empty() && g0 - gaps.back().second < 24) gaps.back().second = g1; else gaps.push_back ({ g0, g1 });
         }
         int mended = 0;
-        for (auto& g : gaps) if (interpolate (x, g.first, g.second, 40)) { ++mended; if (found) found->push_back (g); }
+        for (auto& g : gaps)
+        {
+            const long m = g.second - g.first;
+            if (interpolate (x, g.first, g.second, (int) juce::jlimit (40L, 128L, m / 4))) { ++mended; if (found) found->push_back (g); }
+        }
         return mended;
+    }
+
+    /** Finds clicks in [t0,t1) (samples of x) and mends each one. 'sensitivity' 1..10 (10 = finds the faintest clicks). Returns how many were mended.
+        Several passes, so what a first mend uncovers is found too. If the stretch is short (30 ms or less) it is taken to BE the click and is mended as a whole. */
+    static int declick (std::vector<float>& x, long t0, long t1, double sensitivity, std::vector<std::pair<long, long>>* found = nullptr, double sampleRate = 48000.0)
+    {
+        const long L = (long) x.size();
+        t0 = juce::jlimit (0L, L, t0); t1 = juce::jlimit (0L, L, t1);
+        if (t1 - t0 < 4) return 0;
+        if (t1 - t0 <= (long) (0.03 * sampleRate))                         // a short area chosen by the user: mend all of it
+        {
+            if (interpolate (x, t0, t1, (int) juce::jlimit (40L, 128L, (t1 - t0) / 4))) { if (found) found->push_back ({ t0, t1 }); return 1; }
+            return 0;
+        }
+        if (t1 - t0 < 256) return 0;
+        int total = 0;
+        for (int pass = 0; pass < 3; ++pass)
+        {
+            const int n = declickPass (x, t0, t1, sensitivity, found);
+            total += n;
+            if (n == 0) break;
+        }
+        return total;
     }
 
 private:

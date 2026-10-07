@@ -76,6 +76,7 @@ struct WaitingPiece
     juce::String name;                 // what the user called it ("bar 4", "click removal")
     juce::int64  from = 0, to = 0;     // the part, in samples of the take (or of the piece's files): [from, to)
     std::vector<juce::File> files;     // the exported files, in the order of the piece's / take's files; the other program overwrites them
+    std::vector<juce::Uuid> tracks;    // the track of each exported file (empty = all the files of the piece / take, in order)
     bool active() const noexcept { return ! files.empty() && to > from; }
 };
 
@@ -177,6 +178,8 @@ struct EditDef
     int          insertIndex = -1;         // where the next region goes: -1 = at the end, else before regions[insertIndex]
     double       markIn = -1.0, markOut = -1.0;   // I / O points on the edit timeline, seconds (-1 = not set); used by Bounce Out
     double       fixIn = -1.0, fixOut = -1.0;     // keys 1 / 2: the part to pitch-correct or repair (seconds on the edit timeline, -1 = not set)
+    std::vector<juce::Uuid> fixTracks;            // Alt + drag: only these tracks are marked (empty = every track)
+    bool fixUses (const juce::Uuid& track) const { return fixTracks.empty() || std::find (fixTracks.begin(), fixTracks.end(), track) != fixTracks.end(); }
 
     // ---- automation (drawn in the edit window; only plays from the edit) ----
     bool                 automationOn = false;

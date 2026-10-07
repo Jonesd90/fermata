@@ -2,14 +2,19 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_audio_utils/juce_audio_utils.h>
+#include "WaveColor.h"
 #include <map>
 #include <vector>
 
 namespace td
 {
+/** The colour the waveforms are drawn in: set it with setWaveColour (instead of g.setColour) so the outline can be a brighter shade of it. */
+inline juce::Colour& currentWaveColour() { static juce::Colour c = juce::Colours::white; return c; }
+inline void setWaveColour (juce::Graphics& g, juce::Colour c) { currentWaveColour() = c; g.setColour (c); }
+
 /** Fills one channel's waveform as a single connected shape: the top edge left to right, the bottom edge back again. Because it is one anti-aliased
     outline rather than a thin line per pixel column, it never shows gaps or stripes, whatever the track height or the screen's scaling. */
-inline void fillEnvelope (juce::Graphics& g, float xFirst, const std::vector<float>& tops, const std::vector<float>& bottoms)
+inline void fillEnvelope (juce::Graphics& g, float xFirst, const std::vector<float>& tops, const std::vector<float>& bottoms, const std::vector<juce::Colour>* cols = nullptr)
 {
     const size_t n = tops.size();
     if (n == 0 || bottoms.size() != n) return;
@@ -21,7 +26,26 @@ inline void fillEnvelope (juce::Graphics& g, float xFirst, const std::vector<flo
     for (size_t i = n; i-- > 0;) p.lineTo (xFirst + (float) i + 0.5f, juce::jmax (tops[i] + 1.0f, bottoms[i]));
     p.lineTo (xFirst, juce::jmax (tops[0] + 1.0f, bottoms[0]));
     p.closeSubPath();
-    g.fillPath (p);
+    const auto base = currentWaveColour();
+    const bool coloured = cols != nullptr && cols->size() == n;
+    auto gradient = [&] (bool outline)                                                // WaveColour: a colour for every column
+    {
+        auto tint = [outline] (juce::Colour c) { return outline ? (c.getBrightness() < 0.1f ? juce::Colour (0xff6a6a6a) : c.brighter (0.7f)) : c.darker (0.15f); };
+        const float w = juce::jmax (1.0f, (float) n);
+        juce::ColourGradient gr (tint ((*cols)[0]), xFirst, 0.0f, tint ((*cols)[n - 1]), xFirst + w, 0.0f, false);
+        const size_t step = juce::jmax ((size_t) 1, n / 400);
+        for (size_t i = step; i + 1 < n; i += step) gr.addColour ((double) i / (double) w, tint ((*cols)[i]));
+        return gr;
+    };
+    if (coloured) g.setGradientFill (gradient (false)); else g.setColour (base.darker (0.25f));
+    g.fillPath (p);                          // a calm body ...
+    // ... and a thin bright line round the outer limit of the waveform (as in SADiE and Pyramix) so the peaks stand out
+    juce::Path top, bottom;
+    top.startNewSubPath (xFirst, tops[0]); bottom.startNewSubPath (xFirst, juce::jmax (tops[0] + 1.0f, bottoms[0]));
+    for (size_t i = 0; i < n; ++i) { top.lineTo (xFirst + (float) i + 0.5f, tops[i]); bottom.lineTo (xFirst + (float) i + 0.5f, juce::jmax (tops[i] + 1.0f, bottoms[i])); }
+    if (coloured) g.setGradientFill (gradient (true)); else g.setColour (base.brighter (0.7f));
+    g.strokePath (top, juce::PathStrokeType (1.0f)); g.strokePath (bottom, juce::PathStrokeType (1.0f));
+    g.setColour (base);
 }
 
 /** Instead of a waveform: a hatched block that says the audio is out being processed in other software ("Export for Processing"). */
@@ -39,7 +63,7 @@ inline void drawWaitingBlock (juce::Graphics& g, juce::Rectangle<int> area, cons
 }
 
 /** The waveform of a (zoomed-out) thumbnail between t0 and t1 seconds, drawn with fillEnvelope for every channel. */
-inline void drawThumbnailEnvelope (juce::Graphics& g, juce::Rectangle<int> area, juce::AudioThumbnail& th, double t0, double t1, float vzoom)
+inline void drawThumbnailEnvelope (juce::Graphics& g, juce::Rectangle<int> area, juce::AudioThumbnail& th, double t0, double t1, float vzoom, const WaveColorData* wc = nullptr)
 {
     if (area.isEmpty() || t1 <= t0) return;
     const int nCh = juce::jmax (1, th.getNumChannels());
@@ -48,6 +72,8 @@ inline void drawThumbnailEnvelope (juce::Graphics& g, juce::Rectangle<int> area,
     const int bandH = juce::jmax (1, area.getHeight() / nCh);
     const double perPx = (t1 - t0) / (double) area.getWidth();
     std::vector<float> tops ((size_t) clip.getWidth()), bots ((size_t) clip.getWidth());
+    std::vector<juce::Colour> cols;
+    if (wc != nullptr) for (int i = 0; i < clip.getWidth(); ++i) { const double a = t0 + (double) (clip.getX() + i - area.getX()) * perPx; cols.push_back (wc->colourFor (a, a + perPx)); }
     for (int c = 0; c < nCh; ++c)
     {
         const float centre = (float) area.getY() + (float) bandH * ((float) c + 0.5f), half = (float) bandH * 0.5f * vzoom;
@@ -60,7 +86,7 @@ inline void drawThumbnailEnvelope (juce::Graphics& g, juce::Rectangle<int> area,
             tops[(size_t) i] = juce::jlimit (lo, hi, centre - mx * half);
             bots[(size_t) i] = juce::jlimit (lo, hi, centre - mn * half);
         }
-        fillEnvelope (g, (float) clip.getX(), tops, bots);
+        fillEnvelope (g, (float) clip.getX(), tops, bots, wc != nullptr ? &cols : nullptr);
     }
 }
 
@@ -74,7 +100,7 @@ public:
     explicit DirectWaveCache (juce::AudioFormatManager& fm) : formats (fm) {}
 
     /** True if it drew the audio itself (the caller then does not draw the thumbnail). */
-    bool draw (juce::Graphics& g, juce::Rectangle<int> area, const juce::File& file, double t0, double t1, float vzoom)
+    bool draw (juce::Graphics& g, juce::Rectangle<int> area, const juce::File& file, double t0, double t1, float vzoom, const WaveColorData* wc = nullptr)
     {
         if (area.getWidth() < 1 || area.getHeight() < 1 || t1 <= t0) return false;
         auto clip = g.getClipBounds().getIntersection (area);
@@ -111,9 +137,10 @@ public:
 
             if (spp >= 1.0)                                                  // peaks: a min / max bar for every pixel column
             {
-                std::vector<float> tops, bots;
+                std::vector<float> tops, bots; std::vector<juce::Colour> cols;
                 for (int x = clip.getX(); x < clip.getRight(); ++x)
                 {
+                    if (wc != nullptr) { const double a = t0 + (double) (x - area.getX()) * (t1 - t0) / (double) area.getWidth(); cols.push_back (wc->colourFor (a, a + (t1 - t0) / (double) area.getWidth())); }
                     const juce::int64 s0 = juce::jmax ((juce::int64) 0, (juce::int64) std::floor (t0 * rate + (double) (x - area.getX()) * spp));
                     const juce::int64 s1 = juce::jmin (e->length, juce::jmax (s0 + 1, (juce::int64) std::ceil (t0 * rate + (double) (x + 1 - area.getX()) * spp)));
                     float mn = 1.0f, mx = -1.0f;
@@ -121,7 +148,7 @@ public:
                     if (mn > mx) { mn = mx = 0.0f; }
                     tops.push_back (yOf (mx)); bots.push_back (yOf (mn));
                 }
-                fillEnvelope (g, (float) clip.getX(), tops, bots);
+                fillEnvelope (g, (float) clip.getX(), tops, bots, wc != nullptr ? &cols : nullptr);
             }
             else                                                              // more than a pixel per sample: the sample curve itself
             {

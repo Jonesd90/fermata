@@ -28,7 +28,7 @@ private:
     juce::TreeView tree;
     std::unique_ptr<MediaTreeItem> root;
     juce::TextButton refreshButton { "Refresh" }, revealButton { "Show in Explorer" };
-    juce::Label info;
+    InfoNote info;
     juce::String lastSignature;
     std::vector<juce::File> extraRoots;       // folders added because a selected file is not under any other root
     juce::File pending;

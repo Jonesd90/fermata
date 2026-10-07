@@ -71,7 +71,7 @@ private:
     void refreshTimerStatus();
 
     AppContext& app;
-    juce::Label lineCaption, logoCaption, logoPathLabel, timerCaption, timerStatus, screensCaption, previewCaption, hint;
+    juce::Label lineCaption, logoCaption, logoPathLabel, timerCaption, timerStatus, screensCaption, previewCaption; InfoNote hint;
     juce::TextEditor lineEdit, timerText;
     juce::ComboBox logoBox, timerMode;
     juce::TextButton chooseLogo { "Choose image..." }, startTimer { "Start" }, clearTimer { "No countdown" };
