@@ -69,3 +69,11 @@ Fermata keeps a log in `Documents\Fermata\fermata-log.txt`. Send that file with 
 **Window organiser:** you can choose any take window, edit window or mixer of the project (a closed one is opened); the main window is left as it is.
 **Fades:** the start and end of an edit (and of each take) fade for 25 ms by default; drag the top corners to change it.
 **Bounce Out:** *Between the I/O flags* uses the I and O flags, or the 1 and 2 flags if those are the ones you set.
+
+**Gain and Fader automation.** In the Edit Window, the automation lane menu has both: *Gain* changes the level going INTO the mixer strip (before the inserts and the fader), *Fader* changes it after the inserts. Use Gain to even out a level before a compressor, and Fader for the final balance.
+
+**Choosing tracks (Alt + drag).** Dragging over the audio marks 1 and 2 on every track. Hold **Alt** while you drag and only the track(s) the mouse covers are marked (start on one track and drag up or down to include more). Pitch, Pitch curve, Spectral Repair, De-Click, Export for Processing and the volume change below then act on just those tracks. **5** clears the marks and the track choice.
+
+**Volume change between the marks.** Right-click on the audio with marks 1 and 2 (or I and O) set and choose *Volume change between the marks...*: each marked track gets a fader from +30 dB (top) through 0 (no change) to -inf (bottom). The level glides to the new value over the fade length at the start and glides back to where it was at the end. The old *Volume change from here on* is still there.
+
+**Colour:** in the colour panel, the strip under the swatches slides smoothly through every hue.
