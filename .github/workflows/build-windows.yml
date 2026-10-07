@@ -1,0 +1,36 @@
+name: Build Windows app
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the Steinberg ASIO SDK
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/audiosdk/asio.git asiosdk
+          test -f asiosdk/common/iasiodrv.h
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DASIO_SDK_DIR="${{ github.workspace }}/asiosdk"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist/Fermata
+          cp build/Fermata_artefacts/Release/Fermata.exe dist/Fermata/
+          cp README.md dist/Fermata/README.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Fermata-windows
+          path: dist/Fermata
