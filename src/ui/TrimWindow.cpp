@@ -500,20 +500,28 @@ void TrimComponent::describe()
     auto ms = [&] (juce::int64 t) { return juce::String (((double) t - J) / rate * 1000.0, 1); };
     const int n = (int) rf.e->regions.size();
     const juce::String where = formatTime (J / rate).substring (3, 12);
-    if (hasA && hasB)
+    int editNo = 0, editTotal = 0;                                       // the edit points are counted without the joins made by offline fixes
+    for (int q = 0; q <= n; ++q) { if (! rf.e->isFixJoin (q)) { ++editTotal; if (q <= rf.k) ++editNo; } }
+    if (hasA && hasB && rf.e->isFixJoin (rf.k))
     {
-        infoLabel.setText ("Edit point " + juce::String (rf.k + 1) + " of " + juce::String (n + 1) + ":   " + rf.A->takeName + "   ->   " + rf.B->takeName + "    at " + where, juce::dontSendNotification);
+        infoLabel.setText ("Fix join (made by an offline fix, not an edit between takes):   " + rf.A->takeName + "   ->   " + rf.B->takeName + "    at " + where, juce::dontSendNotification);
+        fadeLabel.setText ("Out-fade " + ms (rf.A->fadeOutBegin()) + " .. " + ms (rf.A->fadeOutFinish()) + " ms     In-fade " + ms (rf.B->fadeInBegin()) + " .. " + ms (rf.B->fadeInFinish())
+                           + " ms     (relative to the join mark)", juce::dontSendNotification);
+    }
+    else if (hasA && hasB)
+    {
+        infoLabel.setText ("Edit point " + juce::String (editNo) + " of " + juce::String (editTotal) + ":   " + rf.A->takeName + "   ->   " + rf.B->takeName + "    at " + where, juce::dontSendNotification);
         fadeLabel.setText ("Out-fade " + ms (rf.A->fadeOutBegin()) + " .. " + ms (rf.A->fadeOutFinish()) + " ms     In-fade " + ms (rf.B->fadeInBegin()) + " .. " + ms (rf.B->fadeInFinish())
                            + " ms     (relative to the join mark)", juce::dontSendNotification);
     }
     else if (hasB)
     {
-        infoLabel.setText ("Edit point 1 of " + juce::String (n + 1) + ":   the START of the edit, fading in " + rf.B->takeName + "    at " + where, juce::dontSendNotification);
+        infoLabel.setText ("Edit point 1 of " + juce::String (editTotal) + ":   the START of the edit, fading in " + rf.B->takeName + "    at " + where, juce::dontSendNotification);
         fadeLabel.setText ("In-fade " + ms (rf.B->fadeInBegin()) + " .. " + ms (rf.B->fadeInFinish()) + " ms     (relative to the start of the piece)", juce::dontSendNotification);
     }
     else
     {
-        infoLabel.setText ("Edit point " + juce::String (n + 1) + " of " + juce::String (n + 1) + ":   the END of the edit, " + rf.A->takeName + " fading out    at " + where, juce::dontSendNotification);
+        infoLabel.setText ("Edit point " + juce::String (editTotal) + " of " + juce::String (editTotal) + ":   the END of the edit, " + rf.A->takeName + " fading out    at " + where, juce::dontSendNotification);
         fadeLabel.setText ("Out-fade " + ms (rf.A->fadeOutBegin()) + " .. " + ms (rf.A->fadeOutFinish()) + " ms     (relative to the end of the piece)", juce::dontSendNotification);
     }
 }
@@ -546,8 +554,15 @@ void TrimComponent::refreshControls()
             for (int id : ids) trackBox.addItem (app.project.tracks[(size_t) id - 1].name, id);
             trackBox.setSelectedId (current > 0 && trackBox.indexOfItemId (current) >= 0 ? current : (ids.empty() ? 0 : ids.front()), juce::dontSendNotification);
         }
-        prevButton.setEnabled (rf.k > 0);
-        nextButton.setEnabled (rf.k < (int) rf.e->regions.size());
+        {
+            const int n = (int) rf.e->regions.size();
+            bool havePrev = false, haveNext = false;
+            for (int q = rf.k - 1; q >= 0; --q) if (! rf.e->isFixJoin (q)) { havePrev = true; break; }
+            for (int q = rf.k + 1; q <= n; ++q) if (! rf.e->isFixJoin (q)) { haveNext = true; break; }
+            const bool onFix = rf.e->isFixJoin (rf.k);               // a join made by an offline fix: no next / previous (they are for the edits between takes)
+            prevButton.setVisible (! onFix); nextButton.setVisible (! onFix);
+            prevButton.setEnabled (havePrev); nextButton.setEnabled (haveNext);
+        }
         const bool both = hasA && hasB;
         for (auto* b : std::initializer_list<juce::Component*> { &copyOutIn, &copyInOut, &origA, &origB, &slipLeftToggle, &slipRightToggle })
             b->setEnabled (both || b == &origA || b == &origB);
@@ -727,7 +742,9 @@ void TrimComponent::step (int delta)
 {
     const auto rf = refs();
     if (! rf.ok()) return;
-    const int n = (int) rf.e->regions.size(), to = rf.k + delta;
+    const int n = (int) rf.e->regions.size();
+    int to = rf.k + delta;
+    while (to >= 0 && to <= n && rf.e->isFixJoin (to)) to += delta;           // only the edits between takes: the joins made by offline fixes are skipped
     if (to < 0 || to > n) return;
     app.project.changed();                            // what was done on this join is accepted
     if (to == n) gotoJoin (rf.e->regions.back().id, true);

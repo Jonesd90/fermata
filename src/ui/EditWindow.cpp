@@ -208,10 +208,24 @@ public:
         // The edit points: every fade of the edit, numbered in order along the timeline. Edit 1 is where the first piece starts, the last one is where
         // the final piece fades out, and each join between two pieces is one edit. (Overdubs do not count.) The flag stands in the middle of the crossfade
         // (or of the gap, when the fades do not overlap). Click one to select it; double-click or T opens the Trim window on it.
+        int editNumber = 0;                                                                     // joins made by an offline fix (pitch, repair, de-click, export for processing) are not edits: no number
         for (int k = 0; k <= (int) e->regions.size() && ! e->regions.empty(); ++k)
         {
             const int x = xOf ((double) editPointSample (*e, k) / rate);
             const bool js = selectedJoin == k;
+            if (e->isFixJoin (k))
+            {
+                g.setColour (js ? juce::Colour (0xffc26500) : theme::dimText.withAlpha (0.7f));
+                g.fillRect (x, kRulerH, 1, rowsEnd - kRulerH);
+                juce::Path tri; tri.addTriangle ((float) x - 4, (float) kRulerH, (float) x + 4, (float) kRulerH, (float) x, (float) kRulerH + 6);
+                g.fillPath (tri);
+                const auto badge = juce::Rectangle<int> (x - 8, kRulerH - 13, 16, 11);          // a small grey "fx" tag instead of a number
+                g.setColour (js ? juce::Colour (0xffc26500) : theme::dimText.withAlpha (0.55f)); g.fillRoundedRectangle (badge.toFloat(), 3.0f);
+                g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (8.5f, juce::Font::bold));
+                g.drawText ("fx", badge, juce::Justification::centred);
+                continue;
+            }
+            ++editNumber;
             g.setColour (js ? juce::Colour (0xffc26500) : theme::text);
             g.fillRect (x - 1, kRulerH, 2, rowsEnd - kRulerH);
             juce::Path tri; tri.addTriangle ((float) x - 6, (float) kRulerH, (float) x + 6, (float) kRulerH, (float) x, (float) kRulerH + 9);
@@ -219,7 +233,7 @@ public:
             const auto badge = juce::Rectangle<int> (x - 11, kRulerH - 16, 22, 15);              // the number, above the flag
             g.setColour (js ? juce::Colour (0xffc26500) : theme::accent); g.fillRoundedRectangle (badge.toFloat(), 3.0f);
             g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-            g.drawText (juce::String (k + 1), badge, juce::Justification::centred);
+            g.drawText (juce::String (editNumber), badge, juce::Justification::centred);
         }
 
         // overdubs: narrower pieces in the middle of each track row, laid over the edit

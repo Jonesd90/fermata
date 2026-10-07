@@ -96,6 +96,7 @@ struct EditRegion
     double       inStart = 0.0,  inEnd = 0.0;      // fade-in,  seconds relative to the region start
     double       outStart = 0.0, outEnd = 0.0;     // fade-out, seconds relative to the region end
     FadeCurve    curve = FadeCurve::EqualPower;
+    bool         fixIn = false, fixOut = false;    // the join at its start / end was made by an offline fix (pitch, repair, de-click, export for processing), not by an edit: it is not counted as an edit point
     std::vector<GainChange> gains;     // volume changes inside this piece, sorted by 'at'
 
     juce::int64 length()    const noexcept { return srcOut - srcIn; }
@@ -403,6 +404,8 @@ struct EditDef
         clampAll();
     }
 
+    /** True if edit point k (k = the join before regions[k]) was made by an offline fix: such joins are not counted or numbered, and "next / previous fade" skips them. */
+    bool isFixJoin (int k) const noexcept { return k > 0 && k < (int) regions.size() && (regions[(size_t) k].fixIn || regions[(size_t) k - 1].fixOut); }
     EditRegion* find (const juce::Uuid& rid) { for (auto& r : regions) if (r.id == rid) return &r; return nullptr; }
     /** A piece of the main track OR an overdub. */
     EditRegion* findAny (const juce::Uuid& rid) { if (auto* r = find (rid)) return r; for (auto& o : overdubs) if (o.id == rid) return &o; return nullptr; }
@@ -423,6 +426,7 @@ struct EditDef
         EditRegion right = left;
         left.waiting = WaitingPiece(); right.waiting = WaitingPiece();            // a cut piece no longer matches the exported files
         right.id = juce::Uuid();
+        right.fixIn = false; left.fixOut = false;                            // (the new join is an edit; the caller of a fix marks it as a fix join)
         right.srcIn += offset; right.startSample += offset;
         right.gains.clear();
         for (auto& g : left.gains) if (g.at >= offset) { auto c = g; c.at -= offset; right.gains.push_back (c); }

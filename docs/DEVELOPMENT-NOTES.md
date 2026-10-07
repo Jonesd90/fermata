@@ -456,3 +456,5 @@ Mixer window size, found from the log: Windows applied the window's biggest-size
 * **Spectral Repair / De-Click in the Edit window across edit points:** the marks may now cover several pieces. The picture is the whole marked area, piece after piece; each piece is repaired from its own source file (the part of the box that falls in it) and put back in its own place, so edit points and fades are kept.
 
 * **Quit asks first:** closing Fermata (window close or Quit) always asks "Save and quit / Quit without saving / Cancel" (Main.cpp systemRequestedQuit); Cancel keeps working.
+
+* **Fix joins are not edits:** the joins made by Pitch, Pitch curve, Spectral Repair, De-Click and Export for Processing carry `fixIn` / `fixOut` flags on the pieces (EditDef::isFixJoin). They are drawn as a small grey "fx" flag with no number, are left out of the edit count (also in the Trim window caption), and "Accept, next / previous fade" skips them; on a fix join those two buttons are hidden. They can still be opened and trimmed (click + T, double-click, or the **Trim Window** button, formerly "Trim join").

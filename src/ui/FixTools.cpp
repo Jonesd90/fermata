@@ -1672,6 +1672,9 @@ static bool applyRegionJob (EditDef& e, const RegionJob& j, const juce::String& 
     mid.curve = FadeCurve::Linear;
     if (cutBefore && i > 0) e.regions[(size_t) i - 1].curve = FadeCurve::Linear;
     if (cutAfter && i + 1 < (int) e.regions.size()) e.regions[(size_t) i + 1].curve = FadeCurve::Linear;
+    // the joins made here are only there to put the fixed audio in: they are not edit points (no number, skipped by next / previous fade in the Trim window)
+    if (cutBefore) { mid.fixIn = true; if (i > 0) e.regions[(size_t) i - 1].fixOut = true; }
+    if (cutAfter)  { mid.fixOut = true; if (i + 1 < (int) e.regions.size()) e.regions[(size_t) i + 1].fixIn = true; }
     for (size_t k = 0; k < j.idx.size() && j.idx[k] < mid.files.size(); ++k) { mid.files[j.idx[k]].file = j.results[k].file; mid.files[j.idx[k]].fileStart = j.results[k].from; }
     mid.takeName = mid.takeName.upToFirstOccurrenceOf (" (", false, false) + " (" + suffix + ")";
     return true;
@@ -2448,6 +2451,8 @@ void exportForProcessingEdit (AppContext& app, const juce::Uuid& eid, juce::Comp
             mid.curve = FadeCurve::Linear;
             if (cutBefore && i > 0) e2->regions[(size_t) i - 1].curve = FadeCurve::Linear;
             if (cutAfter && i + 1 < (int) e2->regions.size()) e2->regions[(size_t) i + 1].curve = FadeCurve::Linear;
+            if (cutBefore) { mid.fixIn = true; if (i > 0) e2->regions[(size_t) i - 1].fixOut = true; }                 // not edit points
+            if (cutAfter)  { mid.fixOut = true; if (i + 1 < (int) e2->regions.size()) e2->regions[(size_t) i + 1].fixIn = true; }
             setUndoForEdit (app, eid, old, "export for processing");
             app.project.changed();
             say ("Export for Processing", exportedMessage (name, j->folder));

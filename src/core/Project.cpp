@@ -786,7 +786,7 @@ var Project::toVar (bool editorialOnly) const
             put (ro, "id", r.id.toString()); put (ro, "window", r.windowId.toString()); put (ro, "take", r.takeId.toString());
             put (ro, "takeName", r.takeName); put (ro, "in", (juce::int64) r.srcIn); put (ro, "out", (juce::int64) r.srcOut);
             put (ro, "start", (juce::int64) r.startSample); put (ro, "sourceLength", (juce::int64) r.sourceLength); put (ro, "barIn", r.barIn); put (ro, "barOut", r.barOut);
-            put (ro, "rate", r.sampleRate); put (ro, "curve", (int) r.curve);
+            put (ro, "rate", r.sampleRate); put (ro, "curve", (int) r.curve); if (r.fixIn) put (ro, "fixIn", true); if (r.fixOut) put (ro, "fixOut", true);
             put (ro, "inStart", r.inStart); put (ro, "inEnd", r.inEnd); put (ro, "outStart", r.outStart); put (ro, "outEnd", r.outEnd);
             juce::Array<var> rf;
             for (auto& f : r.files)
@@ -973,6 +973,7 @@ bool Project::fromVar (const var& root)
                 r.startSample = (juce::int64) rv["start"]; r.sourceLength = (juce::int64) rv["sourceLength"];
                 r.barIn = juce::jmax (0, (int) rv["barIn"]); r.barOut = juce::jmax (0, (int) rv["barOut"]);
                 r.sampleRate = (double) rv["rate"]; r.curve = (FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv["curve"]);
+                r.fixIn = (bool) rv["fixIn"]; r.fixOut = (bool) rv["fixOut"];
                 r.inStart = (double) rv["inStart"]; r.inEnd = (double) rv["inEnd"]; r.outStart = (double) rv["outStart"]; r.outEnd = (double) rv["outEnd"];
                 if (auto* fs = rv["files"].getArray())
                     for (auto& fv : *fs)
