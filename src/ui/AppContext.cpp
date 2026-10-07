@@ -418,6 +418,20 @@ bool AppContext::openProject (const juce::File& file)
     return true;
 }
 
+void AppContext::startBlankProject()
+{
+    project.createDefaultDesign();
+    project.projectFile = juce::File();
+    project.name = "(no project yet)";
+    afterProjectReplaced();
+}
+
+juce::File AppContext::lastProjectFile()
+{
+    juce::File last (props.getUserSettings()->getValue ("lastProject"));
+    return last.existsAsFile() ? last : juce::File();
+}
+
 void AppContext::restoreLastProject()
 {
     juce::File last (props.getUserSettings()->getValue ("lastProject"));
@@ -529,6 +543,7 @@ void AppContext::toggleRecord (const juce::Uuid& takeWindowId)
         saveNow();
         return;
     }
+    if (! hasProject()) { setNotice ("First choose where the project is saved (New project or Open project)."); return; }
     stopPlayback();
     auto* w = project.findTakeWindow (takeWindowId);
     if (w == nullptr) { showError ("Record", "Choose a take window to record into."); return; }

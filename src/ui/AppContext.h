@@ -208,6 +208,11 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     bool openProject (const juce::File& projectFile);
     void saveNow();
     void restoreLastProject();
+    /** Has a project been chosen (new or opened)? Until then nothing is saved or recorded. */
+    bool hasProject() const { return project.projectFile != juce::File(); }
+    /** The start-up state: an empty in-memory project that is not saved anywhere, until the user picks where the project goes. */
+    void startBlankProject();
+    juce::File lastProjectFile();
     void shutdown();
 
 private:

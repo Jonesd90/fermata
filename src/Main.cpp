@@ -206,7 +206,7 @@ public:
             juce::File toOpen;                                         // a project double-clicked in Explorer
             for (auto& a : juce::StringArray::fromTokens (commandLine, true))
                 if ((a.unquoted().endsWithIgnoreCase (".fermata") || a.unquoted().endsWithIgnoreCase (".takedaw")) && juce::File (a.unquoted()).existsAsFile()) toOpen = juce::File (a.unquoted());
-            if (toOpen == juce::File() || ! ctx->openProject (toOpen)) ctx->restoreLastProject();
+            if (toOpen == juce::File() || ! ctx->openProject (toOpen)) ctx->startBlankProject();      // otherwise the start screen asks where the project goes
         }
         ctx->devices.addAudioCallback (&ctx->engine);
 
@@ -336,7 +336,12 @@ private:
             if (auto sit = ctx->project.windowBounds.find (key); sit != ctx->project.windowBounds.end()) saved = juce::Rectangle<int>::fromString (sit->second);
             bool onScreen = false;                                                   // a remembered place counts only if its title bar can still be reached
             for (auto& d : displays.displays) if (d.userArea.intersects (juce::Rectangle<int> (saved.getX() + 20, saved.getY() - 10, 120, 30))) onScreen = true;
-            if (saved.getWidth() >= 120 && saved.getHeight() >= 80 && onScreen) w->setBounds (saved);
+            const bool isMixer = key.startsWith ("mixer:");
+            if (saved.getWidth() >= 120 && saved.getHeight() >= 80 && onScreen)
+            {
+                if (isMixer) w->setTopLeftPosition (saved.getPosition());           // a mixer always opens at the size that shows every strip; only its place is remembered
+                else w->setBounds (saved);
+            }
             else
             {
                 const bool mixer = key.startsWith ("mixer:");
@@ -347,6 +352,7 @@ private:
         }
         const bool owned = mainWindow != nullptr && makeOwnedBy (*w, *mainWindow);
         w->setVisible (true);
+        if (auto* mc = dynamic_cast<MixerComponent*> (content)) mc->fitWindowToStrips();
         w->onBoundsChanged = [this, key] (const juce::String& t) { ctx->project.windowBounds[key] = t; };       // from now on, every move / resize is remembered in the project
         auto* raw = w.get();
         windows[key] = std::move (w);

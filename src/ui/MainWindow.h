@@ -177,6 +177,8 @@ private:
     void showEditsMenu();
     void newProjectDialog();
     void openProjectDialog();
+    void showStartPanel();
+    std::unique_ptr<juce::Component> startPanel;           // the "where do you want to save your project?" screen, until a project is chosen
 
     AppContext& app;
     MenuBarButton projectButton { "Project" }, audioButton { "Audio settings" }, preampsButton { "Preamps" }, designButton { "Project Designer" },

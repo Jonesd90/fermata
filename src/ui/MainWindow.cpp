@@ -237,6 +237,65 @@ private:
     juce::Label number, driver, fedBy; juce::TextEditor alias; LevelMeter meter { false };
 };
 
+/** Shown when Fermata starts: nothing can be done until the project's folder is chosen (or an existing project opened). */
+class StartPanel : public juce::Component
+{
+public:
+    std::function<void()> onNew, onOpen, onLast, onQuit;
+    StartPanel (const juce::File& last)
+    {
+        title.setText ("Where do you want to save your project?", juce::dontSendNotification);
+        title.setFont (juce::FontOptions (26.0f, juce::Font::bold)); title.setJustificationType (juce::Justification::centred);
+        title.setColour (juce::Label::textColourId, theme::text);
+        body.setText ("Choose the place (a drive or a folder) and give the project a name. Fermata makes a folder with that name, and everything goes inside it:\n"
+                      "the project file, Recorded Media (all the recorded audio), and Bounced Media (exports; Mastered Audio is inside that).\n"
+                      "Copying that one folder anywhere is a complete copy of the project.", juce::dontSendNotification);
+        body.setJustificationType (juce::Justification::centred); body.setColour (juce::Label::textColourId, theme::text.withAlpha (0.85f));
+        newBtn.setButtonText ("New project...");
+        openBtn.setButtonText ("Open an existing project...");
+        quitBtn.setButtonText ("Quit");
+        for (auto* c : std::initializer_list<juce::Component*> { &title, &body, &newBtn, &openBtn, &quitBtn }) addAndMakeVisible (c);
+        if (last != juce::File())
+        {
+            lastBtn.setButtonText ("Open the last project:  " + last.getFileNameWithoutExtension());
+            addAndMakeVisible (lastBtn); hasLast = true;
+        }
+        newBtn.onClick = [this] { if (onNew) onNew(); };
+        openBtn.onClick = [this] { if (onOpen) onOpen(); };
+        lastBtn.onClick = [this] { if (onLast) onLast(); };
+        quitBtn.onClick = [this] { if (onQuit) onQuit(); };
+        setWantsKeyboardFocus (false);
+    }
+    void paint (juce::Graphics& g) override { g.fillAll (theme::window); }
+    bool keyPressed (const juce::KeyPress&) override { return true; }       // the program's keys do nothing until a project exists
+    void resized() override
+    {
+        auto r = getLocalBounds().withSizeKeepingCentre (juce::jmin (760, getWidth() - 40), juce::jmin (420, getHeight() - 20));
+        title.setBounds (r.removeFromTop (50)); r.removeFromTop (10);
+        body.setBounds (r.removeFromTop (100)); r.removeFromTop (24);
+        const int bw = juce::jmin (420, r.getWidth());
+        auto place = [&] (juce::Component& c) { c.setBounds (r.removeFromTop (44).withSizeKeepingCentre (bw, 44)); r.removeFromTop (10); };
+        place (newBtn); place (openBtn);
+        if (hasLast) place (lastBtn);
+        place (quitBtn);
+    }
+private:
+    juce::Label title, body; juce::TextButton newBtn, openBtn, lastBtn, quitBtn; bool hasLast = false;
+};
+
+void MainComponent::showStartPanel()
+{
+    auto p = std::make_unique<StartPanel> (app.lastProjectFile());
+    p->onNew = [this] { newProjectDialog(); };
+    p->onOpen = [this] { openProjectDialog(); };
+    p->onLast = [this] { const auto f = app.lastProjectFile(); if (f != juce::File()) app.openProject (f); };
+    p->onQuit = [] { if (auto* a = juce::JUCEApplicationBase::getInstance()) a->systemRequestedQuit(); };
+    startPanel = std::move (p);
+    addAndMakeVisible (*startPanel);
+    startPanel->setBounds (getLocalBounds());
+    startPanel->toFront (false);
+}
+
 MainComponent::MainComponent (AppContext& a) : app (a)
 {
     addAndMakeVisible (logo);
@@ -302,6 +361,7 @@ MainComponent::MainComponent (AppContext& a) : app (a)
     app.project.addChangeListener (this);
     startTimerHz (30);
     app.peakListeners.add (this);
+    if (! app.hasProject()) showStartPanel();                      // nothing can be done until the project's folder is chosen
     setSize (juce::jmax (1120, menuBarWidth() + 4), 840);
 }
 
@@ -362,6 +422,7 @@ void MainComponent::paint (juce::Graphics& g)
 
 void MainComponent::resized()
 {
+    if (startPanel != nullptr) startPanel->setBounds (getLocalBounds());
     // ---- the menu bar: every entry on one line, along the top (it only wraps onto a second line if the window is made narrower than the entries)
     {
         int x = 4, y = 0, lineH = 30;
@@ -455,6 +516,7 @@ void MainComponent::peaksUpdated()
 
 void MainComponent::timerCallback()
 {
+    if (startPanel != nullptr && app.hasProject()) startPanel.reset();           // a project was chosen
     // The menu bar (with the Pre-Rec / C-R / P-B squares) is always there, in front of the other Fermata windows (not other programs), and goes with the main window when it is minimised.
     if (menuStrip != nullptr && getPeer() != nullptr && ! getPeer()->isMinimised() && ! menuStrip->isVisible()) menuStrip->setVisible (true);
     flagPre.set (app.sessionMode()); flagCr.set (app.crMicOpen()); flagPb.set (app.tbPlaybackOn());
@@ -539,7 +601,7 @@ void MainComponent::newProjectDialog()
     if (app.engine.isRecording()) { showError ("Recording", "Stop recording first."); return; }
     auto start = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Fermata");
     start.createDirectory();
-    chooser = std::make_unique<juce::FileChooser> ("New project: choose where to keep it and name it (a folder with this name is created, with the project file, Recorded Media and Bounced Media inside)", start.getChildFile ("New project.fermata"), "*.fermata;*.takedaw");
+    chooser = std::make_unique<juce::FileChooser> ("Where do you want to save your project? Choose the place, then type a name: a folder with that name is created there and everything goes inside it", start.getChildFile ("New project.fermata"), "*.fermata;*.takedaw");
     chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
                           [this] (const juce::FileChooser& fc)
     {
