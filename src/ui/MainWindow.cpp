@@ -244,17 +244,10 @@ public:
     std::function<void()> onNew, onOpen, onLast, onQuit;
     StartPanel (const juce::File& last)
     {
-        title.setText ("Where do you want to save your project?", juce::dontSendNotification);
-        title.setFont (juce::FontOptions (26.0f, juce::Font::bold)); title.setJustificationType (juce::Justification::centred);
-        title.setColour (juce::Label::textColourId, theme::text);
-        body.setText ("Choose the place (a drive or a folder) and give the project a name. Fermata makes a folder with that name, and everything goes inside it:\n"
-                      "the project file, Recorded Media (all the recorded audio), and Bounced Media (exports; Mastered Audio is inside that).\n"
-                      "Copying that one folder anywhere is a complete copy of the project.", juce::dontSendNotification);
-        body.setJustificationType (juce::Justification::centred); body.setColour (juce::Label::textColourId, theme::text.withAlpha (0.85f));
         newBtn.setButtonText ("New project...");
         openBtn.setButtonText ("Open an existing project...");
         quitBtn.setButtonText ("Quit");
-        for (auto* c : std::initializer_list<juce::Component*> { &title, &body, &newBtn, &openBtn, &quitBtn }) addAndMakeVisible (c);
+        for (auto* c : std::initializer_list<juce::Component*> { &newBtn, &openBtn, &quitBtn }) addAndMakeVisible (c);
         if (last != juce::File())
         {
             lastBtn.setButtonText ("Open the last project:  " + last.getFileNameWithoutExtension());
@@ -270,9 +263,7 @@ public:
     bool keyPressed (const juce::KeyPress&) override { return true; }       // the program's keys do nothing until a project exists
     void resized() override
     {
-        auto r = getLocalBounds().withSizeKeepingCentre (juce::jmin (760, getWidth() - 40), juce::jmin (420, getHeight() - 20));
-        title.setBounds (r.removeFromTop (50)); r.removeFromTop (10);
-        body.setBounds (r.removeFromTop (100)); r.removeFromTop (24);
+        auto r = getLocalBounds().withSizeKeepingCentre (juce::jmin (760, getWidth() - 40), (hasLast ? 4 : 3) * 54);
         const int bw = juce::jmin (420, r.getWidth());
         auto place = [&] (juce::Component& c) { c.setBounds (r.removeFromTop (44).withSizeKeepingCentre (bw, 44)); r.removeFromTop (10); };
         place (newBtn); place (openBtn);
@@ -280,7 +271,7 @@ public:
         place (quitBtn);
     }
 private:
-    juce::Label title, body; juce::TextButton newBtn, openBtn, lastBtn, quitBtn; bool hasLast = false;
+    juce::TextButton newBtn, openBtn, lastBtn, quitBtn; bool hasLast = false;
 };
 
 void MainComponent::showStartPanel()

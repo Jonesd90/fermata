@@ -433,3 +433,5 @@ A mixer window now always opens at exactly the size that shows every strip (only
 
 ## Start-up asks where the project goes (latest)
 Fermata no longer creates a project by itself. When it starts, a screen asks "Where do you want to save your project?": **New project...** (pick the place, type a name; a folder with that name is created holding the project file, Recorded Media and Bounced Media/Mastered Audio), **Open an existing project...**, **Open the last project: ...**, or **Quit**. Until a project is chosen nothing is saved and Record does nothing. Double-clicking a project file in Explorer still opens it directly.
+
+Mixer window size, found from the log: Windows applied the window's biggest-size limit to the whole window (frame and title bar included), so a mixer set to exactly the strips' size was cut short by about 14 x 37 points, which made scroll bars appear. The limit now has some slack. The start screen shows only its buttons.

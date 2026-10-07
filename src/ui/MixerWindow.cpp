@@ -1167,6 +1167,11 @@ int MixerComponent::slotsNeeded() const
 int MixerComponent::naturalContentW() const { return juce::jmax (topBarMinWidth(), holder->getNaturalWidth()); }
 int MixerComponent::naturalContentH() const { return 30 + holder->getNaturalHeight(); }
 
+/** Windows applies the biggest-size limit to the whole window, frame and title bar included, while the sizes here are for the inside: with the limit set exactly to
+    the strips' size, the window was cut short by the width of the frame (about 14 x 37 points) and scroll bars appeared. The limit is therefore a little looser; the
+    window is still made exactly the strips' size by the code (and snaps back to it when it grows too big). */
+static constexpr int kLimitSlack = 120;
+
 /** The window never grows bigger than the strips need: it stops there (and snaps back if it was bigger). Smaller is fine: scroll bars appear. */
 void MixerComponent::updateWindowLimits()
 {
@@ -1187,7 +1192,7 @@ void MixerComponent::updateWindowLimits()
     if (auto* c = win->getConstrainer())
     {
         c->setMinimumSize (juce::jmin (topBarMinWidth() + borderW, maxW), juce::jmin (260, maxH));
-        c->setMaximumSize (maxW, maxH);
+        c->setMaximumSize (maxW + kLimitSlack, maxH + kLimitSlack);
     }
     const bool firstTime = lastMaxW == 0 || lastMaxH == 0;          // a window that has never been fitted opens showing everything
     const bool wasFullW = firstTime || win->getWidth() >= lastMaxW, wasFullH = firstTime || win->getHeight() >= lastMaxH;
@@ -1209,7 +1214,7 @@ void MixerComponent::fitWindowToStrips()
     if (win == nullptr || win->getContentComponent() != this || win->isFullScreen()) return;
     const auto frame = win->getContentComponentBorder();
     const int w = naturalContentW() + frame.getLeftAndRight(), h = naturalContentH() + frame.getTopAndBottom();
-    if (auto* c = win->getConstrainer()) { c->setMinimumSize (juce::jmin (topBarMinWidth() + frame.getLeftAndRight(), w), juce::jmin (260, h)); c->setMaximumSize (w, h); }
+    if (auto* c = win->getConstrainer()) { c->setMinimumSize (juce::jmin (topBarMinWidth() + frame.getLeftAndRight(), w), juce::jmin (260, h)); c->setMaximumSize (w + kLimitSlack, h + kLimitSlack); }
     lastMaxW = w; lastMaxH = h;
     win->setSize (w, h);
     const auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (win->getBounds())->userArea;
