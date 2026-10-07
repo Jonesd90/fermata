@@ -354,7 +354,7 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
         for (int offset = 0; offset < numSamples; offset += maxBlock)
         {
             const int n = juce::jmin (maxBlock, numSamples - offset);
-            if (ps != nullptr && ps->automation != nullptr) ps->automation->apply (ps->getPosition());     // an edit's automation moves the faders
+            if (ps != nullptr && ps->automation != nullptr) ps->automation->apply (ps->getTimelinePosition());     // an edit's automation moves the faders
             if (ps != nullptr) ps->pull (n);          // disk audio replaces the live inputs while playing
             for (size_t i = 0; i < pl->disk.size(); ++i) pl->disk[i] = (ps != nullptr && (int) i < ps->numTracks()) ? &ps->trackBuffer ((int) i) : nullptr;
             // engineer audition: mixer 0 is the engineer's. While a cue mixer is audited, the engineer's own Ext buses go quiet and

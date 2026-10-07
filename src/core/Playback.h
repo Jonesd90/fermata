@@ -86,6 +86,14 @@ public:
     bool isFinished() const noexcept        { return finished.load(); }
     double getSampleRate() const noexcept   { return sampleRate; }
     juce::int64 getPosition() const noexcept { return position.load(); }
+    /** Where on the TIMELINE the sound being played is (for automation): the start of what was asked for, plus what has been played, going round with a loop.
+        (getPosition() only counts what was played since the start.) */
+    juce::int64 getTimelinePosition() const noexcept
+    {
+        const auto played = position.load(); const auto len = endPos - startPos;
+        if (len <= 0) return startPos + played;
+        return startPos + ((looping.load() || played > len) ? played % len : played);
+    }
     double getPositionSeconds() const noexcept { return sampleRate > 0 ? (double) position.load() / sampleRate : 0.0; }
     int getUnderruns() const noexcept       { return underruns.load(); }
 

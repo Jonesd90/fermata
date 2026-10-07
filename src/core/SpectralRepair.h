@@ -21,28 +21,47 @@ struct RepairParams
     double weighting = 0.5;                             // 0 = only the sound BEFORE the box, 1 = only the sound AFTER it, 0.5 = both equally (cross-fade)
 };
 
-/** A spectrogram of several tracks merged into one picture (the loudest track at every point), in dB. */
+/** A spectrogram of several tracks merged into one picture (the loudest track at every point), in dB.
+    Two layers: 'db' (a short window: sharp in time, 23 Hz between rows) for everything, and 'lowDb' (a window about 8 times longer, 3 Hz between rows) for the
+    bass. level() blends them: the long one at the bottom, the short one at the top, a smooth cross-over in between. */
 struct MergedSpectrogram
 {
     int bins = 0, frames = 0;
     double sampleRate = 48000.0, hopSamples = 512.0, fftSize = 2048.0;
     std::vector<float> db;                       // frames * bins
+    int lowBins = 0; double lowBinHz = 0.0, crossLo = 250.0, crossHi = 1500.0, lowGainDb = 0.0;
+    std::vector<float> lowDb;                    // frames * lowBins (empty = no bass layer)
     float at (int frame, int bin) const { return db[(size_t) frame * (size_t) bins + (size_t) bin]; }
     double hzToBin (double hz) const { return hz * fftSize / sampleRate; }
+
+    /** The level (dB) at a frame and a pitch, from both layers. */
+    float level (int frame, double hz) const
+    {
+        const double bf = juce::jlimit (0.0, (double) bins - 1.0001, hzToBin (hz));
+        const int b0 = (int) bf; const float fr = (float) (bf - b0);
+        const float hi = at (frame, b0) * (1.0f - fr) + at (frame, b0 + 1) * fr;
+        if (lowBins < 2 || hz >= crossHi) return hi;
+        const double lf = juce::jlimit (0.0, (double) lowBins - 1.0001, hz / lowBinHz);
+        const int l0 = (int) lf; const float lr = (float) (lf - l0);
+        const float* row = lowDb.data() + (size_t) frame * (size_t) lowBins;
+        const float lo = row[l0] * (1.0f - lr) + row[l0 + 1] * lr + (float) lowGainDb;
+        double w = 1.0;                                                        // 1 = all long window, 0 = all short window
+        if (hz > crossLo) { const double t = std::log (hz / crossLo) / std::log (crossHi / crossLo); w = 1.0 - t * t * (3.0 - 2.0 * t); }
+        return (float) (w * lo + (1.0 - w) * hi);
+    }
 };
 
 class SpectralRepair
 {
 public:
-    /** The merged spectrogram of all the tracks (each a mono vector of the same length). */
-    static MergedSpectrogram spectrogram (const std::vector<std::vector<float>>& tracks, double sr, int maxFrames = 1600, int fftN = 2048)
+    /** The merged spectrogram of all the tracks (each a mono vector of the same length).
+        bassMode: 0 = blended (a long window for the bass, a short one above: the default), 1 = short window only (sharpest for clicks), 2 = extra fine bass. */
+    static MergedSpectrogram spectrogram (const std::vector<std::vector<float>>& tracks, double sr, int maxFrames = 1600, int bassMode = 0)
     {
         MergedSpectrogram s; s.sampleRate = sr;
-        const size_t L = tracks.empty() ? 0 : tracks[0].size();
-        int N = juce::jlimit (2048, 32768, fftN);
-        while (N > 2048 && L < (size_t) N) N /= 2;                       // very short audio: the longest window that fits
-        maxFrames = juce::jmax (400, maxFrames * 2048 / N);               // a longer window costs more per frame, so fewer frames
+        const int N = 2048;
         s.fftSize = N; s.bins = N / 2 + 1;
+        const size_t L = tracks.empty() ? 0 : tracks[0].size();
         if (L < (size_t) N) { s.frames = 0; return s; }
         const double hop = juce::jmax (512.0, std::ceil ((double) L / (double) maxFrames));
         s.hopSamples = hop;
@@ -50,6 +69,27 @@ public:
         s.db.assign ((size_t) s.frames * (size_t) s.bins, -120.0f);
         const dsp::FFT fft (N); const auto win = dsp::hann (N);
         std::vector<std::complex<double>> buf ((size_t) N);
+        // the bass layer: the sound is thinned out (D times fewer samples, with a low-pass first) and a window of the same N points then spans D times longer
+        const int D = bassMode == 2 ? 16 : 8;
+        const bool bass = bassMode != 1;
+        std::vector<double> taps;
+        if (bass)
+        {
+            const int nt = D * 8 + 1; const double fc = 0.45 / (double) D;
+            for (int k = 0; k < nt; ++k)
+            {
+                const double x = (double) (k - nt / 2);
+                const double sinc = x == 0.0 ? 2.0 * fc : std::sin (2.0 * dsp::kPi * fc * x) / (dsp::kPi * x);
+                taps.push_back (sinc * (0.54 - 0.46 * std::cos (2.0 * dsp::kPi * (double) k / (double) (nt - 1))));
+            }
+            s.lowBinHz = (sr / (double) D) / (double) N;
+            s.crossLo = bassMode == 2 ? 150.0 : 250.0; s.crossHi = bassMode == 2 ? 800.0 : 1500.0;
+            s.lowBins = juce::jmin (N / 2, (int) std::ceil (s.crossHi * 1.15 / s.lowBinHz) + 2);
+            s.lowGainDb = 10.0 * std::log10 ((double) D) * 0.5;               // noise reads lower in a longer window: half the difference is made up, so there is no visible step
+            s.lowDb.assign ((size_t) s.frames * (size_t) s.lowBins, -120.0f);
+        }
+        std::vector<double> dec ((size_t) N);
+        const long span = (long) N * D;
         for (auto& t : tracks)
             for (int f = 0; f < s.frames; ++f)
             {
@@ -61,6 +101,23 @@ public:
                 {
                     const float d = (float) (20.0 * std::log10 (std::abs (buf[(size_t) b]) * 4.0 / (double) N + 1.0e-9));   // ~ dBFS of a sine
                     auto& dst = s.db[(size_t) f * (size_t) s.bins + (size_t) b];
+                    if (d > dst) dst = d;
+                }
+                if (! bass) continue;
+                // the long window is centred on the same moment as the short one
+                const long centre = (long) o + N / 2, start = centre - span / 2, nt = (long) taps.size(), L2 = (long) t.size();
+                for (int k = 0; k < N; ++k)
+                {
+                    const long c = start + (long) k * D; double a = 0.0;
+                    for (long j = 0; j < nt; ++j) { const long q = c + j - nt / 2; if (q >= 0 && q < L2) a += taps[(size_t) j] * (double) t[(size_t) q]; }
+                    dec[(size_t) k] = a;
+                }
+                for (int i = 0; i < N; ++i) buf[(size_t) i] = dec[(size_t) i] * win[(size_t) i];
+                fft.forward (buf);
+                for (int b = 0; b < s.lowBins; ++b)
+                {
+                    const float d = (float) (20.0 * std::log10 (std::abs (buf[(size_t) b]) * 4.0 / (double) N + 1.0e-9));
+                    auto& dst = s.lowDb[(size_t) f * (size_t) s.lowBins + (size_t) b];
                     if (d > dst) dst = d;
                 }
             }

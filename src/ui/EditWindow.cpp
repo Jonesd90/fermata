@@ -326,6 +326,23 @@ public:
 
         if (e->automationOn)
             for (size_t i = 0; i < tracks.size(); ++i) paintLane (g, *e, (int) i, top + (int) i * rowH);
+        if (e->automationOn && autoDragIndex >= 0)                                    // the value of the point being set or moved, in a little box beside it
+            if (auto* L = e->findLane (autoDragLane); L != nullptr && juce::isPositiveAndBelow (autoDragIndex, (int) L->pts.size()))
+            {
+                const auto& pt = L->pts[(size_t) autoDragIndex];
+                const double rt = juce::jmax (1.0, e->sampleRate);
+                const int rowTop = top + autoDragRow * rowH;
+                const juce::String txt = autoValueText (*L, pt.value) + "   " + juce::String ((double) pt.time / rt, 2) + " s";
+                const int bw = 120, bh = 20;
+                const float cx = (float) xOf ((double) pt.time / rt), cy = yOfValue (*L, pt.value, rowTop);
+                auto box = juce::Rectangle<float> ((float) bw, (float) bh).withCentre ({ cx + 14.0f + (float) bw * 0.5f, cy - 18.0f });
+                if (box.getRight() > (float) getWidth() - 2.0f) box.setX (cx - 14.0f - (float) bw);
+                if (box.getY() < (float) rowTop) box.setY ((float) rowTop + 2.0f);
+                g.setColour (juce::Colour (0xf0101418)); g.fillRoundedRectangle (box, 4.0f);
+                g.setColour (juce::Colour (0xffffc83d)); g.drawRoundedRectangle (box, 4.0f, 1.2f);
+                g.setFont (juce::FontOptions (12.5f, juce::Font::bold)); g.setColour (juce::Colours::white);
+                g.drawText (txt, box.toNearestInt(), juce::Justification::centred, false);
+            }
 
         const int sx = viewport.getViewPositionX();
         for (size_t i = 0; i < tracks.size(); ++i)
@@ -683,7 +700,7 @@ private:
     // ------------------------------------------------------------------ automation
     struct LaneSel { juce::String param { autoparam::fader }; juce::Uuid mixer = juce::Uuid::null(); };
     std::map<juce::String, LaneSel> laneSel;                       // per track: which lane is shown
-    juce::Uuid autoDragLane = juce::Uuid::null(); int autoDragIndex = -1; int autoDragRow = 0;
+    juce::Uuid autoDragLane = juce::Uuid::null(); int autoDragIndex = -1; int autoDragRow = 0; float autoPrevY = 0.0f;
 
     LaneSel& selOf (const juce::Uuid& trackId) { return laneSel[trackId.toString()]; }
     juce::Rectangle<int> lockRect (int sx, int rowTop) const { return { sx + kNameW - 24, rowTop + rowH - 22, 18, 18 }; }
@@ -750,6 +767,29 @@ private:
         else if (lane.isPlugin()) f = juce::jlimit (0.0f, 1.0f, v);
         else f = (juce::jlimit (-60.0f, 12.0f, v) + 60.0f) / 72.0f;
         return (float) rowTop + m + (1.0f - f) * h;
+    }
+    /** The value as text for the box that follows a point while it is dragged: dB for faders / gains / sends, L / C / R for pan, a number for plug-in parameters. */
+    static juce::String autoValueText (const AutoLane& lane, float v)
+    {
+        if (lane.param == autoparam::pan)
+        {
+            const int pct = (int) std::lround (std::abs (v) * 100.0f);
+            return pct == 0 ? juce::String ("C") : (v < 0 ? "L" : "R") + juce::String (pct);
+        }
+        if (lane.isPlugin()) return juce::String (v, 3);
+        if (v <= AutoLane::kFaderOff + 0.5f) return "-inf dB";
+        return juce::String (v, 1) + " dB";
+    }
+    /** Where the mouse is, as a value; rounded to 0.1 dB (pan 0.01, plug-in 0.001) so a figure like -4.5 dB can be hit exactly. Alt = ten times finer movement. */
+    float draggedValue (const AutoLane& lane, float y, int rowTop, bool fine, float current)
+    {
+        float v = valueOfY (lane, y, rowTop);
+        if (fine) v = current + (valueOfY (lane, y, rowTop) - valueOfY (lane, autoPrevY, rowTop)) * 0.1f;
+        autoPrevY = y;
+        if (lane.param == autoparam::pan) return juce::jlimit (-1.0f, 1.0f, std::round (v * 100.0f) / 100.0f);
+        if (lane.isPlugin()) return juce::jlimit (0.0f, 1.0f, std::round (v * 1000.0f) / 1000.0f);
+        if (v <= AutoLane::kFaderOff + 0.5f) return AutoLane::kFaderOff;
+        return std::round (v * 10.0f) / 10.0f;
     }
     float valueOfY (const AutoLane& lane, float y, int rowTop) const
     {
@@ -832,7 +872,7 @@ private:
                 {
                     lane->pts.erase (lane->pts.begin() + k); app.project.changed(); repaint(); return true;
                 }
-                autoDragLane = lane->id; autoDragIndex = k; autoDragRow = row; return true;
+                autoDragLane = lane->id; autoDragIndex = k; autoDragRow = row; autoPrevY = (float) e.y; repaint(); return true;
             }
             if (lane->locked) return true;
         }
@@ -840,7 +880,8 @@ private:
         auto& l = ed.addLane (t.id, s.param, s.mixer);
         if (s.param == autoparam::pan && t.channelCount() != 1) return true;         // pan is for mono tracks
         const auto time = (juce::int64) std::llround (juce::jmax (0.0, (double) (e.x - kNameW) / pixelsPerSecond) * rate);
-        autoDragIndex = ed.addPoint (l, time, valueOfY (l, (float) e.y, rowTop));
+        autoPrevY = (float) e.y;
+        autoDragIndex = ed.addPoint (l, time, draggedValue (l, (float) e.y, rowTop, false, 0.0f));
         autoDragLane = l.id; autoDragRow = row;
         app.project.markDirty(); repaint();
         return true;
@@ -853,7 +894,8 @@ private:
         const double rate = juce::jmax (1.0, ed.sampleRate);
         const int rowTop = kRulerH + kLaneH + autoDragRow * rowH;
         const auto time = (juce::int64) std::llround (juce::jmax (0.0, (double) (e.x - kNameW) / pixelsPerSecond) * rate);
-        autoDragIndex = ed.movePoint (*lane, autoDragIndex, time, valueOfY (*lane, (float) e.y, rowTop));
+        const float cur = juce::isPositiveAndBelow (autoDragIndex, (int) lane->pts.size()) ? lane->pts[(size_t) autoDragIndex].value : 0.0f;
+        autoDragIndex = ed.movePoint (*lane, autoDragIndex, time, draggedValue (*lane, (float) e.y, rowTop, e.mods.isAltDown(), cur));
         app.project.markDirty(); repaint();
     }
 

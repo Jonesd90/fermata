@@ -1529,6 +1529,17 @@ int main()
             auto z = x; SpectralRepair::declick (z, 99990, 100330, 5, nullptr, sr);               // marked by hand
             CHECK (errOf (z) < before * 0.1);
         }
+        // spectrogram: two low notes 13 Hz apart are told apart with the bass layer (and are not with the short window alone); a click stays sharp in time
+        {
+            std::vector<float> x ((size_t) (6 * sr), 0.0f);
+            for (size_t i = 0; i < x.size(); ++i) x[i] = 0.2f * (float) std::sin (2.0 * dsp::kPi * 55.0 * (double) i / sr) + 0.2f * (float) std::sin (2.0 * dsp::kPi * 68.0 * (double) i / sr);
+            const auto blend = SpectralRepair::spectrogram ({ x }, sr, 1600, 0), plain = SpectralRepair::spectrogram ({ x }, sr, 1600, 1);
+            const int fr = blend.frames / 2;
+            const float pk = blend.level (fr, 55.0), va = blend.level (fr, 61.5), pk2 = blend.level (fr, 68.0);
+            CHECK (pk - va > 12.0f && pk2 - va > 12.0f);
+            CHECK (plain.level (fr, 55.0) - plain.level (fr, 61.5) < 6.0f);
+            CHECK (std::abs (blend.level (fr, 5000.0) - plain.level (fr, 5000.0)) < 0.01f);           // above the cross-over nothing changes
+        }
         // patch: a burst of noise inside the box is replaced, the rest is left alone
         {
             auto x = tone; auto ref = x; juce::Random rnd (7);
