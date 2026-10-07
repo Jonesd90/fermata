@@ -573,7 +573,7 @@ static juce::String beginSession (AppContext& app, std::vector<PlaySegment> segs
 /** Playing from the middle of something (or to a mark) would start and stop the sound abruptly: a 1 ms fade in at the start and out at the end of what is played. */
 static void transportFades (std::vector<PlaySegment>& segs, juce::int64 a, juce::int64 b, double rate)
 {
-    const auto len = (juce::int64) std::llround (kDefaultEdgeFade * rate);
+    const auto len = (juce::int64) std::llround (0.001 * rate);                   // (always 1 ms: just enough to avoid a click when starting / stopping)
     if (len <= 0) return;
     for (auto& s : segs)
     {

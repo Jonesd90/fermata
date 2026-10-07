@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.h"
+#include "Edit.h"
 #include <algorithm>
 
 namespace td
@@ -26,6 +27,7 @@ struct TakeGroup
     double       fadeInSeconds = kDefaultEdgeFade, fadeOutSeconds = kDefaultEdgeFade;   // short fades when the take is played / bounced (the files are untouched)
     std::vector<TakeFile> files;
     bool         dud = false;               // marked with D: nothing good in this take
+    std::vector<WaitingPiece> waiting;      // parts sent out to be processed in other software, waiting for the corrected files
     int          barIn = 0, barOut = 0;     // the bars of the music this take starts and ends in (0 = not entered); it contains those bars and all the ones between
 
     double lengthSeconds() const { return sampleRate > 0 ? (double) lengthSamples / sampleRate : 0.0; }

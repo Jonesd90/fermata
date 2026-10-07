@@ -18,7 +18,6 @@ public:
     // drag audio files (or a folder) from another program's session onto this window to import them as takes
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void filesDropped (const juce::StringArray& files, int x, int y) override;
-    juce::Uuid getWindowId() const { return windowId; }
 
 private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
@@ -64,7 +63,7 @@ private:
                      playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, playMarkedButton { "Play marked" }, inButton { "Bounce IN [I]" },
                      outButton { "Bounce OUT [O]" }, editInButton { "Edit IN [1]" }, editOutButton { "Edit OUT [2]" },
                      toEditButton { "To edit [3]" }, toEditAtButton { "To playhead [4]" }, editWindowButton { "Edit window" }, bounceButton { "Bounce Out..." },
-                     importButton { "Import takes..." }, pitchButton { "Pitch..." }, pitchCurveButton { "Pitch curve..." }, repairButton { "Repair..." }, undoFixButton { "Undo fix" }, barSearchButton { "Search for bar" };
+                     importButton { "Import takes..." }, pitchButton { "Pitch..." }, pitchCurveButton { "Pitch curve..." }, repairButton { "Spectral Repair..." }, declickButton { "De-Click..." }, exportProcButton { "Export for Processing..." }, undoFixButton { "Undo fix" }, barSearchButton { "Search for bar" };
     juce::ToggleButton overdubBox { "Overdub" }, loopToggle { "Loop [L]" };
     PlayheadModeButton playheadMode;
     std::unique_ptr<TakeTimeline> timeline;

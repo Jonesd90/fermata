@@ -18,7 +18,7 @@ constexpr int kSendSlots        = 2;    // VST3 inserts that can sit between a c
 constexpr float kSendOffDb      = -60.0f;   // a send at or below this level is off
 constexpr int kNumSlots         = 4;    // VST3 insert slots per strip / fx channel
 /** Every piece of audio starts and ends with a short fade (seconds) so nothing clicks; the files are never touched. Editable per piece. */
-constexpr double kDefaultEdgeFade = 0.001;
+constexpr double kDefaultEdgeFade = 0.025;           // the fade at the start / end of an edit, and of a take, until the user changes it (25 ms)
 constexpr int kMaxTrackChannels = 16;   // widest track (surround)
 constexpr int kMaxInputs        = 256;  // physical input channels tracked for metering
 

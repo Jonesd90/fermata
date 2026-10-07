@@ -61,6 +61,69 @@ bool writeWav (const juce::File& f, const std::vector<std::vector<float>>& ch, d
     return ok;
 }
 
+bool exportRange (juce::AudioFormatManager& fm, const juce::File& src, juce::int64 fileStart, juce::int64 a, juce::int64 b, const juce::File& dest, juce::String& error)
+{
+    auto rd = openReader (fm, src);
+    if (rd == nullptr) { error = "Could not read " + src.getFileName(); return false; }
+    auto w = makeWavWriter (dest, rd->sampleRate, (int) rd->numChannels);
+    if (w == nullptr) { error = "Could not create " + dest.getFullPathName(); return false; }
+    constexpr juce::int64 block = 1 << 17;
+    std::vector<std::vector<float>> ch;
+    for (juce::int64 pos = a; pos < b; pos += block)
+    {
+        const auto n = juce::jmin (block, b - pos);
+        if (! readRange (*rd, pos - fileStart, n, ch)) { error = "Could not read " + src.getFileName(); w.reset(); dest.deleteFile(); return false; }
+        std::vector<const float*> p; for (auto& c : ch) p.push_back (c.data());
+        if (! w->writeFromFloatArrays (p.data(), (int) p.size(), (int) n)) { error = "Could not write " + dest.getFileName() + " (is the disk full?)"; w.reset(); dest.deleteFile(); return false; }
+    }
+    w.reset();                                    // closed: no file stays open, so another program can open and overwrite it
+    rd.reset();
+    return true;
+}
+
+juce::String checkReplacement (juce::AudioFormatManager& fm, const juce::File& f, juce::int64 frames, int channels, double rate)
+{
+    if (! f.existsAsFile()) return "The file " + f.getFileName() + " is missing.";
+    auto rd = openReader (fm, f);
+    if (rd == nullptr) return "The file " + f.getFileName() + " could not be read as audio.";
+    if ((int) rd->numChannels != channels) return f.getFileName() + " has " + juce::String ((int) rd->numChannels) + " channel(s) but " + juce::String (channels) + " were sent out.";
+    if (std::abs (rd->sampleRate - rate) > 0.5) return f.getFileName() + " is at " + juce::String (rd->sampleRate, 0) + " Hz but it was sent out at " + juce::String (rate, 0) + " Hz.";
+    if (rd->lengthInSamples != frames) return f.getFileName() + " is " + juce::String (rd->lengthInSamples) + " samples long but it must stay " + juce::String (frames) + " (the length must not change).";
+    return {};
+}
+
+bool spliceFile (juce::AudioFormatManager& fm, const juce::File& src, const juce::File& repl, juce::int64 s0, juce::int64 s1, const juce::File& dest, double xfadeSec, juce::String& error)
+{
+    auto rs = openReader (fm, src); auto rr = openReader (fm, repl);
+    if (rs == nullptr || rr == nullptr) { error = "Could not read the audio."; return false; }
+    if (rs->numChannels != rr->numChannels) { error = "The corrected file has a different number of channels."; return false; }
+    auto w = makeWavWriter (dest, rs->sampleRate, (int) rs->numChannels);
+    if (w == nullptr) { error = "Could not create " + dest.getFullPathName(); return false; }
+    const auto xf = juce::jmax ((juce::int64) 1, (juce::int64) std::llround (xfadeSec * rs->sampleRate));
+    constexpr juce::int64 block = 1 << 17;
+    std::vector<std::vector<float>> a, b;
+    for (juce::int64 pos = 0; pos < rs->lengthInSamples; pos += block)
+    {
+        const auto n = juce::jmin (block, rs->lengthInSamples - pos);
+        if (! readRange (*rs, pos, n, a)) { error = "Could not read the audio."; w.reset(); dest.deleteFile(); return false; }
+        if (pos + n > s0 && pos < s1)
+        {
+            readRange (*rr, pos - s0, n, b);
+            for (juce::int64 i = 0; i < n; ++i)
+            {
+                const auto t = pos + i;
+                if (t < s0 || t >= s1) continue;
+                const auto d = juce::jmin (t - s0, s1 - 1 - t);
+                const float wt = d >= xf ? 1.0f : (float) (d + 1) / (float) (xf + 1);
+                for (size_t c = 0; c < a.size(); ++c) a[c][(size_t) i] = a[c][(size_t) i] * (1.0f - wt) + b[c][(size_t) i] * wt;
+            }
+        }
+        std::vector<const float*> p; for (auto& c : a) p.push_back (c.data());
+        if (! w->writeFromFloatArrays (p.data(), (int) p.size(), (int) n)) { error = "Could not write " + dest.getFileName() + " (is the disk full?)"; w.reset(); dest.deleteFile(); return false; }
+    }
+    return true;
+}
+
 void applyFix (std::vector<std::vector<float>>& chans, double sr, long s0, long s1, const FixSpec& spec, long xfade)
 {
     for (auto& x : chans)

@@ -80,8 +80,7 @@ public:
     ~MixerComponent() override;
     void resized() override;
     void parentHierarchyChanged() override;
-    juce::Uuid getMixerId() const { return mixerId; }
-    /** Makes the window exactly as big as the strips need (so everything is shown, no scroll bars), whatever size it was. Used when the window opens and by the Fit button. */
+    /** Makes the window exactly as big as the strips need (so everything is shown, no scroll bars), whatever size it was. Used when the window opens. */
     void fitWindowToStrips();
 
 private:
@@ -101,7 +100,7 @@ private:
     juce::Label statusLabel, nameCaption;
     juce::TextEditor nameEditor;
     MixIconButton themeButton { MixIconButton::Kind::Look }, copyButton { MixIconButton::Kind::CopyMix }, altButton { MixIconButton::Kind::AltDeck };
-    juce::TextButton auditionButton, deleteButton { "Delete this mixer" }, fitButton { "Fit" };
+    juce::TextButton auditionButton, deleteButton { "Delete this mixer" };
     int slotCount = 1;                    // insert slots shown on every strip: one more than the highest one in use
     int slotsNeeded() const;
     int topBarMinWidth() const;

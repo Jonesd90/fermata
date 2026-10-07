@@ -77,15 +77,15 @@ class FermataApplication : public juce::JUCEApplication, private juce::ChangeLis
 {
 public:
     const juce::String getApplicationName() override    { return "Fermata"; }
-    const juce::String getApplicationVersion() override { return "0.1.0"; }
+    const juce::String getApplicationVersion() override { return "1.0"; }
     bool moreThanOneInstanceAllowed() override          { return false; }
 
     void initialise (const juce::String& commandLine) override
     {
-        splash = std::make_unique<SplashScreen> (juce::String ("Version ") + getApplicationVersion() + "   -   build " + __DATE__ + " " + __TIME__);
+        splash = std::make_unique<SplashScreen> (juce::String ("Version ") + getApplicationVersion());
         logFolder().createDirectory();
         registerProjectFileType();
-        fileLogger.reset (new juce::FileLogger (logFolder().getChildFile ("fermata-log.txt"), "Fermata " + getApplicationVersion(), 512 * 1024));
+        fileLogger.reset (new juce::FileLogger (logFolder().getChildFile ("fermata-log.txt"), "Fermata " + getApplicationVersion() + "  (built " + __DATE__ + " " + __TIME__ + ")", 512 * 1024));
         juce::Logger::setCurrentLogger (fileLogger.get());
         juce::SystemStats::setApplicationCrashHandler (crashHandler);
         lookAndFeel.reset (new FermataLookAndFeel());
@@ -147,7 +147,16 @@ public:
         {
             std::vector<std::pair<juce::String, juce::String>> out;
             out.push_back ({ "main", "Main window" });
-            for (auto& [key, w] : windows) if (w != nullptr && key != "organiser") out.push_back ({ key, w->getName() });
+            // every take window, edit window and mixer of the project (open or not: choosing one that is closed opens it) ...
+            for (auto& t : ctx->project.takeWindows) out.push_back ({ "take:" + t->id.toString(), "Takes - " + t->name });
+            for (auto& e : ctx->project.edits)       out.push_back ({ "edit:" + e->id.toString(), "Edit - " + e->name });
+            for (auto& m : ctx->project.mixers)      out.push_back ({ "mixer:" + m->id.toString(), "Mixer - " + m->name });
+            // ... and the other windows that are open now
+            for (auto& [key, w] : windows)
+            {
+                if (w == nullptr || key == "organiser" || key.startsWith ("take:") || key.startsWith ("edit:") || key.startsWith ("mixer:")) continue;
+                out.push_back ({ key, w->getName() });
+            }
             return out;
         };
         ctx->placeWindows = [this] (const std::vector<std::pair<juce::String, juce::Rectangle<float>>>& items)
@@ -157,13 +166,21 @@ public:
             for (auto& it : items) if (it.first == "main") mainIncluded = true;
             if (! mainIncluded)
             {
-                // the main window keeps the top of the screen (its menu bar must always be reachable) and the other windows are arranged below it
+                // the main window stays exactly as it is (full screen or not); the other windows are arranged below its menu bar
                 if (mainWindow->isMinimised()) mainWindow->setMinimised (false);
-                if (mainWindow->isFullScreen()) mainWindow->setFullScreen (false);
-                auto b = mainWindow->getBounds();
-                mainWindow->setBounds (area.getX(), area.getY(), juce::jmin (b.getWidth(), area.getWidth()), juce::jmin (b.getHeight(), area.getHeight()));
                 if (auto* mc = dynamic_cast<MainComponent*> (mainWindow->getContentComponent()))
-                    area.removeFromTop (juce::jlimit (0, area.getHeight() / 3, mc->menuBarBottomOnScreen() - area.getY() + 2));
+                {
+                    const int bottom = mc->menuBarBottomOnScreen();
+                    if (bottom > area.getY() && bottom < area.getBottom()) area.removeFromTop (juce::jlimit (0, area.getHeight() / 3, bottom - area.getY() + 2));
+                }
+            }
+            for (auto& it : items)                                         // windows that are not open yet are opened first
+            {
+                if (windows.find (it.first) != windows.end() || it.first == "main") continue;
+                const auto id = juce::Uuid (it.first.fromFirstOccurrenceOf (":", false, false));
+                if (it.first.startsWith ("take:")) openTakeWindow (id);
+                else if (it.first.startsWith ("edit:")) openEdit (id);
+                else if (it.first.startsWith ("mixer:")) openMixer (id);
             }
             for (auto& [key, cell] : items)
             {
@@ -261,7 +278,7 @@ private:
     class ToolWindowMain : public juce::DocumentWindow
     {
     public:
-        explicit ToolWindowMain (FermataApplication&) : juce::DocumentWindow (juce::String ("Fermata  -  build ") + __DATE__ + " " + __TIME__, theme::window, juce::DocumentWindow::allButtons)
+        explicit ToolWindowMain (FermataApplication&) : juce::DocumentWindow (juce::String ("Fermata"), theme::window, juce::DocumentWindow::allButtons)
         {
             setUsingNativeTitleBar (true);
             setResizable (true, true);

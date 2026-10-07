@@ -46,7 +46,6 @@ public:
     explicit TakeDisplayHub (AppContext& a) : app (a) {}
     bool isOpen (int displayIndex) const { return windows.count (displayIndex) > 0; }
     void setOpen (int displayIndex, bool open);
-    void closeAll() { windows.clear(); changes.sendChangeMessage(); }
     juce::ChangeBroadcaster changes;
 
 private:

@@ -179,6 +179,9 @@ public:
                 const auto tc = chan::of (app.project, tracks[ti].id);
                 g.setColour (selected ? chan::clipFill (tc, true) : chan::clipFill (tc));
                 g.fillRect (rr);
+                if (r.waiting.active())
+                    drawWaitingBlock (g, rr.reduced (1), r.waiting.name, theme::text);
+                else
                 {
                     g.setColour (chan::waveColour (tc));
                     juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (rr.reduced (1));
@@ -362,6 +365,8 @@ public:
         auto* ed = this->edit();
         if (ed == nullptr) return;
         const double rate = juce::jmax (1.0, ed->sampleRate);
+        if (! e.mods.isCommandDown() && ! e.mods.isCtrlDown() && ! e.mods.isPopupMenu() && ! (e.x > kNameW && e.y >= kRulerH + kLaneH))   // a click anywhere but on the audio lets go of the selected pieces
+        { selectedRegion = juce::Uuid::null(); selectedRegions.clear(); moveRegion = juce::Uuid::null(); repaint(); }
         if (ed->automationOn && automationMouseDown (e, *ed)) return;
         if (e.mods.isPopupMenu() && e.x >= viewport.getViewPositionX() && e.x < viewport.getViewPositionX() + kNameW && e.y >= kRulerH + kLaneH)   // right-click on a track name: its colour
         {
@@ -901,7 +906,7 @@ private:
 
     int xOf (double seconds) const { return kNameW + (int) (seconds * pixelsPerSecond); }
 
-    /** Every piece starts and ends with a short fade (1 ms unless changed). Its two outer corners are handles; the fade is drawn as a white slope. */
+    /** Every piece starts and ends with a short fade (25 ms unless changed). Its two outer corners are handles; the fade is drawn as a white slope. */
     void drawFadeHandles (juce::Graphics& g, juce::Rectangle<int> lane, const EditRegion& r, double rate, bool showIn, bool showOut)
     {
         g.setColour (juce::Colours::white.withAlpha (0.85f));
@@ -973,8 +978,15 @@ private:
         m.addItem (2, "Volume of the whole piece...");
         m.addItem (3, "Remove all volume changes in this piece", hasGains);
         if (isOver) { m.addSeparator(); m.addItem (4, "Delete this overdub"); }
+        if (piece->waiting.active())
+        {
+            m.addSeparator();
+            m.addItem (5, "Re-link corrected audio  (" + piece->waiting.name + ")");
+            m.addItem (6, "Stop waiting: keep the original audio");
+        }
         auto* appPtr = &app;
-        m.showMenuAsync (juce::PopupMenu::Options(), [appPtr, eid, rid, rel] (int r)
+        juce::Component::SafePointer<juce::Component> self (this);
+        m.showMenuAsync (juce::PopupMenu::Options(), [appPtr, eid, rid, rel, self] (int r)
         {
             auto* ed2 = appPtr->project.findEdit (eid);
             auto* p2 = ed2 ? ed2->findAny (rid) : nullptr;
@@ -982,6 +994,8 @@ private:
             if (r == 1) showVolumeChange (*appPtr, eid, rid, rel);
             else if (r == 2) showVolumeChange (*appPtr, eid, rid, 0);
             else if (r == 3) { p2->gains.clear(); appPtr->project.changed(); }
+            else if (r == 5) fixtools::relinkEdit (*appPtr, eid, rid, self.getComponent());
+            else if (r == 6) { p2->waiting = WaitingPiece(); appPtr->project.changed(); }
             else if (r == 4) { if (appPtr->isPlaying()) appPtr->stopPlayback(); ed2->removeOverdub (rid); appPtr->project.changed(); }
         });
     }
@@ -1109,9 +1123,13 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     pitchButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::pitchEdit (app, editId, this); }); };
     pitchCurveButton.setTooltip ("Pitch curve: draw a line of pitch against time between marks 1 and 2 (+100 cents at the top, -100 at the bottom), for a note that drifts flat or sharp; audition it, then accept or revert");
     pitchCurveButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::pitchCurveEdit (app, editId, this); }); };
-    repairButton.setTooltip ("Noise repair: shows the audio between marks 1 and 2 of all tracks as one spectrogram; draw a box round a noise and rebuild it from the clean sound next to it, or mend clicks");
-    repairButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::repairEdit (app, editId, this); }); };
-    undoFixButton.setTooltip ("Undo the last pitch correction or noise repair (the original audio files were never touched)");
+    repairButton.setTooltip ("Spectral Repair: shows the audio between marks 1 and 2 of all tracks as one spectrogram; draw a box round a noise (drag its edges to adjust it) and rebuild it from the clean sound next to it");
+    repairButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::repairEdit (app, editId, this, false); }); };
+    declickButton.setTooltip ("De-Click: the same window as Spectral Repair, but it finds and mends clicks (the spectrogram helps you see them)");
+    declickButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::repairEdit (app, editId, this, true); }); };
+    exportProcButton.setTooltip ("Export for Processing: sends the part between marks 1 and 2 (all tracks) to the Processing Media folder to be corrected in other software (e.g. iZotope RX). Re-link it afterwards with a right-click on the 'Waiting for corrected audio' block");
+    exportProcButton.onClick = [this] { fixtools::exportForProcessingEdit (app, editId, this); };
+    undoFixButton.setTooltip ("Undo the last pitch correction, repair, de-click or export for processing (the original audio files were never touched)");
     undoFixButton.onClick = [this] { fixtools::undoLastFix (app); };
     bounceButton.setTooltip ("Make a master file of this edit through the processing mixer (or another mixer)");
     bounceButton.setColour (juce::TextButton::buttonColourId, theme::accent);
@@ -1121,7 +1139,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     slipRightToggle.setTooltip ("When you slide a piece, every piece AFTER it slides with it (off: they stay where they are).");
     slipLeftToggle.onClick  = [this] { timeline->slipLeft = slipLeftToggle.getToggleState(); };
     slipRightToggle.onClick = [this] { timeline->slipRight = slipRightToggle.getToggleState(); };
-    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &automationButton, &pitchButton, &pitchCurveButton, &repairButton, &undoFixButton,
+    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &automationButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &exportProcButton, &undoFixButton,
                                                           &slipLeftToggle, &slipRightToggle })
     {
         addAndMakeVisible (b);
@@ -1159,7 +1177,7 @@ void EditWindowComponent::resized()
         { &leftButton }, { &rightButton }, { &endButton, grid::btnW, grid::btnH, 14 },
         { &bounceButton, grid::btnW, grid::btnH, 14 },
         { &automationButton, grid::btnW, grid::btnH, 14 },
-        { &pitchButton }, { &pitchCurveButton, grid::btnW + 24 }, { &repairButton }, { &undoFixButton, grid::btnW, grid::btnH, 14 },
+        { &pitchButton }, { &pitchCurveButton, grid::btnW + 24 }, { &repairButton, grid::btnW + 30 }, { &declickButton }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, grid::btnW, grid::btnH, 14 },
         { &tracksButton }, { &importButton, grid::btnW, grid::btnH, 14 },
         { &slipLeftToggle, 95 }, { &slipRightToggle, 105, grid::btnH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
@@ -1422,6 +1440,18 @@ void EditWindowComponent::setMark (bool in)
 }
 
 /** 1 / 2: the part to pitch-correct or repair starts / ends at the playhead (or the cursor when nothing plays). */
+/** A click on any empty part of the window (not a button) lets go of the selected pieces. */
+void EditWindowComponent::mouseDown (const juce::MouseEvent& e)
+{
+    juce::ignoreUnused (e);
+    grabKeyboardFocus();
+    if (timeline != nullptr)
+    {
+        timeline->selectedRegion = juce::Uuid::null(); timeline->selectedRegions.clear(); timeline->moveRegion = juce::Uuid::null(); timeline->selectedJoin = -1;
+        timeline->repaint();
+    }
+}
+
 void EditWindowComponent::setFixMark (bool in)
 {
     auto* e = edit();

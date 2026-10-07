@@ -510,7 +510,7 @@ int main()
         CHECK (reg.gains.size() == 2 && std::abs (reg.levelDbAt (0, S + 20) + 3.0f) < 0.01f);
         reg.setGainChange (S, 0.0, { -6.0206f, 0.0f });
 
-                CHECK (std::abs (val (ed, 0, 100) - 0.5) < 1e-5 && std::abs (val (ed, 1, 100) - 0.25) < 1e-5);                        // before the change
+                CHECK (std::abs (val (ed, 0, 2000) - 0.5) < 1e-5 && std::abs (val (ed, 1, 2000) - 0.25) < 1e-5);                        // before the change
         CHECK (std::abs (val (ed, 0, (int) S + 10) - 0.25) < 2e-3 && std::abs (val (ed, 1, (int) S + 10) - 0.25) < 1e-5);    // file 1 is 6 dB down, file 2 untouched
         CHECK (std::abs (val (ed, 0, (int) (2 * S + S / 4)) - 0.375) < 2e-3);                                              // mid glide: 0.5 * 0.75
         CHECK (std::abs (val (ed, 1, (int) (2 * S + S / 4)) - 0.125) < 2e-3);
@@ -2193,6 +2193,33 @@ int main()
         base.deleteRecursively();
         Project m; juce::String me; CHECK (m.load (moved.getChildFile ("Concert.fermata"), me));
         CHECK (m.takeWindows.back()->groups[0].files[0].file == moved.getChildFile ("Recorded Media").getChildFile (wav.getFileName()));
+    }
+    // ---- export for processing / re-link ----
+    {
+        std::printf ("export for processing\n");
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        auto dir = tmp.getChildFile ("proc"); dir.createDirectory();
+        std::vector<std::vector<float>> sig (2, std::vector<float> (48000));
+        for (size_t c = 0; c < 2; ++c) for (size_t i = 0; i < sig[c].size(); ++i) sig[c][i] = 0.5f * std::sin (0.01f * (float) i * (float) (c + 1));
+        auto orig = dir.getChildFile ("orig.wav"); CHECK (audioops::writeWav (orig, sig, 48000.0));
+        auto ex = dir.getChildFile ("ex.wav"); juce::String err;
+        CHECK (audioops::exportRange (fm, orig, 0, 10000, 30000, ex, err));
+        CHECK (audioops::checkReplacement (fm, ex, 20000, 2, 48000.0).isEmpty());
+        CHECK (audioops::checkReplacement (fm, ex, 20001, 2, 48000.0).isNotEmpty());
+        CHECK (audioops::checkReplacement (fm, ex, 20000, 1, 48000.0).isNotEmpty());
+        CHECK (audioops::checkReplacement (fm, ex, 20000, 2, 44100.0).isNotEmpty());
+        CHECK (audioops::checkReplacement (fm, dir.getChildFile ("nope.wav"), 20000, 2, 48000.0).isNotEmpty());
+        CHECK (ex.deleteFile());                                  // not held open
+        std::vector<std::vector<float>> quiet (2, std::vector<float> (20000, 0.0f));
+        CHECK (audioops::writeWav (ex, quiet, 48000.0));
+        auto sp = dir.getChildFile ("splice.wav");
+        CHECK (audioops::spliceFile (fm, orig, ex, 10000, 30000, sp, 0.005, err));
+        std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (sp));
+        CHECK (rd != nullptr && rd->lengthInSamples == 48000);
+        std::vector<std::vector<float>> got; audioops::readRange (*rd, 0, 48000, got);
+        CHECK (std::abs (got[0][5000] - sig[0][5000]) < 1e-5f && std::abs (got[1][40000] - sig[1][40000]) < 1e-5f);        // outside: untouched
+        CHECK (std::abs (got[0][20000]) < 1e-6f);                                                                         // inside: the corrected (silent) audio
+        CHECK (std::abs (got[0][10000]) > 0.0f || std::abs (sig[0][10000]) < 1e-6f);                                       // the crossfade starts from the original
     }
     eng.rebuildPlan();
     tmp.deleteRecursively();

@@ -24,6 +24,20 @@ inline void fillEnvelope (juce::Graphics& g, float xFirst, const std::vector<flo
     g.fillPath (p);
 }
 
+/** Instead of a waveform: a hatched block that says the audio is out being processed in other software ("Export for Processing"). */
+inline void drawWaitingBlock (juce::Graphics& g, juce::Rectangle<int> area, const juce::String& name, juce::Colour text)
+{
+    if (area.isEmpty()) return;
+    juce::Graphics::ScopedSaveState ss (g);
+    g.reduceClipRegion (area);
+    g.setColour (text.withAlpha (0.10f)); g.fillRect (area);
+    g.setColour (text.withAlpha (0.28f));
+    for (int x = area.getX() - area.getHeight(); x < area.getRight(); x += 10)
+        g.drawLine ((float) x, (float) area.getBottom(), (float) (x + area.getHeight()), (float) area.getY(), 1.0f);
+    g.setColour (text); g.setFont (juce::FontOptions (juce::jmin (13.0f, (float) area.getHeight() * 0.6f), juce::Font::bold));
+    g.drawText ("Waiting for corrected audio" + (name.isNotEmpty() ? juce::String (" - ") + name : juce::String()), area.reduced (6, 0), juce::Justification::centred, true);
+}
+
 /** The waveform of a (zoomed-out) thumbnail between t0 and t1 seconds, drawn with fillEnvelope for every channel. */
 inline void drawThumbnailEnvelope (juce::Graphics& g, juce::Rectangle<int> area, juce::AudioThumbnail& th, double t0, double t1, float vzoom)
 {
@@ -129,8 +143,6 @@ public:
         }
         return true;
     }
-
-    void forget (const juce::File& f) { cache.erase (f.getFullPathName()); }
 
 private:
     static constexpr juce::int64 kMaxSamples = 400000;          // never read more than this for one file in one go

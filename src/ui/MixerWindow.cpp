@@ -1095,9 +1095,6 @@ MixerComponent::MixerComponent (AppContext& a, const juce::Uuid& id) : app (a), 
     altButton.setTooltip ("Make this the Alt Mixer: the one the second Mixer key of the Stream Deck opens and closes. Lit = it is. (With none chosen, the first cue mixer is used.)");
     altButton.onClick = [this] { if (auto* m = mixer()) { app.project.altMixer = app.project.altMixer == m->id ? juce::Uuid::null() : m->id; app.project.markDirty(); app.project.sendChangeMessage(); } };
     addChildComponent (altButton);
-    fitButton.setTooltip ("Makes this window exactly big enough to show every strip, with no scroll bars.");
-    fitButton.onClick = [this] { fitWindowToStrips(); };
-    addAndMakeVisible (fitButton);
     copyButton.setTooltip ("Copy mixes between mixers (levels, pans, mutes, solos, sends, plug-ins)");
     copyButton.onClick = [this] { showCopyMenu(); };
     addAndMakeVisible (copyButton);
@@ -1151,7 +1148,7 @@ int MixerComponent::topBarMinWidth() const
 {
     auto* m = mixer();
     const bool other = m != nullptr && ! app.isEngineerMixer (m->id);
-    return 84 + 180 + 76 + 140 + 44 + (other ? 410 : 0);                // name, the two icons, a little room for messages
+    return 84 + 180 + 76 + 140 + (other ? 410 : 0);                // name, the two icons, a little room for messages
 }
 int MixerComponent::slotsNeeded() const
 {
@@ -1184,9 +1181,6 @@ void MixerComponent::updateWindowLimits()
     // The biggest the window may be is exactly what the strips need, so there is no scroll bar at all at that size. (Only when the strips cannot fit
     // on the screen do they need bars; a bar then takes room from the other direction, so the window may be that much bigger.)
     const auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (win->getBounds())->userArea;
-    const bool needVBar = false;                                   // the window may be as tall as the strips need, even taller than the screen, so there is no bar at full size
-    // A horizontal bar takes room from the height, so the window may be exactly that much taller (then there is never a vertical bar as well).
-    const bool needHBar = false;
     const int maxW = naturalContentW() + borderW + 0;
     const int maxH = naturalContentH() + borderH + 0;
     if (auto* c = win->getConstrainer())
@@ -1219,17 +1213,6 @@ void MixerComponent::fitWindowToStrips()
     win->setSize (w, h);
     const auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (win->getBounds())->userArea;
     if (win->getY() < area.getY() + 44) win->setTopLeftPosition (win->getX(), area.getY() + 44);
-    juce::Logger::writeToLog ("Mixer fit: strips " + juce::String (holder->getNaturalWidth()) + "x" + juce::String (holder->getNaturalHeight())
-                              + ", frame " + juce::String (frame.getLeftAndRight()) + "x" + juce::String (frame.getTopAndBottom())
-                              + ", wanted window " + juce::String (w) + "x" + juce::String (h) + ", screen area " + area.toString()
-                              + ", window now " + win->getBounds().toString());
-    juce::Component::SafePointer<MixerComponent> self (this);
-    juce::Timer::callAfterDelay (700, [self]
-    {
-        if (self == nullptr) return;
-        if (auto* wn = self->getTopLevelComponent())
-            juce::Logger::writeToLog ("Mixer fit, 0.7 s later: window " + wn->getBounds().toString() + ", strips wanted " + juce::String (self->naturalContentW()) + "x" + juce::String (self->naturalContentH()));
-    });
 }
 
 void MixerComponent::parentHierarchyChanged() { updateWindowLimits(); }
@@ -1359,7 +1342,6 @@ void MixerComponent::resized()
     themeButton.setBounds (top.removeFromRight (34).withSizeKeepingCentre (28, 24));
     top.removeFromRight (2);
     copyButton.setBounds (top.removeFromRight (34).withSizeKeepingCentre (28, 24));
-    fitButton.setBounds (top.removeFromRight (44).reduced (2, 3));
     if (altButton.isVisible()) { altButton.setBounds (top.removeFromRight (34).withSizeKeepingCentre (30, 24)); top.removeFromRight (2); }
     if (deleteButton.isVisible()) deleteButton.setBounds (top.removeFromRight (150).reduced (3));
     if (auditionButton.isVisible()) auditionButton.setBounds (top.removeFromRight (260).reduced (3));

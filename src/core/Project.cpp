@@ -599,11 +599,12 @@ juce::File Project::projectFolder() const
 {
     return projectFile != juce::File() ? projectFile.getParentDirectory() : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Fermata");
 }
+juce::File Project::processingFolder() const { return projectFolder().getChildFile ("Processing Media"); }
 juce::File Project::bouncedFolder() const { return projectFolder().getChildFile ("Bounced Media"); }
 juce::File Project::masteredFolder() const { return bouncedFolder().getChildFile ("Mastered Audio"); }
 void Project::createFolders() const
 {
-    audioFolder().createDirectory(); bouncedFolder().createDirectory(); masteredFolder().createDirectory();
+    audioFolder().createDirectory(); processingFolder().createDirectory(); bouncedFolder().createDirectory(); masteredFolder().createDirectory();
 }
 
 /** A file path as saved: the full path, and (for a file inside the project folder) the path from the project folder, so the whole folder can be moved or copied. */
@@ -611,6 +612,15 @@ static void putFilePath (var& o, const juce::File& file, const juce::File& base)
 {
     put (o, "file", file.getFullPathName());
     if (base != juce::File() && file.isAChildOf (base)) put (o, "rel", file.getRelativePathFrom (base).replaceCharacter ('\\', '/'));
+}
+static var waitingToVar (const WaitingPiece& w, const juce::File& base)
+{
+    var o = obj();
+    put (o, "name", w.name); put (o, "from", (juce::int64) w.from); put (o, "to", (juce::int64) w.to);
+    juce::Array<var> fs;
+    for (auto& f : w.files) { var fo = obj(); putFilePath (fo, f, base); put (fo, "channels", 1); fs.add (fo); }      // ("channels" marks it as an audio file for the project copy)
+    put (o, "files", fs);
+    return o;
 }
 /** The file for a saved path: inside the project folder it is found from the relative path (so a moved or copied project uses its OWN files). */
 static juce::File getFilePath (const var& fv, const juce::File& base)
@@ -622,6 +632,14 @@ static juce::File getFilePath (const var& fv, const juce::File& base)
         if (f.existsAsFile()) return f;
     }
     return juce::File (fv["file"].toString());
+}
+
+static WaitingPiece waitingFromVar (const var& o, const juce::File& base)
+{
+    WaitingPiece w;
+    w.name = o["name"].toString(); w.from = (juce::int64) o["from"]; w.to = (juce::int64) o["to"];
+    if (auto* fs = o["files"].getArray()) for (auto& fv : *fs) w.files.push_back (getFilePath (fv, base));
+    return w;
 }
 
 juce::File Project::takeFolder (const TakeWindowDef& w) const
@@ -739,6 +757,11 @@ var Project::toVar (bool editorialOnly) const
                 fs.add (fo);
             }
             put (go, "files", fs);
+            if (! g.waiting.empty())
+            {
+                juce::Array<var> ws; for (auto& w : g.waiting) ws.add (waitingToVar (w, projectFile.getParentDirectory()));
+                put (go, "waiting", ws);
+            }
             gs.add (go);
         }
         put (o, "groups", gs);
@@ -771,6 +794,7 @@ var Project::toVar (bool editorialOnly) const
                 rf.add (fo);
             }
             put (ro, "files", rf);
+            if (r.waiting.active()) put (ro, "waiting", waitingToVar (r.waiting, projectFile.getParentDirectory()));
             juce::Array<var> gs;
             for (auto& g : r.gains)
             {
@@ -911,7 +935,9 @@ bool Project::fromVar (const var& root)
                     g.startSeconds = (double) gv["start"]; g.lengthSamples = (juce::int64) gv["length"];
                     g.sampleRate = (double) gv["rate"]; g.recordedAt = juce::Time ((juce::int64) gv["time"]);
                     if (gv.hasProperty ("fadeIn"))  g.fadeInSeconds  = juce::jmax (0.0, (double) gv["fadeIn"]);
+                    if (g.fadeInSeconds <= 0.0011 && g.fadeInSeconds > 0.0) g.fadeInSeconds = kDefaultEdgeFade;       // the old 1 ms default becomes the new one
                     if (gv.hasProperty ("fadeOut")) g.fadeOutSeconds = juce::jmax (0.0, (double) gv["fadeOut"]);
+                    if (g.fadeOutSeconds <= 0.0011 && g.fadeOutSeconds > 0.0) g.fadeOutSeconds = kDefaultEdgeFade;
                     g.dud = (bool) gv["dud"]; g.barIn = juce::jmax (0, (int) gv["barIn"]); g.barOut = juce::jmax (0, (int) gv["barOut"]);
                     if (auto* fs = gv["files"].getArray())
                         for (auto& fv : *fs)
@@ -920,6 +946,7 @@ bool Project::fromVar (const var& root)
                             f.file = getFilePath (fv, loadBase()); f.numChannels = (int) fv["channels"];
                             g.files.push_back (f);
                         }
+                    if (auto* ws = gv["waiting"].getArray()) for (auto& wv : *ws) g.waiting.push_back (waitingFromVar (wv, loadBase()));
                     w->groups.push_back (std::move (g));
                 }
             takeWindows.push_back (std::move (w));
@@ -950,6 +977,7 @@ bool Project::fromVar (const var& root)
                         f.fileStart = (juce::int64) fv["fileStart"];
                         r.files.push_back (f);
                     }
+                if (rv.hasProperty ("waiting")) r.waiting = waitingFromVar (rv["waiting"], loadBase());
                 if (auto* gs = rv["gains"].getArray())
                     for (auto& gv : *gs)
                     {

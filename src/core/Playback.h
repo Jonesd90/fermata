@@ -81,7 +81,6 @@ public:
 
     /** While true the session starts again at its start position each time it reaches its end (seamlessly: the disk thread just wraps). Any thread. */
     void setLooping (bool on) noexcept { looping = on; }
-    bool isLooping() const noexcept    { return looping.load(); }
 
     // ---- any thread ----
     bool isFinished() const noexcept        { return finished.load(); }

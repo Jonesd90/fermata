@@ -70,8 +70,18 @@ inline float dbToLinear (float db) noexcept { return db <= -99.0f ? 0.0f : std::
       fade-out: from  end   + outStart  to  end   + outEnd    (seconds relative to the region's END)
     A fade may begin before the region start / finish after its end: the audio comes from the 'handles'
     (the parts of the take outside srcIn..srcOut). A fade with start == end is a hard cut at that position. */
+/** A part that was sent out of Fermata to be processed in other software ("Export for Processing"). The audio stays as it was until the corrected files come back. */
+struct WaitingPiece
+{
+    juce::String name;                 // what the user called it ("bar 4", "click removal")
+    juce::int64  from = 0, to = 0;     // the part, in samples of the take (or of the piece's files): [from, to)
+    std::vector<juce::File> files;     // the exported files, in the order of the piece's / take's files; the other program overwrites them
+    bool active() const noexcept { return ! files.empty() && to > from; }
+};
+
 struct EditRegion
 {
+    WaitingPiece waiting;              // set while the piece waits for corrected audio (from/to = srcIn/srcOut at the time of the export)
     juce::Uuid   id;
     juce::Uuid   windowId, takeId;     // where it came from (informational only: the edit does not depend on them)
     juce::String takeName;             // display name, e.g. "002 - Take"
@@ -333,14 +343,14 @@ struct EditDef
         clampFades (i - 1); clampFades (i);
     }
 
-    /** The two ends of the edit get a short fade (1 ms by default: no click, and the file is untouched). A fade the user already made
+    /** The two ends of the edit get a short fade (25 ms by default: no click, and the file is untouched). A fade the user already made
         there (starting at the piece's own start / end) is kept; a hard cut, or the crossfade left over from when the piece was in the middle, is replaced. */
     void hardenEnds()
     {
         if (regions.empty()) return;
         auto& f = regions.front(); auto& b = regions.back();
-        if (f.inStart != 0.0 || f.inEnd <= f.inStart) { f.inStart = 0.0; f.inEnd = kDefaultEdgeFade; }
-        if (b.outEnd != 0.0 || b.outEnd <= b.outStart) { b.outStart = -kDefaultEdgeFade; b.outEnd = 0.0; }
+        if (f.inStart != 0.0 || f.inEnd <= f.inStart || f.inEnd < 0.0011) { f.inStart = 0.0; f.inEnd = kDefaultEdgeFade; }
+        if (b.outEnd != 0.0 || b.outEnd <= b.outStart || b.outStart > -0.0011) { b.outStart = -kDefaultEdgeFade; b.outEnd = 0.0; }
     }
 
     /** Insert a region at the insert point (default: after the last one), rippling later regions. Returns its index. */
@@ -408,6 +418,7 @@ struct EditDef
         auto left = regions[(size_t) i];
         if (offset <= 0 || offset >= left.length()) return i;
         EditRegion right = left;
+        left.waiting = WaitingPiece(); right.waiting = WaitingPiece();            // a cut piece no longer matches the exported files
         right.id = juce::Uuid();
         right.srcIn += offset; right.startSample += offset;
         right.gains.clear();

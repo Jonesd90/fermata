@@ -200,7 +200,7 @@ public:
             g.fillRect (lane);
             g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
             g.drawText (w->displayName (grp), lane.reduced (6, 0), juce::Justification::centredLeft, true);
-            if (! live)                                     // the take's fades (1 ms unless changed): drag the top corners
+            if (! live)                                     // the take's fades (25 ms unless changed): drag the top corners
             {
                 g.setColour (juce::Colours::white.withAlpha (0.85f));
                 auto corner = [&] (bool left, double fadeSec)
@@ -234,6 +234,15 @@ public:
                     if (total > 0.0 && ! directWave.draw (g, r.reduced (1), tf.file, 0.0, total, app.waveZoom))
                         drawThumbnailEnvelope (g, r.reduced (1), *th, 0.0, total, app.waveZoom);
                 }
+                if (! live)                                                                          // parts sent out with "Export for Processing": no waveform, a hatched block
+                    for (auto& wp : grp.waiting)
+                        if (wp.active() && grp.sampleRate > 0)
+                        {
+                            const int wx0 = x0 + (int) ((double) wp.from / grp.sampleRate * pixelsPerSecond), wx1 = x0 + (int) ((double) wp.to / grp.sampleRate * pixelsPerSecond);
+                            auto wr = juce::Rectangle<int> (wx0, r.getY(), juce::jmax (3, wx1 - wx0), r.getHeight()).getIntersection (r);
+                            g.setColour (theme::window); g.fillRect (wr.reduced (0, 1));
+                            drawWaitingBlock (g, wr.reduced (1), wp.name, theme::text);
+                        }
                 g.setColour (live ? theme::text.withAlpha (0.7f) : tc.withAlpha (picked ? 1.0f : 0.85f));
                 g.drawRect (r, picked ? 2 : 1);
                 if ((grp.barIn > 0 || grp.dud) && r.getWidth() > 50 && r.getHeight() >= 22)       // "DUD   Bar 17 - 39" along the bottom of the take (DUD in red)
@@ -389,6 +398,34 @@ public:
         grabKeyboardFocus();
         auto* w = def();
         if (w == nullptr) return;
+        if (e.mods.isPopupMenu() && e.x >= kNameW)                         // right-click on a part waiting for corrected audio: re-link it
+            if (auto* wg = groupAt (e.getPosition()))
+                if (wg->sampleRate > 0)
+                {
+                    const auto smp = (juce::int64) std::llround ((double) (e.x - xOf (wg->startSeconds)) / pixelsPerSecond * wg->sampleRate);
+                    for (size_t wi = 0; wi < wg->waiting.size(); ++wi)
+                        if (wg->waiting[wi].active() && smp >= wg->waiting[wi].from && smp < wg->waiting[wi].to && e.y >= kRulerH + kLaneH)
+                        {
+                            const auto gid = wg->id; const auto wname = wg->waiting[wi].name; const auto wfrom = wg->waiting[wi].from;
+                            juce::PopupMenu pm;
+                            pm.addSectionHeader ("Waiting for corrected audio: " + wname);
+                            pm.addItem (1, "Re-link corrected audio");
+                            pm.addItem (2, "Stop waiting: keep the original audio");
+                            const auto wid = windowId;
+                            juce::Component::SafePointer<juce::Component> self (this);
+                            pm.showMenuAsync (juce::PopupMenu::Options(), [this, self, gid, wid, wfrom] (int r)
+                            {
+                                if (self == nullptr) return;
+                                if (r == 1) fixtools::relinkTake (app, wid, gid, wfrom, self.getComponent());
+                                else if (r == 2)
+                                {
+                                    if (auto* tw = app.project.findTakeWindow (wid)) if (auto* gg = tw->findGroup (gid))
+                                    { gg->waiting.erase (std::remove_if (gg->waiting.begin(), gg->waiting.end(), [wfrom] (const WaitingPiece& x) { return x.from == wfrom; }), gg->waiting.end()); app.project.changed(); repaint(); }
+                                }
+                            });
+                            return;
+                        }
+                }
         if (e.mods.isPopupMenu() && e.x >= kNameW)                         // right-click on a take, even one still being recorded: its bars
             if (auto* bg = groupAt (e.getPosition(), true)) { showBars (bg->id, e.getPosition()); return; }
         const bool inLane = e.y >= kRulerH && e.y < kRulerH + kLaneH;
@@ -1003,19 +1040,23 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     pitchButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::pitchTake (app, windowId, this); }); };
     pitchCurveButton.setTooltip ("Pitch curve: draw a line of pitch against time over the marked part (+100 cents at the top, -100 at the bottom), for a note that drifts flat or sharp; audition it, then accept or revert");
     pitchCurveButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::pitchCurveTake (app, windowId, this); }); };
-    repairButton.setTooltip ("Noise repair: shows the marked part (Edit IN [1] / Edit OUT [2]) of all tracks as one spectrogram; draw a box round a noise and rebuild it from the clean sound next to it");
-    repairButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::repairTake (app, windowId, this); }); };
-    undoFixButton.setTooltip ("Undo the last pitch correction or noise repair (the original audio files were never touched)");
+    repairButton.setTooltip ("Spectral Repair: shows the marked part (Edit IN [1] / Edit OUT [2]) of all tracks as one spectrogram; draw a box round a noise (drag its edges to adjust it) and rebuild it from the clean sound next to it");
+    repairButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::repairTake (app, windowId, this, false); }); };
+    declickButton.setTooltip ("De-Click: the same window as Spectral Repair, but it finds and mends clicks (the spectrogram helps you see them)");
+    declickButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::repairTake (app, windowId, this, true); }); };
+    exportProcButton.setTooltip ("Export for Processing: sends the marked part (Edit IN [1] / Edit OUT [2], all tracks) to the Processing Media folder to be corrected in other software (e.g. iZotope RX). Re-link it afterwards with a right-click on the 'Waiting for corrected audio' block");
+    exportProcButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::exportForProcessingTake (app, windowId, this); }); };
+    undoFixButton.setTooltip ("Undo the last pitch correction, repair, de-click or export for processing (the original audio files were never touched)");
     undoFixButton.onClick = [this] { fixtools::undoLastFix (app); };
     bounceButton.setTooltip ("Make a master file of the marked take (or the marked part of it) through the processing mixer");
     inButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1f7a46));
     outButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xffb3261e));
     toEditButton.setColour (juce::TextButton::buttonColourId, theme::accent);
     for (auto* c : std::initializer_list<juce::Component*> { &recordButton, &zoomInButton, &zoomOutButton, &playButton, &playMarkedButton,
-                                                              &inButton, &outButton, &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &pitchCurveButton, &repairButton, &undoFixButton, &barSearchButton, &timeLabel, &statusLabel, &markLabel })
+                                                              &inButton, &outButton, &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &exportProcButton, &undoFixButton, &barSearchButton, &timeLabel, &statusLabel, &markLabel })
         addAndMakeVisible (c);
     for (auto* b : std::initializer_list<juce::Button*> { &recordButton, &zoomInButton, &zoomOutButton, &playButton, &playMarkedButton,
-                                                          &inButton, &outButton, &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &pitchCurveButton, &repairButton, &undoFixButton, &barSearchButton })
+                                                          &inButton, &outButton, &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &exportProcButton, &undoFixButton, &barSearchButton })
         b->setWantsKeyboardFocus (false);       // keep the keyboard shortcuts working after a button click
     timeLabel.setFont (juce::FontOptions (20.0f, juce::Font::bold));
     statusLabel.setColour (juce::Label::textColourId, theme::warn);
@@ -1090,7 +1131,7 @@ void TakeWindowComponent::resized()
         { &editWindowButton }, { &bounceButton, grid::btnW, grid::btnH, 14 },
         { &sendCaption, 120, grid::btnH, 2 }, { &sendBox, 200, grid::btnH, 14 },
         { &armAllButton }, { &armNoneButton, grid::btnW, grid::btnH, 14 },
-        { &importButton }, { &pitchButton }, { &pitchCurveButton, grid::btnW + 24 }, { &repairButton }, { &undoFixButton, grid::btnW, grid::btnH, 14 }, { &barSearchButton, grid::btnW + 14, grid::btnH, 14 },
+        { &importButton }, { &pitchButton }, { &pitchCurveButton, grid::btnW + 24 }, { &repairButton, grid::btnW + 30 }, { &declickButton }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, grid::btnW, grid::btnH, 14 }, { &barSearchButton, grid::btnW + 14, grid::btnH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
     r.removeFromTop (grid::flow (r, items));                           // everything on one line when there is room, otherwise it spills onto more

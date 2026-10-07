@@ -72,6 +72,13 @@ std::unique_ptr<juce::AudioFormatWriter> makeWavWriter (const juce::File&, doubl
 /** Writes a 24-bit WAV (or 32-bit float when 'floatData'). */
 bool writeWav (const juce::File&, const std::vector<std::vector<float>>&, double sampleRate, bool floatData = false);
 
+/** Writes the samples [a, b) of 'source' (the file's sample 0 is the take's sample 'fileStart') to a new WAV file with the same channels and sample rate (24-bit, no dither, nothing held open afterwards). */
+bool exportRange (juce::AudioFormatManager&, const juce::File& source, juce::int64 fileStart, juce::int64 a, juce::int64 b, const juce::File& dest, juce::String& error);
+/** Checks that 'file' (a corrected file that came back) can replace 'frames' samples with 'channels' channels at 'rate'. Returns "" if so, else a sentence saying what is wrong. */
+juce::String checkReplacement (juce::AudioFormatManager&, const juce::File& file, juce::int64 frames, int channels, double rate);
+/** A new file as long as 'source' in which [s0, s1) comes from 'replacement' (whose sample 0 is the sample s0), with a short linear crossfade inside the range at both ends. */
+bool spliceFile (juce::AudioFormatManager&, const juce::File& source, const juce::File& replacement, juce::int64 s0, juce::int64 s1, const juce::File& dest, double crossfadeSeconds, juce::String& error);
+
 /** Applies a fix to the samples [s0, s1) of every channel (the rest of the buffer is context and is not changed, apart from the cross-fade at the edges). */
 void applyFix (std::vector<std::vector<float>>& channels, double sampleRate, long s0, long s1, const FixSpec&, long crossfade);
 

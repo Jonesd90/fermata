@@ -64,7 +64,7 @@ BounceComponent::BounceComponent (AppContext& a, const BounceContext& c)
     title.setFont (juce::FontOptions (16.0f, juce::Font::bold));
     cap (rangeCaption, "What to bounce:", true);
     fullButton.setButtonText (isEdit ? "Full Track (first to last audio of the edit)" : "Whole take");
-    ioButton.setButtonText ("Use I/O points");
+    ioButton.setButtonText ("Between the I/O flags (set with I and O, or with 1 and 2)");
     selectedButton.setButtonText (isEdit ? "Selected pieces (click a piece in the edit, Ctrl + click for more)"
                                          : "Selected takes (click a take, Ctrl + click for more)");
     allTakesButton.setButtonText ("All takes as individual files (every take of this window, one file each - e.g. to send for listening)");
@@ -132,13 +132,13 @@ BounceComponent::BounceComponent (AppContext& a, const BounceContext& c)
     bool hasIO = false;
     if (isEdit)
     {
-        if (auto* e = app.project.findEdit (ctx.id)) hasIO = e->markIn >= 0 && e->markOut > e->markIn;
+        if (auto* e = app.project.findEdit (ctx.id)) hasIO = (e->markIn >= 0 && e->markOut > e->markIn) || (e->fixIn >= 0 && e->fixOut > e->fixIn);
     }
-    else if (auto* w = app.project.findTakeWindow (ctx.id)) hasIO = (! w->markTake.isNull()) && w->markIn >= 0 && w->markOut > w->markIn;
+    else if (auto* w = app.project.findTakeWindow (ctx.id)) hasIO = ((! w->markTake.isNull()) && w->markIn >= 0 && w->markOut > w->markIn) || (w->findGroup (w->editTake) != nullptr && w->editIn >= 0 && w->editOut > w->editIn);
     ioButton.setEnabled (hasIO);
     selectedButton.setEnabled (! ctx.selected.empty());
     selectedButton.setTooltip (ctx.selected.empty() ? (isEdit ? "Click a piece in the edit window first (Ctrl + click for several)" : "Click a take in the take window first (Ctrl + click for several)") : "");
-    ioButton.setTooltip (hasIO ? "" : "Set an IN and an OUT point first (press I and O)");
+    ioButton.setTooltip (hasIO ? "" : "Set an IN and an OUT flag first (keys I and O, or 1 and 2)");
     if (! ctx.selected.empty()) selectedButton.setToggleState (true, juce::dontSendNotification);
     else fullButton.setToggleState (true, juce::dontSendNotification);
     if (! isEdit && ctx.selected.empty())
@@ -259,8 +259,10 @@ bool BounceComponent::buildSettings (BounceSettings& bs, juce::String& error) co
         }
         else if (ioButton.getToggleState())
         {
-            if (! (e->markIn >= 0 && e->markOut > e->markIn)) { error = "Set an IN and an OUT point first (press I and O in the edit window)."; return false; }
-            bs.items.push_back ({ base, (juce::int64) std::llround (e->markIn * e->sampleRate), (juce::int64) std::llround (e->markOut * e->sampleRate) });
+            const bool io = e->markIn >= 0 && e->markOut > e->markIn, fix = e->fixIn >= 0 && e->fixOut > e->fixIn;
+            if (! io && ! fix) { error = "Set an IN and an OUT flag first (keys I and O, or 1 and 2, in the edit window)."; return false; }
+            const double a = io ? e->markIn : e->fixIn, b = io ? e->markOut : e->fixOut;           // the I / O flags; if they are not set, the 1 / 2 flags
+            bs.items.push_back ({ base, (juce::int64) std::llround (a * e->sampleRate), (juce::int64) std::llround (b * e->sampleRate) });
         }
         else
         {
@@ -293,7 +295,10 @@ bool BounceComponent::buildSettings (BounceSettings& bs, juce::String& error) co
             }
             return true;
         }
-        const auto takeId = (! w->markTake.isNull()) ? w->markTake : w->cursorTake;
+        const bool ioSet = (! w->markTake.isNull()) && w->markIn >= 0 && w->markOut > w->markIn;
+        const bool fixSet = w->findGroup (w->editTake) != nullptr && w->editIn >= 0 && w->editOut > w->editIn;
+        const bool wantRange = ioButton.getToggleState();
+        const auto takeId = (wantRange && ! ioSet && fixSet) ? w->editTake : ((! w->markTake.isNull()) ? w->markTake : w->cursorTake);
         auto* g = w->findGroup (takeId);
         if (g == nullptr) { error = "Click in a take first (or mark IN / OUT in one), then press Bounce Out."; return false; }
         bs.sampleRate = g->sampleRate;
@@ -302,8 +307,9 @@ bool BounceComponent::buildSettings (BounceSettings& bs, juce::String& error) co
             bs.items.push_back ({ base, (juce::int64) 0, (juce::int64) g->lengthSamples });
         else
         {
-            if (! (w->markTake == g->id && w->markIn >= 0 && w->markOut > w->markIn)) { error = "Mark IN and OUT in the take first."; return false; }
-            bs.items.push_back ({ base, (juce::int64) std::llround (w->markIn * g->sampleRate), (juce::int64) std::llround (w->markOut * g->sampleRate) });
+            const double a = ioSet ? w->markIn : w->editIn, b = ioSet ? w->markOut : w->editOut;
+            if (! ioSet && ! fixSet) { error = "Mark IN and OUT in the take first (keys I and O, or 1 and 2)."; return false; }
+            bs.items.push_back ({ base, (juce::int64) std::llround (a * g->sampleRate), (juce::int64) std::llround (b * g->sampleRate) });
         }
     }
     if (bs.segments.empty() && bs.items.empty()) { error = "There is no audio to bounce."; return false; }

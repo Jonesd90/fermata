@@ -11,8 +11,6 @@ class RemoteControlServer : private juce::Thread, private juce::Timer
 public:
     RemoteControlServer (AppContext&, int port);
     ~RemoteControlServer() override;
-    bool isListening() const noexcept { return listening; }
-    int  getPort() const noexcept { return portNumber; }
 
 private:
     struct Client;

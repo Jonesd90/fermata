@@ -641,8 +641,8 @@ void TrimComponent::resetFades()
     const auto rf = refs();
     if (! rf.ok()) return;
     if (rf.A != nullptr && rf.B != nullptr) rf.e->setDefaultJoinFades (rf.k);
-    else if (rf.B != nullptr) { rf.B->inStart = 0.0; rf.B->inEnd = 0.001; rf.e->clampFades (rf.k); }              // the start of the edit: the short 1 ms fade-in
-    else { rf.A->outStart = -0.001; rf.A->outEnd = 0.0; rf.e->clampFades (rf.k - 1); }                           // the end: the short 1 ms fade-out
+    else if (rf.B != nullptr) { rf.B->inStart = 0.0; rf.B->inEnd = kDefaultEdgeFade; rf.e->clampFades (rf.k); }              // the start of the edit: the default short fade-in
+    else { rf.A->outStart = -kDefaultEdgeFade; rf.A->outEnd = 0.0; rf.e->clampFades (rf.k - 1); }                           // the end: the default short fade-out
     if (rf.A != nullptr) rf.A->curve = FadeCurve::EqualPower;
     if (rf.B != nullptr) rf.B->curve = FadeCurve::EqualPower;
     app.project.changed();

@@ -99,8 +99,4 @@ inline void showColourPickerAt (AppContext& app, const juce::Uuid& channel, juce
 {
     juce::CallOutBox::launchAsynchronously (std::make_unique<ColourPickerPanel> (app, channel), screenArea, nullptr);
 }
-inline void showColourPicker (AppContext& app, const juce::Uuid& channel, juce::Component& target)
-{
-    showColourPickerAt (app, channel, target.getScreenBounds());
-}
 } // namespace td

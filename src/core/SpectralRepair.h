@@ -28,7 +28,6 @@ struct MergedSpectrogram
     double sampleRate = 48000.0, hopSamples = 512.0, fftSize = 2048.0;
     std::vector<float> db;                       // frames * bins
     float at (int frame, int bin) const { return db[(size_t) frame * (size_t) bins + (size_t) bin]; }
-    double binToHz (double bin) const { return bin * sampleRate / fftSize; }
     double hzToBin (double hz) const { return hz * fftSize / sampleRate; }
 };
 

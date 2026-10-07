@@ -167,8 +167,6 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     void stopPlayback();
     /** Seconds played since the playback began, wrapped to the loop length while a loop plays. */
     double playedSeconds() const;
-    /** Cheap notification while dragging in the trim window (marks the project dirty and repaints windows). */
-    void markDirtyAndRepaintTrim() { project.markDirty(); project.sendChangeMessage(); }
     bool isPlaying() const { return engine.isPlaying(); }
     /** Time on the timeline of the thing being played (take or edit), or -1 if nothing plays. */
     double playheadSeconds() const;

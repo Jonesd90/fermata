@@ -16,6 +16,7 @@ public:
     ~EditWindowComponent() override;
     void resized() override;
     bool keyPressed (const juce::KeyPress&) override;
+    void mouseDown (const juce::MouseEvent&) override;
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void filesDropped (const juce::StringArray& files, int x, int y) override;
 
@@ -52,7 +53,7 @@ private:
     juce::TextButton playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, trimButton { "Trim join [T]" }, deleteButton { "Delete piece" },
                      leftButton { "Move earlier" }, rightButton { "Move later" }, endButton { "Next goes at end" },
                      zoomInButton { "+" }, zoomOutButton { "-" }, bounceButton { "Bounce Out..." }, automationButton { "Automation" },
-                     pitchButton { "Pitch..." }, pitchCurveButton { "Pitch curve..." }, repairButton { "Repair..." }, undoFixButton { "Undo fix" }, tracksButton { "Tracks..." }, importButton { "Import..." };
+                     pitchButton { "Pitch..." }, pitchCurveButton { "Pitch curve..." }, repairButton { "Spectral Repair..." }, declickButton { "De-Click..." }, exportProcButton { "Export for Processing..." }, undoFixButton { "Undo fix" }, tracksButton { "Tracks..." }, importButton { "Import..." };
     juce::ToggleButton slipLeftToggle { "Slip Left" }, slipRightToggle { "Slip Right" }, loopToggle { "Loop [L]" };
     PlayheadModeButton playheadMode;
     std::unique_ptr<EditTimeline> timeline;
