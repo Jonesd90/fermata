@@ -213,6 +213,7 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     bool newProject (const juce::File& projectFile);
     bool openProject (const juce::File& projectFile);
     void saveNow();
+    bool skipFinalSave = false;                       // "Quit without saving": the last save when closing is left out
     void restoreLastProject();
     /** Has a project been chosen (new or opened)? Until then nothing is saved or recorded. */
     bool hasProject() const { return project.projectFile != juce::File(); }

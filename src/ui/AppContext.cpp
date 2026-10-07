@@ -789,7 +789,7 @@ void AppContext::shutdown()
     stopPlayback();
     project.preampDriver = std::make_shared<NullPreampDriver>();
     plugins.closeAllEditors();
-    saveNow();
+    if (! skipFinalSave) saveNow();
     if (auto* s = props.getUserSettings())
         if (auto xml = devices.createStateXml()) { s->setValue ("audioDevice", xml.get()); }
     props.saveIfNeeded();

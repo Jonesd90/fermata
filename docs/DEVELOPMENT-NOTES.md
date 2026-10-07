@@ -454,3 +454,5 @@ Mixer window size, found from the log: Windows applied the window's biggest-size
 * **Automation value box:** while a point is set or dragged a box beside it shows its value (dB / L-C-R / plug-in value) and time. Values snap to 0.1 dB; hold **Alt** while dragging for ten times finer movement.
 * **Spectrogram:** two analysis layers (2048-point window at full rate, and the same size after 8x decimation = 8x longer window, 3 Hz rows) blended between 250 Hz and 1.5 kHz (`MergedSpectrogram::level`). The "Bass detail" box: blended / off / extra fine (16x, 150-800 Hz).
 * **Spectral Repair / De-Click in the Edit window across edit points:** the marks may now cover several pieces. The picture is the whole marked area, piece after piece; each piece is repaired from its own source file (the part of the box that falls in it) and put back in its own place, so edit points and fades are kept.
+
+* **Quit asks first:** closing Fermata (window close or Quit) always asks "Save and quit / Quit without saving / Cancel" (Main.cpp systemRequestedQuit); Cancel keeps working.

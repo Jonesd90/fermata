@@ -271,8 +271,21 @@ public:
             showError ("Recording in progress", "Stop recording before quitting.");
             return;
         }
-        quit();
+        if (quitAsking) return;                                                  // the question is already on screen
+        if (! ctx || ctx->project.projectFile == juce::File()) { quit(); return; }
+        quitAsking = true;
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon).withTitle ("Quit Fermata")
+                                          .withMessage ("Do you want to save your work before quitting?\n\n(The project is also saved automatically as you work; \"Quit without saving\" skips only the final save.)")
+                                          .withButton ("Save and quit").withButton ("Quit without saving").withButton ("Cancel"),
+                                      [this] (int result)
+                                      {
+                                          quitAsking = false;
+                                          if (result == 1) { if (ctx) ctx->saveNow(); quit(); }               // Save and quit
+                                          else if (result == 2) { if (ctx) ctx->skipFinalSave = true; quit(); }   // Quit without saving
+                                          // anything else (Cancel): carry on working
+                                      });
     }
+    bool quitAsking = false;
 
 private:
     class ToolWindowMain : public juce::DocumentWindow
