@@ -18,8 +18,7 @@ jobs:
           test -f asiosdk/common/iasiodrv.h
 
       - name: Configure
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DASIO_SDK_DIR="${{ github.workspace }}/asiosdk"
-
+        run: cmake -S . -B build -A x64 -DASIO_SDK_DIR="${{ github.workspace }}/asiosdk"
       - name: Build
         run: cmake --build build --config Release --parallel
 
