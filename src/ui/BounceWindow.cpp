@@ -140,16 +140,16 @@ BounceComponent::BounceComponent (AppContext& a, const BounceContext& c)
     {
         if (auto* e = app.project.findEdit (ctx.id)) hasIO = (e->markIn >= 0 && e->markOut > e->markIn) || (e->fixIn >= 0 && e->fixOut > e->fixIn);
     }
-    else if (auto* w = app.project.findTakeWindow (ctx.id)) hasIO = ((! w->markTake.isNull()) && w->markIn >= 0 && w->markOut > w->markIn) || (w->findGroup (w->editTake) != nullptr && w->editIn >= 0 && w->editOut > w->editIn);
+    else if (auto* w = app.project.findTakeWindow (ctx.id)) hasIO = (w->findGroup (w->editTake) != nullptr && w->editIn >= 0 && w->editOut > w->editIn);
     ioButton.setEnabled (hasIO);
     selectedButton.setEnabled (! ctx.selected.empty());
     selectedButton.setTooltip (ctx.selected.empty() ? (isEdit ? "Click a piece in the edit window first (Ctrl + click for several)" : "Click a take in the take window first (Ctrl + click for several)") : "");
-    ioButton.setTooltip (hasIO ? "" : "Set an IN and an OUT flag first (keys I and O, or 1 and 2)");
+    ioButton.setTooltip (hasIO ? "" : isEdit ? "Set an IN and an OUT flag first (keys I and O, or 1 and 2)" : "Set the IN and OUT flags first (keys 1 and 2, or P for a whole take)");
     if (! ctx.selected.empty()) selectedButton.setToggleState (true, juce::dontSendNotification);
     else fullButton.setToggleState (true, juce::dontSendNotification);
     if (! isEdit && ctx.selected.empty())
         if (auto* w = app.project.findTakeWindow (ctx.id))
-            if (w->findGroup (w->markTake) == nullptr && w->findGroup (w->cursorTake) == nullptr && ! w->groups.empty())
+            if (w->findGroup (w->editTake) == nullptr && w->findGroup (w->cursorTake) == nullptr && ! w->groups.empty())
                 allTakesButton.setToggleState (true, juce::dontSendNotification);     // no take picked: offer every take
     updateEnabled();
     startTimerHz (15);
@@ -301,20 +301,20 @@ bool BounceComponent::buildSettings (BounceSettings& bs, juce::String& error) co
             }
             return true;
         }
-        const bool ioSet = (! w->markTake.isNull()) && w->markIn >= 0 && w->markOut > w->markIn;
+        const bool ioSet = false;                                                          // (the separate Bounce I / O flags are gone: the 1 and 2 flags are used)
         const bool fixSet = w->findGroup (w->editTake) != nullptr && w->editIn >= 0 && w->editOut > w->editIn;
         const bool wantRange = ioButton.getToggleState();
-        const auto takeId = (wantRange && ! ioSet && fixSet) ? w->editTake : ((! w->markTake.isNull()) ? w->markTake : w->cursorTake);
+        const auto takeId = (wantRange && ! ioSet && fixSet) ? w->editTake : ((! w->editTake.isNull()) ? w->editTake : w->cursorTake);
         auto* g = w->findGroup (takeId);
-        if (g == nullptr) { error = "Click in a take first (or mark IN / OUT in one), then press Bounce Out."; return false; }
+        if (g == nullptr) { error = "Click in a take first (or set the 1 / 2 flags in one), then press Bounce Out."; return false; }
         bs.sampleRate = g->sampleRate;
         bs.segments = segmentsForTake (p, *g);
         if (fullButton.getToggleState())
             bs.items.push_back ({ base, (juce::int64) 0, (juce::int64) g->lengthSamples });
         else
         {
-            const double a = ioSet ? w->markIn : w->editIn, b = ioSet ? w->markOut : w->editOut;
-            if (! ioSet && ! fixSet) { error = "Mark IN and OUT in the take first (keys I and O, or 1 and 2)."; return false; }
+            const double a = w->editIn, b = w->editOut;
+            if (! ioSet && ! fixSet) { error = "Set the IN and OUT flags in the take first (keys 1 and 2, or P for a whole take)."; return false; }
             bs.items.push_back ({ base, (juce::int64) std::llround (a * g->sampleRate), (juce::int64) std::llround (b * g->sampleRate) });
         }
     }

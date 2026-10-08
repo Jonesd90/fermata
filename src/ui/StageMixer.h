@@ -10,16 +10,13 @@ namespace td
 class StageSpeakerPanel : public juce::Component, private juce::Timer
 {
 public:
-    static constexpr int kStripW = 78, kHeight = 152, kCaptionH = 16, kGap = 10;
+    static constexpr int kStripW = 78, kHeight = 128, kGap = 10;
 
     explicit StageSpeakerPanel (AppContext& a) : app (a)
     {
         viewport.setScrollBarsShown (false, true);                 // a sideways scroll bar only when the strips do not fit
         viewport.setViewedComponent (&holder, false);
         addAndMakeVisible (viewport);
-        caption.setFont (juce::FontOptions (12.5f, juce::Font::bold));
-        caption.setColour (juce::Label::textColourId, theme::dimText);
-        addAndMakeVisible (caption);
         rebuildIfNeeded();
         startTimerHz (20);
     }
@@ -56,14 +53,12 @@ public:
         out->isOutput = true;
         out->onChange = [this] (float db, float) { app.project.stageOutputDb = db; push(); };
         strips.add (out); holder.addAndMakeVisible (out);
-        caption.setText ("STAGE SPEAKER MIXER   (what the talkback speakers hear)", juce::dontSendNotification);
         resized(); repaint();
     }
 
     void resized() override
     {
         auto r = getLocalBounds();
-        caption.setBounds (r.removeFromTop (kCaptionH));
         viewport.setBounds (r);
         const bool scrolls = wantedWidth() > r.getWidth();
         const int h = r.getHeight() - (scrolls ? 12 : 0);
@@ -172,7 +167,6 @@ private:
     }
 
     AppContext& app;
-    juce::Label caption;
     juce::Viewport viewport;
     juce::Component holder;
     juce::OwnedArray<Strip> strips;

@@ -1214,7 +1214,7 @@ int main()
         CHECK (q2.takeWindows.front()->groups.front().barIn == 17 && q2.takeWindows.front()->groups.front().barOut == 39 && e2 != nullptr && e2->regions[0].barIn == 17 && e2->regions[1].barOut == 39);
         CHECK (barsContain (17, 39, 17) && barsContain (17, 39, 30) && barsContain (17, 39, 39) && ! barsContain (17, 39, 16) && ! barsContain (17, 39, 40) && ! barsContain (0, 0, 1) && barsContain (5, 0, 5) && ! barsContain (5, 0, 6));
         CHECK (barsLabel (17, 39) == "Bar 17 - 39" && barsLabel (5, 5) == "Bar 5" && barsLabel (0, 0).isEmpty());
-        CHECK (q2.takeWindows.front()->markTake == gid1 && q2.takeWindows.front()->markIn == 0.25 && q2.takeWindows.front()->markOut == 0.75);
+        CHECK (q2.takeWindows.front()->markTake.isNull() && q2.takeWindows.front()->markIn < 0.0);       // (the old separate Bounce I / O flags are not loaded any more)
         CHECK (q2.findTrack (violinId)->monitor() == Monitor::SessionLive && q2.findTrack (mainId)->inputOf (1) == 7);
         {   // the playhead of a take window: the cursor follows it; Space plays from it
             auto& w = *q2.takeWindows.front();
@@ -1859,6 +1859,29 @@ int main()
             CHECK (cue.contains ("TRACK 03 AUDIO") && cue.contains ("INDEX 01 00:00:00") && cue.contains ("INDEX 00") && cue.contains ("ISRC GBAJY14" "12340") && cue.contains ("FLAGS PRE") && cue.contains ("PERFORMER \"Orchestra\""));
             const auto wavOut = tmp.getChildFile ("prog.wav"), cueOut = tmp.getChildFile ("prog.cue");
             CHECK (ddp::writeWavAndCue (wavOut, cueOut, dd, pq, files, nullptr, nullptr).isEmpty() && wavOut.getSize() == 44 + (juce::int64) (pq.leadOut - 150) * 2352 && cueOut.existsAsFile());
+            {   // an overlap: track 3 starts 1 s before track 2 ends; the two are mixed, nothing is cut, the PQ stays in order
+                dd.clips[2].gapSectors = -75;
+                const auto pqo = computePq (dd, frames);
+                CHECK (pqo.tracks[2].audioStart == pqo.tracks[1].endSector - 75 && pqo.tracks[2].index00 == -1 && pqo.tracks[2].index01 == pqo.tracks[2].audioStart);
+                bool warned = false; for (auto& w : pqo.warnings) warned = warned || w.contains ("overlaps the track before"); CHECK (warned);
+                dd.clips[2].gapSectors = -100000; CHECK (computePq (dd, frames).tracks[2].gapSectors >= -kMaxOverlapSectors);        // never more than 20 s
+                dd.clips[2].gapSectors = -75;
+                const auto folder2 = tmp.getChildFile ("ddpover");
+                CHECK (ddp::writeFileset (folder2, dd, pqo, files, tmp.getChildFile ("ddpover.zip"), nullptr, nullptr).isEmpty());
+                CHECK (folder2.getChildFile ("IMAGE.DAT").getSize() == (juce::int64) pqo.leadOut * 2352);
+                juce::FileInputStream img (folder2.getChildFile ("IMAGE.DAT"));
+                juce::AudioFormatManager fm; fm.registerBasicFormats();
+                std::unique_ptr<juce::AudioFormatReader> r2 (fm.createReaderFor (files[1])), r3 (fm.createReaderFor (files[2]));
+                const juce::int64 inTrack3 = 1000;                                                    // 1000 frames after track 3 starts: still under the end of track 2
+                const juce::int64 abs = (juce::int64) pqo.tracks[2].audioStart * kSamplesPerSector + inTrack3;
+                img.setPosition (abs * 4);
+                const int l = (short) img.readShort();
+                juce::AudioBuffer<float> b2 (2, 1), b3 (2, 1);
+                r2->read (&b2, 0, 1, abs - (juce::int64) pqo.tracks[1].audioStart * kSamplesPerSector, true, true); r3->read (&b3, 0, 1, inTrack3, true, true);
+                const int want = juce::jlimit (-32768, 32767, (int) std::lrintf (b2.getSample (0, 0) * 32768.0f) + (int) std::lrintf (b3.getSample (0, 0) * 32768.0f));
+                CHECK (std::abs (l - want) <= 1);                                                      // the overlap is the sum of the two tracks
+                dd.clips[2].gapSectors = 0;
+            }
         }
 
         // a FLAC file gets its tags and still plays

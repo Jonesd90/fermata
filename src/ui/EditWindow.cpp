@@ -1,11 +1,14 @@
 #include "WaveDraw.h"
 #include "EditWindow.h"
+#include <set>
 #include "FixTools.h"
 #include "ColourPicker.h"
 #include "VolumeDialog.h"
 
 namespace td
 {
+/** How many different takes the edit is made from (a take used in several pieces counts once). */
+static int takesInEdit (const EditDef& e) { std::set<juce::String> t; for (auto& r : e.regions) t.insert (r.takeId.toString()); return (int) t.size(); }
 static constexpr int kRulerH = 22, kLaneH = 38, kNameW = 150;
 
 class EditTimeline : public juce::Component, private juce::ChangeListener, private juce::Timer
@@ -1644,7 +1647,7 @@ void EditWindowComponent::timerCallback()
     if (playheadMode.getToggleState() != app.playheadFollows) playheadMode.setToggleState (app.playheadFollows, juce::dontSendNotification);
     if (waveColourBtn.getToggleState() != app.waveColour) { waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification); repaint(); }
     if (auto* e = edit())
-        infoLabel.setText (juce::String ((int) e->regions.size()) + " piece(s)" + (e->overdubs.empty() ? juce::String() : ", " + juce::String ((int) e->overdubs.size()) + " overdub(s)") + ", " + formatTime (e->lengthSeconds()).substring (3, 8)
+        infoLabel.setText (juce::String (takesInEdit (*e)) + (takesInEdit (*e) == 1 ? " Take" : " Takes") + (e->overdubs.empty() ? juce::String() : ", " + juce::String ((int) e->overdubs.size()) + " overdub(s)") + ", " + formatTime (e->lengthSeconds()).substring (3, 8)
                            + (e->markIn >= 0 ? "   IN " + formatTime (e->markIn).substring (3, 11) : juce::String())
                            + (e->markOut >= 0 ? "   OUT " + formatTime (e->markOut).substring (3, 11) : juce::String())
                            + (e->fixIn >= 0 ? "   [1] " + formatTime (e->fixIn).substring (3, 11) : juce::String())

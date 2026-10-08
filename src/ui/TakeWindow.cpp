@@ -6,7 +6,7 @@
 
 namespace td
 {
-static constexpr int kRulerH = 34, kLaneH = 26, kNameW = 150;
+static constexpr int kRulerH = 34, kLaneH = 50, kNameW = 150;
 
 /** The scrolling content: ruler, one lane of take names, then one row per track. */
 /** The little non-modal box for a take's IN Bar / OUT Bar (so it can be filled in while recording, with the keyboard already in the IN box). */
@@ -176,6 +176,14 @@ public:
 
         g.setColour (theme::ruler); g.fillRect (0, 0, getWidth(), kRulerH);
         const double step = pixelsPerSecond >= 200 ? 0.5 : pixelsPerSecond >= 60 ? 1.0 : pixelsPerSecond >= 24 ? 5.0 : pixelsPerSecond >= 8 ? 10.0 : pixelsPerSecond >= 3 ? 60.0 : 300.0;
+        // fainter unlabelled lines between the labelled ones: 5 s -> every 1 s, 1 s -> every 0.5 s, then 0.25 s (two zoom steps), then 0.1 s however far in
+        const double minor = pixelsPerSecond >= 450 ? 0.1 : pixelsPerSecond >= 200 ? 0.25 : pixelsPerSecond >= 60 ? 0.5 : pixelsPerSecond >= 24 ? 1.0 : pixelsPerSecond >= 8 ? 5.0 : pixelsPerSecond >= 3 ? 10.0 : 60.0;
+        const int minorPer = juce::jmax (1, (int) std::lround (step / minor));
+        for (int n = 0; (double) n * minor * pixelsPerSecond < getWidth(); ++n)
+        {
+            if (n % minorPer == 0) continue;
+            g.setColour (theme::grid.withAlpha (0.45f)); g.drawVerticalLine (kNameW + (int) ((double) n * minor * pixelsPerSecond), (float) kRulerH - 6, (float) getHeight());
+        }
         g.setFont (11.0f);
         for (double s = 0; s * pixelsPerSecond < getWidth(); s += step)
         {
@@ -194,7 +202,7 @@ public:
             const int x0 = xOf (grp.startSeconds);
             const int wpx = juce::jmax (4, (int) (len * pixelsPerSecond));
 
-            auto lane = juce::Rectangle<int> (x0, kRulerH + 2, wpx, kLaneH - 4);
+            auto lane = juce::Rectangle<int> (x0, kRulerH + 16, wpx, 20);      // under the row of Edit IN / OUT flags and above the row of In / Out flags
             const bool picked = isTakeSelected (grp.id);
             g.setColour (live ? juce::Colour (0xffb03030) : (picked ? theme::accent.darker (0.45f) : theme::accent));
             g.fillRect (lane);
@@ -270,17 +278,6 @@ public:
                 g.setColour (juce::Colour (0xff1e8fff)); g.drawRect (juce::Rectangle<int> (x0, y0, wpx, y1 - y0).expanded (1), 1);
             }
 
-            // marked region
-            if (w->markTake == grp.id)
-            {
-                if (w->markIn >= 0 && w->markOut > w->markIn)
-                {
-                    g.setColour (juce::Colour (0x3350e070));
-                    g.fillRect (juce::Rectangle<int> (x0 + (int) (w->markIn * pixelsPerSecond), y0, (int) ((w->markOut - w->markIn) * pixelsPerSecond), y1 - y0));
-                }
-                if (w->markIn >= 0)  { g.setColour (juce::Colour (0xff1f9d4a)); g.fillRect (x0 + (int) (w->markIn * pixelsPerSecond) - 1, kRulerH, 3, y1 - kRulerH); }
-                if (w->markOut >= 0) { g.setColour (juce::Colour (0xffd32f2f)); g.fillRect (x0 + (int) (w->markOut * pixelsPerSecond) - 1, kRulerH, 3, y1 - kRulerH); }
-            }
             // edit marks (keys 1 and 2)
             if (w->editTake == grp.id)
             {
@@ -314,7 +311,7 @@ public:
                         const int x = x0 + (int) (sec * pixelsPerSecond);
                         const auto c = isIn ? juce::Colour (0xff1a9c8a) : juce::Colour (0xff8a5cd0);
                         g.setColour (c.withAlpha (0.55f)); g.fillRect (x, y0, 1, y1 - y0);
-                        const int fw = 38; juce::Rectangle<int> f (isIn ? x : x - fw, y0 - 12 < kRulerH + 14 ? kRulerH + 14 : y0 - 12, fw, 11);
+                        const int fw = 38; juce::Rectangle<int> f (isIn ? x : x - fw, kRulerH + kLaneH - 13, fw, 11);       // its own row at the bottom of the strip, clear of the Edit IN / OUT flags
                         g.setColour (c); g.fillRect (f);
                         g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (9.5f, juce::Font::bold));
                         g.drawText ((isIn ? "In " : "Out ") + juce::String (number), f, juce::Justification::centred);
@@ -401,6 +398,8 @@ public:
         grabKeyboardFocus();
         auto* w = def();
         if (w == nullptr) return;
+        flagDrag = 0;
+        if (! e.mods.isPopupMenu() && (flagDrag = editFlagAt (*w, e.getPosition())) != 0) return;       // grab an Edit IN / OUT flag to move it
         if (e.mods.isPopupMenu() && e.x >= kNameW)                         // right-click on a part waiting for corrected audio: re-link it
             if (auto* wg = groupAt (e.getPosition()))
                 if (wg->sampleRate > 0)
@@ -525,6 +524,19 @@ public:
             }
             return;
         }
+        if (flagDrag != 0)
+        {
+            if (auto* eg = w->findGroup (w->editTake))
+            {
+                double sec = juce::jlimit (0.0, eg->lengthSeconds(), (double) (e.x - xOf (eg->startSeconds)) / pixelsPerSecond);
+                if (sec * pixelsPerSecond < 5.0) sec = 0.0;                                     // a flag snaps to the very start or end of the take
+                if ((eg->lengthSeconds() - sec) * pixelsPerSecond < 5.0) sec = eg->lengthSeconds();
+                if (flagDrag == 1) w->editIn  = w->editOut >= 0 ? juce::jmin (sec, w->editOut - 0.001) : sec;
+                else               w->editOut = w->editIn  >= 0 ? juce::jmax (sec, w->editIn + 0.001)  : sec;
+                app.project.markDirty(); repaint();
+            }
+            return;
+        }
         if (! markDragTake.isNull())
         {
             if (auto* grp = w->findGroup (markDragTake))
@@ -561,12 +573,13 @@ public:
     void mouseMove (const juce::MouseEvent& e) override
     {
         auto* w = def(); bool isIn = true;
-        setMouseCursor (w != nullptr && fadeHandleAt (*w, e.getPosition(), isIn) != nullptr ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
+        setMouseCursor (w != nullptr && (fadeHandleAt (*w, e.getPosition(), isIn) != nullptr || editFlagAt (*w, e.getPosition()) != 0) ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
     }
 
     void mouseUp (const juce::MouseEvent&) override
     {
         if (markActive) { markActive = false; app.project.changed(); }
+        if (flagDrag != 0) { flagDrag = 0; app.project.changed(); }
         markDragTake = {};
         if (fadeDrag != 0) { fadeDrag = 0; app.project.changed(); }
         if (dragging)
@@ -924,6 +937,18 @@ private:
     DirectWaveCache directWave { formatManager };
     std::map<juce::String, std::unique_ptr<juce::AudioThumbnail>> thumbs;
     juce::Uuid dragId; bool dragging = false; double dragOriginSeconds = 0.0;
+    int flagDrag = 0;                                      // 1 = dragging the Edit IN flag, 2 = the Edit OUT flag
+    /** Which Edit flag (1 = IN, 2 = OUT) is under this point: the little label at the top of the take or the line itself. */
+    int editFlagAt (TakeWindowDef& w, juce::Point<int> p) const
+    {
+        if (p.y < kRulerH || p.y >= kRulerH + 14) return 0;
+        auto* eg = w.findGroup (w.editTake);
+        if (eg == nullptr) return 0;
+        const int gx = xOf (eg->startSeconds);
+        if (w.editIn >= 0)  { const int x = gx + (int) (w.editIn * pixelsPerSecond);  if (p.x >= x - 3 && p.x <= x + 48) return 1; }
+        if (w.editOut >= 0) { const int x = gx + (int) (w.editOut * pixelsPerSecond); if (p.x >= x - 48 && p.x <= x + 3) return 2; }
+        return 0;
+    }
     juce::Uuid markDragTake; bool markActive = false, markAlt = false; double markAnchor = 0.0; int markStartX = 0, markRow0 = 0;     // dragging over a take's tracks sets Edit IN (mouse down) and OUT (mouse up)
     int fadeDrag = 0; juce::Uuid fadeTake; double fadeBase = 0.0;      // dragging a take's fade-in (1) or fade-out (2) from its top corner
 
@@ -1001,8 +1026,6 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     endTransportButton.onClick = [this] { goToEnd(); };
     for (auto* b : { &startButton, &backButton, &fwdButton, &endTransportButton }) { addAndMakeVisible (b); b->setWantsKeyboardFocus (false); }
     playMarkedButton.onClick = [this] { playMarked(); };
-    inButton.onClick = [this] { markIn(); };
-    outButton.onClick = [this] { markOut(); };
     toEditButton.onClick = [this] { toEdit(false); };
     toEditAtButton.onClick = [this] { toEdit(true); };
     editInButton.onClick = [this] { editMarkIn(); };
@@ -1024,7 +1047,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification);
     waveColourBtn.setWantsKeyboardFocus (false);
     addAndMakeVisible (waveColourBtn);
-    loopToggle.setTooltip ("Loop: when lit, Play and Play marked repeat the marked area (Edit IN / OUT [1] [2] if set, otherwise Bounce IN / OUT [I] [O]) over and over until you press Stop. Key L.");
+    loopToggle.setTooltip ("Loop: when lit, Play and Play marked repeat the marked area (the Edit IN / OUT flags [1] [2]) over and over until you press Stop. Key L.");
     loopToggle.onClick = [this] { loopChanged(); };
     loopToggle.setWantsKeyboardFocus (false);
     addAndMakeVisible (loopToggle);
@@ -1064,14 +1087,12 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     undoFixButton.setTooltip ("Undo the last pitch correction, repair, de-click or export for processing (the original audio files were never touched)");
     undoFixButton.onClick = [this] { fixtools::undoLastFix (app); };
     bounceButton.setTooltip ("Make a master file of the marked take (or the marked part of it) through the processing mixer");
-    inButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1f7a46));
-    outButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xffb3261e));
     toEditButton.setColour (juce::TextButton::buttonColourId, theme::accent);
     for (auto* c : std::initializer_list<juce::Component*> { &recordButton, &zoomInButton, &zoomOutButton, &playButton, &playMarkedButton,
-                                                              &inButton, &outButton, &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &exportProcButton, &undoFixButton, &barSearchButton, &timeLabel, &statusLabel, &markLabel })
+                                                              &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &exportProcButton, &undoFixButton, &barSearchButton, &timeLabel, &statusLabel, &markLabel })
         addAndMakeVisible (c);
     for (auto* b : std::initializer_list<juce::Button*> { &recordButton, &zoomInButton, &zoomOutButton, &playButton, &playMarkedButton,
-                                                          &inButton, &outButton, &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &exportProcButton, &undoFixButton, &barSearchButton })
+                                                          &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &exportProcButton, &undoFixButton, &barSearchButton })
         b->setWantsKeyboardFocus (false);       // keep the keyboard shortcuts working after a button click
     timeLabel.setFont (juce::FontOptions (20.0f, juce::Font::bold));
     statusLabel.setColour (juce::Label::textColourId, theme::warn);
@@ -1141,7 +1162,6 @@ void TakeWindowComponent::resized()
         { &nameLabel, 45 }, { &nameEditor, 200, grid::btnH, 10 }, { &takeBox, 84, 58, 14 },
         { &recordButton, grid::btnW, grid::btnH, 6 }, { &timeLabel, 150, 28, 14 },
         { &startButton, 40, grid::btnH, 2 }, { &backButton, 40, grid::btnH, 2 }, { &playButton }, { &fwdButton, 40, grid::btnH, 2 }, { &endTransportButton, 40, grid::btnH, 6 }, { &playMarkedButton }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 84, grid::btnH, 14 },
-        { &inButton }, { &outButton, grid::btnW, grid::btnH, 14 },
         { &editInButton }, { &editOutButton }, { &toEditButton }, { &toEditAtButton }, { &overdubBox, grid::btnW - 10, grid::btnH, 14 },
         { &editWindowButton }, { &bounceButton, grid::btnW, grid::btnH, 14 },
         { &sendCaption, 120, grid::btnH, 2 }, { &sendBox, 200, grid::btnH, 14 },
@@ -1158,41 +1178,15 @@ void TakeWindowComponent::resized()
 }
 
 // ----------------------------------------------------------------------------- editing actions
-void TakeWindowComponent::markIn()
-{
-    auto* w = def();
-    if (w == nullptr) return;
-    double sec = 0.0;
-    auto* g = timeline->markPoint (sec);          // the live position while recording or playing, otherwise the playhead
-    if (g == nullptr) { showError ("Mark IN", "Click the ruler at the top, inside a take, to place the playhead first (or press I while a take plays)."); return; }
-    if (w->markTake != g->id) { w->markTake = g->id; w->markOut = -1.0; }
-    w->markIn = sec;
-    if (w->markOut >= 0 && w->markOut <= w->markIn) w->markOut = -1.0;
-    app.project.changed();
-}
-
-void TakeWindowComponent::markOut()
-{
-    auto* w = def();
-    if (w == nullptr) return;
-    double sec = 0.0;
-    auto* g = timeline->markPoint (sec);
-    if (g == nullptr) { showError ("Mark OUT", "Click the ruler at the top, inside a take, to place the playhead first (or press O while a take plays)."); return; }
-    if (w->markTake != g->id) { w->markTake = g->id; w->markIn = -1.0; }
-    w->markOut = sec;
-    if (w->markIn >= 0 && w->markIn >= w->markOut) w->markIn = -1.0;
-    app.project.changed();
-}
-
-/** P: with a take selected, the bounce IN and OUT go to its very start and end. */
+/** P: with a take selected, the Edit IN and OUT flags (the same ones as keys 1 and 2) go to its very start and end, sample-exact. */
 void TakeWindowComponent::markWholeSelected()
 {
     auto* w = def();
     if (w == nullptr) return;
     const TakeGroup* g = nullptr;
     for (auto& id : timeline->selectedTakes) { g = w->findGroup (id); if (g != nullptr) break; }
-    if (g == nullptr) { showError ("Bounce marks", "Click a take first (in the grey bar above its tracks), then press P to mark all of it."); return; }
-    w->markTake = g->id; w->markIn = 0.0; w->markOut = g->lengthSeconds();
+    if (g == nullptr) { showError ("Bounce marks", "Click a take first (in the grey bar above its tracks), then press P to put the IN and OUT flags round all of it."); return; }
+    w->editTake = g->id; w->editIn = 0.0; w->editOut = g->lengthSeconds(); w->editTracks.clear();
     app.project.changed();
 }
 
@@ -1286,8 +1280,8 @@ void TakeWindowComponent::playMarked()
     if (w == nullptr) return;
     if (app.isPlaying()) app.stopPlayback();
     const bool useEdit = w->findGroup (w->editTake) != nullptr && w->editIn >= 0;
-    const auto take = useEdit ? w->editTake : w->markTake;
-    const double in = useEdit ? w->editIn : w->markIn, out = useEdit ? w->editOut : w->markOut;
+    const auto take = w->editTake; (void) useEdit;
+    const double in = w->editIn, out = w->editOut;
     if (w->findGroup (take) == nullptr || in < 0) { showError ("Play marked", "Mark an IN point (and an OUT point) first."); return; }
     auto err = app.playTake (windowId, take, in, out > in ? out : -1.0, loopToggle.getToggleState() && out > in);
     if (err.isNotEmpty()) showError ("Play", err);
@@ -1298,8 +1292,7 @@ bool TakeWindowComponent::markedRange (juce::Uuid& take, double& in, double& out
     auto* w = app.project.findTakeWindow (windowId);
     if (w == nullptr) return false;
     const bool useEdit = w->findGroup (w->editTake) != nullptr && w->editIn >= 0;
-    take = useEdit ? w->editTake : w->markTake;
-    in = useEdit ? w->editIn : w->markIn; out = useEdit ? w->editOut : w->markOut;
+    take = w->editTake; in = w->editIn; out = w->editOut; (void) useEdit;
     return w->findGroup (take) != nullptr && in >= 0 && out > in;
 }
 
@@ -1308,7 +1301,7 @@ void TakeWindowComponent::loopChanged()
     const bool on = loopToggle.getToggleState();
     const bool mine = app.isPlaying() && ! app.engine.isRecording() && app.playInfo.kind == AppContext::PlayInfo::Kind::Take && app.playInfo.windowId == windowId;
     juce::Uuid take; double in = 0.0, out = 0.0;
-    if (on && ! markedRange (take, in, out)) { app.setNotice ("Loop: mark an area first (Edit IN / OUT [1] [2], or Bounce IN / OUT [I] [O]): the loop plays the area between them."); return; }
+    if (on && ! markedRange (take, in, out)) { app.setNotice ("Loop: mark an area first (Edit IN / OUT [1] [2], or [P] for a whole take): the loop plays the area between them."); return; }
     if (! mine) return;
     if (on) { const auto err = app.playTake (windowId, take, in, out, true); if (err.isNotEmpty()) showError ("Play", err); }
     else app.engine.setPlaybackLooping (false);
@@ -1321,7 +1314,7 @@ void TakeWindowComponent::openBounce()
     BounceContext c;
     c.kind = BounceContext::Kind::Take; c.id = windowId;
     for (auto& g : w->groups) if (timeline->isTakeSelected (g.id)) c.selected.push_back (g.id);     // only takes that still exist
-    const auto takeId = (! w->markTake.isNull()) ? w->markTake : w->cursorTake;
+    const auto takeId = (! w->editTake.isNull()) ? w->editTake : w->cursorTake;
     if (c.selected.size() > 1) c.defaultName = w->name;                                              // each file then gets " - take NNN"
     else if (c.selected.size() == 1) { if (auto* g = w->findGroup (c.selected[0])) c.defaultName = w->name + " - take " + pad3 (g->number); }
     else if (auto* g = w->findGroup (takeId)) c.defaultName = w->name + " - take " + pad3 (g->number);
@@ -1392,8 +1385,6 @@ bool TakeWindowComponent::keyPressed (const juce::KeyPress& k)
     }
     if (k == juce::KeyPress::homeKey) { goTo (0.0);  return true; }
     if (k == juce::KeyPress::endKey)  { goToEnd();   return true; }
-    if (c == 'i')                       { markIn();  return true; }
-    if (c == 'o')                       { markOut(); return true; }
     if (c == 'p')                       { markWholeSelected(); return true; }
     if (c == 'd' && ! k.getModifiers().isAnyModifierKeyDown()) { timeline->toggleDud(); return true; }
     if (c == 'l' && ! k.getModifiers().isAnyModifierKeyDown()) { loopToggle.setToggleState (! loopToggle.getToggleState(), juce::dontSendNotification); loopChanged(); return true; }
@@ -1449,13 +1440,6 @@ void TakeWindowComponent::timerCallback()
         {
             m = "EDIT " + w->displayName (*ge) + ":  Edit IN " + fmt (w->editIn) + "   Edit OUT " + fmt (w->editOut);
             if (w->editIn >= 0 && w->editOut > w->editIn) m += "   (" + juce::String (w->editOut - w->editIn, 2) + " s)";
-            if (w->findGroup (w->markTake) != nullptr) m += "      BOUNCE  I " + fmt (w->markIn) + "  O " + fmt (w->markOut);
-        }
-        else if (auto* g = w->findGroup (w->markTake))
-        {
-            m = "BOUNCE " + w->displayName (*g) + ":  IN " + (w->markIn >= 0 ? formatTime (w->markIn).substring (3) : juce::String ("--"))
-                + "   OUT " + (w->markOut >= 0 ? formatTime (w->markOut).substring (3) : juce::String ("--"));
-            if (w->markIn >= 0 && w->markOut > w->markIn) m += "   (" + juce::String (w->markOut - w->markIn, 2) + " s)";
         }
         else if (auto* gc = w->findGroup (w->cursorTake))
             m = "Playhead: " + w->displayName (*gc) + "  " + formatTime (w->cursorSeconds).substring (3);

@@ -52,7 +52,7 @@ struct DdpClip
 {
     juce::Uuid   editId;
     bool         include = true;
-    int          gapSectors = 150;    // silence BEFORE this track in 1/75 s (the track's pause / INDEX 00). The first track's is the lead-in, never less than 150 (2 s)
+    int          gapSectors = 150;    // silence BEFORE this track in 1/75 s (the track's pause / INDEX 00). The first track's is the lead-in, never less than 150 (2 s). Negative = it overlaps the track before (up to 20 s)
     juce::String title, performer, songwriter, composer, arranger, isrc;
     bool         preEmphasis = false, copyPermitted = false;
     int          index01Shift = 0;    // where the track's INDEX 01 (its PQ start) sits compared with where its audio starts, in sectors (negative = before the audio). Dragged on the timeline
@@ -96,6 +96,7 @@ struct MasteringDef
 // ----------------------------------------------------------------------------- helpers
 constexpr int kSamplesPerSector = 588;             // 44100 / 75
 constexpr int kBytesPerSector = 2352;
+constexpr int kMaxOverlapSectors = 75 * 20;          // a track may start up to 20 s before the end of the one before it (the two are mixed together)
 constexpr int kMaxCdSectors = 359775;               // 79:57, what an 80-minute disc holds
 
 /** The length of the file the Mastering window makes of this edit, in samples at the edit's own rate: first audio to last audio, plus the tail. */

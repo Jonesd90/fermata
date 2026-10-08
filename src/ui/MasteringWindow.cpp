@@ -281,16 +281,34 @@ public:
                         if (w > 2.0f)
                         {
                             const float midY = r.getY() + 40.0f + (r.getHeight() - 44.0f) * 0.5f, half = (r.getHeight() - 44.0f) * 0.5f;
-                            g.setColour (chan::waveColour (c));
-                            const int x0 = juce::jmax (0, (int) r.getX()), x1 = juce::jmin (W, (int) r.getRight());
-                            for (int x = x0; x < x1; ++x)
+                            // one smooth filled outline (not a line per pixel): where the picture is zoomed in so far that a slice covers many pixels, the levels are joined by straight
+                            // lines between the middles of the slices; where a pixel covers several slices, its loudest one is used
+                            const int x0 = juce::jmax (0, (int) r.getX() - 1), x1 = juce::jmin (W, (int) r.getRight() + 1);
+                            auto levelAt = [&] (float xpix) -> float
                             {
-                                const float u0 = ((float) x - r.getX()) / w, u1 = ((float) x + 1.0f - r.getX()) / w;
-                                if (u0 >= 1.0f) break;
-                                const int i0 = juce::jlimit (0, n - 1, (int) (u0 * (float) n)), i1 = juce::jlimit (i0, n - 1, (int) (u1 * (float) n));
-                                float m = 0.0f; for (int i = i0; i <= i1; ++i) m = juce::jmax (m, bins[(size_t) i]);
-                                const float hh = juce::jmax (0.5f, juce::jmin (1.0f, m) * half);
-                                g.drawVerticalLine (x, midY - hh, midY + hh);
+                                const float u0 = (xpix - r.getX()) / w * (float) n, u1 = (xpix + 1.0f - r.getX()) / w * (float) n;
+                                if (u1 - u0 >= 1.0f)                                          // many slices under one pixel: the loudest
+                                {
+                                    const int i0 = juce::jlimit (0, n - 1, (int) u0), i1 = juce::jlimit (i0, n - 1, (int) u1);
+                                    float m = 0.0f; for (int i = i0; i <= i1; ++i) m = juce::jmax (m, bins[(size_t) i]);
+                                    return m;
+                                }
+                                const float mid = 0.5f * (u0 + u1) - 0.5f;                     // one slice under many pixels: a straight line from one slice's middle to the next
+                                const int i0 = juce::jlimit (0, n - 1, (int) std::floor (mid)), i1 = juce::jlimit (0, n - 1, i0 + 1);
+                                const float fr = juce::jlimit (0.0f, 1.0f, mid - (float) i0);
+                                return bins[(size_t) i0] * (1.0f - fr) + bins[(size_t) i1] * fr;
+                            };
+                            const float xEnd = r.getX() + w;
+                            std::vector<float> hs; int xs = x0;
+                            for (int x = x0; x < x1 && (float) x < xEnd; ++x) hs.push_back (juce::jmax (0.6f, juce::jmin (1.0f, levelAt ((float) x)) * half));
+                            if (hs.size() > 1)
+                            {
+                                juce::Path poly;
+                                poly.startNewSubPath ((float) xs, midY - hs[0]);
+                                for (size_t i = 1; i < hs.size(); ++i) poly.lineTo ((float) xs + (float) i, midY - hs[i]);
+                                for (size_t i = hs.size(); i-- > 0;) poly.lineTo ((float) xs + (float) i, midY + hs[i]);
+                                poly.closeSubPath();
+                                g.setColour (chan::waveColour (c).withAlpha (0.9f)); g.fillPath (poly);
                             }
                         }
                     }
@@ -300,7 +318,13 @@ public:
                 g.setFont (juce::FontOptions (11.0f));
                 g.drawText (juce::String ((double) (b.end - b.start) / 75.0, 1) + " s   starts " + sectorsToMsf (b.start), inside.reduced (6, 4).withTrimmedTop (20).withHeight (16), juce::Justification::centredLeft, true);
             }
-            pos = b.end;
+            if (b.start < pos)                                                                  // an overlap with the track before: shaded
+            {
+                auto ov = juce::Rectangle<float> (xOfSector (b.start), (float) top, xOfSector (pos) - xOfSector (b.start), (float) h);
+                g.setColour (juce::Colour (0x55ff9d2e)); g.fillRect (ov);
+                if (ov.getWidth() > 44) { g.setFont (juce::FontOptions (11.0f, juce::Font::bold)); g.setColour (juce::Colours::white); g.drawText ("overlap " + secondsText (pos - b.start), ov, juce::Justification::centred); }
+            }
+            pos = juce::jmax (pos, b.end);
         }
         // the PQ flags: INDEX 01 (the start of each track), INDEX 00 (the start of its pause) and the lead-out
         // rows: the upper one has the starts (INDEX 01, INDEX 00) and the lead-out; the lower one has the CD start and the end of every track (flag pointing back, over the track it ends)
@@ -371,7 +395,7 @@ public:
                 return;
             }
         for (size_t i = 0; i < blocks.size(); ++i)
-            if (e.x >= (int) xOfSector (blocks[i].start) && e.x <= (int) xOfSector (blocks[i].end)) { dragIndex = (int) i; break; }
+            if (e.x >= (int) xOfSector (blocks[i].start) && e.x <= (int) xOfSector (blocks[i].end)) dragIndex = (int) i;        // (where tracks overlap, the later one is on top)
         placePlayhead (e.x);                                                                     // a click anywhere puts the playhead there
         if (dragIndex < 0) return;
         dragId = blocks[(size_t) dragIndex].id; dragStartX = e.x; dragStartGap = blocks[(size_t) dragIndex].gap;
@@ -389,19 +413,14 @@ public:
         if (dragIndex < 0 || dragIndex >= (int) blocks.size()) return;
         const auto& b = blocks[(size_t) dragIndex];
         if (b.id != dragId) return;
-        const int minGap = b.number == 1 ? 150 : 0;
-        const int raw = dragStartGap + (int) std::lround ((double) (e.x - dragStartX) / pxPerSector());
-        if (raw < minGap && dragIndex > 0)                                                       // pushed into the track before: change places with it
+        // a track can be dragged back over the one before it (they overlap and are mixed together on the disc) but never past that track's start, and never by more than 20 s
+        int minGap = 150;
+        if (b.number > 1)
         {
             const auto& prev = blocks[(size_t) dragIndex - 1];
-            const double overshoot = (double) (minGap - raw) * pxPerSector();
-            if (overshoot > 0.5 * (double) (prev.end - prev.start) * pxPerSector())
-            {
-                if (onSwap) onSwap (b.clipIndex, prev.clipIndex);
-                rebase (e.x);
-                return;
-            }
+            minGap = juce::jmax (-kMaxOverlapSectors, -(prev.end - prev.start) + 1);
         }
+        const int raw = dragStartGap + (int) std::lround ((double) (e.x - dragStartX) / pxPerSector());
         const int gap = juce::jmax (minGap, raw);
         if (gap != b.gap && onGap) { onGap (b.clipIndex, gap); rebase (e.x); }          // the picture moved under the mouse: measure from here again
     }
@@ -671,16 +690,18 @@ MasteringComponent::MasteringComponent (AppContext& a) : app (a), renderProgress
     cap (gapCaption, "Pause before this track (s)"); cap (allGapsCaption, "Set every pause to"); cap (ddpFolderCaption, "Folder"); styleCaption (ddpPeakUnit, "dBFS"); addChildComponent (ddpPeakUnit);
     warnings.setFont (juce::FontOptions (12.5f)); warnings.setColour (juce::Label::textColourId, theme::warn); warnings.setJustificationType (juce::Justification::topLeft); addChildComponent (warnings);
     ddpStatus.setFont (juce::FontOptions (13.0f)); addChildComponent (ddpStatus);
-    for (auto* c : std::initializer_list<juce::Component*> { &gapEditor, &allGapsBox, &autoPq, &zoomIn, &zoomOut, &zoomFit, &ddpUp, &ddpDown, &ddpChoose, &ddpExport, &ddpShow, &ddpCheck, &preToggle, &copyToggle,
+    for (auto* c : std::initializer_list<juce::Component*> { &gapEditor, &allGapsBox, &autoPq, &isrcBtn, &zoomIn, &zoomOut, &zoomFit, &ddpUp, &ddpDown, &ddpChoose, &ddpExport, &ddpShow, &ddpCheck, &preToggle, &copyToggle,
                                                               &zipToggle, &cueToggle, &ddpNorm, &ddpTogether, &ddpFolderEditor, &ddpPeakEditor, &ddpProgress }) addChildComponent (*c);
-    gapEditor.setInputRestrictions (7, "0123456789.");
+    gapEditor.setInputRestrictions (8, "0123456789.-");
     gapEditor.onReturnKey = [this] { applyGapToSelected (gapEditor.getText()); };
     gapEditor.onFocusLost = [this] { applyGapToSelected (gapEditor.getText()); };
-    gapEditor.setTooltip ("Silence before the selected track, in seconds (the first track always starts at 2 s or later). You can also drag a track left and right in the timeline.");
+    gapEditor.setTooltip ("Silence before the selected track, in seconds (the first track always starts at 2 s or later). A minus number (or dragging the track back over the one before it) overlaps the two: they are mixed together on the disc. You can also drag a track left and right in the timeline.");
     { const double v[] = { 0, 1, 1.5, 2, 3, 4, 5 }; allGapsBox.addItem ("Keep positions", 1); for (int i = 0; i < 7; ++i) allGapsBox.addItem ("Set every pause to " + juce::String (v[i], v[i] == 1.5 ? 1 : 0) + " s", i + 2); allGapsBox.setSelectedId (1, juce::dontSendNotification); }
     allGapsBox.setTooltip ("Keep positions: Auto PQ makes the PQ points from where the tracks are now and moves nothing. The other choices first set the pause before every track to that length.");
-    autoPq.setTooltip ("Makes the PQ points (track starts, pauses, lead-out) from the tracks as they are placed. With 'Keep positions' nothing moves. "
+    autoPq.setTooltip ("Makes the PQ points (track starts, pauses, lead-out) from the tracks as they are placed, and puts any PQ flags you dragged back to the audio, every time you press it. With 'Keep positions' no track moves. "
                        "The PQ points always follow the positions: if an edit gets longer or shorter later, the tracks after it move and every pause stays as it is.");
+    isrcBtn.onClick = [this] { openIsrcTool(); };
+    isrcBtn.setTooltip ("Fills in the ISRC of every track in one go: type the country, label (registrant) and year codes and the 5-digit number of the FIRST track, and the other tracks get the numbers that follow (+1 each).");
     autoPq.onClick = [this] { const double v[] = { 0, 1, 1.5, 2, 3, 4, 5 }; const int id = allGapsBox.getSelectedId(); if (id <= 1) autoPqInPlace(); else setAllGaps (v[juce::jlimit (0, 6, id - 2)]); };
     zoomIn.onClick = [this] { zoomKey (true); };
     zoomOut.onClick = [this] { zoomKey (false); };
@@ -820,7 +841,7 @@ void MasteringComponent::requestEnvelope (const juce::Uuid& editId)
     const juce::int64 total = e->lengthSamples();
     const double rate = e->sampleRate;
     const double master = (double) juce::jmax ((juce::int64) 1, masterLengthSamples (*e, def().tailSeconds));
-    const int bins = juce::jlimit (400, 12000, (int) ((double) total / rate * 8.0));
+    const int bins = juce::jlimit (400, 60000, (int) ((double) total / rate * 40.0));      // 40 slices a second: smooth even when zoomed in
     juce::Component::SafePointer<MasteringComponent> safe (this);
     juce::Thread::launch ([safe, regs, total, rate, master, bins, id, key]
     {
@@ -1044,7 +1065,7 @@ void MasteringComponent::refreshDdp (bool reloadFields)
         blocks.push_back (b);
         MasterPqRow r; r.id = t.editId; r.number = juce::String (t.number); r.title = title;
         r.index00 = t.index00 >= 0 ? sectorsToMsf (t.index00) : juce::String ("-"); r.index01 = sectorsToMsf (t.index01);
-        r.length = sectorsToMsf (t.lengthSectors); r.pause = t.number == 1 ? "lead-in " + secondsText (t.gapSectors) : secondsText (t.gapSectors);
+        r.length = sectorsToMsf (t.lengthSectors); r.pause = t.number == 1 ? "lead-in " + secondsText (t.gapSectors) : t.gapSectors < 0 ? "overlap " + secondsText (-t.gapSectors) : secondsText (t.gapSectors);
         r.isrc = c.isrc; r.flags = juce::String (c.preEmphasis ? "PRE " : "") + (c.copyPermitted ? "COPY" : "");
         rows.push_back (r);
     }
@@ -1059,10 +1080,10 @@ void MasteringComponent::refreshDdp (bool reloadFields)
     warnings.setText (w, juce::dontSendNotification);
     // the selected track
     updating = true;
-    int selGap = -1; bool selIsFirst = false;
-    for (auto& t : L.tracks) if (t.editId == def().selectedClip) { selGap = t.gapSectors; selIsFirst = t.number == 1; }
-    gapEditor.setEnabled (selGap >= 0);
-    if (! gapEditor.hasKeyboardFocus (false)) gapEditor.setText (selGap >= 0 ? juce::String ((double) selGap / 75.0, 2) : juce::String(), false);
+    int selGap = 0; bool selIsFirst = false, selFound = false;
+    for (auto& t : L.tracks) if (t.editId == def().selectedClip) { selGap = t.gapSectors; selIsFirst = t.number == 1; selFound = true; }
+    gapEditor.setEnabled (selFound);
+    if (! gapEditor.hasKeyboardFocus (false)) gapEditor.setText (selFound ? juce::String ((double) selGap / 75.0, 2) : juce::String(), false);
     (void) selIsFirst;
     if (auto* c = def().findClip (def().selectedClip)) { preToggle.setToggleState (c->preEmphasis, juce::dontSendNotification); copyToggle.setToggleState (c->copyPermitted, juce::dontSendNotification); }
     preToggle.setEnabled (def().findClip (def().selectedClip) != nullptr); copyToggle.setEnabled (preToggle.isEnabled());
@@ -1139,7 +1160,8 @@ void MasteringComponent::applyGapToSelected (const juce::String& text)
     if (updating) return;
     auto* c = def().findClip (def().selectedClip);
     if (c == nullptr || text.trim().isEmpty()) return;
-    c->gapSectors = juce::jmax (0, sectorsFromSeconds (text.getDoubleValue()));
+    const bool firstOne = ! def().ddp.clips.empty() && &def().ddp.clips.front() == c;
+    c->gapSectors = juce::jmax (firstOne ? 150 : -kMaxOverlapSectors, (int) std::llround (text.getDoubleValue() * 75.0));
     touched(); refreshDdp (false);
 }
 
@@ -1267,7 +1289,7 @@ void MasteringComponent::setView (int v)
     for (auto* f : albumFields) { f->caption.setVisible (vm); f->editor.setVisible (vm); }
     for (auto* f : fileFields) { f->caption.setVisible (vm); f->editor.setVisible (vm); }
     for (juce::Component* c : std::initializer_list<juce::Component*> { ddpList.get(), &rightView, timeline.get(), &playBtn, &gapPlayBtn, &startBtn, &timeLabel, &pqView, &discCaption, &clipCaption, &pqCaption, &gapCaption, &allGapsCaption, &ddpFolderCaption, &ddpPeakUnit,
-                                                                         &warnings, &ddpStatus, &gapEditor, &allGapsBox, &autoPq, &zoomIn, &zoomOut, &zoomFit, &ddpUp, &ddpDown, &ddpChoose, &ddpExport,
+                                                                         &warnings, &ddpStatus, &gapEditor, &allGapsBox, &autoPq, &isrcBtn, &zoomIn, &zoomOut, &zoomFit, &ddpUp, &ddpDown, &ddpChoose, &ddpExport,
                                                                          &ddpCheck, &preToggle, &copyToggle, &zipToggle, &cueToggle, &ddpNorm, &ddpTogether, &ddpFolderEditor, &ddpPeakEditor, &ddpProgress })
         c->setVisible (dd);
     ddpShow.setVisible (dd && ddpShow.isVisible());
@@ -1411,6 +1433,7 @@ void MasteringComponent::layoutDdp (juce::Rectangle<int> area)
         zoomIn.setBounds (tb.removeFromRight (40).reduced (2, 1)); zoomOut.setBounds (tb.removeFromRight (40).reduced (2, 1)); zoomFit.setBounds (tb.removeFromRight (50).reduced (2, 1));
         tb.removeFromRight (12);
         autoPq.setBounds (tb.removeFromRight (96).reduced (2, 1)); tb.removeFromRight (4);
+        isrcBtn.setBounds (tb.removeFromRight (84).reduced (2, 1)); tb.removeFromRight (4);
         allGapsBox.setBounds (tb.removeFromRight (210).reduced (2, 1));
         allGapsCaption.setBounds (0, 0, 0, 0);
         timeLabel.setBounds (tb);
@@ -1550,7 +1573,7 @@ void MasteringComponent::playGap()
     for (auto& t : computePq (def().ddp, clipFrames()).tracks)
         if (t.editId == def().selectedClip)
         {
-            const double gapStart = (double) (t.audioStart - t.gapSectors) / 75.0;
+            const double gapStart = (double) juce::jmin (t.audioStart, t.audioStart - t.gapSectors) / 75.0;
             const double from = juce::jmax (0.0, gapStart - 3.0), to = (double) t.audioStart / 75.0 + 3.0;
             timeline->showSeconds (from);
             startPlay (from, to);
@@ -1563,6 +1586,15 @@ void MasteringComponent::playGap()
 void MasteringComponent::autoPqInPlace()
 {
     bool first = true, moved = false;
+    int flagsPutBack = 0;
+    for (auto& c : def().ddp.clips)                                                          // every press starts again: the PQ flags go back to the audio, wherever they were dragged
+    {
+        if (c.index01Shift != 0) ++flagsPutBack;
+        if (c.index00Shift != kIndexAuto) ++flagsPutBack;
+        c.index01Shift = 0; c.index00Shift = kIndexAuto;
+    }
+    if (def().ddp.endPadSectors != 0) ++flagsPutBack;
+    def().ddp.endPadSectors = 0;                                                             // ... and so does the End of CD flag
     for (auto& c : def().ddp.clips)
     {
         if (! c.include) continue;
@@ -1570,10 +1602,72 @@ void MasteringComponent::autoPqInPlace()
         first = false;
     }
     touched(); refreshDdp (false);
+    timeline->repaint();
     const auto L = computePq (def().ddp, clipFrames());
+    int overlaps = 0; for (auto& t : L.tracks) if (t.number > 1 && t.gapSectors < 0) ++overlaps;
     ddpStatus.setColour (juce::Label::textColourId, theme::text);
-    ddpStatus.setText ("PQ made from the current positions: " + juce::String ((int) L.tracks.size()) + " track(s), end of CD at " + sectorsToMsf (L.leadOut)
-                       + (moved ? ". Only the first track was moved, to start at 2 s." : ". No track was moved."), juce::dontSendNotification);
+    ddpStatus.setText ("Auto PQ: every track now starts (INDEX 01) where its audio starts and ends where its audio ends, with the tracks left exactly where they are. "
+                       + juce::String ((int) L.tracks.size()) + " track(s), end of CD at " + sectorsToMsf (L.leadOut) + ". "
+                       + (flagsPutBack > 0 ? juce::String (flagsPutBack) + " flag(s) that had been moved were put back. " : juce::String ("The flags were already in place. "))
+                       + (overlaps > 0 ? juce::String (overlaps) + " overlap(s): the track after starts under the end of the one before. " : juce::String())
+                       + (moved ? "Only the first track was moved, to start at 2 s." : "No track was moved."), juce::dontSendNotification);
+    juce::Logger::writeToLog ("Auto PQ (keep positions): " + juce::String ((int) L.tracks.size()) + " tracks, " + juce::String (flagsPutBack) + " flags put back, " + juce::String (overlaps) + " overlaps, end " + sectorsToMsf (L.leadOut));
+}
+
+/** The ISRC tool: country, registrant and year codes, and the number of the first track; the rest follow (+1 each, or all the same). Also puts them on the matching Virtual Master files. */
+void MasteringComponent::openIsrcTool()
+{
+    auto& clips = def().ddp.clips;
+    const auto frames = clipFrames();
+    std::vector<size_t> order;                                                    // the tracks that are on the disc, in disc order
+    for (size_t i = 0; i < clips.size(); ++i) if (clips[i].include && i < frames.size() && frames[i] > 0) order.push_back (i);
+    if (order.empty()) { ddpStatus.setColour (juce::Label::textColourId, theme::warn); ddpStatus.setText ("There are no tracks on the disc to give ISRCs to.", juce::dontSendNotification); return; }
+    juce::String cc, reg, yy, num;
+    const auto first = compactIsrc (clips[order.front()].isrc);
+    if (first.length() == 12) { cc = first.substring (0, 2); reg = first.substring (2, 5); yy = first.substring (5, 7); num = first.substring (7); }
+    else { yy = juce::String (juce::Time::getCurrentTime().getYear() % 100).paddedLeft ('0', 2); }
+    auto* aw = new juce::AlertWindow ("ISRCs for the tracks",
+                                      "An ISRC looks like GB-XXX-YY-NNNNN: country, label (registrant), year, then the track's own number. Type the first track's number and the other " + juce::String ((int) order.size() - 1) + " track(s) follow in disc order.",
+                                      juce::MessageBoxIconType::NoIcon, this);
+    aw->addTextEditor ("cc", cc, "Country code (2 letters, e.g. GB)");
+    aw->addTextEditor ("reg", reg, "Registrant / label code (3 letters or numbers)");
+    aw->addTextEditor ("yy", yy, "Year code (2 digits)");
+    aw->addTextEditor ("num", num, "Number of the FIRST track (5 digits, e.g. 00121)");
+    aw->addComboBox ("mode", { "Sequential: each track after the first is one higher", "The same number on every track" }, "Numbering");
+    aw->addButton ("Fill in the tracks", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<juce::AlertWindow> awp (aw);
+    juce::Component::SafePointer<MasteringComponent> safe (this);
+    aw->enterModalState (true, juce::ModalCallbackFunction::create ([awp, safe, order] (int r)
+    {
+        if (r != 1 || awp == nullptr || safe == nullptr) return;
+        auto cc = awp->getTextEditorContents ("cc").trim().toUpperCase(), reg = awp->getTextEditorContents ("reg").trim().toUpperCase();
+        auto yy = awp->getTextEditorContents ("yy").trim(), num = awp->getTextEditorContents ("num").trim();
+        const bool sequential = awp->getComboBoxComponent ("mode")->getSelectedItemIndex() == 0;
+        auto fail = [&] (const juce::String& why) { safe->ddpStatus.setColour (juce::Label::textColourId, theme::warn); safe->ddpStatus.setText ("ISRCs not changed: " + why, juce::dontSendNotification); };
+        const auto allOf = [] (const juce::String& t, auto pred) { for (auto ch : t) if (! pred (ch)) return false; return true; };
+        const auto isLetter = [] (juce::juce_wchar c) { return c >= 'A' && c <= 'Z'; };
+        const auto isDigit = [] (juce::juce_wchar c) { return c >= '0' && c <= '9'; };
+        if (cc.length() != 2 || ! allOf (cc, isLetter)) { fail ("the country code is two letters (for example GB)."); return; }
+        if (reg.length() != 3 || ! allOf (reg, [&] (juce::juce_wchar c) { return isLetter (c) || isDigit (c); })) { fail ("the registrant (label) code is three letters or numbers."); return; }
+        if (yy.length() != 2 || ! allOf (yy, isDigit)) { fail ("the year code is two digits (for example 25)."); return; }
+        if (num.length() == 0 || num.length() > 5 || ! allOf (num, isDigit)) { fail ("the number of the first track is up to five digits (for example 00121)."); return; }
+        const int start = num.getIntValue();
+        if (sequential && start + (int) order.size() - 1 > 99999) { fail ("the numbers would run past 99999."); return; }
+        auto& clips = safe->def().ddp.clips;
+        juce::String firstCode, lastCode;
+        for (size_t k = 0; k < order.size(); ++k)
+        {
+            const auto code = cc + "-" + reg + "-" + yy + "-" + juce::String (start + (sequential ? (int) k : 0)).paddedLeft ('0', 5);
+            clips[order[k]].isrc = code;
+            if (auto* item = safe->def().findItem (clips[order[k]].editId)) item->tags.isrc = code;       // the Virtual Master file of the same edit gets it too
+            if (k == 0) firstCode = code;
+            lastCode = code;
+        }
+        safe->touched(); safe->refreshDdp (true);
+        safe->ddpStatus.setColour (juce::Label::textColourId, theme::text);
+        safe->ddpStatus.setText ("ISRCs filled in for " + juce::String ((int) order.size()) + " track(s): " + firstCode + (order.size() > 1 ? "  to  " + lastCode : juce::String()) + ".", juce::dontSendNotification);
+    }));
 }
 
 void MasteringComponent::centrePlayhead()

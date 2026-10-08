@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include <set>
 #include "WinOwner.h"
 #include "FixTools.h"
 #include "PreampSetup.h"
@@ -454,7 +455,7 @@ void MainComponent::resized()
     if (showStage)
     {
         const int panelW = juce::jlimit (220, juce::jmax (220, rightEdge - (r.getX() + 560)), stagePanel.wantedWidth());
-        stagePanel.setBounds (rightEdge - panelW, topY, panelW, StageSpeakerPanel::kHeight);
+        stagePanel.setBounds (rightEdge - panelW, topY, panelW, StageSpeakerPanel::kHeight);       // (the height is set again below to what the left side leaves free)
         leftLimit = rightEdge - panelW - 10;
     }
     auto header = r.removeFromTop (60);
@@ -469,7 +470,12 @@ void MainComponent::resized()
         auditionCaption.setBounds (bar.removeFromLeft (150));
         for (auto* b : auditionButtons) b->setBounds (bar.removeFromLeft (juce::jmin (260, juce::jmax (150, bar.getWidth() / juce::jmax (1, auditionButtons.size())))).withSizeKeepingCentre (juce::jmin (260, juce::jmax (150, bar.getWidth() / juce::jmax (1, auditionButtons.size()))) - 4, grid::btnH));
     }
-    if (showStage && r.getY() - topY < StageSpeakerPanel::kHeight + 2) r.removeFromTop (StageSpeakerPanel::kHeight + 2 - (r.getY() - topY));     // make room for the panel's height
+    if (showStage)      // the panel fills the space the left side leaves free, so the lists below never move down because of it (a little room is made only if the left side is very short)
+    {
+        const int minH = 100;
+        if (r.getY() - topY < minH) r.removeFromTop (minH - (r.getY() - topY));
+        stagePanel.setBounds (stagePanel.getBounds().withHeight (juce::jmin (StageSpeakerPanel::kHeight, r.getY() - topY)));
+    }
     r.removeFromTop (6);
     r.removeFromTop (2);
     // driver inputs (with ARM, monitoring and the preamp controls) on the left, driver outputs on the right
@@ -654,7 +660,7 @@ void MainComponent::showEditsMenu()
 {
     juce::PopupMenu m;
     int i = 1;
-    for (auto& e : app.project.edits) m.addItem (i++, "Open: " + e->name + "  (" + juce::String ((int) e->regions.size()) + " pieces)");
+    for (auto& e : app.project.edits) { std::set<juce::String> takesUsed; for (auto& rg : e->regions) takesUsed.insert (rg.takeId.toString()); const int nt = (int) takesUsed.size(); m.addItem (i++, "Open: " + e->name + "  (" + juce::String (nt) + (nt == 1 ? " Take)" : " Takes)")); }
     m.addSeparator();
     m.addItem (1000, "New empty edit");
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&editsButton), [this] (int r)

@@ -991,7 +991,7 @@ bool Project::fromVar (const var& root)
             w->id = juce::Uuid (v["id"].toString()); w->name = v["name"].toString();
             w->defaultLabel = v["defaultLabel"].toString(); w->nextNumber = (int) v["nextNumber"];
             if (v.hasProperty ("targetEdit")) w->targetEdit = juce::Uuid (v["targetEdit"].toString());
-            if (v.hasProperty ("markTake")) { w->markTake = juce::Uuid (v["markTake"].toString()); w->markIn = (double) v["markIn"]; w->markOut = (double) v["markOut"];
+            if (v.hasProperty ("markTake")) {      // (older projects had separate Bounce I / O flags in a take window: they are gone, the 1 / 2 flags do that job)
                                               w->cursorTake = juce::Uuid (v["cursorTake"].toString()); w->cursorSeconds = (double) v["cursorSeconds"]; }
             if (v.hasProperty ("editTake")) { w->editTake = juce::Uuid (v["editTake"].toString()); w->editIn = (double) v["editIn"]; w->editOut = (double) v["editOut"]; }
             w->overdub = (bool) v["overdub"];

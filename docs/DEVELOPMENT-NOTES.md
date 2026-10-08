@@ -477,3 +477,9 @@ Mixer window size, found from the log: Windows applied the window's biggest-size
 - `src/ui/StageMixer.h` (StageSpeakerPanel): one strip per CR input (fader -60..+10 dB, pan knob), a Playback strip and an Output strip. Shown only when a CR input or a TB pair exists; sideways scroll only if the strips do not fit.
 - Settings live on `Project` (`stageGainDb`, `stagePan` indexed by driver input, `stagePlaybackDb`, `stageOutputDb`) and are saved in the project file.
 - Engine: `AudioEngine::setStageMix` fills lock-free gains; the TB section of the audio callback applies them with a per-block ramp. Centre pan is unity on both sides, so 0 dB / centre is exactly the old behaviour. Several TB pairs share the one stage mix.
+
+## Take window flags, spectral windows, overlaps, ISRCs
+- Take window: the separate Bounce I / O flags are gone. P sets Edit IN / OUT (keys 1 / 2) round the whole selected take; the Edit IN / OUT flags can be dragged (snap to the take's start / end within 5 px). Bounce uses the 1 / 2 flags. Old projects' take-window I / O marks are not loaded.
+- Spectral Repair / De-click / Pitch curve windows: a click on the time ruler places a playhead (`cueT`); Play starts from it and the left / right zoom keeps it still on screen; down arrow zooms in vertically, up zooms out; R = Fix (Repair) / Audition (Pitch curve).
+- Mastering: a track may overlap the one before it (negative `gapSectors`, at most 20 s, never before the previous track's start). `computePq` keeps `pos` as the furthest end; `ddp::streamProgram` mixes the overlap (tail of the earlier track kept in a pending buffer). INDEX 00 is not set for an overlapped track. Dragging no longer swaps tracks.
+- Mastering waveform: 40 slices per second, drawn as one smooth filled outline. ISRC tool (button "ISRCs..." in the DDP view) fills country / registrant / year / first number, sequential or the same.

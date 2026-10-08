@@ -179,18 +179,20 @@ public:
     void zoomTime (double factor)
     {
         const double span = juce::jlimit (juce::jmin (0.05, duration), duration, (vt1 - vt0) * factor);
-        // around the playhead when it is running across the picture (it goes to the middle, as far as the start allows), otherwise around the middle
-        const double mid = (playT >= vt0 && playT <= vt1) ? playT : 0.5 * (vt0 + vt1);
-        setWindow (mid - 0.5 * span, span);
+        // the zoom keeps the playhead where it is on the screen: the one running across the picture, or else the one you placed by clicking the ruler;
+        // with neither in view it zooms around the middle
+        const double at = (playT >= vt0 && playT <= vt1) ? playT : (cueT >= vt0 && cueT <= vt1) ? cueT : 0.5 * (vt0 + vt1);
+        const double frac = (vt1 - vt0) > 0.0 ? (at - vt0) / (vt1 - vt0) : 0.5;
+        setWindow (at - frac * span, span);
     }
     void zoomCents (double factor) { kc = juce::jlimit (5.0, (double) PitchCurve::kRange, kc * factor); repaint(); }
-    /** Left / right = zoom in time (right in), up / down = zoom in cents (up in). */
+    /** Left / right = zoom out / in in time (right in), up / down = zoom out / in vertically (down in). */
     bool zoomKey (const juce::KeyPress& k)
     {
         if (k == juce::KeyPress::rightKey) { zoomTime (0.7); return true; }
         if (k == juce::KeyPress::leftKey)  { zoomTime (1.0 / 0.7); return true; }
-        if (k == juce::KeyPress::upKey)    { zoomCents (0.7); return true; }
-        if (k == juce::KeyPress::downKey)  { zoomCents (1.0 / 0.7); return true; }
+        if (k == juce::KeyPress::downKey)  { zoomCents (0.7); return true; }
+        if (k == juce::KeyPress::upKey)    { zoomCents (1.0 / 0.7); return true; }
         return false;
     }
     void setEnvelope (std::vector<float> e)
@@ -202,6 +204,8 @@ public:
     int count() const { return (int) curve.pts.size(); }
     /** The play position (seconds from the start of the marked part); < 0 hides it. */
     void setPlayhead (double t) { if (std::abs (t - playT) > 1.0e-6) { playT = t; repaint(); } }
+    /** The playhead you place by clicking the time ruler: where Play starts, and the point the zoom keys keep still. */
+    double playFrom() const { return cueT >= vt0 && cueT < vt1 ? cueT : vt0; }
     void clearPoints() { curve.pts.clear(); selected = -1; edited(); }
 
     void paint (juce::Graphics& g) override
@@ -273,6 +277,10 @@ public:
                 g.setColour (theme::wellDark); g.drawEllipse (c.x - r, c.y - r, 2 * r, 2 * r, 1.2f);
             }
         }
+        if (playT < 0.0 && cueT >= vt0 && cueT <= vt1)         // the playhead you placed on the ruler
+        {
+            g.setColour (theme::playhead); g.drawVerticalLine (xOf (cueT), (float) pl.getY(), (float) pl.getBottom());
+        }
         if (playT >= 0.0)                                  // the playhead runs across the line, with a dot on the line itself
         {
             const double t = juce::jlimit (0.0, duration, playT);
@@ -292,7 +300,7 @@ public:
     void mouseDown (const juce::MouseEvent& e) override
     {
         grabKeyboardFocus();
-        if (e.y < plot().getY() - 2 && e.x >= plot().getX()) { panning = true; panT0 = vt0; return; }          // the ruler
+        if (e.y < plot().getY() - 2 && e.x >= plot().getX()) { panning = true; panT0 = vt0; return; }          // the ruler: click to put the playhead there, drag to move the view
         int i = hit (e.getPosition());
         if (e.mods.isPopupMenu()) { if (i >= 0) removeAt (i); return; }
         if (i < 0)
@@ -316,7 +324,11 @@ public:
         p.t = juce::jlimit (juce::jmin (lo, hi), juce::jmax (lo, hi), toT (e.x)); p.cents = snapC (toC (e.y));       // whole cents; near the middle line it snaps to exactly 0
         say (p); edited();
     }
-    void mouseUp (const juce::MouseEvent&) override { dragging = false; panning = false; }
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (panning && e.getDistanceFromDragStart() < 4) { cueT = toT (e.x); repaint(); }                  // a click on the ruler (not a drag) places the playhead
+        dragging = false; panning = false;
+    }
     void mouseDoubleClick (const juce::MouseEvent& e) override { if (e.y < plot().getY() - 2) { resetView(); return; } const int i = hit (e.getPosition()); if (i >= 0) removeAt (i); }
     bool keyPressed (const juce::KeyPress& k) override
     {
@@ -352,7 +364,7 @@ private:
         span = juce::jlimit (juce::jmin (0.05, duration), duration, span);
         vt0 = juce::jlimit (0.0, juce::jmax (0.0, duration - span), t0); vt1 = vt0 + span; repaint();
     }
-    double duration = 1.0, vt0 = 0.0, vt1 = 1.0, kc = PitchCurve::kRange, panT0 = 0.0; std::vector<float> env; int selected = -1; bool dragging = false, panning = false; double playT = -1.0;
+    double cueT = -1.0, duration = 1.0, vt0 = 0.0, vt1 = 1.0, kc = PitchCurve::kRange, panT0 = 0.0; std::vector<float> env; int selected = -1; bool dragging = false, panning = false; double playT = -1.0;
 };
 
 class CurveDialog : public JobDialogBase
@@ -376,12 +388,12 @@ public:
         addChildComponent (pad); addChildComponent (padCap); pad.setVisible (ctx.allowPad); padCap.setVisible (ctx.allowPad);
         for (auto* b : { &auditionBtn, &playBtn, &stopBtn, &revertBtn, &acceptBtn, &closeBtn, &resetBtn }) addAndMakeVisible (b);
         addAndMakeVisible (loopBtn); addAndMakeVisible (hearToggle);
-        playBtn.setTooltip ("Plays the part you can see (left / right arrows zoom in and out in time, up / down in cents; drag the ruler to move) with the sound as it is now: the original until you Preview, then the corrected sound if 'Hear corrected' is lit. With Loop lit it goes round and round. Key: Space");
+        playBtn.setTooltip ("Plays the part you can see (left / right arrows zoom in and out in time, down / up zoom in / out in cents; click the ruler to place the playhead, drag it to move; R = Audition) with the sound as it is now: the original until you Preview, then the corrected sound if 'Hear corrected' is lit. With Loop lit it goes round and round. Key: Space");
         hearToggle.setTooltip ("Lit: you hear the CORRECTED sound. Off: you hear the ORIGINAL. Click it while playing to switch at once and hear the difference, without touching the line. (Available after Preview.)");
         hearToggle.onClick = [this] { hearChanged(); };
         loopBtn.setTooltip ("Repeat the marked part over and over until you press Stop");
         loopBtn.onClick = [this] { const bool on = loopBtn.getToggleState(); if (! playing()) return; if (on) { if (ctx.play) ctx.play (view.visT0(), view.visT1(), true); } else if (ctx.setLooping) ctx.setLooping (false); };
-        playBtn.onClick = [this] { if (ctx.stop) ctx.stop(); if (ctx.play) ctx.play (view.visT0(), view.visT1(), loopBtn.getToggleState()); };
+        playBtn.onClick = [this] { if (ctx.stop) ctx.stop(); if (ctx.play) ctx.play (view.playFrom(), view.visT1(), loopBtn.getToggleState()); };
         auditionBtn.setColour (juce::TextButton::buttonColourId, theme::accent);
         auditionBtn.setButtonText ("Preview");
         auditionBtn.setTooltip ("Calculates the corrected sound (this takes a moment) and plays it. Then use 'Hear corrected' to switch between the corrected and the original sound. Nothing is final until you press Accept.");
@@ -495,7 +507,7 @@ private:
                     {
                         self->tentative = true; self->stale = false; self->corrected = true;
                         self->hearToggle.setToggleState (true, juce::dontSendNotification);
-                        if (self->ctx.play) self->ctx.play (self->view.visT0(), self->view.visT1(), self->loopBtn.getToggleState());
+                        if (self->ctx.play) self->ctx.play (self->view.playFrom(), self->view.visT1(), self->loopBtn.getToggleState());
                         self->status.setText ("Playing the corrected sound.  'Hear corrected' switches to the original and back; Accept keeps it, Revert goes back, or change the line and Preview again.", juce::dontSendNotification);
                     }
                     else self->status.setText ("The audio changed while it was being calculated, so nothing was changed. Please try again.", juce::dontSendNotification);
@@ -534,7 +546,12 @@ public:
     {
         if (k == juce::KeyPress::spaceKey)                                      // Space: play the marked part, or stop
         {
-            if (loaded && ! running) { if (playing()) { if (ctx.stop) ctx.stop(); } else if (ctx.play) ctx.play (view.visT0(), view.visT1(), loopBtn.getToggleState()); }
+            if (loaded && ! running) { if (playing()) { if (ctx.stop) ctx.stop(); } else if (ctx.play) ctx.play (view.playFrom(), view.visT1(), loopBtn.getToggleState()); }
+            return true;
+        }
+        if ((k.getTextCharacter() == 'r' || k.getTextCharacter() == 'R') && ! k.getModifiers().isAnyModifierKeyDown())      // R: audition the line as it is
+        {
+            if (auditionBtn.isEnabled()) auditionBtn.triggerClick();
             return true;
         }
         return view.zoomKey (k);
@@ -598,6 +615,8 @@ public:
     void clearSelection() { hasSel = false; repaint(); if (onSelection) onSelection(); }
     /** Seconds from the start of the area; < 0 hides the playhead. */
     void setPlayhead (double t) { if (std::abs (t - playT) > 1.0e-6) { playT = t; repaint(); } }
+    /** The playhead you place by clicking the time ruler: where Play starts, and the point the zoom keys keep still. */
+    double playFrom() const { return cueT >= vt0 && cueT < vt1 ? cueT : vt0; }
 
     // ---- the view: which part of the time is shown (this is what Play plays), which pitches, and how the pitches are spread up the picture
     double visT0() const { return vt0; }
@@ -607,9 +626,11 @@ public:
     void zoomTime (double factor)
     {
         const double span = juce::jlimit (juce::jmin (0.05, duration), duration, (vt1 - vt0) * factor);
-        // around the playhead when it is running across the picture (it goes to the middle, as far as the start allows), otherwise around the middle
-        const double mid = (playT >= vt0 && playT <= vt1) ? playT : 0.5 * (vt0 + vt1);
-        setWindow (mid - 0.5 * span, span);
+        // the zoom keeps the playhead where it is on the screen: the one running across the picture, or else the one you placed by clicking the ruler;
+        // with neither in view it zooms around the middle
+        const double at = (playT >= vt0 && playT <= vt1) ? playT : (cueT >= vt0 && cueT <= vt1) ? cueT : 0.5 * (vt0 + vt1);
+        const double frac = (vt1 - vt0) > 0.0 ? (at - vt0) / (vt1 - vt0) : 0.5;
+        setWindow (at - frac * span, span);
     }
     void zoomFreq (double factor)
     {
@@ -620,13 +641,13 @@ public:
     void panFreq (double logShift) { setFreqWindow (std::log (fLo) + logShift, std::log (fHi / fLo)); }
     /** 0 = pitch spread evenly (linear), 1 = every octave the same height (musical); in between is a blend. */
     void setScale (double w) { warp = juce::jlimit (0.0, 1.0, w); dirty = true; repaint(); }
-    /** Left / right = zoom in time (right in), up / down = zoom in pitch (up in). */
+    /** Left / right = zoom out / in in time (right in), up / down = zoom out / in vertically (down in). */
     bool zoomKey (const juce::KeyPress& k)
     {
         if (k == juce::KeyPress::rightKey) { zoomTime (0.7); note(); return true; }
         if (k == juce::KeyPress::leftKey)  { zoomTime (1.0 / 0.7); note(); return true; }
-        if (k == juce::KeyPress::upKey)    { zoomFreq (0.7); return true; }
-        if (k == juce::KeyPress::downKey)  { zoomFreq (1.0 / 0.7); return true; }
+        if (k == juce::KeyPress::downKey)  { zoomFreq (0.7); return true; }
+        if (k == juce::KeyPress::upKey)    { zoomFreq (1.0 / 0.7); return true; }
         return false;
     }
     /** The round colour control (bottom left): each step is another colour map and another range of levels, so quiet noises show up. */
@@ -711,6 +732,11 @@ public:
                 g.setColour (juce::Colour (0x44ffd24a)); g.fillRect (r);
                 g.setColour (juce::Colour (0xffffd24a)); g.drawRect (r, 2);
             }
+            if (playT < 0.0 && cueT >= vt0 && cueT <= vt1 && duration > 0.0)          // the playhead you placed on the ruler
+            {
+                const int x = tToX (cueT, plot);
+                g.setColour (theme::playhead); g.fillRect (x - 1, plot.getY(), 2, plot.getHeight());
+            }
             if (playT >= 0.0 && duration > 0.0 && playT >= vt0 && playT <= vt1)
             {
                 const int x = tToX (playT, plot);
@@ -784,6 +810,12 @@ public:
     {
         const auto m = mode; mode = Mode::none;
         if (m == Mode::knob && e.getDistanceFromDragStart() < 4) { setRoll (std::floor (rollPos + 0.5) + (e.mods.isRightButtonDown() || e.mods.isShiftDown() ? -1 : 1)); return; }
+        if (m == Mode::pan && e.getDistanceFromDragStart() < 4)                  // a click (not a drag) on the time ruler puts the playhead there
+        {
+            const auto pl = plotArea();
+            cueT = juce::jlimit (0.0, duration, vt0 + (double) (e.x - pl.getX()) / (double) juce::jmax (1, pl.getWidth()) * (vt1 - vt0));
+            repaint(); return;
+        }
         if (m == Mode::pan || m == Mode::pitchPan) { note(); return; }
         if (m != Mode::select && m != Mode::resize) return;
         if (selT1() - selT0() < 0.002) hasSel = false;
@@ -856,7 +888,7 @@ private:
     juce::Rectangle<int> plotArea() const { return getLocalBounds().withTrimmedLeft (46).withTrimmedTop (22).withTrimmedBottom (30); }
     juce::Rectangle<int> rulerArea() const { auto pl = plotArea(); return { pl.getX(), 0, pl.getWidth(), pl.getY() }; }
     juce::Rectangle<int> knobArea() const { return { 8, getHeight() - 28, 24, 24 }; }
-    void note() { if (onNote) onNote ("Showing " + juce::String (vt0, 2) + " - " + juce::String (vt1, 2) + " s (Play plays this part).  Left / right arrows zoom in time, up / down in pitch; drag the ruler to move; double-click the ruler to see it all."); }
+    void note() { if (onNote) onNote ("Showing " + juce::String (vt0, 2) + " - " + juce::String (vt1, 2) + " s (Play plays this part).  Right / left arrows zoom in / out in time, down / up in pitch; click the ruler to place the playhead, drag it to move; double-click the ruler to see it all."); }
     void setWindow (double t0, double span)
     {
         span = juce::jlimit (juce::jmin (0.05, duration), duration, span);
@@ -947,7 +979,7 @@ private:
     double vt0 = 0.0, vt1 = 1.0, fLo = kMinHz, fHi = 20000.0, warp = 1.0;
     int preset = 0; double rollPos = 0.0, rollStart = 0.0; Mode mode = Mode::none; double panT0 = 0.0, panF = kMinHz;
     std::array<juce::Colour, 256> lut;
-    bool hasSel = false; juce::Point<double> a, b; double playT = -1.0;
+    bool hasSel = false; juce::Point<double> a, b; double playT = -1.0, cueT = -1.0;
     bool showSurround = false; double surroundPct = 100.0; int surroundDir = 0; double surroundAfter = 0.5;
 };
 
@@ -993,7 +1025,7 @@ public:
         hearBox.addItem ("Original", 1); hearBox.addItem ("Fixed (after Fix)", 2); hearBox.setSelectedId (1, juce::dontSendNotification);
         hearBox.setTooltip ("Which sound Play plays: the audio as it is, or the audio with the repair applied (available after you press Fix). Press Play while a loop runs to hear the other one.");
         playBtn.setColour (juce::TextButton::buttonColourId, theme::accent);
-        playBtn.setTooltip ("Plays the part of the picture you can see (zoom in with the left / right arrows to play a shorter piece, zoom out to hear more), through the mixers, with a playhead on the picture. No repair is needed: use it to listen for what has to be mended. Key: Space");
+        playBtn.setTooltip ("Plays the part of the picture you can see, from the red playhead if you have clicked the time ruler to place one (zoom in with the left / right arrows to play a shorter piece, zoom out to hear more), through the mixers, with a playhead on the picture. No repair is needed: use it to listen for what has to be mended. Key: Space");
         loopBtn.setTooltip ("Repeat what is playing until you press Stop");
         stopBtn.setTooltip ("Stops playing");
         playBtn.onClick = [this] { playPressed(); };
@@ -1043,8 +1075,8 @@ public:
                     self->origSpec = std::make_shared<MergedSpectrogram> (*spec);
                     self->view.setData (std::move (*spec), secs);
                     self->status.setText (self->declickOnly
-                        ? "Press Space (or Play) to listen to what is in view (left / right arrows zoom in time, up / down in pitch, drag the ruler to move). Clicks show as thin vertical lines. Drag a box to limit the search to that stretch of time (drag its edges to resize it), or leave it to search everything. Set the sensitivity and press Fix, then Play to listen; Undo if it did not work. Write back to file when you are happy.  Double-click the picture to clear the box."
-                        : "Press Space (or Play) to listen to what is in view (left / right arrows zoom in time, up / down in pitch, drag the ruler to move). Drag a box around the noise (drag its edges or corners to resize it), set the controls, then press Fix, then Play to listen. Undo if it did not work; or draw a box round the next problem and Fix again (the earlier fixes stay). Write back to file when you are happy.  Double-click the picture to clear the box.", juce::dontSendNotification);
+                        ? "Press Space (or Play) to listen to what is in view (left / right arrows zoom in time, down / up zoom in / out in pitch, click the ruler to place the playhead, drag it to move; R = Fix). Clicks show as thin vertical lines. Drag a box to limit the search to that stretch of time (drag its edges to resize it), or leave it to search everything. Set the sensitivity and press Fix, then Play to listen; Undo if it did not work. Write back to file when you are happy.  Double-click the picture to clear the box."
+                        : "Press Space (or Play) to listen to what is in view (left / right arrows zoom in time, down / up zoom in / out in pitch, click the ruler to place the playhead, drag it to move; R = Fix). Drag a box around the noise (drag its edges or corners to resize it), set the controls, then press Fix, then Play to listen. Undo if it did not work; or draw a box round the next problem and Fix again (the earlier fixes stay). Write back to file when you are happy.  Double-click the picture to clear the box.", juce::dontSendNotification);
                     self->scanned = true; self->refreshControls();
                 });
     }
@@ -1098,6 +1130,11 @@ protected:
             if (scanned && ! running) { if (isPlayingNow()) { if (ctx.stop) ctx.stop(); } else playPressed(); }
             return true;
         }
+        if ((k.getTextCharacter() == 'r' || k.getTextCharacter() == 'R') && ! k.getModifiers().isAnyModifierKeyDown())      // R: do the fix with the settings as they are
+        {
+            if (previewBtn.isEnabled()) preview();
+            return true;
+        }
         if (scanned && view.zoomKey (k)) return true;                           // arrows: right / left zoom in / out in time, up / down in pitch
         return false;
     }
@@ -1142,7 +1179,7 @@ private:
     /** What is played: the part of the picture that is in view (zoom in to hear less, out to hear more), not just the box. */
     void playRange()
     {
-        if (ctx.play) ctx.play (view.visT0(), juce::jmin (seconds(), view.visT1()), loopBtn.getToggleState());
+        if (ctx.play) ctx.play (view.playFrom(), juce::jmin (seconds(), view.visT1()), loopBtn.getToggleState());
     }
     void playOriginal()
     {

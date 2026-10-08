@@ -1,3 +1,4 @@
+#include <limits>
 #include "Ddp.h"
 #include <map>
 
@@ -63,7 +64,6 @@ juce::String streamProgram (const PqLayout& L, const std::vector<juce::File>& fi
     const double totalSectors = juce::jmax (1, L.leadOut - fromSector);
     juce::int64 skip = (juce::int64) fromSector * kSamplesPerSector;
     int doneSectors = 0;
-    std::vector<juce::int16> zeros ((size_t) kSamplesPerSector * 64 * 2, 0);
     bool failed = false;
     auto emit = [&] (const juce::int16* d, int n)
     {
@@ -72,49 +72,76 @@ juce::String streamProgram (const PqLayout& L, const std::vector<juce::File>& fi
         if (! sink (d + off * 2, n - off)) failed = true;
         return ! failed;
     };
-    auto silence = [&] (juce::int64 frames)
+    auto report = [&] { if (progress != nullptr) progress->store ((float) juce::jlimit (0.0, 1.0, doneSectors / totalSectors)); };
+    // The programme is written in order. A track may start before the one before it has finished (an overlap, set by dragging a track back in the PQ editor):
+    // the part of the earlier track that runs past the start of the next one is kept in 'pend' and mixed into the next track's first seconds.
+    const juce::int64 SPS = kSamplesPerSector;
+    juce::int64 cursor = 0;                                        // frames written so far, counted from the start of the disc
+    std::vector<float> pend; size_t pendOff = 0;                   // what is waiting to be mixed in, as left / right pairs, for the frames from 'cursor' on
+    std::vector<juce::int16> pcm ((size_t) kChunkFrames * 2);
+    auto pendFrames = [&] { return (juce::int64) ((pend.size() - pendOff) / 2); };
+    auto emitMixed = [&] (const float* src, int n) -> bool         // writes n frames at the cursor: the waiting audio, plus 'src' (null = nothing more)
     {
-        while (frames > 0 && ! failed)
+        const juce::int64 pf = pendFrames();
+        for (int k = 0; k < n; ++k)
         {
-            const int n = (int) juce::jmin (frames, (juce::int64) kSamplesPerSector * 64);
-            if (! emit (zeros.data(), n)) return false;
-            frames -= n;
+            float l = src != nullptr ? src[(size_t) k * 2] : 0.0f, r = src != nullptr ? src[(size_t) k * 2 + 1] : 0.0f;
+            if (k < pf) { l += pend[pendOff + (size_t) k * 2]; r += pend[pendOff + (size_t) k * 2 + 1]; }
+            pcm[(size_t) k * 2]     = (juce::int16) juce::jlimit (-32768, 32767, (int) std::lrintf (l * 32768.0f));
+            pcm[(size_t) k * 2 + 1] = (juce::int16) juce::jlimit (-32768, 32767, (int) std::lrintf (r * 32768.0f));
+        }
+        pendOff += (size_t) juce::jmin ((juce::int64) n, pf) * 2;
+        if (pendOff > 4000000) { pend.erase (pend.begin(), pend.begin() + (std::ptrdiff_t) pendOff); pendOff = 0; }
+        cursor += n;
+        return emit (pcm.data(), n);
+    };
+    auto addPending = [&] (const float* src, int n, juce::int64 at)      // puts n frames that belong from frame 'at' on into the waiting audio
+    {
+        const size_t rel = (size_t) (at - cursor);
+        if (pend.size() - pendOff < (rel + (size_t) n) * 2) pend.resize (pendOff + (rel + (size_t) n) * 2, 0.0f);
+        for (int k = 0; k < n; ++k) { pend[pendOff + (rel + (size_t) k) * 2] += src[(size_t) k * 2]; pend[pendOff + (rel + (size_t) k) * 2 + 1] += src[(size_t) k * 2 + 1]; }
+    };
+    auto runTo = [&] (juce::int64 target) -> bool                  // writes up to frame 'target': the waiting audio, then silence
+    {
+        while (cursor < target && ! failed)
+        {
+            const int n = (int) juce::jmin ((juce::int64) kChunkFrames, target - cursor);
+            if (! emitMixed (nullptr, n)) return false;
         }
         return ! failed;
     };
-    auto report = [&] { if (progress != nullptr) progress->store ((float) juce::jlimit (0.0, 1.0, doneSectors / totalSectors)); };
-    int pos = 0;
+    juce::int64 furthest = 0;
     for (size_t i = 0; i < L.tracks.size(); ++i)
     {
         const auto& t = L.tracks[i];
-        if (! silence ((juce::int64) (t.audioStart - pos) * kSamplesPerSector)) return "Cannot write the output.";
-        doneSectors += juce::jmax (0, t.audioStart - pos);
+        const juce::int64 startS = (juce::int64) t.audioStart * SPS;
+        const juce::int64 nextStart = i + 1 < L.tracks.size() ? (juce::int64) L.tracks[i + 1].audioStart * SPS : std::numeric_limits<juce::int64>::max();
+        if (! runTo (startS)) return "Cannot write the output.";
+        doneSectors = juce::jmax (doneSectors, t.audioStart); report();
         std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (files[i]));
         if (r == nullptr) return "Cannot read " + files[i].getFullPathName();
         if (std::abs (r->sampleRate - 44100.0) > 0.5 || r->numChannels != 2) return files[i].getFileName() + " is not 44.1 kHz stereo.";
         if (r->bitsPerSample != 16 || r->usesFloatingPointData) return files[i].getFileName() + " is not 16 bit (a disc master is always 44.1 kHz, 16 bit).";
         if (r->lengthInSamples != t.frames) return files[i].getFileName() + " has a different length than the layout expects.";
         juce::AudioBuffer<float> buf (2, kChunkFrames);
-        std::vector<juce::int16> pcm ((size_t) kChunkFrames * 2);
+        std::vector<float> il ((size_t) kChunkFrames * 2);
         for (juce::int64 p = 0; p < t.frames; p += kChunkFrames)
         {
             if (cancel != nullptr && cancel->load()) return "Cancelled.";
             const int n = (int) juce::jmin ((juce::int64) kChunkFrames, t.frames - p);
             r->read (&buf, 0, n, p, true, true);
             const float* l = buf.getReadPointer (0); const float* rr = buf.getReadPointer (1);
-            for (int k = 0; k < n; ++k)
-            {
-                pcm[(size_t) k * 2]     = (juce::int16) juce::jlimit (-32768, 32767, (int) std::lrintf (l[k] * 32768.0f));
-                pcm[(size_t) k * 2 + 1] = (juce::int16) juce::jlimit (-32768, 32767, (int) std::lrintf (rr[k] * 32768.0f));
-            }
-            if (! emit (pcm.data(), n)) return "Cannot write the output.";
-            doneSectors = t.audioStart + (int) juce::jmin ((juce::int64) t.lengthSectors, (p + n) / kSamplesPerSector);
-            report();
+            for (int k = 0; k < n; ++k) { il[(size_t) k * 2] = l[k]; il[(size_t) k * 2 + 1] = rr[k]; }
+            const juce::int64 gp = startS + p;
+            const int nHere = (int) juce::jlimit ((juce::int64) 0, (juce::int64) n, nextStart - gp);       // the part before the next track begins is written now
+            if (nHere > 0 && ! emitMixed (il.data(), nHere)) return "Cannot write the output.";
+            if (nHere < n) addPending (il.data() + (size_t) nHere * 2, n - nHere, gp + nHere);              // the rest runs under the next track
+            doneSectors = juce::jmax (doneSectors, t.audioStart + (int) juce::jmin ((juce::int64) t.lengthSectors, (p + n) / kSamplesPerSector)); report();
         }
-        if (! silence ((juce::int64) t.lengthSectors * kSamplesPerSector - t.frames)) return "Cannot write the output.";
-        pos = t.endSector; doneSectors = pos; report();
+        furthest = juce::jmax (furthest, (juce::int64) t.endSector * SPS);
     }
-    if (L.leadOut > pos && ! silence ((juce::int64) (L.leadOut - pos) * kSamplesPerSector)) return "Cannot write the output.";      // the End of CD flag was dragged later: silence up to it
+    if (! runTo (juce::jmax ((juce::int64) L.leadOut * SPS, juce::jmax (furthest, cursor + pendFrames())))) return "Cannot write the output.";      // what is left, and silence up to the End of CD flag
+    doneSectors = L.leadOut; report();
     return {};
 }
 

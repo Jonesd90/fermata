@@ -107,7 +107,7 @@ private:
     juce::Label gapCaption, discCaption, clipCaption, pqCaption, warnings, ddpStatus, allGapsCaption, ddpFolderCaption, ddpPeakUnit;
     juce::TextEditor gapEditor, ddpFolderEditor, ddpPeakEditor;
     juce::ComboBox allGapsBox;
-    juce::TextButton autoPq { "Auto PQ" }, zoomIn { "+" }, zoomOut { "-" }, zoomFit { "Fit" }, ddpUp { "Move earlier" }, ddpDown { "Move later" },
+    juce::TextButton autoPq { "Auto PQ" }, isrcBtn { "ISRCs..." }, zoomIn { "+" }, zoomOut { "-" }, zoomFit { "Fit" }, ddpUp { "Move earlier" }, ddpDown { "Move later" },
                      ddpChoose { "Choose folder..." }, ddpExport { "Make DDP" }, ddpShow { "Show in folder" }, ddpCheck { "Check DDP" };
     juce::ToggleButton preToggle { "Pre-emphasis" }, copyToggle { "Copy permitted" }, zipToggle { "Also make a .zip" }, cueToggle { "Also make a WAV + CUE sheet" },
                        ddpNorm { "Set the peak level to" }, ddpTogether { "One gain for the whole disc" };
@@ -125,6 +125,7 @@ private:
     void playGap();
     void zoomKey (bool in);
     void autoPqInPlace();
+    void openIsrcTool();
     void centrePlayhead();
     void updateTimeLabel();
     void pollPlayback();

@@ -24,8 +24,6 @@ private:
     void timerCallback() override;
     TakeWindowDef* def() const { return app.project.findTakeWindow (windowId); }
 
-    void markIn();
-    void markOut();
     void markWholeSelected();
     void editMarkIn();
     void editMarkOut();
@@ -60,8 +58,8 @@ private:
     bool updatingSendBox = false;
     juce::TextButton armAllButton { "Arm all" }, armNoneButton { "Arm none" };
     juce::TextButton recordButton { "REC  [R]" }, zoomInButton { "+" }, zoomOutButton { "-" },
-                     playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, playMarkedButton { "Play marked" }, inButton { "Bounce IN [I]" },
-                     outButton { "Bounce OUT [O]" }, editInButton { "Edit IN [1]" }, editOutButton { "Edit OUT [2]" },
+                     playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, playMarkedButton { "Play marked" },
+                     editInButton { "Edit IN [1]" }, editOutButton { "Edit OUT [2]" },
                      toEditButton { "To edit [3]" }, toEditAtButton { "To playhead [4]" }, editWindowButton { "Edit window" }, bounceButton { "Bounce Out..." },
                      importButton { "Import takes..." }, pitchButton { "Pitch..." }, pitchCurveButton { "Pitch curve..." }, repairButton { "Spectral Repair..." }, declickButton { "De-Click..." }, exportProcButton { "Export for Processing..." }, undoFixButton { "Undo fix" }, barSearchButton { "Search for bar" };
     juce::ToggleButton overdubBox { "Overdub" }, loopToggle { "Loop [L]" };

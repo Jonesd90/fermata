@@ -50,11 +50,11 @@ In a Take Window, click the ruler to place the playhead, mark the part you want 
 | 1, 2 | Mark the edit IN / OUT |
 | 3 / 4 | Send the marked part to the end of the edit / to its playhead |
 | 5 | Clear the edit marks |
-| I, O | Bounce IN / OUT marks |
+
 | M | Open / close the processing mixer |
 | B | Open / close the meter bridge |
 | C | Centre the window on the playhead |
-| P | Mark the whole selected take |
+| P | Put the 1 / 2 flags round the whole selected take (sample-exact) |
 | D | Mark a take as a dud |
 | L | Loop |
 | Home / End | Go to the start / end |

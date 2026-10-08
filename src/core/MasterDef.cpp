@@ -121,7 +121,7 @@ void MasteringDef::fromVar (const var& root)
             for (auto& v : *a)
             {
                 DdpClip c; c.editId = idOf (v["edit"]); c.include = v["include"].isVoid() ? true : (bool) v["include"];
-                c.gapSectors = juce::jmax (0, v["gap"].isVoid() ? 150 : (int) v["gap"]);
+                c.gapSectors = juce::jmax (-kMaxOverlapSectors, v["gap"].isVoid() ? 150 : (int) v["gap"]);
                 c.title = v["title"].toString(); c.performer = v["performer"].toString(); c.songwriter = v["songwriter"].toString();
                 c.composer = v["composer"].toString(); c.arranger = v["arranger"].toString(); c.isrc = v["isrc"].toString();
                 c.preEmphasis = (bool) v["pre"]; c.copyPermitted = (bool) v["copy"];
@@ -149,7 +149,7 @@ juce::int64 convertedLength (juce::int64 samples, double fromRate, double toRate
 PqLayout computePq (const DdpDisc& disc, const std::vector<juce::int64>& frames)
 {
     PqLayout L;
-    int pos = 0, number = 0, prevIndex01 = 0;
+    int pos = 0, number = 0, prevIndex01 = 0, prevAudioStart = 0;
     for (size_t i = 0; i < disc.clips.size(); ++i)
     {
         const auto& c = disc.clips[i];
@@ -159,8 +159,10 @@ PqLayout computePq (const DdpDisc& disc, const std::vector<juce::int64>& frames)
         ++number;
         PqTrack t;
         t.clipIndex = (int) i; t.editId = c.editId; t.number = number; t.frames = fr;
-        t.gapSectors = number == 1 ? juce::jmax (150, c.gapSectors) : juce::jmax (0, c.gapSectors);
+        // a track after the first may overlap the one before it (a negative pause): never by more than 20 s, and never starting before the one before it does
+        t.gapSectors = number == 1 ? juce::jmax (150, c.gapSectors) : juce::jmax (-kMaxOverlapSectors, c.gapSectors);
         t.audioStart = pos + t.gapSectors;
+        if (number > 1 && t.audioStart <= prevAudioStart) { t.audioStart = prevAudioStart + 1; t.gapSectors = t.audioStart - pos; }
         t.lengthSectors = (int) ((fr + kSamplesPerSector - 1) / kSamplesPerSector);
         t.endSector = t.audioStart + t.lengthSectors;
         // INDEX 01 normally sits where the audio starts; it can be moved (earlier = the player starts in the pause, later = it skips the first bit)
@@ -175,8 +177,8 @@ PqLayout computePq (const DdpDisc& disc, const std::vector<juce::int64>& frames)
             const int i0 = juce::jlimit (prevIndex01 + 1, juce::jmax (prevIndex01 + 1, t.index01), t.audioStart + c.index00Shift);
             t.index00 = i0 < t.index01 ? i0 : -1;
         }
-        prevIndex01 = t.index01;
-        pos = t.endSector;
+        prevIndex01 = t.index01; prevAudioStart = t.audioStart;
+        pos = juce::jmax (pos, t.endSector);
         L.tracks.push_back (t);
     }
     L.leadOut = L.tracks.empty() ? 150 : pos + juce::jmax (0, disc.endPadSectors);
@@ -187,6 +189,7 @@ PqLayout computePq (const DdpDisc& disc, const std::vector<juce::int64>& frames)
     {
         const auto& c = disc.clips[(size_t) t.clipIndex];
         const auto nm = "Track " + juce::String (t.number) + (c.title.isNotEmpty() ? " (" + c.title + ")" : juce::String());
+        if (t.number > 1 && t.gapSectors < 0) L.warnings.add (nm + " overlaps the track before it by " + juce::String ((double) -t.gapSectors / 75.0, 2) + " s: the two are mixed together on the disc.");
         if (t.lengthSectors < 300) L.warnings.add (nm + " is shorter than 4 seconds (the Red Book minimum).");
         if (! isValidIsrc (c.isrc)) L.warnings.add (nm + ": the ISRC is not in the form CC-XXX-YY-NNNNN.");
     }
