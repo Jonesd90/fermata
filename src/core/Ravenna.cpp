@@ -215,6 +215,17 @@ bool RavennaDevice::applyPath (juce::var& module, const juce::String& rel, const
         for (auto& p : value.getDynamicObject()->getProperties()) cur.getDynamicObject()->setProperty (p.name, p.value);
         return true;
     }
+    if (cur.getArray() != nullptr && value.getArray() != nullptr && cur.getArray()->size() == value.getArray()->size())     // a list of channels: merge channel by channel, so a field the device left out is kept
+    {
+        auto* ca = cur.getArray(); auto* va = value.getArray(); bool allObjects = true;
+        for (int k = 0; k < ca->size(); ++k) allObjects = allObjects && (*ca)[k].getDynamicObject() != nullptr && (*va)[k].getDynamicObject() != nullptr;
+        if (allObjects)
+        {
+            for (int k = 0; k < ca->size(); ++k)
+                for (auto& p : (*va)[k].getDynamicObject()->getProperties()) (*ca)[k].getDynamicObject()->setProperty (p.name, p.value);
+            return true;
+        }
+    }
     if (idx >= 0) { if (auto* a = parent.getArray()) { if (idx < a->size()) a->set (idx, value); else return false; return true; } return false; }
     if (auto* o = parent.getDynamicObject()) { o->setProperty (juce::Identifier (key), value); return true; }
     return false;
@@ -278,7 +289,18 @@ void RavennaDevice::handleSettings (const juce::var& data)
     const auto path = data["path"].toString();
     const auto& value = data["value"];
     bool changed = false;
-    if (path != "$" && path.containsIgnoreCase ("channels") && value.getDynamicObject() != nullptr)          // for the log: every preamp change reported by a device
+    if (path != "$" && path.containsIgnoreCase ("channels") && value.getArray() != nullptr)                   // for the log: a whole list of channels reported (the first two)
+    {
+        juce::String t;
+        for (int k = 0; k < juce::jmin (2, value.getArray()->size()); ++k)
+        {
+            const auto& c = (*value.getArray())[k];
+            t << " [" << k << "] inputMode=" << (c.getDynamicObject() != nullptr && c.getDynamicObject()->hasProperty ("inputMode") ? c["inputMode"].toString() : juce::String ("missing"))
+              << " micGain=" << c["micGain"].toString() << " lineGain=" << c["lineGain"].toString();
+        }
+        juce::Logger::writeToLog ("Device " + hostName + " REPORTED LIST: " + path + t);
+    }
+    else if (path != "$" && path.containsIgnoreCase ("channels") && value.getDynamicObject() != nullptr)          // for the log: every preamp change reported by a device
         juce::Logger::writeToLog ("Device " + hostName + " REPORTED: " + path + " = " + juce::JSON::toString (value, true));
     {
         const juce::ScopedLock sl (lock);
@@ -479,6 +501,7 @@ bool RavennaPreampDriver::apply (int inputIndex, const PreampSettings& s)
     if (s.zHigh != h.zIn)      { o->setProperty ("z_in", s.zHigh); any = true; }
     juce::var v (o);
     if (! any) return true;
+    lastSentMs[inputIndex] = juce::Time::getMillisecondCounterHiRes();
     return d->dev->sendChannelFields (ch, v);
 }
 
@@ -508,14 +531,23 @@ void RavennaPreampDriver::hardwareChanged()
     juce::MessageManager::callAsync ([this, list, flag]
     {
         if (! *flag) return;
+        bool skipped = false;
         for (auto& p : *list)
         {
+            // the device's answer in the moment after this program changed the input may still show the OLD state: ignore it, and look again a moment later
+            auto sent = lastSentMs.find (p.first);
+            if (sent != lastSentMs.end() && juce::Time::getMillisecondCounterHiRes() - sent->second < 1200.0) { skipped = true; continue; }
             auto it = lastReported.find (p.first);
             const auto& a = p.second;
             if (it != lastReported.end() && it->second.gainDb == a.gainDb && it->second.phantom == a.phantom && it->second.line == a.line
                 && it->second.lowCut == a.lowCut && it->second.polarity == a.polarity && it->second.boost == a.boost && it->second.pad == a.pad && it->second.zHigh == a.zHigh) continue;
             lastReported[p.first] = a;
             if (onHardware) onHardware (p.first, a);
+        }
+        if (skipped && ! recheckPending)
+        {
+            recheckPending = true;
+            juce::Timer::callAfterDelay (1300, [this, flag] { if (! *flag) return; recheckPending = false; hardwareChanged(); });
         }
     });
 }

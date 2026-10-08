@@ -129,6 +129,8 @@ private:
     void hardwareChanged();
     std::vector<std::unique_ptr<Dev>> devs;
     std::map<int, PreampSettings> lastReported;       // message thread only
+    std::map<int, double> lastSentMs;                 // message thread only: when this program last changed an input (the device's answers in the next moment are not trusted)
+    bool recheckPending = false;
     std::shared_ptr<bool> alive = std::make_shared<bool> (true);
     struct Link { std::mutex m; RavennaPreampDriver* owner = nullptr; };       // lets a device thread call back safely while this object is being destroyed
     std::shared_ptr<Link> link = std::make_shared<Link>();
