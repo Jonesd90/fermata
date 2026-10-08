@@ -159,6 +159,7 @@ struct MixerState
 {
     juce::Uuid id;
     juce::String name { "Mixer" };
+    juce::Uuid editId = juce::Uuid::null();                // set: this is the mixer of one Edit (it plays only that Edit, and is made, named and removed with it)
     juce::Uuid mainBus = juce::Uuid::null();               // the Ext Bus designated as this mixer's main output (null or not found = the first Ext Bus)
     std::atomic<bool> monoCheck { false };                 // audition switch (not saved): the Ext bus outputs carry (L+R)/2 on both sides, to hear mono-compatibility problems
     std::atomic<int> ditherBits { 24 };                    // dither on this mixer's driver outputs: 0 = off, 24 or 16 bit TPDF (what the converter / next device keeps)

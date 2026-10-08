@@ -336,19 +336,25 @@ void DesignComponent::buildMixersPage()
     g.setRowCountProvider ([&p] { return (int) p.mixers.size(); });
     g.addColumn ({ "Mixer name", 260, GridEditor::Type::Text,
                    [&p] (int r) { return p.mixers[(size_t) r]->name; },
-                   [&p] (int r, const juce::String& v) { p.mixers[(size_t) r]->name = v; p.structureChanged(); }, {}, {} });
+                   [&p] (int r, const juce::String& v)
+                   {
+                       auto& mx = *p.mixers[(size_t) r];
+                       if (! mx.editId.isNull()) { if (auto* e = p.findEdit (mx.editId)) e->name = v; }      // an Edit's mixer carries its Edit's name
+                       mx.name = v; p.syncEditMixers(); p.structureChanged();
+                   }, {}, {} });
     g.addColumn ({ "Outputs (set on each Ext bus in the mixer)", 330, GridEditor::Type::ReadOnly, [&p] (int r) { return p.mixerOutputsText (*p.mixers[(size_t) r]); }, {}, {}, {} });
     mixersPage.addButton ("Add mixer", [this, &p]
     {
-        auto& m = p.addMixer ("Cue mixer " + juce::String ((int) p.mixers.size()));
+        auto& m = p.addMixer ("Cue mixer " + juce::String (p.cueEnd()));
         p.structureChanged();
         mixersPage.grid.refresh();
-        mixersPage.grid.selectRow ((int) p.mixers.size() - 1);
+        mixersPage.grid.selectRow (p.cueEnd() - 1);
     });
     auto remove = [this, &p] (int r)
     {
         if (r < 0 || r >= (int) p.mixers.size()) return;
         if (r == 0) { showError ("Mixers", "The processing mixer cannot be deleted. Only cue mixers can."); return; }
+        if (r >= p.cueEnd()) { showError ("Mixers", "This is the mixer of an Edit. It goes when the Edit goes; it cannot be deleted on its own."); return; }
         const auto id = p.mixers[(size_t) r]->id;
         confirmAsync ("Delete mixer", "Delete the mixer '" + p.mixers[(size_t) r]->name + "'?", "Delete",
                       [this, &p, id]
@@ -369,7 +375,7 @@ void DesignComponent::buildMixersPage()
         m.addItem ("Delete mixer", row > 0, false, [remove, row] { remove (row); });
     };
     mixersPage.note.setText ("Each mixer is completely independent: its own solos, mutes, levels, sends and plug-ins, and its own Ext buses with their own driver outputs "
-                             "- so different listeners can hear different mixes. The first mixer is the processing mixer and cannot be deleted; the others are cue mixers.", juce::dontSendNotification);
+                             "- so different listeners can hear different mixes. The first mixer is the processing mixer and cannot be deleted; the next ones are cue mixers. Every Edit also gets a mixer of its own (listed last): the Edit always plays through it, and the Mastering window bounces each piece through its own.", juce::dontSendNotification);
     mixersPage.note.setJustificationType (juce::Justification::topLeft);
 }
 } // namespace td

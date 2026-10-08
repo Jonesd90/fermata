@@ -96,6 +96,11 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
         const auto& segs = it.segments.empty() ? settings.segments : it.segments;
         if (! openReaders (segs)) return res;
         autoPlan = planForEdit (it.automationEdit.isNull() ? settings.automationEdit : it.automationEdit);
+        {
+            bool have = false;                                   // a piece may have a mixer of its own (an Edit's mixer); if it is gone, the chosen mixer is used
+            for (auto& m : shadow->mixers) have = have || m->id == it.mixerId;
+            engine->setOfflineTarget (have && ! it.mixerId.isNull() ? it.mixerId : settings.mixerId, settings.sources);
+        }
 
         std::vector<juce::File> finals, tmps;
         std::vector<std::unique_ptr<juce::AudioFormatWriter>> writers;

@@ -83,9 +83,15 @@ BounceComponent::BounceComponent (AppContext& a, const BounceContext& c)
     tailBox.setTooltip ("Seconds added after the audio (the file becomes this much longer). Silence goes through the mixer so reverb tails and plug-ins can ring out.");
 
     cap (mixerCaption, "Mixer whose settings are used:", true);
-    int i = 0;
-    for (auto& m : app.project.mixers) { mixerBox.addItem ((i == 0 ? "Processing mixer: " : "Cue mixer: ") + m->name, i + 1); ++i; }
-    mixerBox.setSelectedId (1, juce::dontSendNotification);
+    int i = 0, preset = 1;
+    const int ce = app.project.cueEnd();
+    for (auto& m : app.project.mixers)
+    {
+        mixerBox.addItem ((i == 0 ? "Processing mixer: " : i < ce ? "Cue mixer: " : "Edit mixer: ") + m->name, i + 1);
+        if (isEdit && m->editId == ctx.id) preset = i + 1;                // bouncing an Edit: its own mixer is the one to use
+        ++i;
+    }
+    mixerBox.setSelectedId (preset, juce::dontSendNotification);
     addAndMakeVisible (mixerBox);
 
     cap (sourcesCaption, "Outputs to bounce (every ticked output becomes its own stereo file):", true);

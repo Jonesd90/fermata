@@ -517,7 +517,7 @@ void MainComponent::timerCallback()
         sessionButton.setButtonText (app.sessionMode() ? "PRE-REC ON" : "Pre-Rec");
         repaint();
     }
-    for (int i = 0; i < auditionButtons.size() && (size_t) i + 1 < app.project.mixers.size(); ++i)
+    for (int i = 0; i < auditionButtons.size() && i + 1 < app.project.cueEnd(); ++i)
     {
         auto& m = *app.project.mixers[(size_t) i + 1];
         const bool on = app.isAuditioning (m.id);
@@ -659,7 +659,7 @@ void MainComponent::rebuildAuditionBar()
 {
     auditionButtons.clear();
     const auto& mx = app.project.mixers;
-    for (size_t i = 1; i < mx.size(); ++i)
+    for (size_t i = 1; i < (size_t) app.project.cueEnd(); ++i)
     {
         auto* b = auditionButtons.add (new juce::TextButton());
         const auto id = mx[i]->id;
@@ -683,14 +683,20 @@ void MainComponent::rebuildAuditionBar()
 void MainComponent::showMixersMenu()
 {
     juce::PopupMenu m;
-    int i = 1;
-    for (auto& mx : app.project.mixers) { m.addItem (i, "Open: " + mx->name + (i == 1 ? "   (processing mixer, key M)" : "   (cue mixer)")); ++i; }
+    const int ce = app.project.cueEnd();
+    for (int i = 0; i < ce; ++i) m.addItem (i + 1, "Open: " + app.project.mixers[(size_t) i]->name + (i == 0 ? "   (processing mixer, key M)" : "   (cue mixer)"));
+    if (ce < (int) app.project.mixers.size())
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Edit mixers (each Edit plays through its own)");
+        for (int i = ce; i < (int) app.project.mixers.size(); ++i) m.addItem (i + 1, "Open: " + app.project.mixers[(size_t) i]->name + "   (edit mixer)");
+    }
     m.addSeparator();
     m.addItem (1000, "New cue mixer");
-    if (app.project.mixers.size() > 1)
+    if (ce > 1)
     {
         juce::PopupMenu del;
-        for (size_t k = 1; k < app.project.mixers.size(); ++k) del.addItem (2000 + (int) k, app.project.mixers[k]->name);
+        for (int k = 1; k < ce; ++k) del.addItem (2000 + k, app.project.mixers[(size_t) k]->name);
         m.addSubMenu ("Delete a cue mixer", del);
     }
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&mixersButton), [this] (int r)
@@ -703,7 +709,7 @@ void MainComponent::showMixersMenu()
         }
         if (r == 1000)
         {
-            auto& mx = app.project.addMixer ("Cue mixer " + juce::String ((int) app.project.mixers.size()));
+            auto& mx = app.project.addMixer ("Cue mixer " + juce::String (app.project.cueEnd()));
             if (app.showMixer) app.showMixer (mx.id);
         }
         else if (r >= 1 && (size_t) r <= app.project.mixers.size() && app.showMixer)

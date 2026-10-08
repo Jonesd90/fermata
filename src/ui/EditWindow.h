@@ -52,7 +52,7 @@ private:
     juce::TextEditor nameEditor;
     juce::TextButton playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, trimButton { "Trim Window [T]" }, deleteButton { "Delete piece" },
                      leftButton { "Move earlier" }, rightButton { "Move later" }, endButton { "Next goes at end" },
-                     zoomInButton { "+" }, zoomOutButton { "-" }, bounceButton { "Bounce Out..." }, automationButton { "Automation" },
+                     zoomInButton { "+" }, zoomOutButton { "-" }, bounceButton { "Bounce Out..." }, mixerButton { "Edit Mixer" }, automationButton { "Automation" },
                      pitchButton { "Pitch..." }, pitchCurveButton { "Pitch curve..." }, repairButton { "Spectral Repair..." }, declickButton { "De-Click..." }, exportProcButton { "Export for Processing..." }, undoFixButton { "Undo fix" }, tracksButton { "Tracks..." }, importButton { "Import..." };
     juce::ToggleButton slipLeftToggle { "Slip Left" }, slipRightToggle { "Slip Right" }, loopToggle { "Loop [L]" };
     PlayheadModeButton playheadMode;

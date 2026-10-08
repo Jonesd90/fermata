@@ -1127,7 +1127,10 @@ MixerComponent::MixerComponent (AppContext& a, const juce::Uuid& id) : app (a), 
         auto* m = mixer();
         const auto t = nameEditor.getText().trim();
         if (m == nullptr || t.isEmpty() || t == m->name) { if (m != nullptr) nameEditor.setText (m->name, juce::dontSendNotification); return; }
+        if (! m->editId.isNull())                  // an Edit's mixer carries the name of its Edit: renaming one renames the other
+        { if (auto* e = app.project.findEdit (m->editId)) e->name = t; }
         m->name = t;
+        app.project.syncEditMixers();
         app.project.structureChanged();            // titles and menus pick the new name up
     };
     nameEditor.onReturnKey = commitName;
@@ -1293,7 +1296,7 @@ void MixerComponent::changeListenerCallback (juce::ChangeBroadcaster* source)
 void MixerComponent::updateAuditionButton()
 {
     auto* m = mixer();
-    const bool other = m != nullptr && ! app.isEngineerMixer (m->id);
+    const bool other = m != nullptr && ! app.isEngineerMixer (m->id) && m->editId.isNull();      // (an Edit's mixer is not a cue mixer: no audition, no delete)
     const bool on = m != nullptr && app.isAuditioning (m->id);
     auditionButton.setVisible (other);
     deleteButton.setVisible (other);

@@ -722,7 +722,11 @@ private:
 
     MixerState* mixerFor (const juce::Uuid& id) const
     {
-        if (id.isNull()) return app.project.mixers.empty() ? nullptr : app.project.mixers.front().get();
+        if (id.isNull())                                             // no mixer named: this Edit's own mixer (the processing mixer if it has none)
+        {
+            if (auto* own = app.project.mixerOfEdit (editId)) return own;
+            return app.project.mixers.empty() ? nullptr : app.project.mixers.front().get();
+        }
         for (auto& m : app.project.mixers) if (m->id == id) return m.get();
         return nullptr;
     }
@@ -958,10 +962,14 @@ private:
         m.addSubMenu ("Bus sends", sends, sends.getNumItems() > 0);
         m.addSubMenu ("Plug-in parameters", plugins, plugins.getNumItems() > 0);
         m.addSeparator();
-        for (size_t i = 0; i < app.project.mixers.size(); ++i)
         {
-            const auto& mx = *app.project.mixers[i];
-            mixers.addItem (100 + (int) i, mx.name + (i == 0 ? "  (default)" : ""), true, i == 0 ? s.mixer.isNull() : s.mixer == mx.id);
+            auto* own = app.project.mixerOfEdit (ed.id);
+            mixers.addItem (99, (own != nullptr ? own->name : juce::String ("Processing mixer")) + "  (this edit's mixer, default)", true, s.mixer.isNull());
+            for (int i = 0; i < app.project.cueEnd(); ++i)           // the processing mixer and the cue mixers (the other Edits' mixers are not offered)
+            {
+                const auto& mx = *app.project.mixers[(size_t) i];
+                mixers.addItem (100 + i, mx.name + (i == 0 ? "  (processing mixer)" : "  (cue mixer)"), true, s.mixer == mx.id);
+            }
         }
         m.addSubMenu ("Drives mixer", mixers);
         m.addSeparator();
@@ -977,7 +985,8 @@ private:
             else if (r == 2) sel.param = autoparam::pan;
             else if (r == 3) sel.param = autoparam::gain;
             else if (r >= 1000) { const auto i = (size_t) (r - 1000); if (i < keys.size()) sel.param = keys[i]; }
-            else if (r >= 100) { const auto i = (size_t) (r - 100); if (i < app.project.mixers.size()) sel.mixer = i == 0 ? juce::Uuid::null() : app.project.mixers[i]->id; }
+            else if (r == 99) sel.mixer = juce::Uuid::null();
+            else if (r >= 100) { const auto i = (size_t) (r - 100); if (i < app.project.mixers.size()) sel.mixer = app.project.mixers[i]->id; }
             else if (r == 5) { if (auto* l = e2->findLane (tid, sel.param, sel.mixer)) { l->pts.clear(); app.project.changed(); } }
             repaint();
         });
@@ -1157,7 +1166,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     nameEditor.setText (edit() ? edit()->name : "", false);
     auto commitEditName = [this]
     {
-        if (auto* e = edit()) if (nameEditor.getText().isNotEmpty() && e->name != nameEditor.getText()) { e->name = nameEditor.getText(); app.project.changed(); }
+        if (auto* e = edit()) if (nameEditor.getText().isNotEmpty() && e->name != nameEditor.getText()) { e->name = nameEditor.getText(); if (app.project.syncEditMixers()) app.project.structureChanged(); else app.project.changed(); }
     };
     nameEditor.onFocusLost = commitEditName;
     nameEditor.onReturnKey = [this, commitEditName] { commitEditName(); juce::Component::unfocusAllComponents(); };
@@ -1218,15 +1227,17 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     exportProcButton.onClick = [this] { fixtools::exportForProcessingEdit (app, editId, this); };
     undoFixButton.setTooltip ("Undo the last pitch correction, repair, de-click or export for processing (the original audio files were never touched)");
     undoFixButton.onClick = [this] { fixtools::undoLastFix (app); };
-    bounceButton.setTooltip ("Make a master file of this edit through the processing mixer (or another mixer)");
+    bounceButton.setTooltip ("Make a master file of this edit through its own mixer (or another mixer)");
     bounceButton.setColour (juce::TextButton::buttonColourId, theme::accent);
+    mixerButton.setTooltip ("Opens the mixer of this edit. The edit always plays through it (and is bounced through it), so each piece can have its own mix. It started as a copy of the processing mixer");
+    mixerButton.onClick = [this] { if (auto* m = app.project.mixerOfEdit (editId)) { if (app.showMixer) app.showMixer (m->id); } };
     zoomInButton.onClick = [this] { timeline->zoom (1.5); };
     zoomOutButton.onClick = [this] { timeline->zoom (1.0 / 1.5); };
     slipLeftToggle.setTooltip ("When you slide a piece, every piece BEFORE it slides with it (off: they stay where they are).");
     slipRightToggle.setTooltip ("When you slide a piece, every piece AFTER it slides with it (off: they stay where they are).");
     slipLeftToggle.onClick  = [this] { timeline->slipLeft = slipLeftToggle.getToggleState(); };
     slipRightToggle.onClick = [this] { timeline->slipRight = slipRightToggle.getToggleState(); };
-    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &automationButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &exportProcButton, &undoFixButton,
+    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &automationButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &exportProcButton, &undoFixButton,
                                                           &slipLeftToggle, &slipRightToggle })
     {
         addAndMakeVisible (b);
@@ -1267,7 +1278,7 @@ void EditWindowComponent::resized()
         { &startButton, 40, grid::btnH, 2 }, { &backButton, 40, grid::btnH, 2 }, { &playButton }, { &fwdButton, 40, grid::btnH, 2 }, { &endTransportButton, 40, grid::btnH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 84, grid::btnH, 14 },
         { &trimButton }, { &deleteButton, grid::btnW, grid::btnH, 14 },
         { &leftButton }, { &rightButton }, { &endButton, grid::btnW, grid::btnH, 14 },
-        { &bounceButton, grid::btnW, grid::btnH, 14 },
+        { &bounceButton }, { &mixerButton, grid::btnW, grid::btnH, 14 },
         { &automationButton, grid::btnW, grid::btnH, 14 },
         { &pitchButton }, { &pitchCurveButton, grid::btnW + 24 }, { &repairButton, grid::btnW + 30 }, { &declickButton }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, grid::btnW, grid::btnH, 14 },
         { &tracksButton }, { &importButton, grid::btnW, grid::btnH, 14 },

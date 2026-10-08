@@ -9,6 +9,7 @@ struct BounceItem
     juce::String name;
     juce::int64  start = 0, end = 0;
     std::vector<PlaySegment> segments;       // the audio this piece comes from; empty = BounceSettings::segments (different takes need their own)
+    juce::Uuid mixerId = juce::Uuid::null();          // the mixer this piece goes through (null = BounceSettings::mixerId): an Edit's own mixer, so each piece keeps its own mix
     juce::Uuid automationEdit = juce::Uuid::null();   // the edit whose automation is applied to this item (null = BounceSettings::automationEdit)
 };
 

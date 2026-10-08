@@ -211,7 +211,7 @@ static void addRegionSegments (const Project& p, const EditRegion& r, std::vecto
     }
 }
 
-std::shared_ptr<AutomationPlan> automationPlanFor (Project& p, const EditDef& e)
+std::shared_ptr<AutomationPlan> automationPlanFor (Project& p, const EditDef& e, bool onProcessingMixer)
 {
     if (! e.automationOn) return nullptr;
     auto plan = std::make_shared<AutomationPlan>();
@@ -219,7 +219,7 @@ std::shared_ptr<AutomationPlan> automationPlanFor (Project& p, const EditDef& e)
     {
         if (lane.pts.empty()) continue;
         MixerState* m = nullptr;
-        if (lane.mixerId.isNull()) { if (! p.mixers.empty()) m = p.mixers.front().get(); }
+        if (lane.mixerId.isNull()) { m = onProcessingMixer ? nullptr : p.mixerOfEdit (e.id); if (m == nullptr && ! p.mixers.empty()) m = p.mixers.front().get(); }     // the default is the Edit's own mixer
         else for (auto& mm : p.mixers) if (mm->id == lane.mixerId) m = mm.get();
         const auto* t = p.findTrack (lane.trackId);
         if (m == nullptr || t == nullptr) continue;

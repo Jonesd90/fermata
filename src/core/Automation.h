@@ -45,7 +45,7 @@ struct AutoLane
     juce::Uuid   id;
     juce::Uuid   trackId = juce::Uuid::null();
     juce::String param { autoparam::fader };
-    juce::Uuid   mixerId = juce::Uuid::null();              // null = the processing mixer (the first one)
+    juce::Uuid   mixerId = juce::Uuid::null();              // null = the Edit's own mixer (the processing mixer if it has none)
     bool         locked = false;       // the padlock: a locked lane cannot be edited
     std::vector<AutoPoint> pts;        // sorted by 'time'
 
