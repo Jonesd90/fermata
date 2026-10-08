@@ -129,7 +129,7 @@ public:
         ctx->mixerOpenAt = [this] (int i)
         {
             if (i == 0) i = contextMixerIndex();
-            if (i == 1) i = ctx->project.altMixerIndex();                       // the Stream Deck's second key is the Alt Mixer
+            else if (i == 1) i = ctx->project.altMixerIndex();                  // the Stream Deck's second key is the Alt Mixer (not applied to the Edit mixer just chosen above)
             if (! juce::isPositiveAndBelow (i, (int) ctx->project.mixers.size())) return false;
             auto it = windows.find ("mixer:" + ctx->project.mixers[(size_t) i]->id.toString());
             return it != windows.end() && it->second != nullptr && it->second->isVisible();
@@ -442,12 +442,18 @@ private:
     void toggleMixerAt (int index)
     {
         if (index == 0) index = contextMixerIndex();
-        if (index == 1) index = ctx->project.altMixerIndex();                  // the second key is the Alt Mixer (the one ticked in its window, else the first cue mixer)
+        else if (index == 1) index = ctx->project.altMixerIndex();             // the second key is the Alt Mixer (the one ticked in its window, else the first cue mixer); never applied to an Edit mixer chosen by the line above, which can itself be number 1
         if (! juce::isPositiveAndBelow (index, (int) ctx->project.mixers.size())) return;
         const auto id = ctx->project.mixers[(size_t) index]->id;
         const auto key = "mixer:" + id.toString();
         auto it = windows.find (key);
-        if (it != windows.end() && ! DockHub::get().contains (it->second.get())) closeWindowLater (key); else openMixer (id);
+        if (it != windows.end() && ! DockHub::get().contains (it->second.get()))
+        {
+            bool frontmost = it->second->isVisible();                          // only close it if it is the window you were last in; if it is hidden behind others, bring it forward instead
+            for (auto& kv : windows) if (kv.second != nullptr && kv.second->isVisible() && kv.second->lastActive > it->second->lastActive) frontmost = false;
+            if (frontmost) closeWindowLater (key); else DockHub::get().show (it->second.get());
+        }
+        else openMixer (id);
     }
     /** B: opens the meter bridge, a floating window with a meter for every driver input and output, or closes it. */
     void toggleBridge()
