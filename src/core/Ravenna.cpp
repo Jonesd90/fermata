@@ -265,6 +265,8 @@ bool RavennaDevice::sendChannelFields (int i, const juce::var& fields)
         msg->setProperty ("id", nextId()); msg->setProperty ("clientId", clientId);
         json = juce::JSON::toString (juce::var (msg), true);
         outgoing.add (json);
+        if (fields.getDynamicObject() != nullptr && fields.getDynamicObject()->hasProperty ("inputMode"))       // for the log: Mic / Line changes sent to the device
+            juce::Logger::writeToLog ("Device " + hostName + " SENT: " + path + " = " + juce::JSON::toString (fields, true));
     }
     return true;
 }
@@ -276,6 +278,9 @@ void RavennaDevice::handleSettings (const juce::var& data)
     const auto path = data["path"].toString();
     const auto& value = data["value"];
     bool changed = false;
+    if (path != "$" && path.containsIgnoreCase ("channels") && value.toString().containsIgnoreCase ("inputMode") == false
+        && value.getDynamicObject() != nullptr && value.getDynamicObject()->hasProperty ("inputMode"))          // for the log: a Mic / Line change reported by the device
+        juce::Logger::writeToLog ("Device " + hostName + " REPORTED: " + path + " = " + juce::JSON::toString (value, true));
     {
         const juce::ScopedLock sl (lock);
         if (path == "$")
@@ -457,10 +462,16 @@ bool RavennaPreampDriver::apply (int inputIndex, const PreampSettings& s)
     if (! locate (inputIndex, d, ch) || ! d->dev->getChannel (ch, h)) return false;
     auto* o = new juce::DynamicObject();                      // only what really differs is sent
     bool any = false;
-    if (s.line != h.line) { o->setProperty ("inputMode", s.line ? 1 : 0); any = true; }
-    const int gain = juce::jlimit (0, 660, (int) std::lround (s.gainDb * 10.0f));
-    const int cur = s.line ? h.lineGain : h.micGain;
-    if (gain != cur || s.line != h.line) { o->setProperty (s.line ? "lineGain" : "micGain", gain); any = true; }
+    const bool modeChange = s.line != h.line;
+    if (modeChange) { o->setProperty ("inputMode", s.line ? 1 : 0); any = true; }
+    // Switching Mic / Line sends the switch ALONE, exactly like the device's own web app: the gain on the screen still belongs to the OLD mode,
+    // and sending it along made the device undo the switch. The device's own gain for the new mode comes back and is shown.
+    if (! modeChange)
+    {
+        const int gain = juce::jlimit (0, 660, (int) std::lround (s.gainDb * 10.0f));
+        const int cur = s.line ? h.lineGain : h.micGain;
+        if (gain != cur) { o->setProperty (s.line ? "lineGain" : "micGain", gain); any = true; }
+    }
     if (s.phantom != h.m48V)   { o->setProperty ("m48V", s.phantom); any = true; }
     if (s.lowCut != h.lowCut)  { o->setProperty ("lowCut", s.lowCut); any = true; }
     if (s.polarity != h.phase) { o->setProperty ("phase", s.polarity); any = true; }
