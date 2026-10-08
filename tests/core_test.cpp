@@ -1048,6 +1048,28 @@ int main()
             CHECK (! eng.isPlaying());
         }
         CHECK (eng.startPlayback (std::make_unique<PlaybackSession> (counts, segmentsForTake (p, *gg), 0, gg->lengthSamples, 44100.0, 512)).isNotEmpty());   // wrong rate refused
+        // direct-out player (used by the Mastering window): a stereo file goes straight to the chosen output pair at unity, not through the mixers
+        {
+            auto sf = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("fermata-directout.wav");
+            sf.deleteFile();
+            {
+                juce::WavAudioFormat wav;
+                std::unique_ptr<juce::OutputStream> os (sf.createOutputStream().release());
+                auto w = wav.createWriterFor (os, juce::AudioFormatWriterOptions().withSampleRate (48000.0).withNumChannels (2).withBitsPerSample (24));
+                juce::AudioBuffer<float> sb (2, 48000);
+                for (int i = 0; i < 48000; ++i) { sb.setSample (0, i, 0.25f); sb.setSample (1, i, 0.125f); }
+                w->writeFromAudioSampleBuffer (sb, 0, 48000);
+            }
+            PlaySegment ds; ds.trackIndex = 0; ds.file = sf; ds.srcOffset = 0; ds.begin = 0; ds.end = 48000;
+            auto dsess = std::make_unique<PlaybackSession> (std::vector<int> { 2 }, std::vector<PlaySegment> { ds }, 0, 48000, 48000.0, eng.getMaxBlock());
+            dsess->directOut = 2;
+            CHECK (eng.startPlayback (std::move (dsess)).isEmpty());
+            std::vector<double> dr; rig.run (eng, 10); rig.run (eng, 20, &dr);
+            CHECK (std::abs (dr[2] - 0.25) < 0.01 && std::abs (dr[3] - 0.125) < 0.01);
+            CHECK (dr[0] < 1e-6 && dr[1] < 1e-6);
+            eng.stopPlayback();
+            sf.deleteFile();
+        }
         rig.inGain = 0.5f;
     }
 
@@ -1957,6 +1979,58 @@ int main()
                 MasterExportJob job2 (mp, ds2, nullptr, false); auto res2 = job2.execute();
                 CHECK (res2.error.isEmpty() && res2.report.contains ("consistent"));
                 cl[1].index01Shift = 0; cl[1].index00Shift = kIndexAuto; mp.mastering.ddp.endPadSectors = 0; } }
+            // the renders: two per Edit; a new one always replaces the older of the two
+            {   MasterRenders st (tmp.getChildFile ("rr")); const juce::Uuid id;
+                auto mk = [&] (const char* fp) { auto f = st.tempFile (id); f.getParentDirectory().createDirectory(); f.replaceWithText (fp); st.commit (id, fp, 48000.0, 100, f); };
+                CHECK (st.check (id, "a").state == MasterRenders::State::None);
+                mk ("a"); CHECK (st.check (id, "a").state == MasterRenders::State::Ready);
+                mk ("b"); auto ib = st.check (id, "b");
+                CHECK (ib.state == MasterRenders::State::Ready && ib.hasBackup && ib.file.getFileName().endsWith ("-B.wav"));
+                CHECK (st.check (id, "a").state == MasterRenders::State::Ready && st.check (id, "a").file.getFileName().endsWith ("-A.wav"));      // changed back: the other one is used again, nothing is rendered
+                mk ("c");                                                                                    // A is the current one, so the older one (B) is replaced
+                CHECK (st.check (id, "c").file.getFileName().endsWith ("-B.wav") && st.folder().getChildFile (id.toString() + "-A.wav").loadFileAsString() == "a" && st.folder().getChildFile (id.toString() + "-B.wav").loadFileAsString() == "c");
+                CHECK (st.folder().findChildFiles (juce::File::findFiles, false, "*.wav").size() == 2);       // never more than two
+                mk ("d");                                                                                    // B is current: A (the backup) is replaced, c becomes the backup
+                CHECK (st.check (id, "d").file.getFileName().endsWith ("-A.wav") && st.folder().findChildFiles (juce::File::findFiles, false, "*.wav").size() == 2);
+                CHECK (st.setUsePrevious (id, true) && st.check (id, "zzz").state == MasterRenders::State::Previous && st.check (id, "zzz").file.loadFileAsString() == "c");
+                CHECK (st.setUsePrevious (id, false) && st.check (id, "d").state == MasterRenders::State::Ready);
+                st.markStale (id); CHECK (st.check (id, "d").state == MasterRenders::State::Stale);
+                st.clearAll(); CHECK (st.check (id, "d").state == MasterRenders::State::None); }
+
+            // exporting keeps native-resolution renders, reuses them while nothing changes, and only the DDP is 44.1 kHz / 16 bit
+            {   const auto rdir = MasterRenders::folderFor (mp);
+                auto wavs = [&] { return rdir.findChildFiles (juce::File::findFiles, false, "*.wav"); };
+                MasterJobSpec ds3; CHECK (makeDiscSpec (mp, mp.mastering, ds3).isEmpty());
+                { MasterExportJob j (mp, ds3, nullptr, false); auto rr = j.execute(); CHECK (rr.error.isEmpty());
+                  for (auto& f : rr.files) if (f.endsWith (".wav")) { double rt = 0; int bt = 0; juce::int64 ln = 0; float pk = 0; CHECK (readInfo (juce::File (f), rt, bt, ln, pk) && rt == 44100.0 && bt == 16); } }
+                const auto first = wavs();
+                CHECK (first.size() >= 2 && first.size() <= 4);                                                    // (at most two per edit, two edits)
+                double rate = 0; int bits = 0; juce::int64 len = 0; float pk = 0;
+                CHECK (readInfo (first[0], rate, bits, len, pk) && rate == 48000.0 && bits == 32);             // the renders keep the session's own resolution
+                std::map<juce::String, juce::int64> times; for (auto& f : first) times[f.getFileName()] = f.getLastModificationTime().toMilliseconds();
+                juce::Thread::sleep (30);
+                { MasterExportJob j (mp, ds3, nullptr, false); CHECK (j.execute().error.isEmpty()); }
+                bool same = wavs().size() == first.size(); for (auto& f : wavs()) same = same && times[f.getFileName()] == f.getLastModificationTime().toMilliseconds();
+                CHECK (same);                                                                                // nothing changed: nothing was rendered again
+                auto* em = mp.mixerOfEdit (ed.id); CHECK (em != nullptr);
+                for (int k = 0; k < 4; ++k)                                                                  // four changes in a row, each followed by an export: still two renders of the Edit
+                {
+                    em->stripFor (mp.tracks[0].id)->gainDb.set (-3.0f - (float) k);
+                    MasterJobSpec dk; CHECK (makeDiscSpec (mp, mp.mastering, dk).isEmpty());
+                    MasterExportJob j (mp, dk, nullptr, false); CHECK (j.execute().error.isEmpty());
+                }
+                int mine = 0; for (auto& f : wavs()) if (f.getFileName().startsWith (ed.id.toString())) ++mine;
+                CHECK (mine == 2);
+                // the fingerprint ignores where an automated control was left, but sees any other change
+                RenderParams rp; CHECK (makeRenderParams (mp, mp.mastering, rp).isEmpty());
+                ed.automationOn = true;
+                { auto& ln = ed.addLane (mp.tracks[0].id, autoparam::fader, juce::Uuid::null()); AutoPoint a0; a0.time = 0; a0.value = 0.0f; ln.pts.push_back (a0); }
+                const auto f0 = masterRenderFingerprint (mp, ed, rp);
+                em->stripFor (mp.tracks[0].id)->gainDb.set (-17.0f);
+                CHECK (masterRenderFingerprint (mp, ed, rp) == f0);
+                em->stripFor (mp.tracks[0].id)->pan.set (0.4f);
+                CHECK (masterRenderFingerprint (mp, ed, rp) != f0);
+                ed.automationOn = false; }
             // the source: a missing output falls back to the first Ext bus
             {   mp.mastering.sourceId = ed.id; juce::Uuid mxid, srid;
                 CHECK (resolveRenderSource (mp, mp.mastering, mxid, srid).isEmpty() && srid == bus && mxid == mx.id); }
@@ -2113,7 +2187,7 @@ int main()
             mixA.ditherBits.store (16); mixB.ditherBits.store (0);
             juce::String serr; CHECK (p.save (serr));
             Project q2; CHECK (q2.load (p.projectFile, serr));
-            CHECK (q2.mixers.size() == 2 && q2.mixers[0]->ditherBits.load() == 16 && q2.mixers[1]->ditherBits.load() == 0);
+            CHECK (q2.cueEnd() == 2 && q2.mixers[0]->ditherBits.load() == 16 && q2.mixers[1]->ditherBits.load() == 0);
             mixA.ditherBits.store (24); mixB.ditherBits.store (24);
         }
     }
@@ -2243,6 +2317,45 @@ int main()
         CHECK (std::abs (got[0][5000] - sig[0][5000]) < 1e-5f && std::abs (got[1][40000] - sig[1][40000]) < 1e-5f);        // outside: untouched
         CHECK (std::abs (got[0][20000]) < 1e-6f);                                                                         // inside: the corrected (silent) audio
         CHECK (std::abs (got[0][10000]) > 0.0f || std::abs (sig[0][10000]) < 1e-6f);                                       // the crossfade starts from the original
+    }
+    // ---- every Edit has a mixer of its own ----
+    {
+        Project mp;
+        mp.addTrack ("T1", TrackFormat::Mono, 0);
+        mp.mixers[0]->stripFor (mp.tracks[0].id)->gainDb.set (-6.0f);
+        mp.mixers[0]->ditherBits.store (16);
+        CHECK (mp.cueEnd() == 1);
+        auto& ea = mp.addEdit ("Piece A", juce::Uuid::null());
+        auto& eb = mp.addEdit ("Piece B", juce::Uuid::null());
+        CHECK (mp.mixers.size() == 3 && mp.cueEnd() == 1);
+        auto* ma = mp.mixerOfEdit (ea.id); auto* mb = mp.mixerOfEdit (eb.id);
+        CHECK (ma != nullptr && mb != nullptr && ma != mb && ma->name == "Piece A" && mb->name == "Piece B");
+        CHECK (std::abs (ma->stripFor (mp.tracks[0].id)->gainDb.get() + 6.0f) < 1e-4f && ma->ditherBits.load() == 16);   // starts as a copy of the processing mixer
+        ma->stripFor (mp.tracks[0].id)->gainDb.set (-12.0f);
+        CHECK (std::abs (mp.mixers[0]->stripFor (mp.tracks[0].id)->gainDb.get() + 6.0f) < 1e-4f
+               && std::abs (mb->stripFor (mp.tracks[0].id)->gainDb.get() + 6.0f) < 1e-4f);                                   // independent of the others
+        auto& cue = mp.addMixer ("Cue 1");                                                                                 // cue mixers stay before the Edit mixers
+        CHECK (mp.cueEnd() == 2 && mp.mixers[1].get() == &cue && mp.mixers[2]->editId == ea.id);
+        // lanes with no mixer named drive the Edit's own mixer
+        ea.automationOn = true;
+        auto& lane = ea.addLane (mp.tracks[0].id, autoparam::fader, juce::Uuid::null());
+        { AutoPoint a0; a0.time = 0; a0.value = 0.0f; AutoPoint a1; a1.time = 48000; a1.value = -20.0f; lane.pts.push_back (a0); lane.pts.push_back (a1); }
+        auto plan = automationPlanFor (mp, ea);
+        CHECK (plan != nullptr && plan->items.size() == 1 && plan->items[0].target == &ma->stripFor (mp.tracks[0].id)->gainDb);
+        auto planProc = automationPlanFor (mp, ea, true);
+        CHECK (planProc != nullptr && planProc->items[0].target == &mp.mixers[0]->stripFor (mp.tracks[0].id)->gainDb);
+        // saved and loaded
+        Project back; CHECK (back.fromVar (mp.toVar()));
+        CHECK (back.mixers.size() == 4 && back.cueEnd() == 2 && back.mixerOfEdit (ea.id) != nullptr && back.mixerOfEdit (eb.id) != nullptr);
+        CHECK (back.mixerOfEdit (ea.id) != nullptr && std::abs (back.mixerOfEdit (ea.id)->stripFor (back.tracks[0].id)->gainDb.get() + 12.0f) < 1e-4f);
+        // renaming the Edit renames its mixer
+        ea.name = "Renamed"; CHECK (mp.syncEditMixers() && mp.mixerOfEdit (ea.id)->name == "Renamed");
+        // an old project (no Edit mixers) gets them on loading
+        auto v = mp.toVar();
+        if (auto* arr = v.getDynamicObject()->getProperty ("mixers").getArray())
+            for (int i = arr->size(); --i >= 0;) if ((*arr)[i]["editId"].toString().isNotEmpty()) arr->remove (i);
+        Project old; CHECK (old.fromVar (v));
+        CHECK (old.mixers.size() == 4 && old.mixerOfEdit (eb.id) != nullptr);
     }
     eng.rebuildPlan();
     tmp.deleteRecursively();

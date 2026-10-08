@@ -2,6 +2,7 @@
 #include "Bounce.h"
 #include "MasterDef.h"
 #include "Ddp.h"
+#include "MasterRender.h"
 
 namespace td
 {
@@ -21,6 +22,7 @@ struct MasterJobSpec
     std::vector<MasterJobItem> items;
     std::vector<int> clipIndex;      // Disc: for each item, its index in disc.clips
     juce::Uuid   mixerId, sourceId;
+    bool         ownMixers = true;   // every piece goes through its own Edit's mixer (mixerId is only the fallback)
     double       tailSeconds = 0.0;
     juce::File   destFolder;         // Files: the audio files go here. Disc: the folder that gets the DDP folder, the zip and the WAV + CUE
     juce::File   workFolder;         // intermediates (deleted at the end)
@@ -75,7 +77,7 @@ private:
     juce::String finalise (const juce::File& src, const juce::File& dest, double rate, float gain, const MasterJobItem& item, float& peakOut, MasterFormat fmt);
 
     MasterJobSpec spec;
-    std::unique_ptr<Bouncer> bouncer;
+    std::unique_ptr<MasterRenderBatch> batch;       // the renders to export (up to date ones are reused, the others are made first)
     std::function<void (MasterExportResult)> onDone;
     std::atomic<float> sub { 0.0f };
     std::atomic<int> stage { 0 };

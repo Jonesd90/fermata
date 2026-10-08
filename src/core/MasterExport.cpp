@@ -119,6 +119,7 @@ juce::String commonChecks (const Project& p, const MasteringDef& def, MasterJobS
     juce::String err = resolveRenderSource (p, def, spec.mixerId, spec.sourceId);
     if (err.isNotEmpty()) return err;
     spec.tailSeconds = def.tailSeconds;
+    spec.ownMixers = def.mixerId.isNull();               // "each piece's own mixer" unless one mixer was chosen for everything
     if (edits.empty()) return "Tick at least one edit that has audio in it.";
     for (auto* e : edits) if (std::abs (e->sampleRate - edits.front()->sampleRate) > 0.5)
         return "The ticked edits have different sample rates (" + juce::String (edits.front()->sampleRate, 0) + " and " + juce::String (e->sampleRate, 0) + " Hz). Tick edits with the same rate and export the others separately.";
@@ -193,27 +194,18 @@ juce::String makeDiscSpec (const Project& p, const MasteringDef& def, MasterJobS
 MasterExportJob::MasterExportJob (const Project& live, const MasterJobSpec& s, std::function<void (MasterExportResult)> done, bool startNow)
     : juce::Thread ("Mastering export"), spec (s), onDone (std::move (done))
 {
-    BounceSettings bs;
-    bs.automationEdit = juce::Uuid::null();
-    bs.folder = spec.workFolder; bs.mixerId = spec.mixerId; bs.sources = { spec.sourceId };
-    bs.addOutputName = false; bs.floatFiles = true; bs.normalise = false; bs.tailSeconds = spec.tailSeconds;
+    std::vector<juce::Uuid> ids;
     for (size_t i = 0; i < spec.items.size(); ++i)
     {
         auto* e = const_cast<Project&> (live).findEdit (spec.items[i].editId);
         if (e == nullptr || e->isEmpty()) { earlyError = "An edit no longer exists or is empty."; break; }
-        if (i == 0) bs.sampleRate = e->sampleRate;
-        editRates.push_back (e->sampleRate);
-        BounceItem bi;
-        bi.name = "item-" + juce::String ((int) i + 1).paddedLeft ('0', 2);
-        bi.start = e->firstSample(); bi.end = e->lengthSamples();
-        bi.segments = segmentsForEdit (live, *e);
-        bi.automationEdit = e->automationOn ? e->id : juce::Uuid::null();
-        bs.items.push_back (std::move (bi));
+        ids.push_back (e->id);
     }
     if (earlyError.isEmpty())
     {
-        bouncer = std::make_unique<Bouncer> (live, bs);
-        if (bouncer->getPrepareError().isNotEmpty()) earlyError = bouncer->getPrepareError();
+        RenderParams rp; rp.sourceId = spec.sourceId; rp.mixerId = spec.mixerId; rp.ownMixers = spec.ownMixers; rp.tailSeconds = spec.tailSeconds;
+        batch = std::make_unique<MasterRenderBatch> (live, ids, rp);
+        if (batch->getPrepareError().isNotEmpty()) earlyError = batch->getPrepareError();
     }
     if (startNow) startThread (juce::Thread::Priority::normal);
 }
@@ -364,16 +356,18 @@ MasterExportResult MasterExportJob::executeInner()
     auto setStatus = [&] (const juce::String& s) { const juce::ScopedLock sl (lock); status = s; };
     if (earlyError.isNotEmpty()) { R.error = earlyError; return R; }
     const int n = (int) spec.items.size();
-    if (n == 0 || bouncer == nullptr) { R.error = "Nothing to export."; return R; }
+    if (n == 0 || batch == nullptr) { R.error = "Nothing to export."; return R; }
     if (! spec.destFolder.createDirectory()) { R.error = "Cannot create " + spec.destFolder.getFullPathName(); return R; }
 
-    // ---- 1. render every edit through the mixer (32-bit float, nothing clipped)
+    // ---- 1. every edit through its mixer (32-bit float, nothing clipped, native sample rate). Renders that are up to date are reused; the others are made now and kept.
     stage = 0; sub = 0.0f; setStatus ("Rendering through the mixer...");
-    auto br = bouncer->render (&sub, &cancelFlag);
-    if (br.cancelled) { R.cancelled = true; return R; }
-    if (br.error.isNotEmpty()) { R.error = br.error; return R; }
-    if ((int) br.files.size() != n) { R.error = "The renderer made a different number of files than expected."; return R; }
-    bouncer.reset();
+    const auto rerr = batch->run (&sub, &cancelFlag);
+    if (rerr == "Cancelled.") { R.cancelled = true; return R; }
+    if (rerr.isNotEmpty()) { R.error = rerr; return R; }
+    if (batch->total() != n) { R.error = "The renderer made a different number of files than expected."; return R; }
+    std::vector<juce::File> rendered;
+    for (int i = 0; i < n; ++i) rendered.push_back (batch->fileFor (i));
+    batch.reset();
 
     // ---- 2. sample rate, and the peak of every file
     stage = 1; sub = 0.0f;
@@ -384,7 +378,7 @@ MasterExportResult MasterExportJob::executeInner()
     {
         if (cancelFlag.load()) { R.cancelled = true; return R; }
         setStatus ("Converting " + juce::String (i + 1) + " of " + juce::String (n) + "...");
-        const juce::File src (br.files[(size_t) i]);
+        const juce::File src (rendered[(size_t) i]);
         std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (src));
         if (r == nullptr) { R.error = "Cannot read " + src.getFileName(); return R; }
         const double native = r->sampleRate, T = masterTargetRate (spec.out, native);

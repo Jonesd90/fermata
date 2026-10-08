@@ -22,6 +22,7 @@ $CXX -c "$HERE/src/core/ImportPlan.cpp" -o "$OUT/ImportPlan.o"
 $CXX -c "$HERE/src/core/MasterDef.cpp" -o "$OUT/MasterDef.o"
 $CXX -c "$HERE/src/core/Ddp.cpp" -o "$OUT/Ddp.o"
 $CXX -c "$HERE/src/core/MasterExport.cpp" -o "$OUT/MasterExport.o"
+$CXX -c "$HERE/src/core/MasterRender.cpp" -o "$OUT/MasterRender.o"
 $CXX -c "$HERE/src/core/Ravenna.cpp" -o "$OUT/Ravenna.o"
 $CXX -c "$HERE/tests/core_test.cpp" -o "$OUT/core_test.o"
 $CXX "$OUT"/*.o -o "$OUT/core_test" -lpthread -ldl -lrt

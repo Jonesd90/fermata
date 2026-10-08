@@ -153,7 +153,7 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
             if (nd->receives) nd->incoming.setSize (2, maxBlock);
             mp->order.push_back (std::move (nd));
         }
-        if (m->id == offlineMixerId && ! offlineMixerId.isNull())
+        if (! offlineMixerId.isNull())                     // (every mixer gets its taps: a bounce can use a different mixer for each piece)
         {
             int next = 0;
             std::vector<int> idxOf (offlineTaps.size(), -1);
@@ -277,6 +277,13 @@ void AudioEngine::renderOffline (const std::vector<juce::AudioBuffer<float>>& tr
 }
 
 // ------------------------------------------------------------------ audio thread
+/** An Edit mixer runs only while its own Edit plays; the processing mixer (isFront) rests while an Edit that has a mixer of its own plays. */
+static bool mixerIsLive (const MixerState& m, bool isFront, const PlaybackSession* ps, bool editMixerPlays) noexcept
+{
+    if (! m.editId.isNull()) return ps != nullptr && ps->editId == m.editId;
+    return ! (isFront && editMixerPlays);
+}
+
 void AudioEngine::process (const float* const* in, int numIn, float* const* out, int numOut, int numSamples)
 {
     auto* pl = plan.load (std::memory_order_acquire);
@@ -350,13 +357,19 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
     float* const tapL = tbTap.data();
     float* const tapR = tbTap.data() + zeros.size();
     if (tbPlayNow) { juce::FloatVectorOperations::clear (tapL, numSamples); juce::FloatVectorOperations::clear (tapR, numSamples); }
+    // An Edit plays through its own mixer and no other Edit's. The processing mixer rests meanwhile (it would play the same thing twice on the same outputs).
+    const MixerPlan* editPlan = nullptr;
+    if (pl != nullptr && ps != nullptr && ! ps->editId.isNull())
+        for (auto& mp : pl->mixers) if (mp->mixer->editId == ps->editId) editPlan = mp.get();
+    const bool editMixerPlays = editPlan != nullptr;
     if (pl != nullptr)
         for (int offset = 0; offset < numSamples; offset += maxBlock)
         {
             const int n = juce::jmin (maxBlock, numSamples - offset);
             if (ps != nullptr && ps->automation != nullptr) ps->automation->apply (ps->getTimelinePosition());     // an edit's automation moves the faders
             if (ps != nullptr) ps->pull (n);          // disk audio replaces the live inputs while playing
-            for (size_t i = 0; i < pl->disk.size(); ++i) pl->disk[i] = (ps != nullptr && (int) i < ps->numTracks()) ? &ps->trackBuffer ((int) i) : nullptr;
+            const bool direct = ps != nullptr && ps->directOut >= 0;      // a finished stereo mix: straight to the outputs, the mixers do not touch it
+            for (size_t i = 0; i < pl->disk.size(); ++i) pl->disk[i] = (ps != nullptr && ! direct && (int) i < ps->numTracks()) ? &ps->trackBuffer ((int) i) : nullptr;
             // engineer audition: mixer 0 is the engineer's. While a cue mixer is audited, the engineer's own Ext buses go quiet and
             // everything the cue mixer sends to its Ext buses is also heard on the first output pair of the engineer's mixer.
             const MixerState* aud = auditionMixer.load (std::memory_order_relaxed);
@@ -373,11 +386,21 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
             }
             for (auto& mp : pl->mixers)
             {
-                const bool strict = tbPlayNow && mp.get() == pl->mixers.front().get();       // the processing mixer
-                processMixer (*mp, in, numIn, offset, n, out, numOut, ps != nullptr,
+                if (! mixerIsLive (*mp->mixer, mp.get() == pl->mixers.front().get(), ps, editMixerPlays)) continue;                 // an Edit mixer sleeps unless its own Edit plays
+                const bool strict = tbPlayNow && mp.get() == (editMixerPlays ? editPlan : pl->mixers.front().get());       // the processing mixer (or the playing Edit's mixer)
+                processMixer (*mp, in, numIn, offset, n, out, numOut, ps != nullptr && ! direct,
                               audActive && mp->mixer == eng,
                               audActive && mp->mixer == aud ? monitorOut : -1,
                               strict, strict ? tapL : nullptr, strict ? tapR : nullptr);
+            }
+            if (direct && ps->numTracks() > 0)
+            {
+                const auto& mix = ps->trackBuffer (0);
+                for (int c = 0; c < 2 && c < mix.getNumChannels(); ++c)
+                {
+                    const int ch = ps->directOut + c;
+                    if (ch < numOut && out[ch] != nullptr) juce::FloatVectorOperations::add (out[ch] + offset, mix.getReadPointer (c), n);
+                }
             }
         }
 
@@ -387,7 +410,7 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
         const int nch = juce::jmin (numOut, kMaxInputs);
         for (auto& mp : mc->mixers)
         {
-            if (! mp->mixer->monoCheck.load (std::memory_order_relaxed)) continue;
+            if (! mp->mixer->monoCheck.load (std::memory_order_relaxed) || ! mixerIsLive (*mp->mixer, mp.get() == mc->mixers.front().get(), ps, editMixerPlays)) continue;
             for (auto& nd : mp->order)
             {
                 if (nd->kind != NodeKind::ExtBus) continue;
@@ -411,6 +434,7 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
         {
             const int bits = mp->mixer->ditherBits.load (std::memory_order_relaxed);
             if (bits != 16 && bits != 24) continue;
+            if (! mixerIsLive (*mp->mixer, mp.get() == dp->mixers.front().get(), ps, editMixerPlays)) continue;
             for (auto& nd : mp->order)
             {
                 if (nd->kind != NodeKind::ExtBus) continue;

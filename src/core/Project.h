@@ -74,9 +74,27 @@ public:
     /** Index in 'mixers' of the Alt Mixer, or -1 when there is only the processing mixer. */
     int altMixerIndex() const
     {
-        for (size_t i = 1; i < mixers.size(); ++i) if (mixers[i]->id == altMixer) return (int) i;
-        return mixers.size() > 1 ? 1 : -1;
+        const int ce = cueEnd();
+        for (int i = 1; i < ce; ++i) if (mixers[(size_t) i]->id == altMixer) return i;
+        return ce > 1 ? 1 : -1;
     }
+    /** The mixers are kept in this order: the processing mixer, the cue mixers, then the Edit mixers (one per Edit). This is the index of the first Edit mixer (= the number of the others). */
+    int cueEnd() const
+    {
+        int n = 0;
+        for (auto& m : mixers) { if (! m->editId.isNull()) break; ++n; }
+        return n;
+    }
+    /** The mixer that belongs to this Edit (nullptr if it has none). */
+    MixerState* mixerOfEdit (const juce::Uuid& editId) const
+    {
+        if (editId.isNull()) return nullptr;
+        for (auto& m : mixers) if (m->editId == editId) return m.get();
+        return nullptr;
+    }
+    /** Gives every Edit its own mixer (a copy of the processing mixer's settings and output routing when it is made), names them after their Edits and removes the ones whose Edit is gone.
+        Returns true if anything changed (the caller announces that with structureChanged()). */
+    bool syncEditMixers();
     std::vector<int> tbOutputs;   // the talkback pairs: each is the first driver output of a stereo pair (that output and the next); any number; the last output alone is mono
     std::vector<std::unique_ptr<MixerState>>   mixers;
     std::vector<std::unique_ptr<TakeWindowDef>> takeWindows;
@@ -152,6 +170,9 @@ public:
 
     /** Makes sure every mixer has a strip per track and a return per effects channel. */
     void syncMixers();
+private:
+    MixerState& makeEditMixer (const EditDef&);
+public:
     /** The program sets this: strips created from now on have their output button on (so a new track is heard). Saved projects keep what they saved. */
     bool newStripsToMain = false;
 
@@ -193,6 +214,8 @@ public:
     double restoreSampleRate = 48000.0; int restoreBlock = 512;    // used when plug-ins are re-created by fromVar()
 
     juce::var toVar (bool editorialOnly = false) const;
+    juce::var mixerToVar (const MixerState&) const;      // one mixer, as saved (levels, sends, plug-in states)
+    juce::var editToVar (const EditDef&) const;          // one edit, as saved
     bool fromVar (const juce::var&);
 
     // ---- undo: the last 30 states of the takes' details (bars, duds, names, positions, removed takes), the edits and the mastering ----

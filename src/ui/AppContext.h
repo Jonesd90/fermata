@@ -165,6 +165,11 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     /** Plays the clips one after the other, each at its place on the disc timeline (the pauses between them are silence), through the mixers with the
         edits' automation, from fromSec to toSec (-1 = to the end of the last clip). 'token' goes into playInfo.id so the caller knows it is its own playback. */
     juce::String playDisc (const std::vector<DiscPlayItem>& items, double fromSec, double toSec, const juce::Uuid& token);
+    /** One finished render (a stereo file made by the Mastering window) and where it starts on the disc's timeline. */
+    struct RenderPlayItem { juce::File file; double startSeconds = 0.0; double rate = 0.0; juce::int64 frames = 0; };
+    /** Plays the renders where they sit on the timeline (the pauses are silence; a tail that runs into the next piece is added to it), straight to the
+        driver outputs outFirst and outFirst + 1 at unity: no mixer, no gain change. Same position / token rules as playDisc. */
+    juce::String playRenders (const std::vector<RenderPlayItem>& items, double fromSec, double toSec, const juce::Uuid& token, int outFirst);
     /** Plays one region's raw files (no fades, no neighbours) on the timeline of the file's own samples:
         the trim window's 'play original A / B'. */
     juce::String playRegionOriginal (const juce::Uuid& editId, const juce::Uuid& regionId, juce::int64 fromSample, juce::int64 toSample);

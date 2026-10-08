@@ -29,7 +29,8 @@ struct AutomationPlan
 };
 /** Builds the plan for an edit (null when automation is off or there is nothing to do). Lanes whose track or mixer is gone are left out;
     a Pan lane only drives mono tracks. */
-std::shared_ptr<AutomationPlan> automationPlanFor (Project&, const EditDef&);
+/** The automation of an Edit, aimed at the mixers' controls. A lane that names no mixer drives the Edit's own mixer (onProcessingMixer: the processing mixer instead). */
+std::shared_ptr<AutomationPlan> automationPlanFor (Project&, const EditDef&, bool onProcessingMixer = false);
 
 /** One stretch of one file placed on the playback timeline. */
 struct PlaySegment
@@ -72,6 +73,11 @@ public:
 
     /** Automation applied while this plays (an edit's lanes); null = none. Set before the session is started. */
     std::shared_ptr<const AutomationPlan> automation;
+    /** The Edit being played (null = a take, a clip or something else): it plays through that Edit's own mixer, and only that one. */
+    juce::Uuid editId = juce::Uuid::null();
+    /** >= 0: this session is a finished stereo mix (track 0, two channels). It goes straight to the driver outputs directOut and directOut + 1, at unity,
+        without passing any mixer (the Mastering window's play of the renders). */
+    int directOut = -1;
 
     // ---- audio thread ----
     /** Moves the next n samples into the track buffers. */

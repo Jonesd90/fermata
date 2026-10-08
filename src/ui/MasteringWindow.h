@@ -3,6 +3,7 @@
 #include <map>
 #include <set>
 #include "../core/MasterExport.h"
+#include "../core/MasterRender.h"
 
 namespace td
 {
@@ -31,6 +32,7 @@ private:
 
     // ---- model helpers
     MasteringDef& def() { return app.project.mastering; }
+    const MasteringDef& def() const { return app.project.mastering; }
     const EditDef* editOf (const juce::Uuid&) const;
     juce::String editName (const juce::Uuid&) const;
     std::vector<juce::int64> clipFrames() const;          // 44.1 kHz length of every clip of the disc
@@ -127,6 +129,26 @@ private:
     void updateTimeLabel();
     void pollPlayback();
     std::vector<AppContext::DiscPlayItem> discItems() const;
+
+    // ---- the renders (MasterRender.h): every ticked piece is rendered through its own mixer when this window is opened or comes to the front and something
+    // changed; the disc is played from those renders, and the export uses them. At most two renders of a piece are kept.
+    struct RenderView { juce::String text; bool bad = false; bool previous = false, backup = false; juce::File file; double rate = 0.0; juce::int64 frames = 0; };
+    std::map<juce::String, RenderView> renders;                // by edit id; message thread only
+    std::unique_ptr<MasterRenderJob> renderJob;
+    double renderProgressValue = 0.0;
+    juce::ProgressBar renderProgress;
+    juce::Label renderStatus;
+    juce::TextButton prevRenderBtn { "Use previous render" }, renderAgainBtn { "Render again" };
+    bool wasActive = false;
+    juce::uint32 recheckDue = 0;
+    struct PendingPlay { bool on = false; double from = 0.0, to = -1.0; } pendingPlay;
+    std::vector<juce::Uuid> includedEdits() const;
+    bool checkRenders (bool force = false);          // true = every ticked piece has an up-to-date render (nothing was started)
+    void scheduleRecheck (int ms = 800) { recheckDue = juce::jmax<juce::uint32> (1, juce::Time::getMillisecondCounter() + (juce::uint32) ms); }
+    void renderFinished (const juce::String& error);
+    void updateRenderButtons();
+    int previewOutFirst() const;
+    juce::Uuid selectedPiece() const { return view == 0 ? def().selectedItem : def().selectedClip; }
 
     double progressValue = 0.0;
     std::unique_ptr<MasterExportJob> job;

@@ -145,6 +145,7 @@ SendResult AppContext::setSendLevel (MixerState& m, const juce::Uuid& src, const
 void AppContext::setAudition (const juce::Uuid& id)
 {
     auto* m = (id.isNull() || isEngineerMixer (id)) ? nullptr : findMixer (id);
+    if (m != nullptr && ! m->editId.isNull()) m = nullptr;                          // an Edit's mixer is not a cue mixer
     auditionId = m != nullptr && auditionId != id ? id : juce::Uuid::null();     // pressing the active one again switches it off
     engine.setAuditionMixer (auditionId.isNull() ? nullptr : m);
     project.structure.sendChangeMessage();                                          // windows update their buttons
@@ -153,11 +154,11 @@ void AppContext::setAudition (const juce::Uuid& id)
 bool AppContext::deleteMixer (const juce::Uuid& id)
 {
     if (isEngineerMixer (id)) return false;                       // the processing mixer stays
-    for (size_t i = 1; i < project.mixers.size(); ++i)
-        if (project.mixers[i]->id == id)
+    for (int i = 1; i < project.cueEnd(); ++i)                    // (an Edit's mixer is only removed together with its Edit)
+        if (project.mixers[(size_t) i]->id == id)
         {
             if (auditionId == id) { auditionId = juce::Uuid::null(); engine.setAuditionMixer (nullptr); }
-            project.removeMixer ((int) i);
+            project.removeMixer (i);
             return true;
         }
     return false;
@@ -559,7 +560,8 @@ void AppContext::toggleRecord (const juce::Uuid& takeWindowId)
 static constexpr double kOpenEndSeconds = 6.0 * 3600.0;
 
 static juce::String beginSession (AppContext& app, std::vector<PlaySegment> segs, juce::int64 start, juce::int64 end, double rate,
-                                  std::shared_ptr<AutomationPlan> automation = nullptr, bool loop = false, bool allowEmpty = false)
+                                  std::shared_ptr<AutomationPlan> automation = nullptr, bool loop = false, bool allowEmpty = false,
+                                  const juce::Uuid& editId = juce::Uuid::null())
 {
     if (segs.empty() && ! allowEmpty) return "There is nothing to play here";
     if (end <= start) return "Nothing to play (empty range)";
@@ -567,6 +569,7 @@ static juce::String beginSession (AppContext& app, std::vector<PlaySegment> segs
     for (auto& t : app.project.tracks) counts.push_back (t.channelCount());
     auto session = std::make_unique<PlaybackSession> (counts, std::move (segs), start, end, rate, app.engine.getMaxBlock());
     session->automation = std::move (automation);
+    session->editId = editId;                                  // an Edit plays through its own mixer
     session->setLooping (loop);
     return app.engine.startPlayback (std::move (session));
 }
@@ -632,7 +635,7 @@ juce::String AppContext::playEdit (const juce::Uuid& editId, double fromSec, dou
     transportFades (segs, a, b, rate);
     project.resolveAllAutomation();
     loop = loop && toSec >= 0 && b > a;
-    auto err = beginSession (*this, std::move (segs), a, b, rate, automationPlanFor (project, *e), loop, true);
+    auto err = beginSession (*this, std::move (segs), a, b, rate, automationPlanFor (project, *e), loop, true, editId);
     if (err.isEmpty()) { playInfo = { PlayInfo::Kind::Edit, e->windowId, editId, (double) a / rate }; playInfo.loopLen = loop ? (double) (b - a) / rate : 0.0; }
     return err;
 }
@@ -660,7 +663,7 @@ juce::String AppContext::playDisc (const std::vector<DiscPlayItem>& items, doubl
         }
         endAll = juce::jmax (endAll, D + e->lengthSamples());
         ++used;
-        if (auto p = automationPlanFor (project, *e))
+        if (auto p = automationPlanFor (project, *e, true))      // the disc preview plays through the processing mixer, so the automation moves that one
             for (auto lane : p->items)
             {
                 if (lane.lane.pts.empty()) continue;
@@ -682,6 +685,32 @@ juce::String AppContext::playDisc (const std::vector<DiscPlayItem>& items, doubl
     return err;
 }
 
+juce::String AppContext::playRenders (const std::vector<RenderPlayItem>& items, double fromSec, double toSec, const juce::Uuid& token, int outFirst)
+{
+    double rate = 0.0; juce::int64 endAll = 0;
+    std::vector<PlaySegment> segs;
+    for (auto& it : items)
+    {
+        if (! it.file.existsAsFile() || it.frames <= 0 || it.rate <= 0.0) continue;
+        if (rate <= 0.0) rate = it.rate; else if (std::abs (it.rate - rate) > 0.5) continue;               // another sample rate cannot be played together with these
+        const juce::int64 D = (juce::int64) std::llround (it.startSeconds * rate);
+        PlaySegment s;
+        s.trackIndex = 0; s.file = it.file; s.srcOffset = -D; s.begin = D; s.end = D + it.frames;
+        segs.push_back (std::move (s));
+        endAll = juce::jmax (endAll, D + it.frames);
+    }
+    if (segs.empty() || rate <= 0.0) return "There is nothing to play (the renders are not ready)";
+    const juce::int64 a = juce::jlimit ((juce::int64) 0, endAll, (juce::int64) std::llround (fromSec * rate));
+    const juce::int64 b = toSec < 0 ? endAll : juce::jlimit (a, endAll, (juce::int64) std::llround (toSec * rate));
+    if (b <= a) return "Nothing to play (empty range)";
+    transportFades (segs, a, b, rate);
+    auto session = std::make_unique<PlaybackSession> (std::vector<int> { 2 }, std::move (segs), a, b, rate, engine.getMaxBlock());
+    session->directOut = juce::jmax (0, outFirst);
+    auto err = engine.startPlayback (std::move (session));
+    if (err.isEmpty()) playInfo = { PlayInfo::Kind::Other, juce::Uuid::null(), token, (double) a / rate };
+    return err;
+}
+
 juce::String AppContext::playRegionOriginal (const juce::Uuid& editId, const juce::Uuid& regionId, juce::int64 fromSample, juce::int64 toSample)
 {
     auto* e = project.findEdit (editId);
@@ -691,7 +720,7 @@ juce::String AppContext::playRegionOriginal (const juce::Uuid& editId, const juc
     const auto limit = r->sourceLength > 0 ? r->sourceLength : r->srcOut + (juce::int64) (60.0 * r->sampleRate);
     const juce::int64 a = juce::jlimit ((juce::int64) 0, limit, fromSample);
     const juce::int64 b = juce::jlimit (a, limit, toSample);
-    auto err = beginSession (*this, segmentsForRegionOriginal (project, *r), a, b, r->sampleRate);
+    auto err = beginSession (*this, segmentsForRegionOriginal (project, *r), a, b, r->sampleRate, nullptr, false, false, editId);
     if (err.isEmpty()) playInfo = { PlayInfo::Kind::Other, juce::Uuid::null(), regionId, (double) a / r->sampleRate };
     return err;
 }

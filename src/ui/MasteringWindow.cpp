@@ -29,7 +29,7 @@ const int kRowH = 30;
 } // namespace
 
 // ============================================================================= the list of edits (order, tick, name)
-struct MasterListEntry { juce::Uuid id; bool include = true; juce::String name, detail; };
+struct MasterListEntry { juce::Uuid id; bool include = true; juce::String name, detail, status; bool bad = false; };
 
 class MasterListPanel : public juce::Component
 {
@@ -97,7 +97,7 @@ private:
             box.setBounds (r.removeFromLeft (26).withSizeKeepingCentre (22, 22));
             r.removeFromLeft (28);                                                       // the number
             detailWidth = 84;
-            r.removeFromRight (detailWidth + 6);
+            r.removeFromRight (detailWidth + 6 + statusWidth + 4);
             nameEd.setBounds (r.reduced (0, 3)); nameLabel.setBounds (r);
         }
         void paint (juce::Graphics& g) override
@@ -111,6 +111,12 @@ private:
             g.drawText (juce::String (index + 1), 46, 0, 26, getHeight(), juce::Justification::centredRight);
             g.setColour (theme::dimText);
             g.drawText (entry.detail, getWidth() - detailWidth - 6, 0, detailWidth, getHeight(), juce::Justification::centredRight);
+            if (entry.status.isNotEmpty())                                                       // the state of this piece's render
+            {
+                g.setFont (juce::FontOptions (11.5f));
+                g.setColour (entry.bad ? theme::warn : theme::dimText);
+                g.drawText (entry.status, getWidth() - detailWidth - 6 - statusWidth - 4, 0, statusWidth, getHeight(), juce::Justification::centredRight);
+            }
         }
         void mouseDown (const juce::MouseEvent& e) override
         {
@@ -137,7 +143,7 @@ private:
         }
         MasterListPanel& owner;
         MasterListEntry entry;
-        int index = 0, detailWidth = 84, baseY = 0;
+        int index = 0, detailWidth = 84, statusWidth = 110, baseY = 0;
         bool dragging = false;
         juce::ToggleButton box;
         juce::TextEditor nameEd;
@@ -498,7 +504,7 @@ private:
 };
 
 // ============================================================================= the window
-MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (progressValue), ddpProgress (progressValue)
+MasteringComponent::MasteringComponent (AppContext& a) : app (a), renderProgress (renderProgressValue), vmProgress (progressValue), ddpProgress (progressValue)
 {
     auto cap = [this] (juce::Label& l, const juce::String& t, bool bold = false) { styleCaption (l, t, bold); addChildComponent (l); };
     for (auto* b : { &vmTab, &ddpTab }) { b->setClickingTogglesState (false); b->setColour (juce::TextButton::buttonOnColourId, theme::accent); addAndMakeVisible (b); }
@@ -513,19 +519,38 @@ MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (pr
     sourceBox.setTooltip ("The output that is rendered: normally the stereo Ext bus that goes to the monitors.");
     tailBox.setTooltip ("Silence added after the last audio, run through the mixer so reverb tails and effects can ring out.");
     for (int s = 0; s <= 10; ++s) tailBox.addItem (juce::String (s) + " s", s + 1);
-    tailBox.onChange = [this] { if (updating) return; def().tailSeconds = tailBox.getSelectedId() - 1; touched(); refreshDdp();};
-    mixerBox.onChange = [this] { if (updating) return; const int i = mixerBox.getSelectedId() - 1; if (juce::isPositiveAndBelow (i, (int) mixerIds.size())) { def().mixerId = mixerIds[(size_t) i]; touched(); } };
-    sourceBox.onChange = [this] { if (updating) return; const int i = sourceBox.getSelectedId() - 1; if (juce::isPositiveAndBelow (i, (int) sourceIds.size())) { def().sourceId = sourceIds[(size_t) i]; touched(); } };
+    tailBox.onChange = [this] { if (updating) return; def().tailSeconds = tailBox.getSelectedId() - 1; touched(); refreshDdp(); scheduleRecheck(); };
+    mixerBox.onChange = [this] { if (updating) return; const int i = mixerBox.getSelectedId() - 1; if (juce::isPositiveAndBelow (i, (int) mixerIds.size())) { def().mixerId = mixerIds[(size_t) i]; touched(); scheduleRecheck(); } };
+    sourceBox.onChange = [this] { if (updating) return; const int i = sourceBox.getSelectedId() - 1; if (juce::isPositiveAndBelow (i, (int) sourceIds.size())) { def().sourceId = sourceIds[(size_t) i]; touched(); scheduleRecheck(); } };
+
+    // the renders: one line under the tabs, always visible
+    renderStatus.setFont (juce::FontOptions (13.0f)); addAndMakeVisible (renderStatus);
+    addAndMakeVisible (renderProgress);
+    prevRenderBtn.setTooltip ("Every piece keeps its two latest renders. This switches the selected piece to the one before the newest (Play and Export then use it), and back again. "
+                              "Use it when a change to the edit or its mixer turned out worse.");
+    renderAgainBtn.setTooltip ("Throws away the idea that the renders are up to date and renders every ticked piece again (into the older of its two slots).");
+    prevRenderBtn.onClick = [this]
+    {
+        const auto id = selectedPiece();
+        auto it = renders.find (id.toString());
+        if (id.isNull() || it == renders.end()) return;
+        MasterRenders store (MasterRenders::folderFor (app.project));
+        store.setUsePrevious (id, ! it->second.previous);
+        checkRenders();
+    };
+    renderAgainBtn.onClick = [this] { checkRenders (true); };
+    addAndMakeVisible (prevRenderBtn); addAndMakeVisible (renderAgainBtn);
+    prevRenderBtn.setEnabled (false);
 
     // ---------------- Virtual Master
     vmList = std::make_unique<MasterListPanel> (true);
     addChildComponent (*vmList);
-    vmList->onSelect = [this] (const juce::Uuid& id) { def().selectedItem = id; vmList->setSelected (id); refreshFields(); };
-    vmList->onInclude = [this] (const juce::Uuid& id, bool on) { if (auto* it = def().findItem (id)) { it->include = on; touched(); } };
+    vmList->onSelect = [this] (const juce::Uuid& id) { def().selectedItem = id; vmList->setSelected (id); refreshFields(); updateRenderButtons(); };
+    vmList->onInclude = [this] (const juce::Uuid& id, bool on) { if (auto* it = def().findItem (id)) { it->include = on; touched(); scheduleRecheck(); } };
     vmList->onRename = [this] (const juce::Uuid& id, const juce::String& t) { if (auto* it = def().findItem (id)) { it->fileName = t; touched(); } };
     vmList->onMove = [this] (int from, int to) { moveItem (from, to, false); };
     for (auto* b : { &vmAll, &vmNone, &vmUp, &vmDown }) addChildComponent (*b);
-    vmAll.onClick  = [this] { for (auto& it : def().items) if (auto* e = editOf (it.editId)) it.include = ! e->isEmpty(); touched(); refreshVm(); };
+    vmAll.onClick  = [this] { for (auto& it : def().items) if (auto* e = editOf (it.editId)) it.include = ! e->isEmpty(); touched(); refreshVm(); scheduleRecheck(); };
     vmNone.onClick = [this] { for (auto& it : def().items) it.include = false; touched(); refreshVm(); };
     vmUp.onClick   = [this] { for (int i = 0; i < (int) def().items.size(); ++i) if (def().items[(size_t) i].editId == def().selectedItem && i > 0) { moveItem (i, i - 1, false); break; } };
     vmDown.onClick = [this] { for (int i = 0; i < (int) def().items.size(); ++i) if (def().items[(size_t) i].editId == def().selectedItem && i + 1 < (int) def().items.size()) { moveItem (i, i + 1, false); break; } };
@@ -617,8 +642,8 @@ MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (pr
     // ---------------- DDP builder
     ddpList = std::make_unique<MasterListPanel> (false);
     addChildComponent (*ddpList);
-    ddpList->onSelect = [this] (const juce::Uuid& id) { def().selectedClip = id; refreshDdp(); };
-    ddpList->onInclude = [this] (const juce::Uuid& id, bool on) { if (auto* c = def().findClip (id)) { c->include = on; touched(); refreshDdp (false); } };
+    ddpList->onSelect = [this] (const juce::Uuid& id) { def().selectedClip = id; refreshDdp(); updateRenderButtons(); };
+    ddpList->onInclude = [this] (const juce::Uuid& id, bool on) { if (auto* c = def().findClip (id)) { c->include = on; touched(); refreshDdp (false); scheduleRecheck(); } };
     ddpList->onMove = [this] (int from, int to) { moveItem (from, to, true); };
     timeline = std::make_unique<MasterTimeline>();
     addChildComponent (*timeline);
@@ -714,6 +739,7 @@ MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (pr
     def().sync (app.project.edits);
     refreshAll (true);
     setView (view);
+    scheduleRecheck (300);                                                  // the first look at the renders, just after the window has opened
     startTimerHz (30);
     setWantsKeyboardFocus (true);
     for (auto* c : getChildren()) if (dynamic_cast<juce::Button*> (c) != nullptr) c->setWantsKeyboardFocus (false);     // a click on a button must not take the arrow keys away
@@ -725,6 +751,7 @@ MasteringComponent::~MasteringComponent()
     stopPlay();
     app.project.removeChangeListener (this);
     job.reset();
+    renderJob.reset();
 }
 
 MasterField* MasteringComponent::addField (juce::Component& parent, juce::OwnedArray<MasterField>& list, const juce::String& caption, std::function<juce::String*()> ref, int maxChars)
@@ -837,6 +864,19 @@ void MasteringComponent::changeListenerCallback (juce::ChangeBroadcaster*) { ref
 void MasteringComponent::timerCallback()
 {
     pollPlayback();
+    // the renders are looked at when the window opens, when it comes to the front again (you may have changed an edit or its mixer meanwhile), and shortly after the choice of pieces changes
+    {
+        bool active = false;
+        if (auto* tl = dynamic_cast<juce::TopLevelWindow*> (getTopLevelComponent())) active = tl == juce::TopLevelWindow::getActiveTopLevelWindow();
+        if (active && ! wasActive) scheduleRecheck (150);
+        wasActive = active;
+        if (recheckDue != 0 && juce::Time::getMillisecondCounter() >= recheckDue && isShowing())
+        {
+            if (job != nullptr || renderJob != nullptr) recheckDue = juce::Time::getMillisecondCounter() + 500;       // busy: look again afterwards
+            else { recheckDue = 0; checkRenders(); }
+        }
+    }
+    if (renderJob != nullptr) renderProgressValue = renderJob->getProgress();
     if (job != nullptr)
     {
         progressValue = job->getProgress();
@@ -862,7 +902,15 @@ void MasteringComponent::refreshSource()
     auto& p = app.project;
     mixerBox.clear (juce::dontSendNotification); mixerIds.clear();
     int sel = 1, i = 0;
-    for (auto& m : p.mixers) { const bool first = i == 0; mixerBox.addItem ((first ? "Processing mixer: " : "Cue mixer: ") + m->name, ++i); mixerIds.push_back (m->id); if (m->id == def().mixerId) sel = i; }
+    mixerBox.addItem ("Each piece through its own mixer", ++i); mixerIds.push_back (juce::Uuid::null());       // the default: every Edit has a mixer of its own
+    int mk = 0;
+    for (auto& m : p.mixers)
+    {
+        const auto label = m->editId.isNull() ? (mk == 0 ? juce::String ("All pieces through the processing mixer: ") : juce::String ("All pieces through the cue mixer: "))
+                                              : juce::String ("All pieces through the edit mixer: ");
+        mixerBox.addItem (label + m->name, ++i); mixerIds.push_back (m->id); if (m->id == def().mixerId) sel = i;
+        ++mk;
+    }
     mixerBox.setSelectedId (sel, juce::dontSendNotification);
     sourceBox.clear (juce::dontSendNotification); sourceIds.clear();
     int ssel = 0, k = 0, firstExt = 0;
@@ -883,6 +931,7 @@ void MasteringComponent::refreshVm()
         MasterListEntry en; en.id = it.editId; en.include = it.include && e != nullptr && ! e->isEmpty();
         en.name = it.fileName.isNotEmpty() ? it.fileName : (e != nullptr ? e->name : juce::String ("(deleted)"));
         en.detail = e != nullptr ? lengthText (masterLengthSamples (*e, def().tailSeconds), e->sampleRate) : juce::String();
+        if (auto r = renders.find (it.editId.toString()); r != renders.end() && en.include) { en.status = r->second.text; en.bad = r->second.bad; }
         es.push_back (en);
     }
     vmList->setEntries (es, def().selectedItem);
@@ -982,6 +1031,7 @@ void MasteringComponent::refreshDdp (bool reloadFields)
         MasterListEntry en; en.id = d.clips[i].editId; en.include = d.clips[i].include && frames[i] > 0;
         en.name = d.clips[i].title.isNotEmpty() ? d.clips[i].title : (e != nullptr ? e->name : juce::String ("(deleted)"));
         en.detail = frames[i] > 0 ? lengthText (frames[i], 44100.0) : juce::String ("empty");
+        if (auto r = renders.find (d.clips[i].editId.toString()); r != renders.end() && en.include) { en.status = r->second.text; en.bad = r->second.bad; }
         es.push_back (en);
     }
     ddpList->setEntries (es, def().selectedClip);
@@ -1137,6 +1187,7 @@ void MasteringComponent::setBusy (bool busy)
 void MasteringComponent::startVmExport()
 {
     if (job != nullptr) { job->cancel(); vmStatus.setText ("Cancelling...", juce::dontSendNotification); return; }
+    if (renderJob != nullptr) { vmStatus.setColour (juce::Label::textColourId, theme::warn); vmStatus.setText ("The pieces are being rendered: try again when the line at the top says the renders are up to date.", juce::dontSendNotification); return; }
     if (app.engine.isRecording()) { showError ("Mastering", "Stop recording first."); return; }
     MasterJobSpec spec;
     const auto err = makeFilesSpec (app.project, def(), spec);
@@ -1148,6 +1199,8 @@ void MasteringComponent::startVmExport()
 void MasteringComponent::startDdpExport()
 {
     if (job != nullptr) { job->cancel(); ddpStatus.setText ("Cancelling...", juce::dontSendNotification); return; }
+    if (renderJob != nullptr) { ddpStatus.setColour (juce::Label::textColourId, theme::warn); ddpStatus.setText ("The pieces are being rendered: try again when the line at the top says the renders are up to date.", juce::dontSendNotification); return; }
+    stopPlay();
     if (app.engine.isRecording()) { showError ("Mastering", "Stop recording first."); return; }
     MasterJobSpec spec;
     auto err = makeDiscSpec (app.project, def(), spec);
@@ -1180,6 +1233,7 @@ void MasteringComponent::jobFinished (const MasterExportResult& r, bool disc)
 {
     job.reset();
     setBusy (false);
+    scheduleRecheck (300);                                               // (the export made or reused the renders: show how they stand)
     auto& status = disc ? ddpStatus : vmStatus;
     progressValue = r.error.isEmpty() && ! r.cancelled ? 1.0 : 0.0;
     if (r.cancelled) { status.setColour (juce::Label::textColourId, theme::text); status.setText ("Cancelled.", juce::dontSendNotification); return; }
@@ -1220,14 +1274,15 @@ void MasteringComponent::setView (int v)
     for (auto* f : discFields) { f->caption.setVisible (dd); f->editor.setVisible (dd); }
     for (auto* f : clipFields) { f->caption.setVisible (dd); f->editor.setVisible (dd); }
     refreshFormatControls();
+    updateRenderButtons();
     resized();
 }
 
 void MasteringComponent::paint (juce::Graphics& g)
 {
     g.fillAll (theme::window);
-    g.setColour (theme::panel); g.fillRect (0, 0, getWidth(), 46);
-    g.setColour (theme::border); g.fillRect (0, 45, getWidth(), 1);
+    g.setColour (theme::panel); g.fillRect (0, 0, getWidth(), 76);
+    g.setColour (theme::border); g.fillRect (0, 45, getWidth(), 1); g.fillRect (0, 75, getWidth(), 1);
 }
 
 void MasteringComponent::resized()
@@ -1245,6 +1300,13 @@ void MasteringComponent::resized()
         r.removeFromRight (6);
         mixerBox.setBounds (r.removeFromRight (200).withSizeKeepingCentre (200, grid::btnH));
         renderCaption.setBounds (r.removeFromRight (86));
+    }
+    {
+        auto strip = all.removeFromTop (30).reduced (8, 3);                        // the renders
+        renderAgainBtn.setBounds (strip.removeFromRight (120)); strip.removeFromRight (6);
+        prevRenderBtn.setBounds (strip.removeFromRight (170)); strip.removeFromRight (10);
+        { const int pw = juce::jmin (220, strip.getWidth() / 3); renderProgress.setBounds (strip.removeFromRight (pw).withSizeKeepingCentre (pw, 16)); strip.removeFromRight (10); }
+        renderStatus.setBounds (strip);
     }
     all.reduce (10, 10);
     if (view == 0) layoutVm (all); else layoutDdp (all);
@@ -1440,8 +1502,25 @@ void MasteringComponent::updateTimeLabel()
 void MasteringComponent::startPlay (double fromSec, double toSec)
 {
     if (app.engine.isRecording()) { showError ("Mastering", "Stop recording first."); return; }
+    const bool continuing = discPlaying;                                        // (clicking in the timeline while it plays: the renders were checked when it started)
     if (discPlaying) { app.stopPlayback(); discPlaying = false; }
-    const auto err = app.playDisc (discItems(), fromSec, toSec, playToken);
+    if (job != nullptr) { ddpStatus.setColour (juce::Label::textColourId, theme::warn); ddpStatus.setText ("Wait for the export to finish before playing.", juce::dontSendNotification); return; }
+    // the disc is played from the renders (what you hear is what the export contains): look at them first, and wait if some have to be made
+    pendingPlay.on = false;
+    if (renderJob != nullptr || (! continuing && ! checkRenders()))
+    {
+        if (renderJob == nullptr) { ddpStatus.setColour (juce::Label::textColourId, theme::warn); ddpStatus.setText (renderStatus.getText(), juce::dontSendNotification); }
+        if (renderJob != nullptr) { pendingPlay = { true, fromSec, toSec }; ddpStatus.setColour (juce::Label::textColourId, theme::text); ddpStatus.setText ("Rendering... playback starts when the renders are ready.", juce::dontSendNotification); }
+        return;
+    }
+    std::vector<AppContext::RenderPlayItem> items;
+    for (auto& di : discItems())
+    {
+        auto r = renders.find (di.editId.toString());
+        if (r == renders.end() || ! r->second.file.existsAsFile()) continue;
+        items.push_back ({ r->second.file, di.startSeconds, r->second.rate, r->second.frames });
+    }
+    const auto err = app.playRenders (items, fromSec, toSec, playToken, previewOutFirst());
     if (err.isNotEmpty()) { ddpStatus.setColour (juce::Label::textColourId, theme::warn); ddpStatus.setText (err, juce::dontSendNotification); return; }
     playStartSec = fromSec; playheadSec = fromSec; discPlaying = true;
     playBtn.setButtonText ("Stop");
@@ -1517,6 +1596,117 @@ bool MasteringComponent::keyPressed (const juce::KeyPress& k)
     if (k == juce::KeyPress ('c') || k == juce::KeyPress ('C')) { centrePlayhead(); return true; }
     if (k == juce::KeyPress::homeKey)  { setPlayhead (0.0, true); timeline->showSeconds (0.0); return true; }
     return false;
+}
+
+// ----------------------------------------------------------------------------- the renders
+std::vector<juce::Uuid> MasteringComponent::includedEdits() const
+{
+    std::vector<juce::Uuid> ids;
+    auto add = [&] (const juce::Uuid& id)
+    {
+        auto* e = editOf (id);
+        if (e != nullptr && ! e->isEmpty() && std::find (ids.begin(), ids.end(), id) == ids.end()) ids.push_back (id);
+    };
+    for (auto& it : def().items) if (it.include) add (it.editId);
+    for (auto& c : def().ddp.clips) if (c.include) add (c.editId);
+    return ids;
+}
+
+bool MasteringComponent::checkRenders (bool force)
+{
+    if (job != nullptr || renderJob != nullptr) { scheduleRecheck (500); return false; }
+    if (app.engine.isRecording()) return false;
+    RenderParams rp;
+    const auto perr = makeRenderParams (app.project, def(), rp);
+    const auto ids = includedEdits();
+    renders.clear();
+    if (perr.isNotEmpty() || ids.empty())
+    {
+        renderStatus.setColour (juce::Label::textColourId, perr.isNotEmpty() ? theme::warn : theme::dimText);
+        renderStatus.setText (perr.isNotEmpty() ? perr : juce::String ("Tick the pieces to render: each one is rendered through its own mixer."), juce::dontSendNotification);
+        updateRenderButtons(); refreshVm(); refreshDdp (false);
+        pendingPlay.on = false;
+        return false;
+    }
+    auto batch = std::make_unique<MasterRenderBatch> (app.project, ids, rp, force);
+    if (batch->getPrepareError().isNotEmpty())
+    {
+        renderStatus.setColour (juce::Label::textColourId, theme::warn); renderStatus.setText (batch->getPrepareError(), juce::dontSendNotification);
+        pendingPlay.on = false;
+        updateRenderButtons();
+        return false;
+    }
+    auto fill = [&] (const MasterRenderBatch& b, bool afterRender)
+    {
+        for (int i = 0; i < b.total(); ++i)
+        {
+            RenderView v; v.file = b.fileFor (i); v.rate = b.rateFor (i); v.frames = b.framesFor (i); v.backup = b.hasBackup (i); v.previous = b.isPrevious (i);
+            if (b.needsRender (i)) { v.text = afterRender ? "not rendered" : "rendering..."; v.bad = afterRender; }
+            else v.text = v.previous ? "previous version" : "rendered";
+            renders[b.editAt (i).toString()] = v;
+        }
+    };
+    fill (*batch, false);
+    if (batch->toRender() == 0)
+    {
+        renderProgressValue = 0.0;
+        renderStatus.setColour (juce::Label::textColourId, theme::text);
+        renderStatus.setText ("Renders are up to date (" + juce::String (batch->total()) + (batch->total() == 1 ? " piece)." : " pieces)."), juce::dontSendNotification);
+        updateRenderButtons(); refreshVm(); refreshDdp (false);
+        return true;
+    }
+    renderProgressValue = 0.0;
+    renderStatus.setColour (juce::Label::textColourId, theme::text);
+    renderStatus.setText ("Rendering " + juce::String (batch->toRender()) + " of " + juce::String (batch->total()) + " pieces through their mixers...", juce::dontSendNotification);
+    updateRenderButtons(); refreshVm(); refreshDdp (false);
+    juce::Component::SafePointer<MasteringComponent> safe (this);
+    renderJob = std::make_unique<MasterRenderJob> (std::move (batch), [safe] (juce::String err) { if (safe != nullptr) safe->renderFinished (err); });
+    return false;
+}
+
+void MasteringComponent::renderFinished (const juce::String& error)
+{
+    renders.clear();
+    if (renderJob != nullptr)
+    {
+        const auto& b = renderJob->batchRef();
+        for (int i = 0; i < b.total(); ++i)
+        {
+            RenderView v; v.file = b.fileFor (i); v.rate = b.rateFor (i); v.frames = b.framesFor (i); v.backup = b.hasBackup (i); v.previous = b.isPrevious (i);
+            v.text = b.needsRender (i) || ! v.file.existsAsFile() ? "not rendered" : (v.previous ? "previous version" : "rendered");
+            v.bad = v.text == "not rendered";
+            renders[b.editAt (i).toString()] = v;
+        }
+    }
+    renderJob.reset();
+    renderProgressValue = error.isEmpty() ? 1.0 : 0.0;
+    const bool ok = error.isEmpty();
+    renderStatus.setColour (juce::Label::textColourId, ok ? theme::text : theme::warn);
+    renderStatus.setText (ok ? juce::String ("Renders are up to date.") : (error == "Cancelled." ? juce::String ("Rendering was cancelled.") : "Rendering stopped: " + error), juce::dontSendNotification);
+    updateRenderButtons(); refreshVm(); refreshDdp (false);
+    if (pendingPlay.on) { const auto pp = pendingPlay; pendingPlay.on = false; if (ok) startPlay (pp.from, pp.to); }
+    else if (ok) scheduleRecheck (400);                                  // (something may have changed while it was rendering)
+}
+
+void MasteringComponent::updateRenderButtons()
+{
+    const auto id = selectedPiece();
+    auto it = renders.find (id.toString());
+    const bool have = ! id.isNull() && it != renders.end() && renderJob == nullptr && job == nullptr;
+    prevRenderBtn.setEnabled (have && (it->second.backup || it->second.previous));
+    prevRenderBtn.setButtonText (have && it->second.previous ? "Use newest render" : "Use previous render");
+    renderAgainBtn.setEnabled (renderJob == nullptr && job == nullptr);
+}
+
+int MasteringComponent::previewOutFirst() const
+{
+    auto& p = app.project;
+    if (p.mixers.empty()) return 0;
+    const auto& pm = *p.mixers.front();
+    auto outOf = [&] (const juce::Uuid& busId) { for (auto& b : pm.busPool) if (b->busId == busId) return b->outFirst.load(); return -1; };
+    if (p.kindOf (def().sourceId) == NodeKind::ExtBus) { const int f = outOf (def().sourceId); if (f >= 0) return f; }
+    for (auto& b : p.buses) if (b.external) { const int f = outOf (b.id); if (f >= 0) return f; }
+    return 0;
 }
 
 void MasteringComponent::pollPlayback()

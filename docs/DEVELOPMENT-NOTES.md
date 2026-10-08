@@ -458,3 +458,17 @@ Mixer window size, found from the log: Windows applied the window's biggest-size
 * **Quit asks first:** closing Fermata (window close or Quit) always asks "Save and quit / Quit without saving / Cancel" (Main.cpp systemRequestedQuit); Cancel keeps working.
 
 * **Fix joins are not edits:** the joins made by Pitch, Pitch curve, Spectral Repair, De-Click and Export for Processing carry `fixIn` / `fixOut` flags on the pieces (EditDef::isFixJoin). They are drawn as a small grey "fx" flag with no number, are left out of the edit count (also in the Trim window caption), and "Accept, next / previous fade" skips them; on a fix join those two buttons are hidden. They can still be opened and trimmed (click + T, double-click, or the **Trim Window** button, formerly "Trim join").
+
+## Per-Edit mixers
+- Every Edit owns a MixerState (MixerState::editId). Made in Project::addEdit / syncEditMixers (also on load for old projects) as a copy of the processing mixer (levels, inserts, Ext-bus outputs, dither). Named after the Edit (renaming either renames both). Order in `mixers`: processing, cue mixers, then Edit mixers; `cueEnd()` = first Edit mixer. addMixer inserts before the Edit mixers.
+- Engine: an Edit mixer only runs while PlaybackSession::editId matches; while an Edit with a mixer plays, the processing mixer rests (same outputs would double). Cue mixers are unaffected. TB playback tap uses the playing Edit's mixer. Only ONE playback session exists at a time, so two Edits cannot play together yet.
+- Automation lanes with mixerId null drive the Edit's own mixer (automationPlanFor(..., onProcessingMixer) is used by the CD preview, which still plays through the processing mixer).
+- Bounce: BounceItem::mixerId; Mastering "Each piece through its own mixer" is the default (MasteringDef::mixerId null).
+- UI: Mixers menu lists Edit mixers separately; Edit window "Edit Mixer" button; Design page lists them (cannot be deleted alone); Mixer window hides Audition/Delete/Alt for Edit mixers.
+
+## Mastering render cache
+- Each Edit in the Mastering window gets a stereo render (native rate, 32-bit float) in `<project>/Mastering renders/<editId>-A.wav` / `-B.wav`, listed in `renders.json`. Temp file `mrtmp-<editId>.wav` is swapped in when finished.
+- Two-slot rule: at most two renders per Edit. A new render overwrites the OLDER slot; the newest becomes the backup. A render only happens when the fingerprint changed (edit content, its mixer, source bus, tail, sample rate). "Use previous version" pins the older slot.
+- Fingerprint (MasterRender.cpp) uses FNV-1a hashes; controls driven by automation (fader/pan/gain/sends, plug-in state of automated slots) are masked so playing an edit doesn't cause re-renders. "Render again" forces.
+- Mastering Play (DDP view) uses `AppContext::playRenders` -> PlaybackSession with `directOut`: stereo render goes to the output pair of the chosen source Ext bus at unity, no mixer. Previews are native resolution.
+- Export reuses the renders. DDP always 44.1 kHz / 16-bit: SRC + TPDF dither only happen at DDP render (makeDiscSpec + MasterExportJob stages 2-3); cache renders stay native.

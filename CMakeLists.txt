@@ -37,6 +37,7 @@ target_sources(Fermata PRIVATE
     src/core/MasterDef.cpp
     src/core/Ddp.cpp
     src/core/MasterExport.cpp
+    src/core/MasterRender.cpp
     src/core/Ravenna.cpp
     src/ui/AppContext.cpp
     src/ui/BounceWindow.cpp

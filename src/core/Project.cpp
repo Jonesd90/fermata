@@ -430,10 +430,11 @@ MixerState& Project::addMixer (const String& mixerName)
 {
     auto m = std::make_unique<MixerState>();
     m->name = mixerName;
-    mixers.push_back (std::move (m));
+    const auto at = (size_t) cueEnd();                  // cue mixers go before the Edit mixers
+    mixers.insert (mixers.begin() + (std::ptrdiff_t) at, std::move (m));
     syncMixers();
     structureChanged();
-    return *mixers.back();
+    return *mixers[at];
 }
 
 void Project::removeMixer (int index)
@@ -464,8 +465,52 @@ EditDef& Project::addEdit (const String& editName, const juce::Uuid& windowId)
     auto e = std::make_unique<EditDef>();
     e->name = editName; e->windowId = windowId;
     edits.push_back (std::move (e));
-    changed();
+    if (syncEditMixers()) structureChanged();           // the new Edit gets its own mixer
+    else changed();
     return *edits.back();
+}
+
+MixerState& Project::makeEditMixer (const EditDef& e)
+{
+    auto m = std::make_unique<MixerState>();
+    m->name = e.name; m->editId = e.id;
+    mixers.push_back (std::move (m));
+    auto& mx = *mixers.back();
+    syncMixers();
+    // it starts as a copy of the processing mixer: levels, pans, mutes, sends, plug-ins, and the same Ext buses going to the same outputs
+    for (auto& src : mixers)
+    {
+        if (! src->editId.isNull()) continue;
+        applyMix (mx, mixSnapshot (*src, true), restoreSampleRate, restoreBlock);
+        mx.mainBus = src->mainBus;
+        mx.ditherBits.store (src->ditherBits.load());
+        for (auto& b : buses)
+            if (b.external)
+            {
+                const BusState* sb = nullptr;
+                for (auto& p : src->busPool) if (p->busId == b.id) sb = p.get();
+                if (sb != nullptr) mx.busFor (b.id)->outFirst.store (sb->outFirst.load());
+            }
+        break;                                           // (the first mixer that is not an Edit mixer is the processing mixer)
+    }
+    return mx;
+}
+
+bool Project::syncEditMixers()
+{
+    bool any = false;
+    for (size_t i = mixers.size(); i-- > 0;)             // mixers whose Edit is gone
+        if (! mixers[i]->editId.isNull() && findEdit (mixers[i]->editId) == nullptr)
+        {
+            retiredMixers.push_back (std::move (mixers[i])); mixers.erase (mixers.begin() + (std::ptrdiff_t) i); any = true;
+        }
+    if (cueEnd() == 0) return any;                       // no processing mixer to copy from (cannot normally happen)
+    for (auto& e : edits)
+    {
+        if (auto* m = mixerOfEdit (e->id)) { if (m->name != e->name) { m->name = e->name; any = true; } }
+        else { makeEditMixer (*e); any = true; }
+    }
+    return any;
 }
 
 EditDef* Project::findEdit (const juce::Uuid& id)
@@ -651,6 +696,102 @@ juce::File Project::takeFolder (const TakeWindowDef& w) const
 }
 
 // ---------------------------------------------------------------- persistence
+var Project::mixerToVar (const MixerState& mref) const
+{
+    const MixerState* m = &mref;
+    var o = obj();
+    put (o, "id", m->id.toString()); put (o, "name", m->name);
+    if (! m->editId.isNull()) put (o, "editId", m->editId.toString());
+    juce::Array<var> strips;
+    for (auto& t : tracks)
+    {
+        const StripState* s = nullptr;
+        for (auto& p : m->stripPool) if (p->trackId == t.id) s = p.get();
+        if (s != nullptr) strips.add (stripToVar (*s, t.id, true));
+    }
+    put (o, "strips", strips);
+    put (o, "mainBus", m->mainBus.toString());
+    put (o, "ditherBits", m->ditherBits.load());
+    juce::Array<var> fxs;
+    for (auto& f : buses)
+    {
+        const BusState* s = nullptr;
+        for (auto& p : m->busPool) if (p->busId == f.id) s = p.get();
+        if (s != nullptr) fxs.add (busToVar (*s, f.id, true, true));
+    }
+    put (o, "busStates", fxs);
+    return o;
+}
+
+var Project::editToVar (const EditDef& eref) const
+{
+    const EditDef* e = &eref;
+    var o = obj();
+    put (o, "id", e->id.toString()); put (o, "name", e->name); put (o, "window", e->windowId.toString());
+    put (o, "rate", e->sampleRate); put (o, "insertIndex", e->insertIndex); put (o, "markIn", e->markIn); put (o, "markOut", e->markOut);
+    put (o, "fixIn", e->fixIn); put (o, "fixOut", e->fixOut);
+    if (! e->fixTracks.empty()) { juce::Array<var> ft; for (auto& t : e->fixTracks) ft.add (t.toString()); put (o, "fixTracks", ft); }
+    auto regionToVar = [this] (const EditRegion& r)
+    {
+        var ro = obj();
+        put (ro, "id", r.id.toString()); put (ro, "window", r.windowId.toString()); put (ro, "take", r.takeId.toString());
+        put (ro, "takeName", r.takeName); put (ro, "in", (juce::int64) r.srcIn); put (ro, "out", (juce::int64) r.srcOut);
+        put (ro, "start", (juce::int64) r.startSample); put (ro, "sourceLength", (juce::int64) r.sourceLength); put (ro, "barIn", r.barIn); put (ro, "barOut", r.barOut);
+        put (ro, "rate", r.sampleRate); put (ro, "curve", (int) r.curve); if (r.fixIn) put (ro, "fixIn", true); if (r.fixOut) put (ro, "fixOut", true);
+        put (ro, "inStart", r.inStart); put (ro, "inEnd", r.inEnd); put (ro, "outStart", r.outStart); put (ro, "outEnd", r.outEnd);
+        juce::Array<var> rf;
+        for (auto& f : r.files)
+        {
+            var fo = obj();
+            put (fo, "track", f.trackId.toString()); put (fo, "trackName", f.trackName);
+            putFilePath (fo, f.file, projectFile.getParentDirectory()); put (fo, "channels", f.numChannels);
+            if (f.fileStart != 0) put (fo, "fileStart", (juce::int64) f.fileStart);
+            rf.add (fo);
+        }
+        put (ro, "files", rf);
+        if (r.waiting.active()) put (ro, "waiting", waitingToVar (r.waiting, projectFile.getParentDirectory()));
+        juce::Array<var> gs;
+        for (auto& g : r.gains)
+        {
+            var go = obj();
+            put (go, "at", (juce::int64) g.at); put (go, "ramp", g.ramp);
+            juce::Array<var> dbs; for (float d : g.db) dbs.add ((double) d);
+            put (go, "db", dbs);
+            gs.add (go);
+        }
+        put (ro, "gains", gs);
+        return ro;
+    };
+    juce::Array<var> rs, ods;
+    for (auto& r : e->regions)  rs.add (regionToVar (r));
+    for (auto& r : e->overdubs) ods.add (regionToVar (r));
+    put (o, "overdubs", ods); put (o, "playhead", e->playheadSeconds);
+    { juce::Array<var> ti; for (auto& id : e->trackIds) ti.add (id.toString()); put (o, "trackIds", ti); }
+    put (o, "automationOn", e->automationOn);
+    {
+        juce::Array<var> ls;
+        for (auto& l : e->lanes)
+        {
+            var lo = obj();
+            put (lo, "id", l.id.toString()); put (lo, "track", l.trackId.toString()); put (lo, "param", l.param);
+            put (lo, "mixer", l.mixerId.toString()); put (lo, "locked", l.locked);
+            juce::Array<var> ps;
+            for (auto& p : l.pts)
+            {
+                var po = obj();
+                put (po, "id", p.id.toString()); put (po, "region", p.region.toString()); put (po, "take", p.take.toString()); put (po, "src", (juce::int64) p.srcPos);
+                put (po, "time", (juce::int64) p.time); put (po, "value", (double) p.value); put (po, "floating", p.floating);
+                ps.add (po);
+            }
+            put (lo, "points", ps);
+            ls.add (lo);
+        }
+        put (o, "autoLanes", ls);
+    }
+    put (o, "regions", rs);
+    return o;
+}
+
 var Project::toVar (bool editorialOnly) const
 {
     var root = obj();
@@ -705,30 +846,7 @@ var Project::toVar (bool editorialOnly) const
     { juce::Array<var> tb; for (int o : tbOutputs) tb.add (o); put (root, "tbOutputs", juce::var (tb)); }
 
     juce::Array<var> mx;
-    for (auto& m : mixers)
-    {
-        var o = obj();
-        put (o, "id", m->id.toString()); put (o, "name", m->name);
-        juce::Array<var> strips;
-        for (auto& t : tracks)
-        {
-            const StripState* s = nullptr;
-            for (auto& p : m->stripPool) if (p->trackId == t.id) s = p.get();
-            if (s != nullptr) strips.add (stripToVar (*s, t.id, true));
-        }
-        put (o, "strips", strips);
-        put (o, "mainBus", m->mainBus.toString());
-        put (o, "ditherBits", m->ditherBits.load());
-        juce::Array<var> fxs;
-        for (auto& f : buses)
-        {
-            const BusState* s = nullptr;
-            for (auto& p : m->busPool) if (p->busId == f.id) s = p.get();
-            if (s != nullptr) fxs.add (busToVar (*s, f.id, true, true));
-        }
-        put (o, "busStates", fxs);
-        mx.add (o);
-    }
+    for (auto& m : mixers) mx.add (mixerToVar (*m));
     put (root, "mixers", mx);
     }
 
@@ -773,73 +891,7 @@ var Project::toVar (bool editorialOnly) const
     put (root, "takeWindows", tw);
 
     juce::Array<var> eds;
-    for (auto& e : edits)
-    {
-        var o = obj();
-        put (o, "id", e->id.toString()); put (o, "name", e->name); put (o, "window", e->windowId.toString());
-        put (o, "rate", e->sampleRate); put (o, "insertIndex", e->insertIndex); put (o, "markIn", e->markIn); put (o, "markOut", e->markOut);
-        put (o, "fixIn", e->fixIn); put (o, "fixOut", e->fixOut);
-        if (! e->fixTracks.empty()) { juce::Array<var> ft; for (auto& t : e->fixTracks) ft.add (t.toString()); put (o, "fixTracks", ft); }
-        auto regionToVar = [this] (const EditRegion& r)
-        {
-            var ro = obj();
-            put (ro, "id", r.id.toString()); put (ro, "window", r.windowId.toString()); put (ro, "take", r.takeId.toString());
-            put (ro, "takeName", r.takeName); put (ro, "in", (juce::int64) r.srcIn); put (ro, "out", (juce::int64) r.srcOut);
-            put (ro, "start", (juce::int64) r.startSample); put (ro, "sourceLength", (juce::int64) r.sourceLength); put (ro, "barIn", r.barIn); put (ro, "barOut", r.barOut);
-            put (ro, "rate", r.sampleRate); put (ro, "curve", (int) r.curve); if (r.fixIn) put (ro, "fixIn", true); if (r.fixOut) put (ro, "fixOut", true);
-            put (ro, "inStart", r.inStart); put (ro, "inEnd", r.inEnd); put (ro, "outStart", r.outStart); put (ro, "outEnd", r.outEnd);
-            juce::Array<var> rf;
-            for (auto& f : r.files)
-            {
-                var fo = obj();
-                put (fo, "track", f.trackId.toString()); put (fo, "trackName", f.trackName);
-                putFilePath (fo, f.file, projectFile.getParentDirectory()); put (fo, "channels", f.numChannels);
-                if (f.fileStart != 0) put (fo, "fileStart", (juce::int64) f.fileStart);
-                rf.add (fo);
-            }
-            put (ro, "files", rf);
-            if (r.waiting.active()) put (ro, "waiting", waitingToVar (r.waiting, projectFile.getParentDirectory()));
-            juce::Array<var> gs;
-            for (auto& g : r.gains)
-            {
-                var go = obj();
-                put (go, "at", (juce::int64) g.at); put (go, "ramp", g.ramp);
-                juce::Array<var> dbs; for (float d : g.db) dbs.add ((double) d);
-                put (go, "db", dbs);
-                gs.add (go);
-            }
-            put (ro, "gains", gs);
-            return ro;
-        };
-        juce::Array<var> rs, ods;
-        for (auto& r : e->regions)  rs.add (regionToVar (r));
-        for (auto& r : e->overdubs) ods.add (regionToVar (r));
-        put (o, "overdubs", ods); put (o, "playhead", e->playheadSeconds);
-        { juce::Array<var> ti; for (auto& id : e->trackIds) ti.add (id.toString()); put (o, "trackIds", ti); }
-        put (o, "automationOn", e->automationOn);
-        {
-            juce::Array<var> ls;
-            for (auto& l : e->lanes)
-            {
-                var lo = obj();
-                put (lo, "id", l.id.toString()); put (lo, "track", l.trackId.toString()); put (lo, "param", l.param);
-                put (lo, "mixer", l.mixerId.toString()); put (lo, "locked", l.locked);
-                juce::Array<var> ps;
-                for (auto& p : l.pts)
-                {
-                    var po = obj();
-                    put (po, "id", p.id.toString()); put (po, "region", p.region.toString()); put (po, "take", p.take.toString()); put (po, "src", (juce::int64) p.srcPos);
-                    put (po, "time", (juce::int64) p.time); put (po, "value", (double) p.value); put (po, "floating", p.floating);
-                    ps.add (po);
-                }
-                put (lo, "points", ps);
-                ls.add (lo);
-            }
-            put (o, "autoLanes", ls);
-        }
-        put (o, "regions", rs);
-        eds.add (o);
-    }
+    for (auto& e : edits) eds.add (editToVar (*e));
     put (root, "edits", eds);
     put (root, "mastering", mastering.toVar());
     return root;
@@ -907,6 +959,7 @@ bool Project::fromVar (const var& root)
             auto m = std::make_unique<MixerState>();
             m->id = juce::Uuid (v["id"].toString()); m->name = v["name"].toString();
             m->mainBus = juce::Uuid (v["mainBus"].toString());
+            if (v["editId"].toString().isNotEmpty()) m->editId = juce::Uuid (v["editId"].toString());
             if (v.hasProperty ("ditherBits")) { const int db = (int) v["ditherBits"]; m->ditherBits.store (db == 16 || db == 0 ? db : 24); }
             if (auto* ss = v["strips"].getArray())
                 for (auto& sv : *ss)
@@ -1022,7 +1075,9 @@ bool Project::fromVar (const var& root)
 
     mastering.fromVar (root["mastering"]);
     mastering.sync (edits);
+    std::stable_partition (mixers.begin(), mixers.end(), [] (const std::unique_ptr<MixerState>& m) { return m->editId.isNull(); });     // the Edit mixers come last
     syncMixers();
+    syncEditMixers();                                    // projects from before Edit mixers: every Edit gets one (a copy of the processing mixer)
     structureChanged();
     dirty = false;
     return true;
