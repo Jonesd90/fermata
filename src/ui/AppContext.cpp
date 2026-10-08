@@ -107,6 +107,7 @@ void AppContext::setTbPair (int first, bool on)
 void AppContext::applyTalkback()
 {
     engine.setTalkbackRouting (project.crMicInputs, project.tbOutputs);
+    engine.setStageMix (project.stageGainDb, project.stagePan, project.stagePlaybackDb, project.stageOutputDb);
     engine.setCrMic (crMicOpen());
     engine.setTalkbackPlayback (tbPlaybackOn());
     // (the coloured borders that used to flash round the screen are gone: Pre-Rec, C-R and P-B are shown as squares in the menu bar)

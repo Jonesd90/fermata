@@ -472,3 +472,8 @@ Mixer window size, found from the log: Windows applied the window's biggest-size
 - Fingerprint (MasterRender.cpp) uses FNV-1a hashes; controls driven by automation (fader/pan/gain/sends, plug-in state of automated slots) are masked so playing an edit doesn't cause re-renders. "Render again" forces.
 - Mastering Play (DDP view) uses `AppContext::playRenders` -> PlaybackSession with `directOut`: stereo render goes to the output pair of the chosen source Ext bus at unity, no mixer. Previews are native resolution.
 - Export reuses the renders. DDP always 44.1 kHz / 16-bit: SRC + TPDF dither only happen at DDP render (makeDiscSpec + MasterExportJob stages 2-3); cache renders stay native.
+
+## Stage speaker mixer (main window, top right)
+- `src/ui/StageMixer.h` (StageSpeakerPanel): one strip per CR input (fader -60..+10 dB, pan knob), a Playback strip and an Output strip. Shown only when a CR input or a TB pair exists; sideways scroll only if the strips do not fit.
+- Settings live on `Project` (`stageGainDb`, `stagePan` indexed by driver input, `stagePlaybackDb`, `stageOutputDb`) and are saved in the project file.
+- Engine: `AudioEngine::setStageMix` fills lock-free gains; the TB section of the audio callback applies them with a per-block ramp. Centre pan is unity on both sides, so 0 dB / centre is exactly the old behaviour. Several TB pairs share the one stage mix.

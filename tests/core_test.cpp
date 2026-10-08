@@ -1134,6 +1134,24 @@ int main()
         auto pairs = rig.measure (eng);
         CHECK (std::abs (pairs[0] - cr[2]) < 1e-6 && std::abs (pairs[1] - cr[2]) < 1e-6 && std::abs (pairs[2] - cr[2]) < 1e-6 && std::abs (pairs[3] - cr[2]) < 1e-6);
         eng.setCrMic (false); rig.run (eng, 4);
+        eng.setTalkbackRouting ({ 5 }, 2); eng.setCrMic (true);                 // the stage speaker mixer: gain and pan of the CR input
+        eng.setStageMix ({}, {}, 0.0f, 0.0f); rig.run (eng, 6);
+        auto flat = rig.measure (eng);
+        CHECK (std::abs (flat[2] - cr[2]) < 1e-6 && std::abs (flat[3] - cr[3]) < 1e-6);        // 0 dB and centre = exactly as before
+        std::vector<float> gdb (8, 0.0f), gpan (8, 0.0f);
+        gpan[5] = -1.0f; eng.setStageMix (gdb, gpan, 0.0f, 0.0f); rig.run (eng, 6);
+        auto left = rig.measure (eng);
+        CHECK (left[2] > cr[2] * 0.95f && left[3] < 1e-6);                                       // panned hard left: right side silent
+        gpan[5] = 0.0f; gdb[5] = -6.0f; eng.setStageMix (gdb, gpan, 0.0f, 0.0f); rig.run (eng, 6);
+        auto minus6 = rig.measure (eng);
+        CHECK (minus6[2] > cr[2] * 0.48f && minus6[2] < cr[2] * 0.52f);                         // -6 dB is about half
+        gdb[5] = 0.0f; eng.setStageMix (gdb, gpan, 0.0f, -6.0f); rig.run (eng, 6);
+        auto outm6 = rig.measure (eng);
+        CHECK (outm6[2] > cr[2] * 0.48f && outm6[2] < cr[2] * 0.52f && outm6[3] > cr[3] * 0.48f && outm6[3] < cr[3] * 0.52f);   // the output fader moves both sides
+        gdb[5] = -60.0f; eng.setStageMix (gdb, gpan, 0.0f, 0.0f); rig.run (eng, 6);
+        auto offm = rig.measure (eng);
+        CHECK (offm[2] < 1e-6 && offm[3] < 1e-6);                                               // all the way down is off
+        eng.setStageMix ({}, {}, 0.0f, 0.0f); eng.setCrMic (false); rig.run (eng, 4);
         eng.setTalkbackRouting ({ 5 }, 2);
         // playback
         CHECK (eng.startPlayback (std::make_unique<PlaybackSession> (counts, segmentsForTake (p, *gg), 0, gg->lengthSamples, 48000.0, eng.getMaxBlock())).isEmpty());
@@ -1158,6 +1176,9 @@ int main()
         Project q; juce::String e1;                                            // the routing is saved
         p.crMicInputs = { 5, 6 }; p.tbOutputs = { 0, 2 };
         CHECK (p.save (e1)); CHECK (q.load (p.projectFile, e1) && q.crMicInputs == std::vector<int> ({ 5, 6 }) && q.tbOutputs == std::vector<int> ({ 0, 2 }));
+        p.stageGainDb = { 0.0f, -3.5f }; p.stagePan = { 0.0f, 0.25f }; p.stagePlaybackDb = -2.0f; p.stageOutputDb = 1.5f;
+        CHECK (p.save (e1)); Project q2; CHECK (q2.load (p.projectFile, e1) && std::abs (q2.stageGainOf (1) + 3.5f) < 1e-4 && std::abs (q2.stagePanOf (1) - 0.25f) < 1e-4 && std::abs (q2.stagePlaybackDb + 2.0f) < 1e-4 && std::abs (q2.stageOutputDb - 1.5f) < 1e-4);     // the stage mixer is saved
+        p.stageGainDb.clear(); p.stagePan.clear(); p.stagePlaybackDb = 0.0f; p.stageOutputDb = 0.0f;
         p.crMicInputs.clear(); p.tbOutputs.clear();
     }
 

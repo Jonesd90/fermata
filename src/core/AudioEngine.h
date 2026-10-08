@@ -111,6 +111,21 @@ public:
         for (int o = 0; o < kMaxInputs; ++o) { tbMask[(size_t) o].store (m[o], std::memory_order_relaxed); any = any || m[o] != 0; }
         tbAny.store (any);
     }
+    /** The stage speaker mixer (what the TB pair carries): a gain (dB) and a pan (-1 left .. +1 right) for each CR input, one gain for the playback
+        and one for the whole output. Centre pan is full level on both sides, 0 dB everywhere is the old behaviour. -60 dB means off. Message thread. */
+    void setStageMix (const std::vector<float>& inputDb, const std::vector<float>& inputPan, float playbackDb, float outputDb) noexcept
+    {
+        auto lin = [] (float db) { return db <= -59.9f ? 0.0f : juce::Decibels::decibelsToGain (db); };
+        for (int i = 0; i < kMaxInputs; ++i)
+        {
+            const float g = i < (int) inputDb.size() ? lin (inputDb[(size_t) i]) : 1.0f;
+            const float p = juce::jlimit (-1.0f, 1.0f, i < (int) inputPan.size() ? inputPan[(size_t) i] : 0.0f);
+            stageL[(size_t) i].store (g * juce::jmin (1.0f, 1.0f - p), std::memory_order_relaxed);
+            stageR[(size_t) i].store (g * juce::jmin (1.0f, 1.0f + p), std::memory_order_relaxed);
+        }
+        stagePb.store (lin (playbackDb), std::memory_order_relaxed);
+        stageOut.store (lin (outputDb), std::memory_order_relaxed);
+    }
     void setCrMic (bool open) noexcept { crOn.store (open); }
     void setTalkbackPlayback (bool on) noexcept { tbPlay.store (on); }
 
@@ -239,6 +254,9 @@ private:
     std::array<std::atomic<bool>, kMaxInputs> crSel {};
     std::array<std::atomic<int>, kMaxInputs> tbMask {};      // per output: bit 1 = it carries the left of a talkback pair, bit 2 = the right
     std::atomic<bool> tbAny { false };
+    std::array<std::atomic<float>, kMaxInputs> stageL {}, stageR {};     // the stage speaker mixer: each CR input's level into the left / right of a TB pair
+    std::atomic<float> stagePb { 1.0f }, stageOut { 1.0f };
+    float stagePrevL[kMaxInputs] {}, stagePrevR[kMaxInputs] {}, stagePrevPb = 1.0f, stagePrevOut = 1.0f;     // audio thread: last block's values (so a fader move glides)
     std::atomic<bool> crOn { false }, tbPlay { false };
     float crGain = 0.0f;                            // audio thread: the CR mic's own fade (no click when it opens or closes)
     std::vector<float> tbTap;                       // audio thread: the playback-only main output of the processing mixer, left then right

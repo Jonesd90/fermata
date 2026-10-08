@@ -1,5 +1,6 @@
 #pragma once
 #include "AppContext.h"
+#include "StageMixer.h"
 
 namespace td
 {
@@ -204,6 +205,7 @@ private:
     juce::OwnedArray<OutputRow> outputRows;
     Divider ioDivider { true };
     float ioSplit = 0.62f;                         // share of the width given to the inputs
+    StageSpeakerPanel stagePanel { app };
     juce::OwnedArray<juce::TextButton> auditionButtons;
     juce::Label auditionCaption;
     std::unique_ptr<juce::FileChooser> chooser;

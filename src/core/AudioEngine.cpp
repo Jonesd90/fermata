@@ -8,6 +8,10 @@ AudioEngine::AudioEngine (Project& p) : project (p)
 {
     for (auto& x : inputPeak) x.store (0.0f);
     for (auto& x : outputPeak) x.store (0.0f);
+    for (auto& x : stageL) x.store (1.0f);
+    for (auto& x : stageR) x.store (1.0f);
+    for (auto& x : stagePrevL) x = 1.0f;
+    for (auto& x : stagePrevR) x = 1.0f;
     writerThread.startThread (juce::Thread::Priority::high);
 }
 
@@ -467,26 +471,43 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
             bool anySel = false;
             for (int ci = 0; ci < numIn && ci < kMaxInputs && ! anySel; ++ci) anySel = crSel[(size_t) ci].load (std::memory_order_relaxed) && in[ci] != nullptr;
             const float target = (crOn.load (std::memory_order_relaxed) && anySel) ? 1.0f : 0.0f;
-            const float g0 = crGain, step = (target - g0) / (float) juce::jmax (1, numSamples);
+            const float g0 = crGain;
+            const float pbT = stagePb.load (std::memory_order_relaxed), outT = stageOut.load (std::memory_order_relaxed);
+            const float invN = 1.0f / (float) juce::jmax (1, numSamples);
             for (int o = 0; o < numOut && o < kMaxInputs; ++o)
             {
                 const int mask = tbMask[(size_t) o].load (std::memory_order_relaxed);
                 if (mask == 0 || out[o] == nullptr) continue;
                 float* L = out[o];
                 juce::FloatVectorOperations::clear (L, numSamples);
+                auto addRamp = [&] (const float* src, float a0, float a1)
+                {
+                    if (a0 == a1) { juce::FloatVectorOperations::addWithMultiply (L, src, a0, numSamples); return; }
+                    const float st = (a1 - a0) * invN;
+                    for (int i = 0; i < numSamples; ++i) L[i] += src[i] * (a0 + st * (float) (i + 1));
+                };
                 if (tbPlayNow)                                                   // recorded audio only (see above)
                 {
-                    if (mask & 1) juce::FloatVectorOperations::add (L, tapL, numSamples);
-                    if (mask & 2) juce::FloatVectorOperations::add (L, tapR, numSamples);
+                    if (mask & 1) addRamp (tapL, stagePrevPb, pbT);
+                    if (mask & 2) addRamp (tapR, stagePrevPb, pbT);
                 }
                 if (target > 0.0f || crGain > 0.0f)
                     for (int ci = 0; ci < numIn && ci < kMaxInputs; ++ci)        // every selected input is added (the fade is the same for all)
                     {
                         if (! crSel[(size_t) ci].load (std::memory_order_relaxed) || in[ci] == nullptr) continue;
-                        const float* src = in[ci];
-                        for (int i = 0; i < numSamples; ++i) L[i] += src[i] * (g0 + step * (float) (i + 1));
+                        const float tl = stageL[(size_t) ci].load (std::memory_order_relaxed), tr = stageR[(size_t) ci].load (std::memory_order_relaxed);
+                        const float a0 = g0 * (((mask & 1) ? stagePrevL[ci] : 0.0f) + ((mask & 2) ? stagePrevR[ci] : 0.0f));
+                        const float a1 = target * (((mask & 1) ? tl : 0.0f) + ((mask & 2) ? tr : 0.0f));
+                        addRamp (in[ci], a0, a1);
                     }
+                if (outT != 1.0f || stagePrevOut != 1.0f)                        // the output fader of the stage speaker mixer
+                {
+                    const float st = (outT - stagePrevOut) * invN;
+                    for (int i = 0; i < numSamples; ++i) L[i] *= stagePrevOut + st * (float) (i + 1);
+                }
             }
+            for (int ci = 0; ci < kMaxInputs; ++ci) { stagePrevL[ci] = stageL[(size_t) ci].load (std::memory_order_relaxed); stagePrevR[ci] = stageR[(size_t) ci].load (std::memory_order_relaxed); }
+            stagePrevPb = pbT; stagePrevOut = outT;
             crGain = target;
         }
         else crGain = 0.0f;

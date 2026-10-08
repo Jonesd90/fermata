@@ -290,6 +290,7 @@ void MainComponent::showStartPanel()
 MainComponent::MainComponent (AppContext& a) : app (a)
 {
     addAndMakeVisible (logo);
+    addChildComponent (stagePanel);
     takeBox.setCompact (true);                                    // the take counter lives in the menu bar
     addAndMakeVisible (dock);
     dock.onChange = [this] { resized(); };
@@ -445,18 +446,30 @@ void MainComponent::resized()
     syncMenuStrip();
     auto r = getLocalBounds().withTrimmedTop (menuBarH).reduced (10);
     dock.setBounds (r.removeFromBottom (dock.wantedHeight()));
+    // the stage speaker mixer lives top right, beside the logo, project line and audition buttons (it needs a CR input or a TB pair)
+    const bool showStage = stagePanel.wanted();
+    stagePanel.setVisible (showStage);
+    const int topY = r.getY(), rightEdge = r.getRight();
+    int leftLimit = rightEdge;
+    if (showStage)
+    {
+        const int panelW = juce::jlimit (220, juce::jmax (220, rightEdge - (r.getX() + 560)), stagePanel.wantedWidth());
+        stagePanel.setBounds (rightEdge - panelW, topY, panelW, StageSpeakerPanel::kHeight);
+        leftLimit = rightEdge - panelW - 10;
+    }
     auto header = r.removeFromTop (60);
     logo.setBounds (header.removeFromLeft (200));
     r.removeFromTop (8);
-    auto info = r.removeFromTop (22);                        // one line: project, then the driver and recording state
+    auto info = r.removeFromTop (22).withRight (leftLimit);  // one line: project, then the driver and recording state
     projectName.setBounds (info.removeFromLeft (juce::jmin (260, info.getWidth() / 3)));
     statusLabel.setBounds (info);
     if (! auditionButtons.isEmpty())
     {
-        auto bar = r.removeFromTop (32);
+        auto bar = r.removeFromTop (32).withRight (leftLimit);
         auditionCaption.setBounds (bar.removeFromLeft (150));
         for (auto* b : auditionButtons) b->setBounds (bar.removeFromLeft (juce::jmin (260, juce::jmax (150, bar.getWidth() / juce::jmax (1, auditionButtons.size())))).withSizeKeepingCentre (juce::jmin (260, juce::jmax (150, bar.getWidth() / juce::jmax (1, auditionButtons.size()))) - 4, grid::btnH));
     }
+    if (showStage && r.getY() - topY < StageSpeakerPanel::kHeight + 2) r.removeFromTop (StageSpeakerPanel::kHeight + 2 - (r.getY() - topY));     // make room for the panel's height
     r.removeFromTop (6);
     r.removeFromTop (2);
     // driver inputs (with ARM, monitoring and the preamp controls) on the left, driver outputs on the right
@@ -495,6 +508,7 @@ void MainComponent::rebuildRows()
 
 void MainComponent::changeListenerCallback (juce::ChangeBroadcaster* src)
 {
+    stagePanel.rebuildIfNeeded(); resized();
     if (src == &app.project.structure) { rebuildRows(); rebuildAuditionBar(); }
     else { for (auto* r : inputRows) r->refreshFromModel(); for (auto* r : outputRows) r->refreshFromModel(); }   // a second name or a preamp setting changed
 }

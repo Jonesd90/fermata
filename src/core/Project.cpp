@@ -134,7 +134,7 @@ Project::Project() { createDefaultDesign(); }
 
 void Project::createDefaultDesign()
 {
-    inputs.clear(); tracks.clear(); buses.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); altMixer = juce::Uuid::null(); retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); preampDevices.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); preampDevices.clear();
     setInputCount (8);
     setOutputCount (4);
     addMixer ("Processing mixer");
@@ -846,6 +846,11 @@ var Project::toVar (bool editorialOnly) const
         juce::Array<juce::var> cr; for (int i : crMicInputs) cr.add (i);
         put (root, "crMicInputs", juce::var (cr));
     }
+    {
+        juce::Array<juce::var> sg, sp; for (float v : stageGainDb) sg.add ((double) v); for (float v : stagePan) sp.add ((double) v);
+        put (root, "stageGainDb", juce::var (sg)); put (root, "stagePan", juce::var (sp));
+        put (root, "stagePlaybackDb", (double) stagePlaybackDb); put (root, "stageOutputDb", (double) stageOutputDb);
+    }
     put (root, "altMixer", altMixer.toString());
     { juce::Array<var> tb; for (int o : tbOutputs) tb.add (o); put (root, "tbOutputs", juce::var (tb)); }
 
@@ -906,7 +911,7 @@ bool Project::fromVar (const var& root)
     if (! root.isObject() || (root.getProperty ("format", {}).toString() != "Fermata project" && root.getProperty ("format", {}).toString() != "TakeDAW project"))
         return false;
 
-    inputs.clear(); tracks.clear(); buses.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); altMixer = juce::Uuid::null(); retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); preampDevices.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); preampDevices.clear();
     name = root.getProperty ("name", "Untitled").toString();
     windowBounds.clear();
     if (auto* wb = root["windowBounds"].getDynamicObject())
@@ -952,6 +957,10 @@ bool Project::fromVar (const var& root)
     else if (! root["crMicInput"].isVoid() && (int) root["crMicInput"] >= 0) crMicInputs.push_back ((int) root["crMicInput"]);      // older projects: one CR input
     if (auto* ta = root["tbOutputs"].getArray()) { for (auto& v : *ta) tbOutputs.push_back ((int) v); }
     else if (! root["tbOutput"].isVoid() && (int) root["tbOutput"] >= 0) tbOutputs.push_back ((int) root["tbOutput"]);          // older projects: one pair
+    stageGainDb.clear(); stagePan.clear();
+    if (auto* sg = root["stageGainDb"].getArray()) for (auto& v : *sg) stageGainDb.push_back ((float) (double) v);
+    if (auto* sp = root["stagePan"].getArray())    for (auto& v : *sp) stagePan.push_back ((float) (double) v);
+    stagePlaybackDb = (float) (double) root.getProperty ("stagePlaybackDb", 0.0); stageOutputDb = (float) (double) root.getProperty ("stageOutputDb", 0.0);
     crMicInputs.erase (std::remove_if (crMicInputs.begin(), crMicInputs.end(), [this] (int i) { return i < 0 || i >= (int) inputs.size(); }), crMicInputs.end());
     tbOutputs.erase (std::remove_if (tbOutputs.begin(), tbOutputs.end(), [this] (int o) { return o < 0 || o >= (int) outputs.size(); }), tbOutputs.end());
     std::sort (tbOutputs.begin(), tbOutputs.end()); tbOutputs.erase (std::unique (tbOutputs.begin(), tbOutputs.end()), tbOutputs.end());

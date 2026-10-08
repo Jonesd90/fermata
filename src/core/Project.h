@@ -68,6 +68,11 @@ public:
     std::vector<BusDef>        buses;
     std::vector<OutputDef>    outputs;
     std::vector<int> crMicInputs;  // the driver inputs that make up the Control Room mic: any number of them (empty = none)
+    /** The stage speaker mixer (main window, top right): what the TB pair carries. Indexed by driver input (grown as needed); 0 dB and centre = the old behaviour. */
+    std::vector<float> stageGainDb, stagePan;
+    float stagePlaybackDb = 0.0f, stageOutputDb = 0.0f;
+    float stageGainOf (int input) const { return input >= 0 && input < (int) stageGainDb.size() ? stageGainDb[(size_t) input] : 0.0f; }
+    float stagePanOf (int input) const  { return input >= 0 && input < (int) stagePan.size() ? stagePan[(size_t) input] : 0.0f; }
     bool isCrMic (int input) const { return std::find (crMicInputs.begin(), crMicInputs.end(), input) != crMicInputs.end(); }
     /** The mixer the Stream Deck's second Mixer key opens (null = the first mixer after the processing mixer). */
     juce::Uuid altMixer = juce::Uuid::null();
