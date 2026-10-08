@@ -265,7 +265,7 @@ bool RavennaDevice::sendChannelFields (int i, const juce::var& fields)
         msg->setProperty ("id", nextId()); msg->setProperty ("clientId", clientId);
         json = juce::JSON::toString (juce::var (msg), true);
         outgoing.add (json);
-        if (fields.getDynamicObject() != nullptr && fields.getDynamicObject()->hasProperty ("inputMode"))       // for the log: Mic / Line changes sent to the device
+        if (fields.getDynamicObject() != nullptr)       // for the log: every preamp change sent to a device
             juce::Logger::writeToLog ("Device " + hostName + " SENT: " + path + " = " + juce::JSON::toString (fields, true));
     }
     return true;
@@ -278,8 +278,7 @@ void RavennaDevice::handleSettings (const juce::var& data)
     const auto path = data["path"].toString();
     const auto& value = data["value"];
     bool changed = false;
-    if (path != "$" && path.containsIgnoreCase ("channels") && value.toString().containsIgnoreCase ("inputMode") == false
-        && value.getDynamicObject() != nullptr && value.getDynamicObject()->hasProperty ("inputMode"))          // for the log: a Mic / Line change reported by the device
+    if (path != "$" && path.containsIgnoreCase ("channels") && value.getDynamicObject() != nullptr)          // for the log: every preamp change reported by a device
         juce::Logger::writeToLog ("Device " + hostName + " REPORTED: " + path + " = " + juce::JSON::toString (value, true));
     {
         const juce::ScopedLock sl (lock);
