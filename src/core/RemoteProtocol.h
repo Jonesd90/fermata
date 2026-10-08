@@ -17,6 +17,7 @@ struct State
     int  takeNumber = 1;               // recording: the number of this take; otherwise the number of the next take
     bool playing = false;
     bool talkbackReady = false;        // a CR mic and a TB output are set up
+    bool playbackReady = false;        // a TB output is set up (enough for the Playback speaker key: it does not need the CR mic)
     bool crOpen = false;               // the CR mic is open (latched or held)
     bool pbOn = false;                 // playback is going to the TB speaker
     bool preRec = false;
@@ -33,7 +34,7 @@ struct State
         auto* o = new juce::DynamicObject();
         o->setProperty ("type", "state");
         o->setProperty ("recording", recording); o->setProperty ("takeNumber", takeNumber); o->setProperty ("playing", playing);
-        o->setProperty ("talkbackReady", talkbackReady); o->setProperty ("crOpen", crOpen); o->setProperty ("pbOn", pbOn); o->setProperty ("preRec", preRec);
+        o->setProperty ("talkbackReady", talkbackReady); o->setProperty ("playbackReady", playbackReady); o->setProperty ("crOpen", crOpen); o->setProperty ("pbOn", pbOn); o->setProperty ("preRec", preRec);
         o->setProperty ("mixer1Open", mixerOpen[0]); o->setProperty ("mixer2Open", mixerOpen[1]); o->setProperty ("hasMixer2", hasMixer2); o->setProperty ("mixer2Name", mixer2Name);
         o->setProperty ("hasSession", hasSession); o->setProperty ("sessionLeft", sessionLeft);
         o->setProperty ("timeOfDay", timeOfDay); o->setProperty ("sessionText", sessionText);

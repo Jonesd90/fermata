@@ -6,7 +6,7 @@
 
 namespace td
 {
-static constexpr int kRulerH = 22, kLaneH = 26, kNameW = 150;
+static constexpr int kRulerH = 22, kLaneH = 38, kNameW = 150;
 
 class EditTimeline : public juce::Component, private juce::ChangeListener, private juce::Timer
 {
@@ -138,6 +138,14 @@ public:
         }
         g.setColour (theme::ruler); g.fillRect (0, 0, getWidth(), kRulerH);
         const double step = pixelsPerSecond >= 200 ? 0.5 : pixelsPerSecond >= 60 ? 1.0 : pixelsPerSecond >= 24 ? 5.0 : pixelsPerSecond >= 8 ? 10.0 : pixelsPerSecond >= 3 ? 60.0 : 300.0;
+        // fainter unlabelled lines between the labelled ones: 5 s -> every 1 s, 1 s -> every 0.5 s, then 0.25 s (two zoom steps), then 0.1 s however far in
+        const double minor = pixelsPerSecond >= 450 ? 0.1 : pixelsPerSecond >= 200 ? 0.25 : pixelsPerSecond >= 60 ? 0.5 : pixelsPerSecond >= 24 ? 1.0 : pixelsPerSecond >= 8 ? 5.0 : pixelsPerSecond >= 3 ? 10.0 : 60.0;
+        const int minorPer = juce::jmax (1, (int) std::lround (step / minor));
+        for (int n = 0; (double) n * minor * pixelsPerSecond < getWidth(); ++n)
+        {
+            if (n % minorPer == 0) continue;
+            g.setColour (theme::grid.withAlpha (0.45f)); g.drawVerticalLine (xOf ((double) n * minor), (float) kRulerH - 6, (float) getHeight());
+        }
         g.setFont (11.0f);
         for (double s = 0; s * pixelsPerSecond < getWidth(); s += step)
         {
@@ -161,7 +169,7 @@ public:
             const int wpx = juce::jmax (3, (int) ((double) r.length() / rate * pixelsPerSecond));
             const bool selected = isSelected (r.id);
 
-            auto lane = juce::Rectangle<int> (x0, kRulerH + 2, wpx, kLaneH - 4);
+            auto lane = juce::Rectangle<int> (x0, kRulerH + 11, wpx, kLaneH - 13);   // below the flags, so the title has a line to itself
             g.setColour (selected ? juce::Colour (0xffc26500) : theme::accent);
             g.fillRect (lane);
             g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
@@ -242,7 +250,7 @@ public:
             const int x0 = xOf ((double) r.startSample / rate);
             const int wpx = juce::jmax (3, (int) ((double) r.length() / rate * pixelsPerSecond));
             const bool selected = isSelected (r.id);
-            auto lane = juce::Rectangle<int> (x0, kRulerH + 8, wpx, kLaneH - 12);
+            auto lane = juce::Rectangle<int> (x0, kRulerH + 14, wpx, kLaneH - 18);
             g.setColour (selected ? juce::Colour (0xffc26500) : juce::Colour (0xff6a4cc2)); g.fillRect (lane);
             g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
             g.drawText ("OVERDUB  " + r.takeName, lane.reduced (4, 0), juce::Justification::centredLeft, true);
@@ -1042,7 +1050,7 @@ private:
         for (auto it = ed.overdubs.rbegin(); it != ed.overdubs.rend(); ++it)
         {
             const int x0 = xOf ((double) it->startSample / rate), wpx = juce::jmax (3, (int) ((double) it->length() / rate * pixelsPerSecond));
-            if (p.y >= kRulerH + 8 && p.y < kRulerH + kLaneH - 4) { if (p.x >= x0 && p.x < x0 + wpx) return &*it; continue; }     // its little lane at the top
+            if (p.y >= kRulerH + 14 && p.y < kRulerH + kLaneH - 4) { if (p.x >= x0 && p.x < x0 + wpx) return &*it; continue; }     // its little lane at the top
             if (! juce::isPositiveAndBelow (row, (int) rowTracks().size())) continue;
             bool has = false; for (auto& f : it->files) if (f.trackId == rowTracks()[(size_t) row].id) has = true;
             if (has && overdubBand (top + row * rowH, x0, wpx).contains (p)) return &*it;

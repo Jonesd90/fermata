@@ -93,6 +93,7 @@ remote::State RemoteControlServer::collect() const
     s.takeNumber = number;
     s.playing = app.isPlaying();
     s.talkbackReady = app.talkbackReady();
+    s.playbackReady = ! app.project.tbOutputs.empty();
     s.crOpen = app.crMicOpen();
     s.pbOn = app.tbPlaybackOn();
     s.preRec = app.sessionMode();
