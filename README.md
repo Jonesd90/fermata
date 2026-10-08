@@ -56,7 +56,7 @@ In a Take Window, click the ruler to place the playhead, mark the part you want 
 | C | Centre the window on the playhead |
 | P | Put the 1 / 2 flags round the whole selected take (sample-exact) |
 | D | Mark a take as a dud |
-| L | Loop |
+| L | Loop (the circular-arrows button) |
 | Home / End | Go to the start / end |
 | Left / Right arrows | Zoom out / in (around the playhead) |
 | Up / Down arrows | Make the tracks smaller / bigger |

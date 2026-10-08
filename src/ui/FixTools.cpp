@@ -2391,7 +2391,7 @@ static void askProcessingName (const juce::String& message, const juce::String& 
     auto* aw = new juce::AlertWindow ("Export for Processing", message, juce::MessageBoxIconType::NoIcon);
     aw->addTextEditor ("n", suggestion);
     aw->addButton ("Export", 1, juce::KeyPress (juce::KeyPress::returnKey));
-    aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    aw->addButton ("Close", 0, juce::KeyPress (juce::KeyPress::escapeKey));
     aw->enterModalState (true, juce::ModalCallbackFunction::create ([aw, done] (int res)
     {
         const auto n = aw->getTextEditorContents ("n").trim();

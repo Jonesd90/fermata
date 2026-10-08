@@ -38,7 +38,7 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     void changeWaveZoom (float factor) { waveZoom = juce::jlimit (0.25f, 40.0f, waveZoom * factor); project.sendChangeMessage(); }
 
     /** WaveColour: the waveforms are coloured by what is in them (pitch = hue, tonal = vivid, a thump below 100 Hz = black). Off by default; the rainbow button in the take and edit windows. */
-    bool waveColour = false;
+    bool waveColour = true;
     WaveColorCache waveColors;
     void setWaveColour (bool on) { waveColour = on; project.sendChangeMessage(); }
     /** The colours of this file's waveform, or nothing while it is not wanted or not worked out yet (it is being worked out in the background). */

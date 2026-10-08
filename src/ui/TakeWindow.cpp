@@ -838,7 +838,7 @@ private:
                                           "Every file of this take is renamed to match.", juce::MessageBoxIconType::NoIcon);
         aw->addTextEditor ("label", g->label, "Take name");
         aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
-        aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        aw->addButton ("Close", 0, juce::KeyPress (juce::KeyPress::escapeKey));
         auto safe = juce::Component::SafePointer<TakeTimeline> (this);
         aw->enterModalState (true, juce::ModalCallbackFunction::create ([safe, aw, gid] (int r)
         {
@@ -1161,7 +1161,7 @@ void TakeWindowComponent::resized()
     {
         { &nameLabel, 45 }, { &nameEditor, 200, grid::btnH, 10 }, { &takeBox, 84, 58, 14 },
         { &recordButton, grid::btnW, grid::btnH, 6 }, { &timeLabel, 150, 28, 14 },
-        { &startButton, 40, grid::btnH, 2 }, { &backButton, 40, grid::btnH, 2 }, { &playButton }, { &fwdButton, 40, grid::btnH, 2 }, { &endTransportButton, 40, grid::btnH, 6 }, { &playMarkedButton }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 84, grid::btnH, 14 },
+        { &startButton, 40, grid::btnH, 2 }, { &backButton, 40, grid::btnH, 2 }, { &playButton }, { &fwdButton, 40, grid::btnH, 2 }, { &endTransportButton, 40, grid::btnH, 6 }, { &playMarkedButton }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
         { &editInButton }, { &editOutButton }, { &toEditButton }, { &toEditAtButton }, { &overdubBox, grid::btnW - 10, grid::btnH, 14 },
         { &editWindowButton }, { &bounceButton, grid::btnW, grid::btnH, 14 },
         { &sendCaption, 120, grid::btnH, 2 }, { &sendBox, 200, grid::btnH, 14 },
@@ -1226,7 +1226,7 @@ void TakeWindowComponent::toEdit (bool atEditPlayhead)
         auto* aw = new juce::AlertWindow ("Name the edit", "This is the first piece you send from \"" + w->name + "\".\nWhat should the edit be called?", juce::MessageBoxIconType::QuestionIcon);
         aw->addTextEditor ("name", w->name + " - edit", "Edit name");
         aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
-        aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        aw->addButton ("Close", 0, juce::KeyPress (juce::KeyPress::escapeKey));
         auto safe = juce::Component::SafePointer<TakeWindowComponent> (this);
         aw->enterModalState (true, juce::ModalCallbackFunction::create ([safe, aw, atEditPlayhead] (int r)
         {
@@ -1471,7 +1471,7 @@ void TakeWindowComponent::toggleBarSearch()
     aw->addTextEditor ("bar", {}, "Bar");
     if (auto* te = aw->getTextEditor ("bar")) te->setInputRestrictions (5, "0123456789");
     aw->addButton ("Search", 1, juce::KeyPress (juce::KeyPress::returnKey));
-    aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    aw->addButton ("Close", 0, juce::KeyPress (juce::KeyPress::escapeKey));
     juce::Component::SafePointer<TakeWindowComponent> safe (this);
     aw->enterModalState (true, juce::ModalCallbackFunction::create ([safe, aw] (int r)
     {

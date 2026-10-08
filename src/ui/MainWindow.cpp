@@ -597,7 +597,7 @@ void MainComponent::showProjectMenu()
             auto* aw = new juce::AlertWindow ("Rename project", "Project name:", juce::MessageBoxIconType::NoIcon);
             aw->addTextEditor ("n", app.project.name);
             aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
-            aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+            aw->addButton ("Close", 0, juce::KeyPress (juce::KeyPress::escapeKey));
             aw->enterModalState (true, juce::ModalCallbackFunction::create ([this, aw] (int res)
             {
                 if (res == 1 && aw->getTextEditorContents ("n").isNotEmpty()) { app.project.name = aw->getTextEditorContents ("n"); app.project.changed(); }
@@ -660,7 +660,7 @@ void MainComponent::showEditsMenu()
 {
     juce::PopupMenu m;
     int i = 1;
-    for (auto& e : app.project.edits) { std::set<juce::String> takesUsed; for (auto& rg : e->regions) takesUsed.insert (rg.takeId.toString()); const int nt = (int) takesUsed.size(); m.addItem (i++, "Open: " + e->name + "  (" + juce::String (nt) + (nt == 1 ? " Take)" : " Takes)")); }
+    for (auto& e : app.project.edits) m.addItem (i++, "Open: " + e->name);
     m.addSeparator();
     m.addItem (1000, "New empty edit");
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&editsButton), [this] (int r)

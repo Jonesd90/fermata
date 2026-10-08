@@ -1286,7 +1286,7 @@ void EditWindowComponent::resized()
     const std::vector<FlowItem> items
     {
         { &nameCaption, 45 }, { &nameEditor, 240, grid::btnH, 14 },
-        { &startButton, 40, grid::btnH, 2 }, { &backButton, 40, grid::btnH, 2 }, { &playButton }, { &fwdButton, 40, grid::btnH, 2 }, { &endTransportButton, 40, grid::btnH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 84, grid::btnH, 14 },
+        { &startButton, 40, grid::btnH, 2 }, { &backButton, 40, grid::btnH, 2 }, { &playButton }, { &fwdButton, 40, grid::btnH, 2 }, { &endTransportButton, 40, grid::btnH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
         { &trimButton }, { &deleteButton, grid::btnW, grid::btnH, 14 },
         { &leftButton }, { &rightButton }, { &endButton, grid::btnW, grid::btnH, 14 },
         { &bounceButton }, { &mixerButton, grid::btnW, grid::btnH, 14 },

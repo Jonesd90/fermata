@@ -332,10 +332,11 @@ void AppContext::askRestorePreamps (const PreampMemory& stored, const std::vecto
                                      juce::MessageBoxIconType::QuestionIcon);
     w->addComboBox ("choice", { "Keep the preamp settings as they are now", "Load the stored preamp settings from last time this project was used" });
     w->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    w->addButton ("Close (keep as they are)", 0, juce::KeyPress (juce::KeyPress::escapeKey));
     juce::Component::SafePointer<juce::AlertWindow> safe (w);
-    w->enterModalState (true, juce::ModalCallbackFunction::create ([this, safe, stored, differing] (int)
+    w->enterModalState (true, juce::ModalCallbackFunction::create ([this, safe, stored, differing] (int result)
     {
-        const bool load = safe != nullptr && safe->getComboBoxComponent ("choice") != nullptr && safe->getComboBoxComponent ("choice")->getSelectedItemIndex() == 1;
+        const bool load = result == 1 && safe != nullptr && safe->getComboBoxComponent ("choice") != nullptr && safe->getComboBoxComponent ("choice")->getSelectedItemIndex() == 1;
         if (load)
             for (int i : differing) { auto it = stored.inputs.find (i); if (it != stored.inputs.end()) project.setPreamp (i, it->second); }
         preampAsking = false; haveWrittenPreamps = false;

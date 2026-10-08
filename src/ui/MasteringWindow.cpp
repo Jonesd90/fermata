@@ -1614,7 +1614,7 @@ void MasteringComponent::autoPqInPlace()
     juce::Logger::writeToLog ("Auto PQ (keep positions): " + juce::String ((int) L.tracks.size()) + " tracks, " + juce::String (flagsPutBack) + " flags put back, " + juce::String (overlaps) + " overlaps, end " + sectorsToMsf (L.leadOut));
 }
 
-/** The ISRC tool: country, registrant and year codes, and the number of the first track; the rest follow (+1 each, or all the same). Also puts them on the matching Virtual Master files. */
+/** The ISRC tool: country, registrant and year codes, and the number of the first track; the rest follow (each one higher). Also puts them on the matching Virtual Master files. */
 void MasteringComponent::openIsrcTool()
 {
     auto& clips = def().ddp.clips;
@@ -1633,9 +1633,8 @@ void MasteringComponent::openIsrcTool()
     aw->addTextEditor ("reg", reg, "Registrant / label code (3 letters or numbers)");
     aw->addTextEditor ("yy", yy, "Year code (2 digits)");
     aw->addTextEditor ("num", num, "Number of the FIRST track (5 digits, e.g. 00121)");
-    aw->addComboBox ("mode", { "Sequential: each track after the first is one higher", "The same number on every track" }, "Numbering");
     aw->addButton ("Fill in the tracks", 1, juce::KeyPress (juce::KeyPress::returnKey));
-    aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    aw->addButton ("Close", 0, juce::KeyPress (juce::KeyPress::escapeKey));
     juce::Component::SafePointer<juce::AlertWindow> awp (aw);
     juce::Component::SafePointer<MasteringComponent> safe (this);
     aw->enterModalState (true, juce::ModalCallbackFunction::create ([awp, safe, order] (int r)
@@ -1643,7 +1642,7 @@ void MasteringComponent::openIsrcTool()
         if (r != 1 || awp == nullptr || safe == nullptr) return;
         auto cc = awp->getTextEditorContents ("cc").trim().toUpperCase(), reg = awp->getTextEditorContents ("reg").trim().toUpperCase();
         auto yy = awp->getTextEditorContents ("yy").trim(), num = awp->getTextEditorContents ("num").trim();
-        const bool sequential = awp->getComboBoxComponent ("mode")->getSelectedItemIndex() == 0;
+        const bool sequential = true;                                           // every track after the first is one higher
         auto fail = [&] (const juce::String& why) { safe->ddpStatus.setColour (juce::Label::textColourId, theme::warn); safe->ddpStatus.setText ("ISRCs not changed: " + why, juce::dontSendNotification); };
         const auto allOf = [] (const juce::String& t, auto pred) { for (auto ch : t) if (! pred (ch)) return false; return true; };
         const auto isLetter = [] (juce::juce_wchar c) { return c >= 'A' && c <= 'Z'; };

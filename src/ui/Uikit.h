@@ -678,6 +678,37 @@ public:
     }
 };
 
+/** The Loop button: two arrows chasing each other round a circle. Grey when off, bright orange when on. */
+class LoopButton : public juce::Button
+{
+public:
+    LoopButton() : juce::Button ({}) { setClickingTogglesState (true); }
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        auto b = getLocalBounds().toFloat().reduced (0.5f);
+        const bool on = getToggleState();
+        const auto lit = juce::Colour (0xffffa000);
+        g.setColour (on ? lit : down ? theme::button.brighter (0.2f) : over ? theme::button.brighter (0.1f) : theme::button); g.fillRoundedRectangle (b, 4.0f);
+        g.setColour (on ? lit.brighter (0.5f) : theme::border); g.drawRoundedRectangle (b, 4.0f, on ? 1.6f : 1.0f);
+        const auto ink = on ? juce::Colour (0xff1a1a1a) : theme::text.withAlpha (0.85f);
+        const auto c = b.getCentre();
+        const float r = juce::jmin (b.getWidth(), b.getHeight()) * 0.27f;
+        const float pi = juce::MathConstants<float>::pi;
+        g.setColour (ink);
+        for (int k = 0; k < 2; ++k)                                   // two arcs, each ending in an arrow head, going round the same way
+        {
+            const float a0 = (float) k * pi + 0.45f, a1 = a0 + pi - 0.9f;
+            juce::Path arc; arc.addCentredArc (c.x, c.y, r, r, 0.0f, a0, a1, true);
+            g.strokePath (arc, juce::PathStrokeType (1.9f));
+            const float tx = c.x + r * std::sin (a1), ty = c.y - r * std::cos (a1);               // the arc's end point
+            const float dx = std::cos (a1), dy = std::sin (a1);                                    // the direction of travel there
+            const float nx = -dy, ny = dx;
+            juce::Path head; head.addTriangle (tx + dx * 4.2f, ty + dy * 4.2f, tx + nx * 3.2f, ty + ny * 3.2f, tx - nx * 3.2f, ty - ny * 3.2f);
+            g.fillPath (head);
+        }
+    }
+};
+
 /** The scroll bars (and the viewport) must never take the keyboard: after using one, the arrow keys still control the zoom / track heights of the window,
     not the scroll bar. Whenever a bar is moved, the keyboard goes back to the timeline. */
 struct KeepKeysOnTimeline : private juce::ScrollBar::Listener
