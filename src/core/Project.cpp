@@ -578,6 +578,8 @@ void Project::syncMixers()
 void Project::adoptPreamp (int inputIndex, const PreampSettings& s)
 {
     if (! juce::isPositiveAndBelow (inputIndex, (int) inputs.size())) return;
+    if (inputs[(size_t) inputIndex].preamp.line != s.line)       // for the log: who changed Mic / Line
+        juce::Logger::writeToLog ("Preamp: input " + juce::String (inputIndex + 1) + " Mic/Line " + (s.line ? "MIC -> LINE" : "LINE -> MIC") + " reported by the HARDWARE (gain " + juce::String (s.gainDb, 1) + ")");
     inputs[(size_t) inputIndex].preamp = s;
     sendChangeMessage();                                  // refresh the windows; nothing to save, the hardware is the source of truth
 }
@@ -585,6 +587,8 @@ void Project::adoptPreamp (int inputIndex, const PreampSettings& s)
 void Project::setPreamp (int inputIndex, const PreampSettings& s)
 {
     if (! juce::isPositiveAndBelow (inputIndex, (int) inputs.size())) return;
+    if (inputs[(size_t) inputIndex].preamp.line != s.line)
+        juce::Logger::writeToLog ("Preamp: input " + juce::String (inputIndex + 1) + " Mic/Line " + (s.line ? "MIC -> LINE" : "LINE -> MIC") + " set from the program (gain " + juce::String (s.gainDb, 1) + ")");
     inputs[(size_t) inputIndex].preamp = s;
     if (preampDriver != nullptr) preampDriver->apply (inputIndex, s);
     changed();
