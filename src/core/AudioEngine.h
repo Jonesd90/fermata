@@ -126,6 +126,8 @@ public:
         stagePb.store (lin (playbackDb), std::memory_order_relaxed);
         stageOut.store (lin (outputDb), std::memory_order_relaxed);
     }
+    /** The loudest sample (absolute) sent to the stage speakers since the last call; then it starts again. Message thread (the red PEAK light). */
+    float takeStagePeak() noexcept { return stagePeakSeen.exchange (0.0f); }
     void setCrMic (bool open) noexcept { crOn.store (open); }
     void setTalkbackPlayback (bool on) noexcept { tbPlay.store (on); }
 
@@ -256,6 +258,7 @@ private:
     std::atomic<bool> tbAny { false };
     std::array<std::atomic<float>, kMaxInputs> stageL {}, stageR {};     // the stage speaker mixer: each CR input's level into the left / right of a TB pair
     std::atomic<float> stagePb { 1.0f }, stageOut { 1.0f };
+    std::atomic<float> stagePeakSeen { 0.0f };                                                           // audio thread: loudest sample sent to a TB output since the last look
     float stagePrevL[kMaxInputs] {}, stagePrevR[kMaxInputs] {}, stagePrevPb = 1.0f, stagePrevOut = 1.0f;     // audio thread: last block's values (so a fader move glides)
     std::atomic<bool> crOn { false }, tbPlay { false };
     float crGain = 0.0f;                            // audio thread: the CR mic's own fade (no click when it opens or closes)

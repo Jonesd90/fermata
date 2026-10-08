@@ -1148,9 +1148,13 @@ int main()
         gdb[5] = 0.0f; eng.setStageMix (gdb, gpan, 0.0f, -6.0f); rig.run (eng, 6);
         auto outm6 = rig.measure (eng);
         CHECK (outm6[2] > cr[2] * 0.48f && outm6[2] < cr[2] * 0.52f && outm6[3] > cr[3] * 0.48f && outm6[3] < cr[3] * 0.52f);   // the output fader moves both sides
+        eng.takeStagePeak(); eng.setStageMix (gdb, gpan, 0.0f, 0.0f); rig.run (eng, 6);
+        { const float pkSeen = eng.takeStagePeak(); CHECK (pkSeen > 0.2f && pkSeen < 0.6f); }   // the peak light's reading follows the level (a 0.5 sine)
         gdb[5] = -60.0f; eng.setStageMix (gdb, gpan, 0.0f, 0.0f); rig.run (eng, 6);
         auto offm = rig.measure (eng);
         CHECK (offm[2] < 1e-6 && offm[3] < 1e-6);                                               // all the way down is off
+        eng.setCrMic (false); eng.setStageMix (std::vector<float> (8, 10.0f), {}, 10.0f, 10.0f); rig.run (eng, 6);
+        { auto hot = rig.measure (eng); CHECK (hot[2] < 1e-9 && hot[3] < 1e-9); }                  // even with every stage fader up, live mics never reach TB when the CR mic is closed
         eng.setStageMix ({}, {}, 0.0f, 0.0f); eng.setCrMic (false); rig.run (eng, 4);
         eng.setTalkbackRouting ({ 5 }, 2);
         // playback

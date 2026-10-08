@@ -505,6 +505,11 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
                     const float st = (outT - stagePrevOut) * invN;
                     for (int i = 0; i < numSamples; ++i) L[i] *= stagePrevOut + st * (float) (i + 1);
                 }
+                {
+                    const auto mm = juce::FloatVectorOperations::findMinAndMax (L, numSamples);
+                    const float pk = juce::jmax (std::abs (mm.getStart()), std::abs (mm.getEnd()));
+                    if (pk > stagePeakSeen.load (std::memory_order_relaxed)) stagePeakSeen.store (pk, std::memory_order_relaxed);
+                }
             }
             for (int ci = 0; ci < kMaxInputs; ++ci) { stagePrevL[ci] = stageL[(size_t) ci].load (std::memory_order_relaxed); stagePrevR[ci] = stageR[(size_t) ci].load (std::memory_order_relaxed); }
             stagePrevPb = pbT; stagePrevOut = outT;
