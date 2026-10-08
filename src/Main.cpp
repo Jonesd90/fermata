@@ -128,6 +128,7 @@ public:
         ctx->toggleMixerAt = [this] (int i) { toggleMixerAt (i); };
         ctx->mixerOpenAt = [this] (int i)
         {
+            if (i == 0) i = contextMixerIndex();
             if (i == 1) i = ctx->project.altMixerIndex();                       // the Stream Deck's second key is the Alt Mixer
             if (! juce::isPositiveAndBelow (i, (int) ctx->project.mixers.size())) return false;
             auto it = windows.find ("mixer:" + ctx->project.mixers[(size_t) i]->id.toString());
@@ -409,11 +410,38 @@ private:
                 return;
             }
     }
-    /** M: opens the processing mixer (the first mixer), or closes it if it is open. */
+    /** What M and the first Stream Deck key mean right now: the mixer of the Edit you are working in. "Working in" = the Edit window, Trim window or Edit mixer that was
+        most recently in front of all the other Fermata windows (not just the one that is in front this very moment, which can be the menu bar, another program, or the Stream Deck's focus).
+        If the most recent one is an Edit mixer that is still open, the key closes it again. Anywhere else (a take window, the processing mixer ...) it is the processing mixer (index 0). */
+    int contextMixerIndex() const
+    {
+        auto& P = ctx->project;
+        ToolWindow* best = nullptr; juce::String bestKey;
+        for (auto& kv : windows)
+        {
+            auto* w = kv.second.get();
+            if (w == nullptr || ! w->isVisible() || DockHub::get().contains (w)) continue;
+            if (best == nullptr || w->lastActive > best->lastActive) { best = w; bestKey = kv.first; }
+        }
+        if (best == nullptr || best->lastActive == 0) return 0;
+        if (bestKey.startsWith ("edit:") || bestKey.startsWith ("trim:"))
+        {
+            if (auto* m = P.mixerOfEdit (juce::Uuid (bestKey.fromFirstOccurrenceOf (":", false, false))))
+                for (size_t i = 0; i < P.mixers.size(); ++i) if (P.mixers[i].get() == m) return (int) i;
+        }
+        else if (bestKey.startsWith ("mixer:"))
+        {
+            const juce::Uuid id (bestKey.fromFirstOccurrenceOf (":", false, false));
+            for (size_t i = 0; i < P.mixers.size(); ++i) if (P.mixers[i]->id == id && ! P.mixers[i]->editId.isNull()) return (int) i;
+        }
+        return 0;
+    }
+    /** M: opens the processing mixer (or the mixer of the Edit window you are in), or closes it if it is open. */
     void toggleProcessingMixer() { toggleMixerAt (0); }
     /** The mixer with this index (0 = the processing mixer, 1 = the next one, usually the producer's): opens it, or closes it if it is open. */
     void toggleMixerAt (int index)
     {
+        if (index == 0) index = contextMixerIndex();
         if (index == 1) index = ctx->project.altMixerIndex();                  // the second key is the Alt Mixer (the one ticked in its window, else the first cue mixer)
         if (! juce::isPositiveAndBelow (index, (int) ctx->project.mixers.size())) return;
         const auto id = ctx->project.mixers[(size_t) index]->id;
