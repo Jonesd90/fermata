@@ -2128,11 +2128,13 @@ int main()
 
     SECTION ("preamps: a fixed line input (Anubis jack 3/4) is read as gain / phase / low cut / instrument only");
     {
-        auto jack = juce::JSON::parse (R"({"id":7,"name":"Jack 3/4","custom":{"ins":{"capabilities":{"channel":{"lineGain":true}},"channels":[{"lineGain":420,"phase":true,"lowCut":false,"z_in":true,"inputMode":0,"m48V":true},{"lineGain":100}]}}})");
+        auto jack = juce::JSON::parse (R"({"id":7,"name":"Jack 3/4","custom":{"ins":{"capabilities":{"channel":{"lineGain":true}},"channels":[{"lineGain":420,"instrumentGain":150,"phase":true,"lowCut":false,"inputMode":2},{"lineGain":100,"inputMode":1}]}}})");
+        jack.getDynamicObject()->getProperty ("custom").getDynamicObject()->getProperty ("ins").getDynamicObject()->getProperty ("capabilities").getDynamicObject()->getProperty ("channel").getDynamicObject()->setProperty ("instrument", true);
         auto h = RavennaDevice::readChannel (jack, 0);
-        CHECK (h.lineOnly && h.line && h.lineGain == 420 && h.phase && h.zIn && h.instrKey == "z_in" && ! h.m48V);
+        CHECK (h.lineOnly && h.line && h.lineGain == 420 && h.instrumentGain == 150 && h.phase && h.zIn && h.instrKey == "inputMode");
         auto st = RavennaPreampDriver::toSettings (h);
-        CHECK (st.lineOnly && st.hasInstrument && st.zHigh && st.gainDb > 41.9f && st.gainDb < 42.1f);
+        CHECK (st.lineOnly && st.hasInstrument && st.zHigh && st.gainDb > 14.9f && st.gainDb < 15.1f);       // in Instrument mode the gain shown is the instrument gain
+        CHECK (! RavennaDevice::readChannel (jack, 1).zIn && RavennaPreampDriver::toSettings (RavennaDevice::readChannel (jack, 1)).gainDb > 9.9f);
         auto combo = juce::JSON::parse (R"({"id":3,"name":"Combo 1/2","custom":{"ins":{"capabilities":{"channel":{"micGain":true}},"channels":[{"micGain":100,"inputMode":0}]}}})");
         CHECK (! RavennaDevice::readChannel (combo, 0).lineOnly);
     }
