@@ -828,7 +828,6 @@ private:
         if (g == nullptr) return;
         if (result == 2)
         {
-            if (w->markTake == gid) { w->markTake = juce::Uuid::null(); w->markIn = w->markOut = -1.0; }
             if (w->cursorTake == gid) w->cursorTake = juce::Uuid::null();
             w->groups.erase (std::remove_if (w->groups.begin(), w->groups.end(), [&] (const TakeGroup& x) { return x.id == gid; }), w->groups.end());
             app.project.changed(); updateSize(); repaint();
@@ -1003,7 +1002,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
             }
     };
     nameEditor.onFocusLost = commitName;
-    nameEditor.onReturnKey = [this, commitName] { commitName(); juce::Component::unfocusAllComponents(); };     // Enter: confirm and leave the box, so the keys (R, Space, ...) work again
+    nameEditor.onReturnKey = [commitName] { commitName(); juce::Component::unfocusAllComponents(); };     // Enter: confirm and leave the box, so the keys (R, Space, ...) work again
 
     recordButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xffb3261e));
     recordButton.onClick = [this] { app.toggleRecord (windowId); };

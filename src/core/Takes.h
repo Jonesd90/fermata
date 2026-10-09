@@ -68,7 +68,6 @@ struct TakeWindowDef
         for (size_t i = groups.size(); i-- > 0;)
             if (groups[i].files.empty())
             {
-                if (markTake == groups[i].id) { markTake = juce::Uuid::null(); markIn = markOut = -1.0; }
                 if (editTake == groups[i].id) { editTake = juce::Uuid::null(); editIn = editOut = -1.0; }
                 if (cursorTake == groups[i].id) { cursorTake = juce::Uuid::null(); cursorSeconds = 0.0; }
                 groups.erase (groups.begin() + (long) i);
@@ -77,14 +76,12 @@ struct TakeWindowDef
     }
 
     // --- editing marks (the take window's IN / OUT for the 'copy to edit' button) ---
-    juce::Uuid   markTake = juce::Uuid::null();   // which take the marks are in (null = none)
     juce::Uuid   editTake = juce::Uuid::null();   // the EDIT marks (keys 1 and 2): the part of a take that 'To edit' sends to the edit window
     double       editIn = -1.0, editOut = -1.0;   // seconds from the start of that take (-1 = not set)
     std::vector<juce::Uuid> editTracks;            // Alt + drag: only these tracks are marked (empty = every track of the take)
     bool editUses (const juce::Uuid& track) const { return editTracks.empty() || std::find (editTracks.begin(), editTracks.end(), track) != editTracks.end(); }
     bool         overdub = false;                 // the 'Overdub' box: pieces sent to the edit are laid over it instead of being added to the main track
     juce::Uuid   targetEdit = juce::Uuid::null(); // the edit that this window's 'To edit' button sends to (null = make one)
-    double       markIn = -1.0, markOut = -1.0;   // seconds from the start of that take (-1 = not set)
     juce::Uuid   cursorTake = juce::Uuid::null(); // the take window's cursor (where playback starts)
     double       cursorSeconds = 0.0;
     double       playheadSeconds = 0.0;           // the playhead on this window's timeline (set by clicking the ruler; Space plays from here)

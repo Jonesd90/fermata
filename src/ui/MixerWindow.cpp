@@ -314,7 +314,7 @@ class SendDial : public juce::Component, private juce::Timer
 {
 public:
     SendDial (AppContext& a, MixerState& m, const juce::Uuid& src, const juce::Uuid& dest, bool toTrack)
-        : app (a), mixer (m), srcId (src), destId (dest), destName (app.project.nodeName (dest)), isTrackDest (toTrack)
+        : app (a), mixer (m), srcId (src), destId (dest), destName (app.project.nodeName (dest))
     {
         styleCaption (label, {}, juce::Justification::centred);
         label.setFont (juce::FontOptions (9.0f, juce::Font::bold));
@@ -358,8 +358,6 @@ public:
         value.setBounds (r.removeFromBottom (12).withSizeKeepingCentre (38, 12));
         knob.setBounds (r.withSizeKeepingCentre (juce::jmin (r.getWidth(), r.getHeight()), r.getHeight()));
     }
-    bool isToTrack() const { return isTrackDest; }
-    juce::Uuid getDest() const { return destId; }
 private:
     struct Knob : public juce::Slider
     {
@@ -394,7 +392,7 @@ private:
         auto panel = std::make_unique<SendPanel> (app, mixer, srcId, destId, [safe] { if (safe != nullptr) safe->refreshFromModel(); });
         juce::CallOutBox::launchAsynchronously (std::move (panel), getScreenBounds(), nullptr);
     }
-    AppContext& app; MixerState& mixer; juce::Uuid srcId, destId; juce::String destName; bool isTrackDest;
+    AppContext& app; MixerState& mixer; juce::Uuid srcId, destId; juce::String destName;
     bool refused = false;
     juce::Label label, value; Knob knob;
 };
@@ -478,7 +476,7 @@ class StripOutputRow : public juce::Component
 {
 public:
     StripOutputRow (AppContext& a, MixerState& m, const juce::Uuid& channel, bool isTrack, bool isExt, Flag* onFlag, juce::Uuid* destPtr)
-        : app (a), mixer (m), id (channel), track (isTrack), ext (isExt), on (onFlag), dest (destPtr)
+        : app (a), mixer (m), id (channel), ext (isExt), on (onFlag), dest (destPtr)
     {
         if (ext)
         {
@@ -562,7 +560,7 @@ private:
         *dest = sel <= 1 || (size_t) sel - 2 >= ids.size() ? juce::Uuid::null() : ids[(size_t) sel - 2];
         app.engine.rebuildPlan(); app.project.markDirty();
     }
-    AppContext& app; MixerState& mixer; juce::Uuid id; bool track, ext; Flag* on; juce::Uuid* dest;
+    AppContext& app; MixerState& mixer; juce::Uuid id; bool ext; Flag* on; juce::Uuid* dest;
     bool updating = false; juce::String lastSig;
     juce::TextButton button; juce::ComboBox box; juce::ToggleButton mainBox; std::vector<juce::Uuid> ids;
 };

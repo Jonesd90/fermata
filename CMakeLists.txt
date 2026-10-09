@@ -39,6 +39,7 @@ target_sources(Fermata PRIVATE
     src/core/MasterExport.cpp
     src/core/MasterRender.cpp
     src/core/Ravenna.cpp
+    src/core/CoreReservation.cpp
     src/ui/AppContext.cpp
     src/ui/BounceWindow.cpp
     src/ui/DesignWindow.cpp

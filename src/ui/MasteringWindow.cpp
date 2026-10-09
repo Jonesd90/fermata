@@ -523,7 +523,7 @@ private:
 };
 
 // ============================================================================= the window
-MasteringComponent::MasteringComponent (AppContext& a) : app (a), renderProgress (renderProgressValue), vmProgress (progressValue), ddpProgress (progressValue)
+MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (progressValue), ddpProgress (progressValue), renderProgress (renderProgressValue)
 {
     auto cap = [this] (juce::Label& l, const juce::String& t, bool bold = false) { styleCaption (l, t, bold); addChildComponent (l); };
     for (auto* b : { &vmTab, &ddpTab }) { b->setClickingTogglesState (false); b->setColour (juce::TextButton::buttonOnColourId, theme::accent); addAndMakeVisible (b); }
@@ -643,12 +643,12 @@ MasteringComponent::MasteringComponent (AppContext& a) : app (a), renderProgress
     album ("Comment",       [this] { return &def().vm.album.comment; });
     auto sel = [this] (const char* c, std::function<juce::String*()> r) { addField (vmHolder, fileFields, c, std::move (r)); };
     auto selItem = [this] { return def().findItem (def().selectedItem); };
-    sel ("File name", [this, selItem] { auto* i = selItem(); return i ? &i->fileName : nullptr; });
-    sel ("Title",    [this, selItem] { auto* i = selItem(); return i ? &i->tags.title : nullptr; });
-    sel ("Artist",   [this, selItem] { auto* i = selItem(); return i ? &i->tags.artist : nullptr; });
-    sel ("Composer", [this, selItem] { auto* i = selItem(); return i ? &i->tags.composer : nullptr; });
-    sel ("ISRC",     [this, selItem] { auto* i = selItem(); return i ? &i->tags.isrc : nullptr; });
-    sel ("Comment",  [this, selItem] { auto* i = selItem(); return i ? &i->tags.comment : nullptr; });
+    sel ("File name", [selItem] { auto* i = selItem(); return i ? &i->fileName : nullptr; });
+    sel ("Title",    [selItem] { auto* i = selItem(); return i ? &i->tags.title : nullptr; });
+    sel ("Artist",   [selItem] { auto* i = selItem(); return i ? &i->tags.artist : nullptr; });
+    sel ("Composer", [selItem] { auto* i = selItem(); return i ? &i->tags.composer : nullptr; });
+    sel ("ISRC",     [selItem] { auto* i = selItem(); return i ? &i->tags.isrc : nullptr; });
+    sel ("Comment",  [selItem] { auto* i = selItem(); return i ? &i->tags.comment : nullptr; });
     vmSettings.setViewedComponent (&vmHolder, false); vmSettings.setScrollBarsShown (true, false);
     addChildComponent (vmSettings);
     addChildComponent (vmProgress); addChildComponent (vmStatus); addChildComponent (exportButton); addChildComponent (showButton);

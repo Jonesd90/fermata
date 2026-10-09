@@ -24,6 +24,7 @@ $CXX -c "$HERE/src/core/Ddp.cpp" -o "$OUT/Ddp.o"
 $CXX -c "$HERE/src/core/MasterExport.cpp" -o "$OUT/MasterExport.o"
 $CXX -c "$HERE/src/core/MasterRender.cpp" -o "$OUT/MasterRender.o"
 $CXX -c "$HERE/src/core/Ravenna.cpp" -o "$OUT/Ravenna.o"
+$CXX -c "$HERE/src/core/CoreReservation.cpp" -o "$OUT/CoreReservation.o"
 $CXX -c "$HERE/tests/core_test.cpp" -o "$OUT/core_test.o"
 $CXX "$OUT"/*.o -o "$OUT/core_test" -lpthread -ldl -lrt
 "$OUT/core_test"

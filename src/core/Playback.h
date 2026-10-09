@@ -30,7 +30,7 @@ struct AutomationPlan
 /** Builds the plan for an edit (null when automation is off or there is nothing to do). Lanes whose track or mixer is gone are left out;
     a Pan lane only drives mono tracks. */
 /** The automation of an Edit, aimed at the mixers' controls. A lane that names no mixer drives the Edit's own mixer (onProcessingMixer: the processing mixer instead). */
-std::shared_ptr<AutomationPlan> automationPlanFor (Project&, const EditDef&, bool onProcessingMixer = false);
+std::shared_ptr<AutomationPlan> automationPlanFor (Project&, const EditDef&, bool onProcessingMixer = false, const juce::Uuid& unassignedMixer = juce::Uuid());
 
 /** One stretch of one file placed on the playback timeline. */
 struct PlaySegment

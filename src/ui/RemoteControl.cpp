@@ -34,7 +34,7 @@ struct RemoteControlServer::Client : juce::Thread
     std::atomic<bool> dead { false };
 };
 
-RemoteControlServer::RemoteControlServer (AppContext& a, int port) : juce::Thread ("Fermata remote"), app (a), portNumber (port)
+RemoteControlServer::RemoteControlServer (AppContext& a, int port) : juce::Thread ("Fermata remote"), app (a)
 {
     if (port <= 0) return;
     listening = listener.createListener (port, "127.0.0.1");

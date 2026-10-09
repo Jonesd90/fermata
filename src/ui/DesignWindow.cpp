@@ -310,7 +310,7 @@ void DesignComponent::buildBusPage (Page& page, bool external)
     page.addButton ("Move up",   [&page, move] { move (page.grid.getSelectedRow(), -1); });
     page.addButton ("Move down", [&page, move] { move (page.grid.getSelectedRow(), 1); });
     page.addButton ("Delete selected", [&page, remove] { remove (page.grid.getSelectedRow()); });
-    g.addContextItems = [move, remove, globalIndex, &p, &page] (int row, juce::PopupMenu& m)
+    g.addContextItems = [move, remove, globalIndex, &p] (int row, juce::PopupMenu& m)
     {
         const int i = globalIndex (row);
         if (i < 0) return;
@@ -345,7 +345,7 @@ void DesignComponent::buildMixersPage()
     g.addColumn ({ "Outputs (set on each Ext bus in the mixer)", 330, GridEditor::Type::ReadOnly, [&p] (int r) { return p.mixerOutputsText (*p.mixers[(size_t) r]); }, {}, {}, {} });
     mixersPage.addButton ("Add mixer", [this, &p]
     {
-        auto& m = p.addMixer ("Cue mixer " + juce::String (p.cueEnd()));
+        p.addMixer ("Cue mixer " + juce::String (p.cueEnd()));
         p.structureChanged();
         mixersPage.grid.refresh();
         mixersPage.grid.selectRow (p.cueEnd() - 1);

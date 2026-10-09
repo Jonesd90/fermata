@@ -1,4 +1,5 @@
 #include "Playback.h"
+#include "CoreReservation.h"
 
 namespace td
 {
@@ -23,6 +24,7 @@ PlaybackSession::PlaybackSession (std::vector<int> counts, std::vector<PlaySegme
 
 PlaybackSession::~PlaybackSession()
 {
+    CoreReservation::get().unregisterAudioThread (getThreadId());
     stopThread (3000);
 }
 
@@ -43,6 +45,7 @@ juce::String PlaybackSession::open()
 void PlaybackSession::start()
 {
     startThread (juce::Thread::Priority::high);
+    CoreReservation::get().registerAudioThread (getThreadId());          // (kept on the reserved cores, when there are any)
     const auto deadline = juce::Time::getMillisecondCounter() + 3000;
     const int preload = looping.load() ? 16384 : kRing / 2;                // a loop keeps less in hand (see run()), so it needs less to start
     while (! renderDone.load() && fifo.getNumReady() < preload && juce::Time::getMillisecondCounter() < deadline)
@@ -211,7 +214,7 @@ static void addRegionSegments (const Project& p, const EditRegion& r, std::vecto
     }
 }
 
-std::shared_ptr<AutomationPlan> automationPlanFor (Project& p, const EditDef& e, bool onProcessingMixer)
+std::shared_ptr<AutomationPlan> automationPlanFor (Project& p, const EditDef& e, bool onProcessingMixer, const juce::Uuid& unassignedMixer)
 {
     if (! e.automationOn) return nullptr;
     auto plan = std::make_shared<AutomationPlan>();
@@ -219,7 +222,12 @@ std::shared_ptr<AutomationPlan> automationPlanFor (Project& p, const EditDef& e,
     {
         if (lane.pts.empty()) continue;
         MixerState* m = nullptr;
-        if (lane.mixerId.isNull()) { m = onProcessingMixer ? nullptr : p.mixerOfEdit (e.id); if (m == nullptr && ! p.mixers.empty()) m = p.mixers.front().get(); }     // the default is the Edit's own mixer
+        if (lane.mixerId.isNull())                      // the default is the Edit's own mixer (or, in a render, the mixer that is being rendered)
+        {
+            if (! unassignedMixer.isNull()) for (auto& mm : p.mixers) if (mm->id == unassignedMixer) m = mm.get();
+            if (m == nullptr) m = onProcessingMixer ? nullptr : p.mixerOfEdit (e.id);
+            if (m == nullptr && ! p.mixers.empty()) m = p.mixers.front().get();
+        }
         else for (auto& mm : p.mixers) if (mm->id == lane.mixerId) m = mm.get();
         const auto* t = p.findTrack (lane.trackId);
         if (m == nullptr || t == nullptr) continue;

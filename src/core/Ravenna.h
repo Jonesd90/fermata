@@ -1,5 +1,6 @@
 #pragma once
 #include "Preamp.h"
+#include <atomic>
 #include <mutex>
 
 namespace td
@@ -50,7 +51,6 @@ public:
     void requestStop() { signalThreadShouldExit(); ws.interrupt(); }     // returns at once
 
     const juce::String& getName() const { return deviceName; }
-    const juce::String& getHost() const { return hostName; }
     bool isConnected() const { return connected.load(); }
     juce::String getStatus() const;
     int numChannels() const;
@@ -71,7 +71,7 @@ private:
     void handleSettings (const juce::var& data);
     void rebuildChannelList();
     void sendRaw (const juce::String& json);
-    juce::String nextId() { return juce::String (++idCounter); }
+    juce::String nextId() { return juce::String (idCounter.fetch_add (1) + 1); }
 
     juce::String deviceName, hostName; int portNumber;
     std::atomic<bool> connected { false };
@@ -83,7 +83,7 @@ private:
     juce::StringArray outgoing;
     WebSocketClient ws;
     juce::String clientId;
-    int idCounter = 10;
+    std::atomic<int> idCounter { 10 };
     bool needConnect = false; juce::int64 lastConnectMs = 0;
 };
 

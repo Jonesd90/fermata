@@ -866,8 +866,8 @@ var Project::toVar (bool editorialOnly) const
         put (o, "id", w->id.toString()); put (o, "name", w->name); put (o, "defaultLabel", w->defaultLabel);
         put (o, "nextNumber", w->nextNumber);
         put (o, "targetEdit", w->targetEdit.toString());
-        put (o, "markTake", w->markTake.toString()); put (o, "markIn", w->markIn); put (o, "markOut", w->markOut);
         put (o, "editTake", w->editTake.toString()); put (o, "editIn", w->editIn); put (o, "editOut", w->editOut); put (o, "overdub", w->overdub);
+        if (! w->editTracks.empty()) { juce::Array<var> et; for (auto& t : w->editTracks) et.add (t.toString()); put (o, "editTracks", et); }       // Alt + drag: the marked tracks
         put (o, "cursorTake", w->cursorTake.toString()); put (o, "cursorSeconds", w->cursorSeconds); put (o, "playhead", w->playheadSeconds);
         { juce::Array<var> hid; for (auto& h : w->hiddenTracks) hid.add (h.toString()); put (o, "hiddenTracks", hid); }
         juce::Array<var> gs;
@@ -991,9 +991,9 @@ bool Project::fromVar (const var& root)
             w->id = juce::Uuid (v["id"].toString()); w->name = v["name"].toString();
             w->defaultLabel = v["defaultLabel"].toString(); w->nextNumber = (int) v["nextNumber"];
             if (v.hasProperty ("targetEdit")) w->targetEdit = juce::Uuid (v["targetEdit"].toString());
-            if (v.hasProperty ("markTake")) {      // (older projects had separate Bounce I / O flags in a take window: they are gone, the 1 / 2 flags do that job)
-                                              w->cursorTake = juce::Uuid (v["cursorTake"].toString()); w->cursorSeconds = (double) v["cursorSeconds"]; }
+            if (v.hasProperty ("cursorTake")) { w->cursorTake = juce::Uuid (v["cursorTake"].toString()); w->cursorSeconds = (double) v["cursorSeconds"]; }      // (older projects also had separate Bounce I / O flags here: gone, the 1 / 2 flags do that job)
             if (v.hasProperty ("editTake")) { w->editTake = juce::Uuid (v["editTake"].toString()); w->editIn = (double) v["editIn"]; w->editOut = (double) v["editOut"]; }
+            if (auto* et = v["editTracks"].getArray()) for (auto& t : *et) w->editTracks.push_back (juce::Uuid (t.toString()));
             w->overdub = (bool) v["overdub"];
             if (v.hasProperty ("playhead")) w->playheadSeconds = juce::jmax (0.0, (double) v["playhead"]);
             if (auto* hid = v["hiddenTracks"].getArray()) for (auto& h : *hid) w->hiddenTracks.push_back (juce::Uuid (h.toString()));
@@ -1105,7 +1105,7 @@ juce::String Project::undoState() const
         if (auto* d = o.getDynamicObject()) for (auto* k : keys) d->removeProperty (juce::Identifier (k));
     };
     if (auto* a = v["takeWindows"].getArray())
-        for (auto& w : *a) strip (w, { "markTake", "markIn", "markOut", "editTake", "editIn", "editOut", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub" });
+        for (auto& w : *a) strip (w, { "editTake", "editIn", "editOut", "editTracks", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub" });
     if (auto* a = v["edits"].getArray())
         for (auto& e : *a) strip (e, { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex" });
     if (auto m = v["mastering"]; m.isObject()) strip (m, { "view" });

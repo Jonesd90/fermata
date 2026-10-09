@@ -72,7 +72,6 @@ public:
     /** While set (to a mixer other than the first one), that mixer's mix is also played on the first mixer's outputs
         and the first mixer's own mix is not: the engineer listens to someone else's mix. nullptr = normal. */
     void setAuditionMixer (const MixerState* m) noexcept { auditionMixer.store (m); }
-    const MixerState* getAuditionMixer() const noexcept  { return auditionMixer.load(); }
 
     // --- phase scope: the post-fader stereo signal of one audio track / Int Bus / Ext Bus (a StripState* or BusState* of a mixer) ---
     static constexpr int kScopeFrames = 16384;
@@ -218,9 +217,9 @@ private:
         std::atomic<juce::int64> livePos { 0 };
     };
 
-    void processMixer (MixerPlan&, const float* const* in, int numIn, int offset, int n, float* const* out, int numOut, bool playing,
+    void processMixer (const Plan& pl, MixerPlan&, const float* const* in, int numIn, int offset, int n, float* const* out, int numOut, bool playing,
                        bool silenceOwnOutput, int alsoToFirst, bool playbackOnly = false, float* tapL = nullptr, float* tapR = nullptr);
-    void waitForAudioThread();
+    bool waitForAudioThread();                      // true once the audio thread has certainly left the old data; false if it stalled for half a second (then the old data is left alone rather than freed under it)
     void ensurePreRoll();                           // message thread: (re)makes the ring when session mode is on and nothing is recording
     void deliverFromRing (RecordingSession&, juce::int64 from, juce::int64 to);
     std::unique_ptr<Plan> buildPlan() const;

@@ -112,7 +112,6 @@ public:
     }
     void updateSize()
     {
-        auto* e = edit();
         const double end = timelineSeconds();
         // always at least as big as the visible area, so the ruler, grid and empty rows fill the whole window
         const int contentW = (int) (end * pixelsPerSecond) + kNameW;
@@ -1180,7 +1179,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
         if (auto* e = edit()) if (nameEditor.getText().isNotEmpty() && e->name != nameEditor.getText()) { e->name = nameEditor.getText(); if (app.project.syncEditMixers()) app.project.structureChanged(); else app.project.changed(); }
     };
     nameEditor.onFocusLost = commitEditName;
-    nameEditor.onReturnKey = [this, commitEditName] { commitEditName(); juce::Component::unfocusAllComponents(); };
+    nameEditor.onReturnKey = [commitEditName] { commitEditName(); juce::Component::unfocusAllComponents(); };
     infoLabel.setColour (juce::Label::textColourId, theme::text);
 
     tracksButton.setTooltip ("The tracks (audio rows) of THIS edit: add one, remove one, or show every project track again. Drag a track's name up or down to change the order. Each track has its own mixer strip.");

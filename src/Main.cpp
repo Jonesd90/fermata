@@ -16,6 +16,7 @@
 #include "ui/MasteringWindow.h"
 #include "ui/Splash.h"
 #include "ui/RemoteControl.h"
+#include "ui/CpuCoresPanel.h"
 #if JUCE_WINDOWS
  #include <shlobj.h>
 #endif
@@ -99,6 +100,8 @@ public:
             if (auto* st = ctx->props.getUserSettings()) { st->setValue ("appDark", dark); ctx->props.saveIfNeeded(); }
         };
         if (auto* st = ctx->props.getUserSettings()) if (! st->getBoolValue ("appDark", true)) switchTheme (false);
+        if (auto* st = ctx->props.getUserSettings()) CoreReservation::get().configure (loadCoreReservationSettings (*st));      // the CPU cores kept for the audio (off unless switched on)
+        juce::Logger::writeToLog ("CPU cores: " + CoreReservation::get().statusText().replace ("\n", " "));
         ctx->showTakeWindow = [this] (const juce::Uuid& id) { openTakeWindow (id); };
         ctx->showMixer = [this] (const juce::Uuid& id) { openMixer (id); };
         ctx->showEdit = [this] (const juce::Uuid& id) { openEdit (id); };
@@ -254,6 +257,7 @@ public:
         splash.reset();
         remoteServer.reset();
         if (ctx) ctx->shutdown();
+        CoreReservation::get().shutdown();                                       // other programs are given all the cores back
         windows.clear();
         mainWindow.reset();
         ctx.reset();
@@ -508,7 +512,7 @@ private:
             : app (c), selector (c.devices, 0, 256, 0, 256, false, false, false, false)
         {
             addAndMakeVisible (selector);
-            addAndMakeVisible (apply); addAndMakeVisible (close); addAndMakeVisible (note); addAndMakeVisible (scan);
+            addAndMakeVisible (apply); addAndMakeVisible (close); addAndMakeVisible (note); addAndMakeVisible (scan); addAndMakeVisible (cpuCores);
             note.setText ("Choose the driver and settings above, then press Apply.", juce::dontSendNotification);
             apply.onClick = [this] { app.applyAudioSettings(); note.setText ("Applied: " + juce::String (app.engine.getNumInputs()) + " inputs / "
                                                                              + juce::String (app.engine.getNumOutputs()) + " outputs from the driver.", juce::dontSendNotification); };
@@ -525,6 +529,8 @@ private:
                         safe->note.setText ("Plug-in scan finished: " + juce::String (safe->app.plugins.getKnownPlugins().getNumTypes()) + " plug-ins known.", juce::dontSendNotification);
                 });
             };
+            cpuCores.setTooltip ("Keep some CPU cores for Fermata's audio only, so that other programs cannot interrupt a recording");
+            cpuCores.onClick = [this] { showCpuCoresPanel (app); };
             apply.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1f7a46));
             setSize (580, 560);
         }
@@ -536,11 +542,12 @@ private:
             close.setBounds (bottom.removeFromRight (110).reduced (3));
             apply.setBounds (bottom.removeFromRight (110).reduced (3));
             scan.setBounds (bottom.removeFromLeft (130).reduced (3));
+            cpuCores.setBounds (bottom.removeFromLeft (110).reduced (3));
             note.setBounds (bottom);
         }
         AppContext& app;
         juce::AudioDeviceSelectorComponent selector;
-        juce::TextButton apply { "Apply" }, close { "Close" }, scan { "Scan plug-ins" };
+        juce::TextButton apply { "Apply" }, close { "Close" }, scan { "Scan plug-ins" }, cpuCores { "CPU cores..." };
         juce::Label note;
     };
 

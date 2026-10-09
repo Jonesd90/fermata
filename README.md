@@ -26,6 +26,10 @@ If the program or the computer stops during a recording, nothing recorded is los
 1. **Audio settings**: choose the ASIO driver and your device, set the sample rate, press Apply.
 2. **Project Designer**: name your inputs and outputs, add tracks (mono, stereo, surround) and choose the input of each. Sound reaches the outputs through an **Ext bus**: add one, send your tracks to it, and choose its driver outputs on its strip in the mixer.
 
+## Keeping CPU cores for the audio (Audio settings > CPU cores...)
+For recording on a laptop or a busy PC. Tick one or two CPU cores and Fermata keeps its audio (the driver callback, the disk writing and the playback reading) on those cores only and everything else on the others; with the second box ticked it also asks the other programs to stay off them (what Process Lasso does). Press "Find the quietest cores" to let Fermata measure which cores Windows is using for driver interrupts and tick the calm ones. It is off until you switch it on, and closing Fermata puts everything back.
+Windows' own driver work (DPCs) cannot be moved by any program: if you still get clicks, run LatencyMon to see which driver is the cause.
+
 ## Recording
 
 Arm the inputs you want (ARM next to each input), open a **Take Window** (one per piece), and press **R** (or REC). **Space** stops. Each armed track makes its own file, named like `005 - Symphony 2 - violin.wav`. There is no click track.

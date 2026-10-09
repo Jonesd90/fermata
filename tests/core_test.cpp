@@ -10,6 +10,7 @@
 #include "../src/core/Resampler.h"
 #include "../src/core/Ravenna.h"
 #include "../src/core/Dither.h"
+#include "../src/core/CoreReservation.h"
 #include "../src/core/WavRepair.h"
 #include "../src/core/ProjectCopy.h"
 #include <cstdio>
@@ -1189,8 +1190,8 @@ int main()
     SECTION ("edits and marks survive save / load");
     {
         auto& w0 = *p.takeWindows.front();
-        w0.markTake = gid1; w0.markIn = 0.25; w0.markOut = 0.75;
         w0.groups.front().barIn = 17; w0.groups.front().barOut = 39;
+        w0.editTake = gid1; w0.editIn = 0.25; w0.editOut = 0.75; w0.editTracks = { violinId };               // the Alt + drag track subset
         auto& ed = p.addEdit ("Symphony edit", w0.id);
         EditRegion r; r.barIn = 17; r.barOut = 39; r.windowId = w0.id; r.takeId = gid1; r.srcIn = 100; r.srcOut = 48100; r.sampleRate = 48000.0; r.takeName = "001 - Symphony 2";
         r.sourceLength = 100000;
@@ -1214,7 +1215,7 @@ int main()
         CHECK (q2.takeWindows.front()->groups.front().barIn == 17 && q2.takeWindows.front()->groups.front().barOut == 39 && e2 != nullptr && e2->regions[0].barIn == 17 && e2->regions[1].barOut == 39);
         CHECK (barsContain (17, 39, 17) && barsContain (17, 39, 30) && barsContain (17, 39, 39) && ! barsContain (17, 39, 16) && ! barsContain (17, 39, 40) && ! barsContain (0, 0, 1) && barsContain (5, 0, 5) && ! barsContain (5, 0, 6));
         CHECK (barsLabel (17, 39) == "Bar 17 - 39" && barsLabel (5, 5) == "Bar 5" && barsLabel (0, 0).isEmpty());
-        CHECK (q2.takeWindows.front()->markTake.isNull() && q2.takeWindows.front()->markIn < 0.0);       // (the old separate Bounce I / O flags are not loaded any more)
+        CHECK (q2.takeWindows.front()->editTracks.size() == 1 && q2.takeWindows.front()->editTracks[0] == violinId && q2.takeWindows.front()->editIn == 0.25);       // the marked tracks survive too
         CHECK (q2.findTrack (violinId)->monitor() == Monitor::SessionLive && q2.findTrack (mainId)->inputOf (1) == 7);
         {   // the playhead of a take window: the cursor follows it; Space plays from it
             auto& w = *q2.takeWindows.front();
@@ -2135,7 +2136,7 @@ int main()
         const int startBar = g0.barIn;
         for (int i = 1; i <= 20; ++i) { g0.barIn = i; g0.barOut = i + 1; p.changed(); p.undoTick (false, true); }
         CHECK (p.undoDepth() == 20);
-        w0.markIn = 0.5; w0.playheadSeconds = 3.0; p.changed(); p.undoTick (false, true);          // marks and playheads are not undo steps
+        w0.playheadSeconds = 3.0; p.changed(); p.undoTick (false, true);          // playheads are not undo steps
         CHECK (p.undoDepth() == 20);
         for (int i = 0; i < 20; ++i) CHECK (p.undo());
         CHECK (g0.barIn == startBar && ! p.undo());
@@ -2392,6 +2393,8 @@ int main()
         CHECK (plan != nullptr && plan->items.size() == 1 && plan->items[0].target == &ma->stripFor (mp.tracks[0].id)->gainDb);
         auto planProc = automationPlanFor (mp, ea, true);
         CHECK (planProc != nullptr && planProc->items[0].target == &mp.mixers[0]->stripFor (mp.tracks[0].id)->gainDb);
+        auto planRendered = automationPlanFor (mp, ea, false, mp.mixers[1]->id);                  // a render through one chosen mixer: the lane moves THAT mixer
+        CHECK (planRendered != nullptr && planRendered->items[0].target == &mp.mixers[1]->stripFor (mp.tracks[0].id)->gainDb);
         // saved and loaded
         Project back; CHECK (back.fromVar (mp.toVar()));
         CHECK (back.mixers.size() == 4 && back.cueEnd() == 2 && back.mixerOfEdit (ea.id) != nullptr && back.mixerOfEdit (eb.id) != nullptr);
@@ -2404,6 +2407,37 @@ int main()
             for (int i = arr->size(); --i >= 0;) if ((*arr)[i]["editId"].toString().isNotEmpty()) arr->remove (i);
         Project old; CHECK (old.fromVar (v));
         CHECK (old.mixers.size() == 4 && old.mixerOfEdit (eb.id) != nullptr);
+    }
+    SECTION ("reserved CPU cores: the plan");
+    {
+        auto V = [] (std::initializer_list<int> l) { return std::vector<int> (l); };
+        std::vector<CpuCore> cores;                                                    // 4 cores with hyper-threading: logical 0,1 / 2,3 / 4,5 / 6,7
+        for (int i = 0; i < 4; ++i) { CpuCore c; c.number = i; c.logical = { 2 * i, 2 * i + 1 }; cores.push_back (c); }
+        CoreReservationSettings s; s.enabled = true; s.reserved = { 3 };
+        auto plan = makeCorePlan (cores, s);
+        CHECK (plan.valid && plan.audioCores == V ({ 3 }) && plan.audioLogical == V ({ 6, 7 })
+               && plan.generalCores == V ({ 0, 1, 2 }) && plan.generalLogical == V ({ 0, 1, 2, 3, 4, 5 }) && plan.warning.isEmpty());
+        s.reserved = { 2, 3 }; plan = makeCorePlan (cores, s);
+        CHECK (plan.valid && plan.audioLogical == V ({ 4, 5, 6, 7 }) && plan.warning.isEmpty());                // two of four: fine
+        s.reserved = { 1, 2, 3 }; plan = makeCorePlan (cores, s); CHECK (plan.valid && plan.warning.isNotEmpty());       // three of four leaves one core for Windows: allowed, with a word of warning
+        s.reserved = { 2, 3 };
+        s.reserved = {}; CHECK (! makeCorePlan (cores, s).valid && makeCorePlan (cores, s).problem.isNotEmpty());       // nothing ticked
+        s.reserved = { 0, 1, 2, 3 }; CHECK (! makeCorePlan (cores, s).valid);                                           // everything ticked: nothing left for Windows
+        s.reserved = { 7 }; CHECK (! makeCorePlan (cores, s).valid);                                                    // a core that does not exist is not a reservation
+        s.reserved = { 1 }; CHECK (! makeCorePlan ({ cores[0] }, s).valid);                                             // a one-core PC
+        s.setReservedText (" 3, 1;1 x 2"); CHECK (s.reserved == V ({ 1, 2, 3 }) && s.reservedText() == "1,2,3");
+        CHECK (suggestedReserveCount (2) == 1 && suggestedReserveCount (4) == 1 && suggestedReserveCount (8) == 2 && suggestedReserveCount (16) == 3);
+        // the quietest cores: core 0 is the noisiest here; ties go to the higher number; a core is as noisy as its noisiest thread
+        std::vector<double> load { 9.0, 8.0, 0.1, 0.0, 0.1, 0.1, 0.0, 0.0 };
+        CHECK (pickQuietCores (cores, load, 1) == V ({ 3 }));
+        CHECK (pickQuietCores (cores, load, 2) == V ({ 2, 3 }));
+        CHECK (pickQuietCores (cores, load, 9).size() == 3);                                                            // never every core
+        for (auto& c : cores) c.efficiency = c.number < 2 ? 0 : 1;                                                       // cores 0 and 1 are the slow ones of a hybrid CPU
+        CHECK (pickQuietCores (cores, std::vector<double> (8, 0.0), 2) == V ({ 2, 3 }));
+        auto& cr = CoreReservation::get();                                                                              // (not Windows here: nothing happens, nothing breaks)
+        cr.configure (s); cr.audioThreadCheck(); cr.registerAudioThread (juce::Thread::getCurrentThreadId()); cr.unregisterAudioThread (juce::Thread::getCurrentThreadId());
+        CHECK (! cr.supported() && ! cr.active() && cr.statusText().isNotEmpty() && cr.measureInterruptLoad (200).empty());
+        cr.shutdown();
     }
     eng.rebuildPlan();
     tmp.deleteRecursively();

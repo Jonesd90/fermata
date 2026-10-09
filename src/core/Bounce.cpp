@@ -51,10 +51,10 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
         return true;
     };
     std::shared_ptr<AutomationPlan> autoPlan;                 // the automation of the edit being bounced, aimed at the render copy's mixers
-    auto planForEdit = [&] (const juce::Uuid& editId) -> std::shared_ptr<AutomationPlan>
+    auto planForEdit = [&] (const juce::Uuid& editId, const juce::Uuid& renderedMixer) -> std::shared_ptr<AutomationPlan>
     {
         if (editId.isNull()) return nullptr;
-        if (auto* ed = shadow->findEdit (editId)) return automationPlanFor (*shadow, *ed);
+        if (auto* ed = shadow->findEdit (editId)) return automationPlanFor (*shadow, *ed, false, renderedMixer);      // the automation must move the mixer that is actually being rendered
         return nullptr;
     };
     std::vector<juce::AudioBuffer<float>> trackBufs;
@@ -81,7 +81,7 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
         std::unique_ptr<juce::OutputStream> os (f.createOutputStream().release());
         if (os == nullptr) return nullptr;
         auto opts = juce::AudioFormatWriterOptions().withSampleRate (settings.sampleRate).withNumChannels (2).withBitsPerSample (bits);
-        if (bits == 32 && settings.floatFiles) opts = opts.withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
+        if (bits == 32) opts = opts.withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
         return wav.createWriterFor (os, opts);
     };
     float overallPeak = 0.0f;
@@ -95,12 +95,14 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
         if (total <= 0) continue;
         const auto& segs = it.segments.empty() ? settings.segments : it.segments;
         if (! openReaders (segs)) return res;
-        autoPlan = planForEdit (it.automationEdit.isNull() ? settings.automationEdit : it.automationEdit);
+        juce::Uuid renderedMixer = settings.mixerId;
         {
             bool have = false;                                   // a piece may have a mixer of its own (an Edit's mixer); if it is gone, the chosen mixer is used
             for (auto& m : shadow->mixers) have = have || m->id == it.mixerId;
-            engine->setOfflineTarget (have && ! it.mixerId.isNull() ? it.mixerId : settings.mixerId, settings.sources);
+            if (have && ! it.mixerId.isNull()) renderedMixer = it.mixerId;
+            engine->setOfflineTarget (renderedMixer, settings.sources);
         }
+        autoPlan = planForEdit (it.automationEdit.isNull() ? settings.automationEdit : it.automationEdit, renderedMixer);
 
         std::vector<juce::File> finals, tmps;
         std::vector<std::unique_ptr<juce::AudioFormatWriter>> writers;

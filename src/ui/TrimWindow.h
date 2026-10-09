@@ -35,7 +35,6 @@ public:
     bool slipLeft() const  { return slipLeftToggle.getToggleState(); }
     bool slipRight() const { return slipRightToggle.getToggleState(); }
     bool isAuditioning() const { return app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId; }
-    const juce::Uuid& getEditId() const { return editId; }
     double viewSeconds = 2.0;
     juce::int64 centreSample = 0;
     void viewMoved();                                       // the view was panned: redraw (no edit changed)

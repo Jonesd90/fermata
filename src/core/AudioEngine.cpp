@@ -1,4 +1,5 @@
 #include "AudioEngine.h"
+#include "CoreReservation.h"
 #include <algorithm>
 #include <cstring>
 
@@ -13,10 +14,12 @@ AudioEngine::AudioEngine (Project& p) : project (p)
     for (auto& x : stagePrevL) x = 1.0f;
     for (auto& x : stagePrevR) x = 1.0f;
     writerThread.startThread (juce::Thread::Priority::high);
+    CoreReservation::get().registerAudioThread (writerThread.getThreadId());          // (kept on the reserved cores, when there are any)
 }
 
 AudioEngine::~AudioEngine()
 {
+    CoreReservation::get().unregisterAudioThread (writerThread.getThreadId());
     if (isRecording()) stopRecording();
     stopPlayback();
     running = false;
@@ -47,6 +50,7 @@ void AudioEngine::audioDeviceStopped()
 void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* in, int numIn, float* const* out, int numOut,
                                                     int numSamples, const juce::AudioIODeviceCallbackContext&)
 {
+    CoreReservation::get().audioThreadCheck();                 // first block on this thread, or the reserved cores just changed: move this thread to them
     juce::ScopedNoDenormals noDenormals;
     process (in, numIn, out, numOut, numSamples);
 }
@@ -184,8 +188,7 @@ void AudioEngine::rebuildPlan()
     project.syncMixers();
     auto fresh = buildPlan();
     auto* old = plan.exchange (fresh.release());
-    waitForAudioThread();
-    delete old;
+    if (waitForAudioThread()) delete old;           // (if the audio thread stalled, the old plan is left in memory rather than freed under it)
     ensurePreRoll();                                 // a track patched to a new input starts being kept for the pre-roll
 }
 
@@ -203,7 +206,7 @@ void AudioEngine::ensurePreRoll()
     auto* cur = preRollPtr.load();
     if (! sessionMode.load() || sampleRate <= 0.0)
     {
-        if (cur != nullptr) { preRollPtr.store (nullptr); waitForAudioThread(); delete cur; }
+        if (cur != nullptr) { preRollPtr.store (nullptr); if (waitForAudioThread()) delete cur; }
         return;
     }
     std::vector<int> used;
@@ -223,8 +226,7 @@ void AudioEngine::ensurePreRoll()
     for (size_t i = 0; i < used.size(); ++i) fresh->slotOf[(size_t) used[i]] = (int) i;
     fresh->data.assign (used.size() * (size_t) cap, 0.0f);
     auto* old = preRollPtr.exchange (fresh);
-    waitForAudioThread();
-    delete old;
+    if (waitForAudioThread()) delete old;
 }
 
 /** Hands the samples [from, to) of the ring to every file and live waveform of the session, in order, at most 4096 at a time. */
@@ -252,13 +254,14 @@ void AudioEngine::deliverFromRing (RecordingSession& rs, juce::int64 from, juce:
     }
 }
 
-void AudioEngine::waitForAudioThread()
+bool AudioEngine::waitForAudioThread()
 {
-    if (! running.load()) return;
+    if (! running.load()) return true;
     const auto c0 = blockCounter.load();
     const auto deadline = juce::Time::getMillisecondCounter() + 500;
     while (blockCounter.load() < c0 + 2 && juce::Time::getMillisecondCounter() < deadline && running.load())
         juce::Thread::sleep (2);
+    return blockCounter.load() >= c0 + 2 || ! running.load();
 }
 
 void AudioEngine::setOfflineTarget (const juce::Uuid& mixerId, std::vector<juce::Uuid> tapIds)
@@ -276,7 +279,7 @@ void AudioEngine::renderOffline (const std::vector<juce::AudioBuffer<float>>& tr
     captureBufs = &captures;
     for (auto& mp : pl->mixers)
         if (mp->mixer->id == offlineMixerId)
-            processMixer (*mp, nullptr, 0, 0, n, nullptr, 0, true, false, -1);
+            processMixer (*pl, *mp, nullptr, 0, 0, n, nullptr, 0, true, false, -1);
     captureBufs = nullptr;
 }
 
@@ -392,7 +395,7 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
             {
                 if (! mixerIsLive (*mp->mixer, mp.get() == pl->mixers.front().get(), ps, editMixerPlays)) continue;                 // an Edit mixer sleeps unless its own Edit plays
                 const bool strict = tbPlayNow && mp.get() == (editMixerPlays ? editPlan : pl->mixers.front().get());       // the processing mixer (or the playing Edit's mixer)
-                processMixer (*mp, in, numIn, offset, n, out, numOut, ps != nullptr && ! direct,
+                processMixer (*pl, *mp, in, numIn, offset, n, out, numOut, ps != nullptr && ! direct,
                               audActive && mp->mixer == eng,
                               audActive && mp->mixer == aud ? monitorOut : -1,
                               strict, strict ? tapL : nullptr, strict ? tapR : nullptr);
@@ -540,17 +543,16 @@ static void panGains (float pan, bool stereoSource, float& gL, float& gR) noexce
     gR = std::sin (a);
 }
 
-void AudioEngine::processMixer (MixerPlan& mp, const float* const* in, int numIn, int offset, int n,
+void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* const* in, int numIn, int offset, int n,
                                 float* const* out, int numOut, bool playing, bool silenceOwnOutput, int alsoToFirst,
                                 bool playbackOnly, float* tapL, float* tapR)
 {
-    auto& m = *mp.mixer;
     bool anySolo = false;
     for (auto& nd : mp.order) anySolo = anySolo || (nd->kind == NodeKind::Track && nd->strip->solo.get());
 
     for (auto& nd : mp.order) if (nd->receives) nd->incoming.clear (0, n);
 
-    auto* plan_ = plan.load (std::memory_order_relaxed);
+    auto* plan_ = &pl;                                  // the plan that this block was started with (a rebuild during the block must not mix two plans)
     const bool recordingNow = rec.load (std::memory_order_relaxed) != nullptr;
 
     for (auto& ndp : mp.order)
@@ -765,8 +767,8 @@ void AudioEngine::stopPlayback()
 {
     if (playSession == nullptr) return;
     playback.store (nullptr, std::memory_order_release);
-    waitForAudioThread();
-    playSession.reset();
+    if (waitForAudioThread()) playSession.reset();
+    else (void) playSession.release();               // the audio thread stalled: do not free what it may still be reading
 }
 
 // ------------------------------------------------------------------ recording

@@ -95,6 +95,7 @@ private:
     juce::OwnedArray<MasterField> albumFields, fileFields;
     juce::Viewport vmSettings;
     struct VmHolder : juce::Component { } vmHolder;
+    double progressValue = 0.0;                 // shown by the progress bars below (declared first: they hold a reference to it)
     juce::ProgressBar vmProgress;
 
     // ---- the DDP page
@@ -151,7 +152,6 @@ private:
     int previewOutFirst() const;
     juce::Uuid selectedPiece() const { return view == 0 ? def().selectedItem : def().selectedClip; }
 
-    double progressValue = 0.0;
     std::unique_ptr<MasterExportJob> job;
     std::unique_ptr<juce::FileChooser> chooser;
     juce::File lastOutput;

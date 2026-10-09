@@ -22,13 +22,11 @@ private:
     void broadcast (const juce::String& json);
 
     AppContext& app;
-    int portNumber = 0;
     bool listening = false;
     juce::StreamingSocket listener;
     juce::CriticalSection lock;
     juce::OwnedArray<Client> clients;
     juce::String lastSent;
-    int sinceLast = 0;
     std::shared_ptr<bool> alive = std::make_shared<bool> (true);
 };
 } // namespace td
