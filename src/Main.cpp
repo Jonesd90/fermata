@@ -21,6 +21,10 @@
  #include <shlobj.h>
 #endif
 
+#ifndef FERMATA_VERSION_STRING
+ #define FERMATA_VERSION_STRING "0.0.0"      // only when built without CMake
+#endif
+
 using namespace td;
 
 static juce::File logFolder() { return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Fermata"); }
@@ -78,7 +82,7 @@ class FermataApplication : public juce::JUCEApplication, private juce::ChangeLis
 {
 public:
     const juce::String getApplicationName() override    { return "Fermata"; }
-    const juce::String getApplicationVersion() override { return "1.0"; }
+    const juce::String getApplicationVersion() override { return FERMATA_VERSION_STRING; }      // from FERMATA_VERSION in CMakeLists.txt
     bool moreThanOneInstanceAllowed() override          { return false; }
 
     void initialise (const juce::String& commandLine) override

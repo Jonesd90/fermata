@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-set(FERMATA_VERSION 2.0.3)        # the ONE place the version number is changed (see CHANGELOG.md)
+set(FERMATA_VERSION 2.0.4)        # the ONE place the version number is changed (see CHANGELOG.md)
 project(Fermata VERSION ${FERMATA_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -65,7 +65,8 @@ target_compile_definitions(Fermata PRIVATE
     JUCE_USE_CURL=0
     JUCE_PLUGINHOST_VST3=1
     JUCE_VST3_CAN_REPLACE_VST2=0
-    JUCE_DISPLAY_SPLASH_SCREEN=0)
+    JUCE_DISPLAY_SPLASH_SCREEN=0
+    FERMATA_VERSION_STRING="${FERMATA_VERSION}")
 
 if(MSVC)
     # keep debugging symbols so a crash log can show exactly where it happened; the .pdb is copied next to the exe
