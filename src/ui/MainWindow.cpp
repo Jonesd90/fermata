@@ -79,13 +79,22 @@ public:
         if (driver.getText() != in.driverName) driver.setText (in.driverName, juce::dontSendNotification);
         if (! alias.hasKeyboardFocus (false) && alias.getText() != in.name) alias.setText (in.name, juce::dontSendNotification);
         if (std::abs (gain.getValue() - in.preamp.gainDb) > 0.01 && ! gain.isMouseButtonDown()) gain.setValue (in.preamp.gainDb, juce::dontSendNotification);
-        mic->setToggleState (in.preamp.line, juce::dontSendNotification);
-        mic->setButtonText (in.preamp.line ? "LINE" : "MIC");
         const bool lo = in.preamp.lineOnly;                                         // a fixed line input (Anubis jack 3/4): only gain, phase, low cut and Line / Instrument
-        for (auto* b : { mic, v48, pad, boost }) b->setVisible (! lo);
-        zhi->setVisible (! lo || in.preamp.hasInstrument);
-        zhi->setButtonText (lo ? "INSTR" : "Z HI");
-        zhi->setTooltip (lo ? "Instrument: lit = INSTRUMENT input, off = LINE input" : "High input impedance (the device's Z in switch)");
+        if (lo)                                                                     // the first button is the Line / Instrument switch: LINE (plain) or INSTR (blue)
+        {
+            mic->setToggleState (in.preamp.zHigh, juce::dontSendNotification);
+            mic->setButtonText (in.preamp.zHigh ? "INSTR" : "LINE");
+            mic->setEnabled (in.preamp.hasInstrument);
+            mic->setTooltip ("Line / Instrument: lit = INSTRUMENT input, plain = LINE input");
+        }
+        else
+        {
+            mic->setToggleState (in.preamp.line, juce::dontSendNotification);
+            mic->setButtonText (in.preamp.line ? "LINE" : "MIC");
+            mic->setEnabled (true);
+            mic->setTooltip ("Mic / Line: lit = LINE input, off = MIC input");
+        }
+        for (auto* b : { v48, pad, boost, zhi }) b->setVisible (! lo);
         v48->setToggleState (in.preamp.phantom, juce::dontSendNotification);
         pol->setToggleState (in.preamp.polarity, juce::dontSendNotification);
         lc->setToggleState (in.preamp.lowCut, juce::dontSendNotification);
@@ -156,8 +165,9 @@ private:
     {
         if (updating || idx >= (int) app.project.inputs.size()) return;
         PreampSettings s;
-        s.gainDb = (float) gain.getValue(); s.line = mic->getToggleState(); s.phantom = v48->getToggleState();
-        s.polarity = pol->getToggleState(); s.lowCut = lc->getToggleState(); s.boost = boost->getToggleState(); s.pad = pad->getToggleState(); s.zHigh = zhi->getToggleState();
+        const bool lo = app.project.inputs[(size_t) idx].preamp.lineOnly;
+        s.gainDb = (float) gain.getValue(); s.line = lo ? true : mic->getToggleState(); s.phantom = v48->getToggleState();
+        s.polarity = pol->getToggleState(); s.lowCut = lc->getToggleState(); s.boost = boost->getToggleState(); s.pad = pad->getToggleState(); s.zHigh = lo ? mic->getToggleState() : zhi->getToggleState();
         s.lineOnly = app.project.inputs[(size_t) idx].preamp.lineOnly; s.hasInstrument = app.project.inputs[(size_t) idx].preamp.hasInstrument;
         app.project.setPreamp (idx, s);
     }
