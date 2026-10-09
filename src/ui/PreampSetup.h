@@ -34,6 +34,8 @@ public:
         findButton.onClick = [this] { findAutomatically(); };
         found.setFont (juce::FontOptions (12.0f)); found.setColour (juce::Label::textColourId, theme::dimText); found.setJustificationType (juce::Justification::topLeft);
         addAndMakeVisible (found);
+        deviceNote.setFont (juce::FontOptions (12.0f)); deviceNote.setColour (juce::Label::textColourId, theme::warn); deviceNote.setJustificationType (juce::Justification::topLeft);
+        addAndMakeVisible (deviceNote);
         for (auto* b : { &addButton, &usualButton, &stackButton, &applyButton, &closeButton, &findButton }) addAndMakeVisible (b);
         build();
         startTimerHz (2);
@@ -48,8 +50,9 @@ public:
         closeButton.setBounds (bottom.removeFromRight (grid::btnW));
         bottom.removeFromRight (grid::gap);
         applyButton.setBounds (bottom.removeFromRight (grid::btnW + 20));
-        found.setBounds (r.removeFromBottom (64));
+        found.setBounds (r.removeFromBottom (96));
         auto top = r.removeFromBottom (grid::rowH);
+        deviceNote.setBounds (r.removeFromBottom (40));
         addButton.setBounds (grid::cell (top, 0));
         usualButton.setBounds (grid::cell (top, 1).withWidth (grid::btnW + 24));
         stackButton.setBounds (grid::cell (top, 1).withWidth (grid::btnW).translated (grid::btnW + grid::gap + 30, 0));
@@ -60,7 +63,7 @@ public:
     {
         g.fillAll (theme::window);
         g.setColour (theme::dimText); g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
-        int y = 12 + 44;
+        const int y = 12 + 22 + 4;                      // the column titles sit between the intro line and the first row (layoutRows leaves this room)
         g.drawText ("NAME", 12, y, 120, 16, juce::Justification::centredLeft);
         g.drawText ("IP ADDRESS", 12 + 130, y, 140, 16, juce::Justification::centredLeft);
         g.drawText ("FIRST INPUT", 12 + 280, y, 90, 16, juce::Justification::centredLeft);
@@ -102,7 +105,7 @@ private:
 
     void layoutRows (juce::Rectangle<int> area)
     {
-        area.removeFromTop (18);
+        area.removeFromTop (24);                        // room for the column titles drawn in paint()
         for (auto* r : ui)
         {
             auto row = area.removeFromTop (34).withSizeKeepingCentre (area.getWidth(), grid::btnH);
@@ -129,6 +132,7 @@ private:
     {
         auto* d = dynamic_cast<RavennaPreampDriver*> (app.project.preampDriver.get());
         const auto info = d ? d->info() : std::vector<RavennaPreampDriver::Info>();
+        juce::StringArray notes;
         for (int i = 0; i < ui.size(); ++i)
         {
             juce::String s = "Not applied yet";
@@ -138,9 +142,13 @@ private:
                 {
                     s = inf.status; c = inf.connected ? juce::Colour (0xff5ec27e) : theme::warn;
                     if (inf.connected) s += "  (inputs " + juce::String (inf.firstInput + 1) + " - " + juce::String (inf.firstInput + inf.channels) + ")";
+                    if (inf.connected && inf.patched > inf.channels)
+                        notes.add (inf.name + ": ANEMAN sends " + juce::String (inf.patched) + " of its inputs to ASIO, but the device itself lists preamp controls for only " + juce::String (inf.channels)
+                                   + ". The others are still counted in the input numbers, but have no gain / 48V controls here (see the lines with MODULE in fermata-log.txt).");
                 }
             ui[i]->status.setText (s, juce::dontSendNotification); ui[i]->status.setColour (juce::Label::textColourId, c);
         }
+        deviceNote.setText (notes.joinIntoString ("\n"), juce::dontSendNotification);
     }
 
     void findAutomatically()
@@ -195,7 +203,7 @@ private:
     AppContext& app;
     std::vector<PreampDeviceCfg> rows;
     juce::OwnedArray<Row> ui;
-    InfoNote intro; juce::Label found;
+    InfoNote intro; juce::Label found, deviceNote;
     juce::TextButton findButton, addButton, usualButton, stackButton, applyButton, closeButton;
 };
 

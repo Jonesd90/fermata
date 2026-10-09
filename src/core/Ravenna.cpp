@@ -231,17 +231,27 @@ bool RavennaDevice::applyPath (juce::var& module, const juce::String& rel, const
     return false;
 }
 
+/** Is this module one whose channels have a preamp that Fermata controls? 'why' says in words why not (for the log). */
+static bool usablePreampModule (const juce::var& m, juce::String& why)
+{
+    const auto* arr = m["custom"]["ins"]["channels"].getArray();
+    if (arr == nullptr) { why = "no input channels"; return false; }
+    if (! (bool) m["custom"]["ins"]["capabilities"]["channel"]["micGain"]) { why = "no mic gain (a line-level input without a preamp)"; return false; }      // only modules that have a mic preamp
+    const auto n = m["name"].toString();
+    if (n.containsIgnoreCase ("split") || n.containsIgnoreCase ("built-in")) { why = "the Anubis lists its inputs twice (or this is the built-in mic): the plain ones are used"; return false; }
+    why = "used";
+    return true;
+}
+
 void RavennaDevice::rebuildChannelList()
 {
     std::vector<Ref> r;
     for (auto& kv : modules)
     {
         const auto& m = kv.second;
+        juce::String why;
+        if (! usablePreampModule (m, why)) continue;
         const auto* arr = m["custom"]["ins"]["channels"].getArray();
-        if (arr == nullptr) continue;
-        if (! (bool) m["custom"]["ins"]["capabilities"]["channel"]["micGain"]) continue;       // only modules that have a mic preamp
-        const auto n = m["name"].toString();
-        if (n.containsIgnoreCase ("split") || n.containsIgnoreCase ("built-in")) continue;       // the Anubis lists its inputs twice; use the plain ones
         for (int i = 0; i < arr->size(); ++i) r.push_back ({ kv.first, i });
     }
     refs = std::move (r);
@@ -311,6 +321,15 @@ void RavennaDevice::handleSettings (const juce::var& data)
                 modules.clear();
                 for (auto& m : *arr) modules[(int) m["id"]] = m;
                 rebuildChannelList();
+                for (auto& kv : modules)                           // for the log: every module the device has with input channels, and whether its channels count as preamps
+                {
+                    juce::String why;
+                    const bool used = usablePreampModule (kv.second, why);
+                    const auto* arr = kv.second["custom"]["ins"]["channels"].getArray();
+                    if (arr == nullptr) continue;
+                    juce::Logger::writeToLog ("Device " + hostName + " MODULE " + juce::String (kv.first) + " '" + kv.second["name"].toString() + "': " + juce::String (arr->size()) + " input channel(s), "
+                                              + (used ? "controlled" : "NOT controlled") + " (" + why + ")");
+                }
                 status = "Connected: " + juce::String ((int) refs.size()) + " preamp channels";
                 changed = true;
             }
@@ -512,7 +531,7 @@ std::vector<RavennaPreampDriver::Info> RavennaPreampDriver::info() const
     {
         int first = d->cfg.firstInput, count = d->dev->numChannels();
         if (! d->cfg.map.empty()) { first = 1 << 30; count = 0; for (auto& p : d->cfg.map) if (p.first < d->dev->numChannels() || ! d->dev->isConnected()) { first = juce::jmin (first, p.second); ++count; } }
-        v.push_back ({ d->cfg.name, d->cfg.host, d->dev->getStatus(), d->dev->isConnected(), count, first });
+        v.push_back ({ d->cfg.name, d->cfg.host, d->dev->getStatus(), d->dev->isConnected(), count, first, (int) d->cfg.map.size() });
     }
     return v;
 }

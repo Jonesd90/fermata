@@ -114,7 +114,7 @@ public:
     bool isConnected() const override;
     bool apply (int inputIndex, const PreampSettings&) override;
 
-    struct Info { juce::String name, host, status; bool connected = false; int channels = 0; int firstInput = 0; };
+    struct Info { juce::String name, host, status; bool connected = false; int channels = 0; int firstInput = 0; int patched = 0; };   // channels = with a preamp the device lets us control; patched = inputs ANEMAN sends to the ASIO device
     std::vector<Info> info() const;
     /** What the hardware has for a driver input; false if no device covers it. */
     bool read (int inputIndex, PreampSettings& out) const;
