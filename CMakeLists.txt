@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
-project(Fermata VERSION 1.0.0 LANGUAGES C CXX)
+set(FERMATA_VERSION 2.0.0)        # the ONE place the version number is changed (see CHANGELOG.md)
+project(Fermata VERSION ${FERMATA_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,7 +23,7 @@ set(ASIO_SDK_DIR "" CACHE PATH "Steinberg ASIO SDK folder")
 juce_add_gui_app(Fermata
     PRODUCT_NAME "Fermata"
     COMPANY_NAME "Fermata"
-    VERSION "1.0.0"
+    VERSION "${FERMATA_VERSION}"
     ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/assets/fermata-icon.png"
     ICON_SMALL "${CMAKE_CURRENT_SOURCE_DIR}/assets/fermata-icon.png")
 

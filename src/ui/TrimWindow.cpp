@@ -38,7 +38,7 @@ public:
         // ---- ruler: milliseconds relative to the join mark
         g.setColour (theme::ruler); g.fillRect (0, 0, w, kRulerH);
         double stepMs = 1000.0;
-        for (double s : { 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0 }) if (s * 0.001 * w / owner.viewSeconds > 70.0) { stepMs = s; break; }
+        for (double s : { 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0, 20000.0, 30000.0, 60000.0, 120000.0, 300000.0 }) if (s * 0.001 * w / owner.viewSeconds > 70.0) { stepMs = s; break; }
         const double leftMs = (centre - viewSamples * 0.5 - J) / rate * 1000.0, rightMs = (centre + viewSamples * 0.5 - J) / rate * 1000.0;
         g.setFont (11.0f);
         for (double ms = std::floor (leftMs / stepMs) * stepMs; ms <= rightMs + stepMs; ms += stepMs)
@@ -46,7 +46,7 @@ public:
             const float x = xAt (J + ms * 0.001 * rate);
             if (x < -60 || x > w + 60) continue;
             g.setColour (theme::grid); g.drawVerticalLine ((int) x, (float) kRulerH - 6, (float) h);
-            g.setColour (theme::dimText); g.drawText ((ms > 0 ? "+" : "") + juce::String ((int) std::round (ms)) + " ms", (int) x + 3, 3, 90, 14, juce::Justification::left);
+            g.setColour (theme::dimText); g.drawText ((ms > 0 ? "+" : "") + (std::abs (ms) >= 10000.0 ? juce::String (ms / 1000.0, stepMs >= 1000.0 ? 0 : 1) + " s" : juce::String ((int) std::round (ms)) + " ms"), (int) x + 3, 3, 90, 14, juce::Justification::left);
         }
 
         // ---- lanes
@@ -296,10 +296,30 @@ private:
         key.aStart = A.startSample; key.aIn = A.srcIn; key.bStart = B.startSample; key.bIn = B.srcIn; key.stamp = owner.readersStamp();
         if (key == cacheKey) return;
         cacheKey = key;
-        const int n = juce::jlimit (16, 4000000, (int) viewSamples);
+        const int n = juce::jlimit (16, 4000000, (int) juce::jmin (viewSamples, 4.0e6));
         std::vector<float> buf;
         auto build = [&] (juce::AudioFormatReader* r, const EditRegion& reg, juce::int64 fileStart, Cache& c)
         {
+            if (viewSamples > 4000000.0)        // zoomed right out (a whole take): read it in pieces so nothing is cut off, and keep the lowest and highest sample of every pixel column
+            {
+                const juce::int64 total = (juce::int64) std::llround (viewSamples), base = key.t0 + (reg.srcIn - reg.startSample) - fileStart;
+                c.lo.assign ((size_t) juce::jmax (1, w), 0.0f); c.hi = c.lo;
+                std::vector<float> lo ((size_t) juce::jmax (1, w), 1.0e9f), hi ((size_t) juce::jmax (1, w), -1.0e9f);
+                const int chunk = 1 << 20;
+                for (juce::int64 pos = 0; pos < total; pos += chunk)
+                {
+                    const int cn = (int) juce::jmin ((juce::int64) chunk, total - pos);
+                    readMono (r, base + pos, cn, buf);
+                    for (int i = 0; i < cn; ++i)
+                    {
+                        const int x = (int) (((pos + i) * (juce::int64) juce::jmax (1, w)) / total);
+                        const float v = buf[(size_t) i];
+                        lo[(size_t) x] = juce::jmin (lo[(size_t) x], v); hi[(size_t) x] = juce::jmax (hi[(size_t) x], v);
+                    }
+                }
+                for (size_t x = 0; x < lo.size(); ++x) if (hi[x] >= lo[x]) { c.lo[x] = lo[x]; c.hi[x] = hi[x]; }
+                return;
+            }
             readMono (r, key.t0 + (reg.srcIn - reg.startSample) - fileStart, n, buf);
             c.lo.assign ((size_t) juce::jmax (1, w), 0.0f); c.hi = c.lo;
             for (int x = 0; x < w; ++x)
@@ -486,7 +506,7 @@ void TrimComponent::recentre()
 
 void TrimComponent::zoomBy (double factor)
 {
-    viewSeconds = juce::jlimit (0.02, 12.0, viewSeconds * factor);
+    viewSeconds = juce::jlimit (0.02, 900.0, viewSeconds * factor);        // right out to 15 minutes: a whole take, so a fade can be moved anywhere in it
     waves->invalidate();
 }
 
