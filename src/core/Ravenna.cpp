@@ -187,11 +187,8 @@ static juce::String instrumentKeyOf (const juce::var& ch)
     const auto* o = ch.getDynamicObject();
     if (o == nullptr) return {};
     if (o->hasProperty ("z_in")) return "z_in";
-    for (auto& p : o->getProperties())
-    {
-        const auto k = p.name.toString().toLowerCase();
-        if ((k.contains ("instr") || k.contains ("hiz") || k.contains ("hi_z")) && (p.value.isBool() || p.value.isInt())) return p.name.toString();
-    }
+    // (nothing else is guessed at: the Anubis jack inputs have "instrumentGain", a GAIN, which must never be written a true / false. Their Line / Instrument is the inputMode, whose
+    // value for Instrument is not yet known, so it is not switched from here.)
     return {};
 }
 
