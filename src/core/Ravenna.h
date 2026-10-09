@@ -36,6 +36,8 @@ struct HwPreamp
     juce::String name;                    // e.g. "Combo 1/2"
     bool         m48V = false, pad = false, lowCut = false, phase = false, cut = false, line = false, lift = false, zIn = false;
     int          micGain = 0, lineGain = 0;   // tenths of a dB (660 = 66.0 dB)
+    bool         lineOnly = false;            // a fixed line input (the Anubis jack inputs): gain, phase, low cut and Line / Instrument only
+    juce::String instrKey;                    // the device's name for the Line / Instrument switch of such an input ("" if it has none)
 };
 
 /** A Merging device (Anubis, Hapi, MT48) reached through its web interface: CometD over a WebSocket, at ws://<ip>/cometd/handshake.

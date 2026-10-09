@@ -169,6 +169,32 @@ int RavennaDevice::numChannels() const { const juce::ScopedLock sl (lock); retur
 
 static bool boolOf (const juce::var& v) { return (bool) v; }
 
+/** A fixed line input with its own gain (the Anubis jack inputs 3 / 4): no mic gain, but a line gain. */
+static bool isLineOnlyModule (const juce::var& m)
+{
+    const auto& caps = m["custom"]["ins"]["capabilities"]["channel"];
+    if ((bool) caps["micGain"]) return false;
+    if ((bool) caps["lineGain"]) return true;
+    const auto* arr = m["custom"]["ins"]["channels"].getArray();
+    if (arr == nullptr || arr->isEmpty()) return false;
+    const auto* o = (*arr)[0].getDynamicObject();
+    return o != nullptr && o->hasProperty ("lineGain") && ! o->hasProperty ("micGain");
+}
+
+/** The name of the Line / Instrument switch in a channel: the device's z_in, or anything called instrument / hi-z. "" if there is none. */
+static juce::String instrumentKeyOf (const juce::var& ch)
+{
+    const auto* o = ch.getDynamicObject();
+    if (o == nullptr) return {};
+    if (o->hasProperty ("z_in")) return "z_in";
+    for (auto& p : o->getProperties())
+    {
+        const auto k = p.name.toString().toLowerCase();
+        if ((k.contains ("instr") || k.contains ("hiz") || k.contains ("hi_z")) && (p.value.isBool() || p.value.isInt())) return p.name.toString();
+    }
+    return {};
+}
+
 HwPreamp RavennaDevice::readChannel (const juce::var& module, int index)
 {
     HwPreamp h;
@@ -177,6 +203,12 @@ HwPreamp RavennaDevice::readChannel (const juce::var& module, int index)
     h.m48V = boolOf (ch["m48V"]); h.pad = boolOf (ch["pad"]); h.lowCut = boolOf (ch["lowCut"]); h.phase = boolOf (ch["phase"]); h.cut = boolOf (ch["cut"]); h.lift = boolOf (ch["lift"]); h.zIn = boolOf (ch["z_in"]);
     h.line = (int) ch["inputMode"] == 1;
     h.micGain = (int) ch["micGain"]; h.lineGain = (int) ch["lineGain"];
+    if (isLineOnlyModule (module))
+    {
+        h.lineOnly = true; h.line = true; h.instrKey = instrumentKeyOf (ch);
+        h.m48V = h.pad = h.lift = false;
+        h.zIn = h.instrKey.isNotEmpty() && boolOf (ch[juce::Identifier (h.instrKey)]);
+    }
     return h;
 }
 
@@ -236,23 +268,41 @@ static bool usablePreampModule (const juce::var& m, juce::String& why)
 {
     const auto* arr = m["custom"]["ins"]["channels"].getArray();
     if (arr == nullptr) { why = "no input channels"; return false; }
-    if (! (bool) m["custom"]["ins"]["capabilities"]["channel"]["micGain"]) { why = "no mic gain (a line-level input without a preamp)"; return false; }      // only modules that have a mic preamp
+    const bool lineOnly = isLineOnlyModule (m);
+    if (! (bool) m["custom"]["ins"]["capabilities"]["channel"]["micGain"] && ! lineOnly) { why = "no gain control (not a preamp)"; return false; }      // only modules that have a mic or line gain
     const auto n = m["name"].toString();
     if (n.containsIgnoreCase ("split") || n.containsIgnoreCase ("built-in")) { why = "the Anubis lists its inputs twice (or this is the built-in mic): the plain ones are used"; return false; }
-    why = "used";
+    why = lineOnly ? "used: a fixed line input with its own gain" : "used";
     return true;
 }
 
 void RavennaDevice::rebuildChannelList()
 {
-    std::vector<Ref> r;
+    // the modules that count, in the order of the numbers in their names ("Combo 1/2", "Jack 3/4") when every one has a different number: that is the order of the
+    // inputs on the front panel and in ANEMAN. Otherwise in the order of the device's own module numbers.
+    struct Mod { int id; int firstNumber; };
+    std::vector<Mod> mods;
+    bool numbered = true;
     for (auto& kv : modules)
     {
-        const auto& m = kv.second;
         juce::String why;
-        if (! usablePreampModule (m, why)) continue;
-        const auto* arr = m["custom"]["ins"]["channels"].getArray();
-        for (int i = 0; i < arr->size(); ++i) r.push_back ({ kv.first, i });
+        if (! usablePreampModule (kv.second, why)) continue;
+        const auto name = kv.second["name"].toString();
+        int num = -1;
+        for (int i = 0; i < name.length() && num < 0; ++i) if (juce::CharacterFunctions::isDigit (name[i])) num = name.substring (i).getIntValue();
+        if (num < 0) numbered = false;
+        mods.push_back ({ kv.first, num });
+    }
+    if (numbered)
+    {
+        for (size_t a = 0; a < mods.size() && numbered; ++a) for (size_t b = a + 1; b < mods.size(); ++b) if (mods[a].firstNumber == mods[b].firstNumber) { numbered = false; break; }
+        if (numbered) std::stable_sort (mods.begin(), mods.end(), [] (const Mod& x, const Mod& y) { return x.firstNumber < y.firstNumber; });
+    }
+    std::vector<Ref> r;
+    for (auto& md : mods)
+    {
+        const auto* arr = modules[md.id]["custom"]["ins"]["channels"].getArray();
+        for (int i = 0; i < arr->size(); ++i) r.push_back ({ md.id, i });
     }
     refs = std::move (r);
 }
@@ -329,6 +379,9 @@ void RavennaDevice::handleSettings (const juce::var& data)
                     if (arr == nullptr) continue;
                     juce::Logger::writeToLog ("Device " + hostName + " MODULE " + juce::String (kv.first) + " '" + kv.second["name"].toString() + "': " + juce::String (arr->size()) + " input channel(s), "
                                               + (used ? "controlled" : "NOT controlled") + " (" + why + ")");
+                    if (arr->size() > 0)
+                        juce::Logger::writeToLog ("Device " + hostName + " MODULE " + juce::String (kv.first) + " capabilities: " + juce::JSON::toString (kv.second["custom"]["ins"]["capabilities"], true)
+                                                  + " | first channel: " + juce::JSON::toString ((*arr)[0], true));
                 }
                 status = "Connected: " + juce::String ((int) refs.size()) + " preamp channels";
                 changed = true;
@@ -476,6 +529,7 @@ PreampSettings RavennaPreampDriver::toSettings (const HwPreamp& h)
     PreampSettings s;
     s.line = h.line; s.gainDb = (float) (h.line ? h.lineGain : h.micGain) / 10.0f;
     s.phantom = h.m48V; s.lowCut = h.lowCut; s.polarity = h.phase; s.boost = h.lift; s.pad = h.pad; s.zHigh = h.zIn;
+    s.lineOnly = h.lineOnly; s.hasInstrument = h.lineOnly && h.instrKey.isNotEmpty();
     return s;
 }
 
@@ -502,22 +556,24 @@ bool RavennaPreampDriver::apply (int inputIndex, const PreampSettings& s)
     if (! locate (inputIndex, d, ch) || ! d->dev->getChannel (ch, h)) return false;
     auto* o = new juce::DynamicObject();                      // only what really differs is sent
     bool any = false;
-    const bool modeChange = s.line != h.line;
+    const bool modeChange = ! h.lineOnly && s.line != h.line;                  // a fixed line input has no Mic / Line switch
     if (modeChange) { o->setProperty ("inputMode", s.line ? 1 : 0); any = true; }
     // Switching Mic / Line sends the switch ALONE, exactly like the device's own web app: the gain on the screen still belongs to the OLD mode,
     // and sending it along made the device undo the switch. The device's own gain for the new mode comes back and is shown.
     if (! modeChange)
     {
         const int gain = juce::jlimit (0, 660, (int) std::lround (s.gainDb * 10.0f));
-        const int cur = s.line ? h.lineGain : h.micGain;
-        if (gain != cur) { o->setProperty (s.line ? "lineGain" : "micGain", gain); any = true; }
+        const bool lineGain = h.lineOnly || s.line;
+        const int cur = lineGain ? h.lineGain : h.micGain;
+        if (gain != cur) { o->setProperty (lineGain ? "lineGain" : "micGain", gain); any = true; }
     }
-    if (s.phantom != h.m48V)   { o->setProperty ("m48V", s.phantom); any = true; }
+    if (! h.lineOnly && s.phantom != h.m48V) { o->setProperty ("m48V", s.phantom); any = true; }
     if (s.lowCut != h.lowCut)  { o->setProperty ("lowCut", s.lowCut); any = true; }
     if (s.polarity != h.phase) { o->setProperty ("phase", s.polarity); any = true; }
-    if (s.boost != h.lift)     { o->setProperty ("lift", s.boost); any = true; }
-    if (s.pad != h.pad)        { o->setProperty ("pad", s.pad); any = true; }
-    if (s.zHigh != h.zIn)      { o->setProperty ("z_in", s.zHigh); any = true; }
+    if (! h.lineOnly && s.boost != h.lift)   { o->setProperty ("lift", s.boost); any = true; }
+    if (! h.lineOnly && s.pad != h.pad)      { o->setProperty ("pad", s.pad); any = true; }
+    if (h.lineOnly) { if (h.instrKey.isNotEmpty() && s.zHigh != h.zIn) { o->setProperty (juce::Identifier (h.instrKey), s.zHigh); any = true; } }
+    else if (s.zHigh != h.zIn) { o->setProperty ("z_in", s.zHigh); any = true; }
     juce::var v (o);
     if (! any) return true;
     lastSentMs[inputIndex] = juce::Time::getMillisecondCounterHiRes();

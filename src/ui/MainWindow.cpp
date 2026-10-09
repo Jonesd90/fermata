@@ -81,6 +81,11 @@ public:
         if (std::abs (gain.getValue() - in.preamp.gainDb) > 0.01 && ! gain.isMouseButtonDown()) gain.setValue (in.preamp.gainDb, juce::dontSendNotification);
         mic->setToggleState (in.preamp.line, juce::dontSendNotification);
         mic->setButtonText (in.preamp.line ? "LINE" : "MIC");
+        const bool lo = in.preamp.lineOnly;                                         // a fixed line input (Anubis jack 3/4): only gain, phase, low cut and Line / Instrument
+        for (auto* b : { mic, v48, pad, boost }) b->setVisible (! lo);
+        zhi->setVisible (! lo || in.preamp.hasInstrument);
+        zhi->setButtonText (lo ? "INSTR" : "Z HI");
+        zhi->setTooltip (lo ? "Instrument: lit = INSTRUMENT input, off = LINE input" : "High input impedance (the device's Z in switch)");
         v48->setToggleState (in.preamp.phantom, juce::dontSendNotification);
         pol->setToggleState (in.preamp.polarity, juce::dontSendNotification);
         lc->setToggleState (in.preamp.lowCut, juce::dontSendNotification);
@@ -153,6 +158,7 @@ private:
         PreampSettings s;
         s.gainDb = (float) gain.getValue(); s.line = mic->getToggleState(); s.phantom = v48->getToggleState();
         s.polarity = pol->getToggleState(); s.lowCut = lc->getToggleState(); s.boost = boost->getToggleState(); s.pad = pad->getToggleState(); s.zHigh = zhi->getToggleState();
+        s.lineOnly = app.project.inputs[(size_t) idx].preamp.lineOnly; s.hasInstrument = app.project.inputs[(size_t) idx].preamp.hasInstrument;
         app.project.setPreamp (idx, s);
     }
 

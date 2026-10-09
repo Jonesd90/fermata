@@ -2126,6 +2126,17 @@ int main()
         CHECK (! planFromAneman (juce::var(), juce::var()).ok);
     }
 
+    SECTION ("preamps: a fixed line input (Anubis jack 3/4) is read as gain / phase / low cut / instrument only");
+    {
+        auto jack = juce::JSON::parse (R"({"id":7,"name":"Jack 3/4","custom":{"ins":{"capabilities":{"channel":{"lineGain":true}},"channels":[{"lineGain":420,"phase":true,"lowCut":false,"z_in":true,"inputMode":0,"m48V":true},{"lineGain":100}]}}})");
+        auto h = RavennaDevice::readChannel (jack, 0);
+        CHECK (h.lineOnly && h.line && h.lineGain == 420 && h.phase && h.zIn && h.instrKey == "z_in" && ! h.m48V);
+        auto st = RavennaPreampDriver::toSettings (h);
+        CHECK (st.lineOnly && st.hasInstrument && st.zHigh && st.gainDb > 41.9f && st.gainDb < 42.1f);
+        auto combo = juce::JSON::parse (R"({"id":3,"name":"Combo 1/2","custom":{"ins":{"capabilities":{"channel":{"micGain":true}},"channels":[{"micGain":100,"inputMode":0}]}}})");
+        CHECK (! RavennaDevice::readChannel (combo, 0).lineOnly);
+    }
+
     SECTION ("undo: many levels of the takes' details, the edits and the mastering");
     {
         auto& w0 = *p.takeWindows.front();

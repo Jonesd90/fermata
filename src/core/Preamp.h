@@ -15,6 +15,10 @@ struct PreampSettings
     bool  pad      = false;   // PAD
     bool  zHigh    = false;   // high input impedance (the device's z_in)
     bool  boost    = false;   // the mic preamp's Boost (the device calls it "lift")
+    // what the input CAN do (not saved; filled from the hardware): a fixed line input (the Anubis jack inputs) has no Mic / 48V / Pad / Boost,
+    // only gain, polarity, low cut and (zHigh = "Instrument") the Line / Instrument switch
+    bool  lineOnly      = false;
+    bool  hasInstrument = false;
 };
 
 struct PreampDeviceCfg
