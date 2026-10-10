@@ -68,7 +68,9 @@ private:
     struct Hist { Params p; };
     struct BCand { bool has = false; Brush b; } bcand;
     struct VCand { bool has = false, preview = false; VoiceSet vs; } vcand;
-    struct VoiceRowC;
+    struct VoiceRowC; class ChartPanel;
+    std::unique_ptr<ChartPanel> chartPanel; juce::TextButton chartBtn { "Pitch over time..." };
+    void showChart(); void closeChart();
 
     // ---- the work
     void timerCallback() override;

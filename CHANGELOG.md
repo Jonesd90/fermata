@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.7.0
+- ReHarmoniSer: **Pitch over time...** button in Ensemble ReCentre. It measures the whole recording and shows a chart of how far the choir's pitch sits from A=440 (green line, 0 c = A=440), with the reference A4 now in the box as an amber dashed line and the whole-recording A4 underneath. Esc or Close goes back.
+
 ## 2.6.0
 - ReHarmoniSer: new **Section ReFinement** (several singers on one note, some out of tune). Draw a box round the note, open Section ReFinement and press Find voices: each separate voice is drawn on the picture as a coloured line labelled with how many cents it is from the written note, and listed with a tick (voices already within about 6 cents start unticked) and a bar for how strong it is. Choose "Move them to the written note" or "to the strongest voice", press Preview move (then Space to listen) and Apply correction. Only the ticked voices are moved, in every channel the same way. Each move appears in Corrected Notes (switch off, Edit, X) and is written back with the rest.
 - It is now listed in the same order as the Python tool: Ensemble ReCentre, Note ReShape, Section ReFinement, Erase ReBrush, See mixer, Corrected Notes.

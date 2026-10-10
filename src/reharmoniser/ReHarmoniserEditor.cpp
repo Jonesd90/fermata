@@ -468,6 +468,49 @@ std::shared_ptr<ReHarmoniserEditor::Mix> ReHarmoniserEditor::makeMix (const Spec
     return m;
 }
 
+/** The choir's pitch through the whole recording (cents from A=440), shown over the picture. */
+class ReHarmoniserEditor::ChartPanel : public juce::Component
+{
+public:
+    std::vector<RefSeriesPoint> series; double durSec = 1.0, curA4 = 440.0, wholeA4 = 440.0; std::function<void()> onClose;
+    juce::TextButton closeBtn { "Close" };
+    ChartPanel() { styleButton (closeBtn); closeBtn.onClick = [this] { if (onClose) onClose(); }; addAndMakeVisible (closeBtn); }
+    void resized() override { closeBtn.setBounds (getWidth() - 76, 6, 66, 24); }
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (cPanel); g.setColour (cLine); g.drawRect (getLocalBounds(), 1);
+        g.setColour (cAmber); g.setFont (uiFont (15.0f, true)); g.drawText ("Choir pitch through the recording", 12, 6, getWidth() - 100, 24, juce::Justification::centredLeft, false);
+        const int L = 56, B = 30, T = 40, R = 14, infoH = 44;
+        const juce::Rectangle<int> pl (L, T, getWidth() - L - R, getHeight() - T - B - infoH);
+        g.setColour (cBg); g.fillRect (pl);
+        double lo = -60, hi = 20; for (auto& p : series) { lo = juce::jmin (lo, p.cents - 10); hi = juce::jmax (hi, p.cents + 10); }
+        auto X = [&] (double t) { return (float) pl.getX() + (float) (t / juce::jmax (1.0, durSec) * pl.getWidth()); };
+        auto Y = [&] (double c) { return (float) pl.getY() + (float) ((hi - c) / (hi - lo) * pl.getHeight()); };
+        g.setFont (lcdFont (11.0f));
+        for (int c = (int) std::ceil (lo / 20.0) * 20; c <= hi; c += 20)
+        {
+            g.setColour (c == 0 ? juce::Colours::white.withAlpha (0.45f) : juce::Colours::white.withAlpha (0.1f)); g.drawHorizontalLine ((int) Y (c), (float) pl.getX(), (float) pl.getRight());
+            g.setColour (cText.withAlpha (0.8f)); g.drawText ((c > 0 ? "+" : "") + juce::String (c) + "c", 4, (int) Y (c) - 8, L - 8, 16, juce::Justification::centredLeft, false);
+        }
+        const double step = juce::jmax (5.0, std::round (durSec / 8.0 / 5.0) * 5.0);
+        for (double t = 0; t <= durSec; t += step)
+        {
+            g.setColour (cText.withAlpha (0.8f)); g.drawText (juce::String ((int) (t / 60)) + ":" + juce::String ((int) std::round (std::fmod (t, 60.0))).paddedLeft ('0', 2), (int) X (t) - 20, pl.getBottom() + 4, 40, 16, juce::Justification::centred, false);
+        }
+        const double cur = 1200.0 * std::log2 (curA4 / 440.0);
+        { juce::Path d; d.startNewSubPath ((float) pl.getX(), Y (cur)); d.lineTo ((float) pl.getRight(), Y (cur));
+          juce::Path dashed; const float dl[] = { 5.0f, 4.0f }; juce::PathStrokeType (1.2f).createDashedStroke (dashed, d, dl, 2);
+          g.setColour (cAmber); g.fillPath (dashed); }
+        juce::Path line; bool first = true;
+        for (auto& p : series) { if (first) { line.startNewSubPath (X (p.t), Y (p.cents)); first = false; } else line.lineTo (X (p.t), Y (p.cents)); }
+        g.setColour (cGreen); g.strokePath (line, juce::PathStrokeType (1.8f));
+        for (auto& p : series) g.fillEllipse (X (p.t) - 2.5f, Y (p.cents) - 2.5f, 5.0f, 5.0f);
+        g.setColour (cText); g.setFont (uiFont (12.0f));
+        g.drawFittedText ("Green: the choir's pitch in stretches of the recording (0 c = A=440). Amber dashes: the reference A4 now in the box (" + juce::String (curA4, 1)
+                          + " Hz). Whole recording: A4 = " + juce::String (wholeA4, 1) + " Hz.", 12, getHeight() - infoH - 2, getWidth() - 24, infoH, juce::Justification::topLeft, 3);
+    }
+};
+
 struct ReHarmoniserEditor::Section
 {
     juce::String title; juce::TextButton header; std::vector<juce::Component*> kids; int bodyH = 100;
@@ -525,7 +568,8 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     refMode.onChange = [this] { refModeId = refMode.getSelectedId(); };
     refMode.setColour (juce::ComboBox::backgroundColourId, cBg); refMode.setColour (juce::ComboBox::textColourId, cText); refMode.setColour (juce::ComboBox::outlineColourId, cLine);
     addAndMakeVisible (refMode); styleLabel (refInfo, cAmber, 12.0f); refInfo.setFont (lcdFont (12.0f)); addAndMakeVisible (refInfo);
-    sections[0]->kids = { &a4Cap, &a4Box, &detectBtn, &refMode, &refInfo }; sections[0]->bodyH = 112;
+    chartBtn.setTooltip ("How far the choir's pitch sits from A=440 through the recording"); styleButton (chartBtn); chartBtn.onClick = [this] { showChart(); }; addChildComponent (chartBtn);
+    sections[0]->kids = { &a4Cap, &a4Box, &detectBtn, &refMode, &refInfo, &chartBtn }; sections[0]->bodyH = 142;
     // -- Note ReShape
     auto row = [this] (Row& r, const juce::String& cap, double lo, double hi, double step, double v, const juce::String& suffix, const juce::String& tip)
     {
@@ -786,6 +830,35 @@ void ReHarmoniserEditor::detectReference()
         refInfo.setText ("Measured: A4 " + juce::String (a4, 1) + " Hz", juce::dontSendNotification);
         if (cand.has && ! midiLocked) cand.midi = (int) std::lround (midiOf (median (cand.f0), a4));
         view->dirty = true; replan(); setStatus ("The choir's A4 is " + juce::String (a4, 1) + " Hz. Notes are now measured from that.");
+    });
+}
+
+void ReHarmoniserEditor::closeChart()
+{
+    if (chartPanel == nullptr) return;
+    removeChildComponent (chartPanel.get()); chartPanel.reset(); grabKeyboardFocus();
+}
+
+void ReHarmoniserEditor::showChart()
+{
+    if (orig == nullptr || busy) return;
+    auto audio = orig; const int rate = sr;
+    auto ser = std::make_shared<std::vector<RefSeriesPoint>>(); auto st = std::make_shared<RefStats>();
+    startJob ("Measuring the choir's pitch", [audio, rate, ser, st] (Worker& w) -> juce::String
+    {
+        const auto rp = refPoints (spansOf (*audio), rate, 0.0, {}, 4, w.hooks());
+        *ser = refSeries (rp); *st = refStats (rp.D, rp.W); return {};
+    },
+    [this, ser, st] (const juce::String& err)
+    {
+        if (err.isNotEmpty()) { setStatus (err, err != "Cancelled."); return; }
+        if (ser->empty()) { setStatus ("Could not find enough steady notes to draw the choir's pitch.", true); return; }
+        closeChart();
+        chartPanel = std::make_unique<ChartPanel>();
+        chartPanel->series = *ser; chartPanel->durSec = dur; chartPanel->curA4 = a4; chartPanel->wholeA4 = st->ok ? st->a4 : 440.0;
+        chartPanel->onClose = [this] { juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<ReHarmoniserEditor> (this)] { if (safe != nullptr) safe->closeChart(); }); };
+        addAndMakeVisible (*chartPanel); resized(); chartPanel->toFront (false);
+        setStatus ("The choir's pitch through the recording. Press Esc or Close to go back.");
     });
 }
 
@@ -1275,6 +1348,7 @@ void ReHarmoniserEditor::layoutSections()
 
 void ReHarmoniserEditor::resized()
 {
+    if (chartPanel != nullptr) chartPanel->setBounds (getLocalBounds().reduced (juce::jmax (10, (getWidth() - 760) / 2), juce::jmax (10, (getHeight() - 360) / 2)));
     auto r = getLocalBounds().reduced (8);
     auto bottom = r.removeFromBottom (64); r.removeFromBottom (6);
     auto side = r.removeFromRight (310); r.removeFromRight (8);
@@ -1308,7 +1382,7 @@ void ReHarmoniserEditor::resized()
       auto l3 = a.removeFromTop (26); keyRow.cap.setBounds (l3.removeFromLeft (92)); keyRow.s.setBounds (l3); }
     // the sections: headers always, the open one's body between them
     auto place = [] (juce::Component& c, juce::Rectangle<int>& a, int h) { c.setBounds (a.removeFromTop (h)); };
-    for (auto* k : { (juce::Component*) &a4Cap, (juce::Component*) &a4Box, (juce::Component*) &detectBtn, (juce::Component*) &refMode, (juce::Component*) &refInfo }) k->setVisible (openIdx == 0);
+    for (auto* k : { (juce::Component*) &a4Cap, (juce::Component*) &a4Box, (juce::Component*) &detectBtn, (juce::Component*) &refMode, (juce::Component*) &refInfo, (juce::Component*) &chartBtn }) k->setVisible (openIdx == 0);
     for (int i = 0; i < (int) sections.size(); ++i)
     {
         auto& sec = *sections[(size_t) i];
@@ -1342,7 +1416,7 @@ void ReHarmoniserEditor::resized()
             {
                 auto b = s.removeFromTop (juce::jmin (sec.bodyH, s.getHeight()));
                 auto q = b.removeFromTop (28); a4Cap.setBounds (q.removeFromLeft (92)); detectBtn.setBounds (q.removeFromRight (70)); q.removeFromRight (4); a4Box.setBounds (q.reduced (0, 1));
-                b.removeFromTop (3); refMode.setBounds (b.removeFromTop (26)); b.removeFromTop (3); refInfo.setBounds (b.removeFromTop (24));
+                b.removeFromTop (3); refMode.setBounds (b.removeFromTop (26)); b.removeFromTop (3); refInfo.setBounds (b.removeFromTop (24)); chartBtn.setBounds (b.removeFromTop (26).removeFromLeft (150));
                 s.removeFromTop (4);
             }
         }
@@ -1409,6 +1483,7 @@ void ReHarmoniserEditor::paint (juce::Graphics& g)
 bool ReHarmoniserEditor::keyPressed (const juce::KeyPress& k)
 {
     const auto c = k.getTextCharacter();
+    if (k == juce::KeyPress::escapeKey && chartPanel != nullptr) { closeChart(); return true; }
     if (k == juce::KeyPress::spaceKey) { togglePlay(); return true; }
     if (k.getModifiers().isCtrlDown() && (c == 'z' || c == 'Z' || k.getKeyCode() == 'Z')) { if (k.getModifiers().isShiftDown()) redoStep(); else undoStep(); return true; }
     if (c == '1') { loopIn = playT >= 0 ? playT : cueT; if (loopOut <= loopIn) loopOut = -1.0; view->repaint(); return true; }
