@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.2.0
+- New ReHarmoniSer button in the edit window (next to De-Click). Mark the stretch with keys 1 and 2, press ReHarmoniSer: all tracks between the marks open in one window with a spectrogram. Drag a box round a note, the note is measured, set Move / Snap, Audition (it gets ready; Space plays), Apply correction, then Write back to clip. Every track is changed in exactly the same way. Corrected notes can be switched off, edited or removed; Original plays without the changes. Undo fix brings the original audio back.
+- Not in this version yet: Section ReFinement (nudging single voices), Erase ReBrush, the choir-pitch chart, the project file.
+
 ## 2.1.0
 - Re-HarmoniSer groundwork: the pitch-correction engine (a plain C++ port of the Python tool, no screens yet) is added to the build. Nothing visible changes in Fermata. It was checked against the Python results on a test choir signal (27 checks, all matching).
 

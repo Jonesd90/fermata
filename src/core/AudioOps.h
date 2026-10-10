@@ -8,7 +8,7 @@ namespace td
 /** What a fix does to the audio. */
 struct FixSpec
 {
-    enum class Kind { Pitch, Patch, Declick } kind = Kind::Pitch;
+    enum class Kind { Pitch, Patch, Declick, Reharmonise } kind = Kind::Pitch;
     double cents = 0.0;                     // Pitch: +100 = one semitone up
     bool useCurve = false;                  // Pitch: follow 'curve' instead of the fixed 'cents'
     PitchCurve curve;                       // Pitch curve: cents against time (seconds); time 0 is 'curveZero' samples after the first sample of the fixed part
@@ -21,6 +21,7 @@ struct FixSpec
     {
         if (kind == Kind::Pitch && useCurve) return "pitch curve";
         if (kind == Kind::Pitch) return "pitch " + juce::String (cents >= 0 ? "+" : "") + juce::String (cents, 0) + "c";
+        if (kind == Kind::Reharmonise) return "reharmonised";
         return kind == Kind::Patch ? "repair" : "declick";
     }
 };

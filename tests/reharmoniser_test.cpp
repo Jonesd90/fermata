@@ -1,6 +1,7 @@
 // Compares the C++ Re-HarmoniSer core with the Python engine's reference results.
 // Usage: reharmoniser_test <golden folder>      (made by tools/reharmoniser/make_golden.py)
 #include "../src/reharmoniser/Engine.h"
+#include "../src/reharmoniser/Spectrogram.h"
 #include <cstdio>
 #include <fstream>
 #include <iostream>
@@ -122,6 +123,20 @@ int main (int argc, char** argv)
     const RefStats rs = refStats (rp.D, rp.W);
     check ("ref A4 (Hz)", std::abs (rs.a4 - 440.45643567719816), 0.02);
     check ("ref spread (cents)", std::abs (rs.spread - 3.4401479181932264), 0.1);
+    // spectrogram picture (the whole file)
+    {
+        Spectrogram sp; sp.build (spansOf (data), sr);
+        check ("spectrogram frames/bins", (sp.nf == 801 && sp.nb == 1367 && sp.hop == 240 && sp.N == 4096) ? 0 : 1, 0);
+        check ("spectrogram colour ref (dB)", std::abs (sp.ref - (-16.051145553588867)), 0.1);
+        size_t diff = 0, big = 0, total = 0;
+        for (size_t c = 0; c < nch; ++c)
+        {
+            const auto ref = readAll<double> ("spec_ch" + std::to_string (c) + ".f64");
+            for (size_t i = 0; i < ref.size(); ++i) { const int d = std::abs ((int) sp.db[c][i] - (int) ref[i]); if (d) ++diff; if (d > 1) ++big; ++total; }
+        }
+        check ("spectrogram cells off by >1 (of all)", (double) big / (double) total, 1e-5);
+        std::printf ("   (%.4f%% of cells differ by 1 level = 0.5 dB, from rounding)\n", 100.0 * (double) diff / (double) total);
+    }
     std::printf ("\n%s\n", failures ? "SOME CHECKS FAILED" : "ALL CHECKS PASSED");
     return failures ? 1 : 0;
 }

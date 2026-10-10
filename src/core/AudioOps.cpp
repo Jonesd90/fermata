@@ -159,6 +159,7 @@ void applyFix (std::vector<std::vector<float>>& chans, double sr, long s0, long 
             }
             case FixSpec::Kind::Patch:   SpectralRepair::repair (x, sr, a, b, spec.f0, spec.f1, spec.repair); break;
             case FixSpec::Kind::Declick: SpectralRepair::declick (x, a, b, spec.sensitivity, nullptr, sr); break;
+            case FixSpec::Kind::Reharmonise: break;        // (made by the Re-HarmoniSer window, not here)
         }
     }
 }

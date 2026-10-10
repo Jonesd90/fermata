@@ -25,6 +25,8 @@ void pitchCurveTake (AppContext&, const juce::Uuid& takeWindowId, juce::Componen
 void pitchEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
 void repairEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent, bool declick = false);
 void pitchCurveEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
+/** Re-HarmoniSer: retunes individual out-of-tune notes in the marked part of all tracks, every track in the same way. */
+void reharmoniserEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
 
 /** Undoes the last pitch correction / repair (any window). */
 void undoLastFix (AppContext&);

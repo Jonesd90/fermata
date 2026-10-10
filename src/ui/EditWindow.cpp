@@ -1233,6 +1233,8 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     repairButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::repairEdit (app, editId, this, false); }); };
     declickButton.setTooltip ("De-Click: the same window as Spectral Repair, but it finds and mends clicks (the spectrogram helps you see them)");
     declickButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::repairEdit (app, editId, this, true); }); };
+    reharmoniserButton.setTooltip ("ReHarmoniSer: retunes single out-of-tune notes in the audio between marks 1 and 2 of all tracks, every track in exactly the same way; check it by ear, then Write back to clip");
+    reharmoniserButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::reharmoniserEdit (app, editId, this); }); };
     exportProcButton.setTooltip ("Export for Processing: sends the part between marks 1 and 2 (all tracks) to the Processing Media folder to be corrected in other software (e.g. iZotope RX). Re-link it afterwards with a right-click on the 'Waiting for corrected audio' block");
     exportProcButton.onClick = [this] { fixtools::exportForProcessingEdit (app, editId, this); };
     undoFixButton.setTooltip ("Undo the last pitch correction, repair, de-click or export for processing (the original audio files were never touched)");
@@ -1247,7 +1249,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     slipRightToggle.setTooltip ("When you slide a piece, every piece AFTER it slides with it (off: they stay where they are).");
     slipLeftToggle.onClick  = [this] { timeline->slipLeft = slipLeftToggle.getToggleState(); };
     slipRightToggle.onClick = [this] { timeline->slipRight = slipRightToggle.getToggleState(); };
-    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &automationButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &exportProcButton, &undoFixButton,
+    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &automationButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &reharmoniserButton, &exportProcButton, &undoFixButton,
                                                           &slipLeftToggle, &slipRightToggle })
     {
         addAndMakeVisible (b);
@@ -1290,7 +1292,7 @@ void EditWindowComponent::resized()
         { &leftButton }, { &rightButton }, { &endButton, grid::btnW, grid::btnH, 14 },
         { &bounceButton }, { &mixerButton, grid::btnW, grid::btnH, 14 },
         { &automationButton, grid::btnW, grid::btnH, 14 },
-        { &pitchButton }, { &pitchCurveButton, grid::btnW + 24 }, { &repairButton, grid::btnW + 30 }, { &declickButton }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, grid::btnW, grid::btnH, 14 },
+        { &pitchButton }, { &pitchCurveButton, grid::btnW + 24 }, { &repairButton, grid::btnW + 30 }, { &declickButton }, { &reharmoniserButton, grid::btnW + 24 }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, grid::btnW, grid::btnH, 14 },
         { &tracksButton }, { &importButton, grid::btnW, grid::btnH, 14 },
         { &slipLeftToggle, 95 }, { &slipRightToggle, 105, grid::btnH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }

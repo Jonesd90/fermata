@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-set(FERMATA_VERSION 2.1.0)        # the ONE place the version number is changed (see CHANGELOG.md)
+set(FERMATA_VERSION 2.2.0)        # the ONE place the version number is changed (see CHANGELOG.md)
 project(Fermata VERSION ${FERMATA_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -43,6 +43,8 @@ target_sources(Fermata PRIVATE
     src/core/CoreReservation.cpp
     src/reharmoniser/Dsp.cpp
     src/reharmoniser/Engine.cpp
+    src/reharmoniser/Spectrogram.cpp
+    src/reharmoniser/ReHarmoniserEditor.cpp
     src/ui/AppContext.cpp
     src/ui/BounceWindow.cpp
     src/ui/DesignWindow.cpp
