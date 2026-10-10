@@ -1692,14 +1692,23 @@ static juce::String runRegionJob (RegionJob& j, const FixSpec& spec, AudioJob& j
 }
 
 /** Message thread: cuts the region at a and b and swaps the middle piece onto the new files. */
+static juce::String gApplyWhy;                                   // why the last applyRegionJob said no (shown in the message and written to the log)
+static bool applyFail (const juce::String& why) { gApplyWhy = why; juce::Logger::writeToLog ("applyRegionJob refused: " + why); return false; }
+
 static bool applyRegionJob (EditDef& e, const RegionJob& j, const juce::String& suffix)
 {
     int i = e.indexOf (j.regionId);
-    if (i < 0) return false;
+    if (i < 0) return applyFail ("the region is no longer in the edit");
     {
         const auto& r = e.regions[(size_t) i];
-        if (j.a < r.srcIn || j.b > r.srcOut || j.b <= j.a || j.results.size() != j.idx.size()) return false;
-        for (auto& res : j.results) if (! res.ok || res.from > j.a || res.to < j.b) return false;        // the new files must cover the piece
+        if (j.a < r.srcIn || j.b > r.srcOut || j.b <= j.a) return applyFail ("the piece " + juce::String (j.a) + ".." + juce::String (j.b) + " is outside the region " + juce::String (r.srcIn) + ".." + juce::String (r.srcOut));
+        if (j.results.size() != j.idx.size()) return applyFail ("the corrected files are missing (" + juce::String ((int) j.results.size()) + " of " + juce::String ((int) j.idx.size()) + ")");
+        for (auto& res : j.results)
+        {
+            if (! res.ok) return applyFail ("a corrected file was not made");
+            if (! res.file.existsAsFile()) return applyFail ("the corrected file " + res.file.getFileName() + " is missing");
+            if (res.from > j.a || res.to < j.b) return applyFail ("a corrected file covers " + juce::String (res.from) + ".." + juce::String (res.to) + " but " + juce::String (j.a) + ".." + juce::String (j.b) + " is needed");
+        }
     }
     const bool cutAfter = j.b < e.regions[(size_t) i].srcOut, cutBefore = j.a > e.regions[(size_t) i].srcIn;
     if (cutAfter)  e.splitRegion (i, j.b - e.regions[(size_t) i].srcIn);
@@ -2222,7 +2231,7 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
     {
         if (st->jobs.empty() || st->applied) return true;
         auto* e2 = app.project.findEdit (eid); if (e2 == nullptr) return false;
-        e2->regions = st->base; bool ok = true;
+        e2->regions = st->base; bool ok = true; gApplyWhy = {};
         for (size_t i = st->jobs.size(); i-- > 0;) ok = applyRegionJob (*e2, st->jobs[i], "reharmonised") && ok;
         if (! ok) { e2->regions = st->base; app.project.changed(); return false; }
         st->applied = true; app.project.changed();
@@ -2247,7 +2256,7 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
     h.log = [] (const juce::String& s) { juce::Logger::writeToLog (s); };
     h.play = [&app, eid, from, rate, nm, putIn] (double x, double y, bool loop)
     {
-        if (! putIn()) { say (nm, "The corrected audio does not fit the edit any more."); return; }
+        if (! putIn()) { say (nm, "The corrected audio does not fit the edit any more (" + gApplyWhy + ")."); return; }
         const auto err = app.playEdit (eid, (double) from / rate + x, (double) from / rate + y, loop);
         if (err.isNotEmpty()) say (nm, err);
         app.engine.setPlaybackLooping (loop);
@@ -2291,7 +2300,7 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
         if (self == nullptr) return;
         if (st->jobs.empty()) { self->editor.setStatus ("Nothing to write back.", true); return; }
         app.stopPlayback();
-        if (! putIn()) { self->editor.setStatus ("The corrected audio does not fit the edit any more.", true); return; }
+        if (! putIn()) { self->editor.setStatus ("The corrected audio does not fit the edit any more (" + gApplyWhy + ").", true); return; }
         for (auto& rj : st->jobs) rj.results.clear();              // the new files are kept now
         st->jobs.clear(); st->applied = false; st->accepted = true;
         setUndoForEdit (app, eid, st->base, "reharmoniser");
