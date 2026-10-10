@@ -212,6 +212,27 @@ public:
     bool save (juce::String& error);
     bool saveAs (const juce::File&, juce::String& error);
     bool load (const juce::File&, juce::String& error);
+
+    // ---- window files: every Edit is saved in its own .fmedit file (Edits folder) and every Take window in its own .fmtake file (Take Windows folder).
+    //      The project file only lists them. The files are what is read when the project opens, and they are rewritten whenever the project is saved.
+    struct WindowFile { juce::String rel; juce::String hash; };
+    std::map<juce::String, WindowFile> windowFiles;     // window id -> its file (path from the project folder)
+    std::vector<juce::var> missingWindowRefs;            // listed by the project file but not readable when it was opened: kept in the list so nothing is forgotten
+    juce::StringArray loadNotes;                         // things to tell the person after the project was opened
+    /** Reads a .fmedit / .fmtake file (from another project, or a copy) and adds it. Same-named windows get a number, ids that clash are renewed, tracks are matched by name. */
+    bool importWindowFile (const juce::File&, juce::String& message, juce::Uuid* newId = nullptr);
+    /** How many audio files used by the edits and take windows cannot be found. */
+    int missingAudioCount() const;
+    /** Looks for the missing audio files by name inside a folder (and its sub-folders). Returns how many were found. */
+    int relinkAudio (const juce::File& searchFolder);
+    /** Removes the edit / take window from the project AND moves its file to the recycle bin. The audio recordings are not touched. The caller closes its windows first. */
+    bool deleteEditAndFile (const juce::Uuid&);
+    bool deleteTakeWindowAndFile (const juce::Uuid&);
+private:
+    bool splitWindowFiles (juce::var& root);
+    void mergeWindowFiles (juce::var& root);
+    void forgetWindowFile (const juce::String& id);
+public:
     void createDefaultDesign();
 
     /** A private, independent copy of the whole project (plug-ins re-created from their state) for offline rendering. */

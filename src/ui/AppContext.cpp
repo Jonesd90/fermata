@@ -409,6 +409,12 @@ bool AppContext::openProject (const juce::File& file)
     juce::String err;
     if (! project.load (file, err)) { showError ("Could not open project", err); return false; }
     project.createFolders();
+    if (! project.loadNotes.isEmpty())
+    {
+        juce::String text = "Some edits or take windows could not be read, because their files are missing or damaged. Nothing was deleted: put the files back in the project folder and open the project again.\n\n";
+        for (auto& l : project.loadNotes) text << "   " << l << "\n";
+        juce::MessageManager::callAsync ([text] { juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Files missing").withMessage (text).withButton ("OK"), nullptr); });
+    }
     const auto mended = project.repairInterruptedRecordings();      // the program or the computer stopped while recording: keep everything that was recorded
     if (mended.size() > 0)
     {
@@ -422,8 +428,31 @@ bool AppContext::openProject (const juce::File& file)
     return true;
 }
 
+void AppContext::deleteWindowAndFile (bool isEdit, const juce::Uuid& id)
+{
+    if (engine.isRecording()) { showError ("Recording", "Stop recording first."); return; }
+    stopPlayback();
+    if (closeWindowByKey)
+    {
+        const auto key = id.toString();
+        if (isEdit) { closeWindowByKey ("edit:" + key); closeWindowByKey ("trim:" + key); closeWindowByKey ("bounce:" + key); }
+        else        { closeWindowByKey ("take:" + key); closeWindowByKey ("bounce:" + key); }
+    }
+    juce::MessageManager::callAsync ([this, isEdit, id]                // after the windows are gone (they close in the same queue, just before this)
+    {
+        if (isEdit) project.deleteEditAndFile (id);
+        else
+        {
+            project.deleteTakeWindowAndFile (id);
+            if (recordTarget == id) recordTarget = project.takeWindows.empty() ? juce::Uuid::null() : project.takeWindows.front()->id;
+        }
+        saveNow();
+    });
+}
+
 void AppContext::startBlankProject()
 {
+    project.windowFiles.clear(); project.missingWindowRefs.clear();
     project.createDefaultDesign();
     project.projectFile = juce::File();
     project.name = "(no project yet)";

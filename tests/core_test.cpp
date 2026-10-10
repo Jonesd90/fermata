@@ -2452,6 +2452,67 @@ int main()
         CHECK (! cr.supported() && ! cr.active() && cr.statusText().isNotEmpty() && cr.measureInterruptLoad (200).empty());
         cr.shutdown();
     }
+
+    SECTION ("window files: every edit in a .fmedit, every take window in a .fmtake");
+    {
+        juce::String er; CHECK (p.save (er));
+        const auto folder = p.projectFolder();
+        auto editFiles = folder.getChildFile ("Edits").findChildFiles (juce::File::findFiles, false, "*.fmedit");
+        auto takeFiles = folder.getChildFile ("Take Windows").findChildFiles (juce::File::findFiles, false, "*.fmtake");
+        CHECK (p.windowFiles.size() == p.edits.size() + p.takeWindows.size() && ! p.edits.empty() && ! p.takeWindows.empty());
+        for (auto& kv : p.windowFiles) CHECK (folder.getChildFile (kv.second.rel).existsAsFile());
+        auto pv = juce::JSON::parse (p.projectFile);
+        CHECK (pv.hasProperty ("editFiles") && pv["edits"].size() == 0 && pv["takeWindows"].size() == 0);
+        Project q; CHECK (q.load (p.projectFile, er));
+        CHECK (q.edits.size() == p.edits.size() && q.takeWindows.size() == p.takeWindows.size());
+        CHECK (q.edits.front()->regions.size() == p.edits.front()->regions.size() && q.mixerOfEdit (q.edits.front()->id) != nullptr);
+        CHECK (q.windowFiles.size() == p.edits.size() + p.takeWindows.size());
+
+        // the file is the source of truth: change the name inside the file, open the project again
+        auto ef = folder.getChildFile (p.windowFiles[p.edits.front()->id.toString()].rel);
+        auto ev = juce::JSON::parse (ef.loadFileAsString());
+        { auto eo = ev["edit"]; eo.getDynamicObject()->setProperty ("name", "Named in the file"); }
+        CHECK (ef.replaceWithText (juce::JSON::toString (ev, false)));
+        Project q4; CHECK (q4.load (p.projectFile, er) && q4.edits.front()->name == "Named in the file" && q4.loadNotes.isEmpty());
+
+        // a renamed edit: its file is renamed too
+        const auto oldRel = p.windowFiles[p.edits.front()->id.toString()].rel;
+        p.edits.front()->name = "Zed edit"; p.changed();
+        CHECK (p.save (er));
+        CHECK (! folder.getChildFile (oldRel).existsAsFile() && folder.getChildFile ("Edits/Zed edit.fmedit").existsAsFile());
+
+        // import a copy into the same project: the ids are renewed and the name made unique
+        const auto before = p.edits.size();
+        juce::Uuid newId; juce::String msg;
+        const auto zed = folder.getChildFile ("Edits/Zed edit.fmedit");
+        CHECK (p.importWindowFile (zed, msg, &newId) && p.edits.size() == before + 1);
+        auto* ne = p.findEdit (newId);
+        CHECK (ne != nullptr && ne->id != p.edits.front()->id && ne->name == "Zed edit (2)" && ne->regions.size() == p.edits.front()->regions.size());
+        CHECK (ne != nullptr && ne->regions[0].id != p.edits.front()->regions[0].id && p.mixerOfEdit (newId) != nullptr);
+        // and into an empty project: the tracks come with it
+        {
+            Project r; r.createDefaultDesign(); r.projectFile = tmp.getChildFile ("other/other.fermata");
+            const auto nTracks = r.tracks.size();
+            CHECK (r.importWindowFile (zed, msg, &newId) && r.edits.size() == 1 && r.edits[0]->name == "Zed edit");
+            CHECK (r.tracks.size() >= nTracks && r.missingAudioCount() == 0);
+            CHECK (r.save (er) && r.projectFolder().getChildFile ("Edits/Zed edit.fmedit").existsAsFile());
+        }
+        const auto tf = folder.getChildFile (p.windowFiles[p.takeWindows.front()->id.toString()].rel);
+        CHECK (p.importWindowFile (tf, msg, &newId) && p.findTakeWindow (newId) != nullptr && p.findTakeWindow (newId)->name != p.takeWindows.front()->name);
+
+        // delete: the edit and its file go (the audio does not)
+        const auto audio = p.edits.front()->regions.empty() ? juce::File() : p.edits.front()->regions[0].files[0].file;
+        CHECK (p.deleteEditAndFile (newId) == false);                                   // (that id is a take window)
+        CHECK (p.deleteTakeWindowAndFile (newId));
+        const auto zedRel = p.windowFiles[p.findEdit (ne->id) ? ne->id.toString() : ""].rel;
+        CHECK (p.save (er));
+        const auto copyRel = p.windowFiles[ne->id.toString()].rel;
+        CHECK (folder.getChildFile (copyRel).existsAsFile());
+        const auto neId = ne->id;
+        CHECK (p.deleteEditAndFile (neId) && p.findEdit (neId) == nullptr && ! folder.getChildFile (copyRel).existsAsFile());
+        CHECK (audio == juce::File() || audio.existsAsFile());
+        CHECK (p.save (er));
+    }
     eng.rebuildPlan();
     tmp.deleteRecursively();
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

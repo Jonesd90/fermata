@@ -652,13 +652,64 @@ void MainComponent::openProjectDialog()
     });
 }
 
+void MainComponent::importWindowFileDialog (bool isEdit)
+{
+    if (app.engine.isRecording()) { showError ("Recording", "Stop recording first."); return; }
+    auto start = app.project.projectFolder().getChildFile (isEdit ? "Edits" : "Take Windows");
+    if (! start.isDirectory()) start = app.project.projectFolder();
+    chooser = std::make_unique<juce::FileChooser> (isEdit ? "Choose an edit file (.fmedit)" : "Choose a take window file (.fmtake)", start, isEdit ? "*.fmedit" : "*.fmtake");
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this, isEdit] (const juce::FileChooser& fc)
+    {
+        auto f = fc.getResult();
+        if (! f.existsAsFile()) return;
+        juce::String msg; juce::Uuid id;
+        if (! app.project.importWindowFile (f, msg, &id)) { showError ("Import", msg); return; }
+        app.saveNow();
+        if (app.project.missingAudioCount() == 0)
+        {
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Imported", msg);
+            if (isEdit) { if (app.showEdit) app.showEdit (id); } else if (app.showTakeWindow) app.showTakeWindow (id);
+            return;
+        }
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon).withTitle ("Imported - audio not found")
+                                          .withMessage (msg + "\n\nDo you want to point Fermata at the folder that holds the audio files? It looks in that folder and all the folders inside it, by file name.")
+                                          .withButton ("Find the audio files...").withButton ("Later"),
+                                      [this, isEdit, id] (int r)
+        {
+            if (r != 1) { if (isEdit) { if (app.showEdit) app.showEdit (id); } else if (app.showTakeWindow) app.showTakeWindow (id); return; }
+            relinkAudioDialog (isEdit, id);
+        });
+    });
+}
+
+void MainComponent::relinkAudioDialog (bool isEdit, const juce::Uuid& openAfter)
+{
+    chooser = std::make_unique<juce::FileChooser> ("Choose the folder that holds the audio files", app.project.projectFolder(), "*");
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories, [this, isEdit, openAfter] (const juce::FileChooser& fc)
+    {
+        auto folder = fc.getResult();
+        if (folder.isDirectory())
+        {
+            const int found = app.project.relinkAudio (folder);
+            app.saveNow();
+            const int left = app.project.missingAudioCount();
+            juce::AlertWindow::showMessageBoxAsync (left == 0 ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon, "Audio files",
+                                                    juce::String (found) + " audio file(s) found and connected." + (left > 0 ? "\n" + juce::String (left) + " still could not be found. You can choose another folder from the same menu (\"Find missing audio files...\")." : juce::String()));
+        }
+        if (isEdit) { if (app.showEdit) app.showEdit (openAfter); } else if (app.showTakeWindow) app.showTakeWindow (openAfter);
+    });
+}
+
 void MainComponent::showTakesMenu()
 {
-    juce::PopupMenu m;
+    juce::PopupMenu m, del;
     int i = 1;
-    for (auto& w : app.project.takeWindows) m.addItem (i++, "Open: " + w->name);
+    for (auto& w : app.project.takeWindows) { m.addItem (i, "Open: " + w->name); del.addItem (2000 + i, w->name); ++i; }
     m.addSeparator();
     m.addItem (1000, "New take window...");
+    m.addItem (1001, "Import a take window file (.fmtake)...");
+    m.addItem (1002, "Find missing audio files...", app.project.missingAudioCount() > 0);
+    if (i > 1) { m.addSeparator(); m.addSubMenu ("Delete a take window", del); }
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&takesButton), [this] (int r)
     {
         if (r == 1000)
@@ -667,6 +718,16 @@ void MainComponent::showTakesMenu()
             app.recordTarget = w.id;
             if (app.showTakeWindow) app.showTakeWindow (w.id);
         }
+        else if (r == 1001) importWindowFileDialog (false);
+        else if (r == 1002) relinkAudioDialog (false, juce::Uuid::null());
+        else if (r > 2000 && (size_t) (r - 2000) <= app.project.takeWindows.size())
+        {
+            const auto id = app.project.takeWindows[(size_t) r - 2001]->id; const auto nm = app.project.takeWindows[(size_t) r - 2001]->name;
+            confirmAsync ("Delete take window",
+                          "Do you really want to delete the take window \"" + nm + "\" and its file?\n\nThe take window is removed from this project and its .fmtake file goes to the recycle bin. "
+                          "Your audio recordings are NOT deleted, and edits already made from it keep working.\n\nThis cannot be undone with Ctrl+Z.",
+                          "Yes, I do want to delete it", [this, id] { app.deleteWindowAndFile (false, id); });
+        }
         else if (r >= 1 && (size_t) r <= app.project.takeWindows.size() && app.showTakeWindow)
             app.showTakeWindow (app.project.takeWindows[(size_t) r - 1]->id);
     });
@@ -674,17 +735,32 @@ void MainComponent::showTakesMenu()
 
 void MainComponent::showEditsMenu()
 {
-    juce::PopupMenu m;
+    juce::PopupMenu m, del;
     int i = 1;
-    for (auto& e : app.project.edits) m.addItem (i++, "Open: " + e->name);
+    for (auto& e : app.project.edits) { m.addItem (i, "Open: " + e->name); del.addItem (2000 + i, e->name); ++i; }
     m.addSeparator();
     m.addItem (1000, "New empty edit");
+    m.addItem (1001, "Import an edit file (.fmedit)...");
+    m.addItem (1002, "Find missing audio files...", app.project.missingAudioCount() > 0);
+    if (i > 1) { m.addSeparator(); m.addSubMenu ("Delete an edit", del); }
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&editsButton), [this] (int r)
     {
         if (r == 1000)
         {
             auto& e = app.makeEdit ("Edit " + juce::String ((int) app.project.edits.size() + 1));
             if (app.showEdit) app.showEdit (e.id);
+        }
+        else if (r == 1001) importWindowFileDialog (true);
+        else if (r == 1002) relinkAudioDialog (true, juce::Uuid::null());
+        else if (r > 2000 && (size_t) (r - 2000) <= app.project.edits.size())
+        {
+            const auto id = app.project.edits[(size_t) r - 2001]->id; const auto nm = app.project.edits[(size_t) r - 2001]->name;
+            bool inMastering = false;
+            for (auto& it : app.project.mastering.items) if (it.editId == id) inMastering = true;
+            confirmAsync ("Delete edit",
+                          "Do you really want to delete the edit \"" + nm + "\" and its file?\n\nThe edit is removed from this project" + (inMastering ? ", and from the Mastering list," : "") +
+                          " and its .fmedit file goes to the recycle bin. Your audio recordings are NOT deleted.\n\nThis cannot be undone with Ctrl+Z.",
+                          "Yes, I do want to delete it", [this, id] { app.deleteWindowAndFile (true, id); });
         }
         else if (r >= 1 && (size_t) r <= app.project.edits.size() && app.showEdit)
             app.showEdit (app.project.edits[(size_t) r - 1]->id);

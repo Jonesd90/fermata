@@ -6,6 +6,12 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.3.0
+- Every edit is now saved in its own file (`Edits/<name>.fmedit`) and every take window in its own file (`Take Windows/<name>.fmtake`), inside the project folder. The project file only lists them. The files are updated every time the project is saved, and they are what Fermata reads when it opens the project.
+- Old projects convert on their first save. The old project file is kept once as `<project>.fermata.before-window-files`.
+- New in the Edits and Takes menus: "Import an edit file..." / "Import a take window file...", so an edit or take window can be copied into another project (tracks are matched by name; if the audio is not found, "Find the audio files..." looks for it by file name in a folder you choose), and "Delete an edit" / "Delete a take window". Delete asks first ("Yes, I do want to delete it"), removes the window and moves its file to the recycle bin. Audio recordings are never deleted.
+- If a window's file is missing when a project opens, you are told, the window is left out, and it stays in the project's list so the file can be put back.
+
 ## 2.2.0
 - New ReHarmoniSer button in the edit window (next to De-Click). Mark the stretch with keys 1 and 2, press ReHarmoniSer: all tracks between the marks open in one window with a spectrogram. Drag a box round a note, the note is measured, set Move / Snap, Audition (it gets ready; Space plays), Apply correction, then Write back to clip. Every track is changed in exactly the same way. Corrected notes can be switched off, edited or removed; Original plays without the changes. Undo fix brings the original audio back.
 - Not in this version yet: Section ReFinement (nudging single voices), Erase ReBrush, the choir-pitch chart, the project file.

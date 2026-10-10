@@ -55,6 +55,9 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     /** Makes sure the edit's window exists WITHOUT taking the focus: a new one opens behind 'stayInFront' (a window of the caller); an open one is left alone. */
     std::function<void (const juce::Uuid& editId, juce::Component* stayInFront)> showEditBehind;
     std::function<void (const juce::Uuid& editId, const juce::Uuid& regionId, bool atEnd)> showTrim;   // trim the join BEFORE this region (atEnd: the END of the edit; the region is then the last one)
+    std::function<void (const juce::String& key)> closeWindowByKey;                        // closes a window by its key ("edit:<id>", "take:<id>", ...)
+    /** Deletes the edit / take window AND its .fmedit / .fmtake file (the caller has already asked the person). Its windows are closed first; recordings are never touched. */
+    void deleteWindowAndFile (bool isEdit, const juce::Uuid& id);
     std::function<void (const juce::Uuid& editId)> closeTrim;                              // closes the trim window of that edit
     std::function<void()> showDesign, showAudioSettings, refreshTitles, showBridge, showMedia;
     std::function<void (const juce::Uuid&)> showScope;

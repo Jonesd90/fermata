@@ -1,6 +1,8 @@
 #include "Project.h"
 #include "WavRepair.h"
 #include <algorithm>
+#include <set>
+#include <tuple>
 
 namespace td
 {
@@ -1203,7 +1205,9 @@ bool Project::save (juce::String& error)
     if (projectFile == juce::File()) { error = "No project file chosen"; return false; }
     projectFile.getParentDirectory().createDirectory();
     juce::TemporaryFile tmp (projectFile);
-    if (! tmp.getFile().replaceWithText (juce::JSON::toString (toVar(), false)) || ! tmp.overwriteTargetFileWithTemporary())
+    var root = toVar();
+    splitWindowFiles (root);                              // the edits and take windows go to their own files (if that fails the project is written whole, as before)
+    if (! tmp.getFile().replaceWithText (juce::JSON::toString (root, false)) || ! tmp.overwriteTargetFileWithTemporary())
     {
         error = "Could not write " + projectFile.getFullPathName();
         return false;
@@ -1258,10 +1262,344 @@ bool Project::load (const juce::File& f, juce::String& error)
     juce::var v;
     auto r = juce::JSON::parse (f.loadFileAsString(), v);
     readingFrom = f.getParentDirectory();
-    const bool ok = ! r.failed() && fromVar (v);
+    windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear();
+    bool ok = ! r.failed() && v.isObject();
+    if (ok)
+    {
+        const bool oldStyle = ! v.hasProperty ("takeWindowFiles") && ! v.hasProperty ("editFiles")
+                              && ((v["takeWindows"].isArray() && v["takeWindows"].size() > 0) || (v["edits"].isArray() && v["edits"].size() > 0));
+        if (oldStyle)                                      // a project from before window files: keep the old file as it was, once
+        {
+            auto bak = f.getSiblingFile (f.getFileName() + ".before-window-files");
+            if (! bak.exists()) f.copyFileTo (bak);
+        }
+        mergeWindowFiles (v);
+        ok = fromVar (v);
+    }
     readingFrom = juce::File();
     if (! ok) { error = "Not a valid Fermata project file"; return false; }
     projectFile = f;
+    return true;
+}
+
+// ------------------------------------------------------------------------------------------------ window files
+namespace
+{
+const char* const kEditFormat = "Fermata edit";
+const char* const kTakeFormat = "Fermata take window";
+
+/** Calls f for every audio file the takes and edits use. */
+template <typename F> void forEachAudioFile (std::vector<std::unique_ptr<TakeWindowDef>>& tws, std::vector<std::unique_ptr<EditDef>>& eds, F&& f)
+{
+    for (auto& w : tws)
+        for (auto& g : w->groups)
+        {
+            for (auto& tf : g.files) f (tf.file);
+            for (auto& wp : g.waiting) for (auto& wf : wp.files) f (wf);
+        }
+    for (auto& e : eds)
+    {
+        auto doRegion = [&] (EditRegion& r)
+        {
+            for (auto& rf : r.files) f (rf.file);
+            for (auto& wf : r.waiting.files) f (wf);
+        };
+        for (auto& r : e->regions) doRegion (r);
+        for (auto& r : e->overdubs) doRegion (r);
+    }
+}
+
+void collectIds (const var& o, std::vector<String>& out, const char* arrayKey)
+{
+    if (auto* a = o[arrayKey].getArray()) for (auto& x : *a) { auto i = x["id"].toString(); if (i.isNotEmpty()) out.push_back (i); }
+}
+}
+
+bool Project::splitWindowFiles (var& root)
+{
+    if (projectFile == juce::File()) return false;
+    const auto folder = projectFolder();
+    std::map<String, WindowFile> next;
+    std::set<String> used;
+    struct Pending { juce::File file; String text; };
+    std::vector<Pending> pending;
+    juce::Array<var> takeRefs, editRefs;
+    std::set<String> editMixerIds;
+
+    auto place = [&] (const String& id, const String& nm, const String& sub, const String& ext)
+    {
+        const auto base = sanitiseForFile (nm);
+        auto it = windowFiles.find (id);
+        for (int n = 1; n < 10000; ++n)
+        {
+            const auto rel = sub + "/" + base + (n > 1 ? " (" + String (n) + ")" : String()) + ext;
+            if (used.count (rel.toLowerCase()) > 0) continue;
+            const bool ours = it != windowFiles.end() && it->second.rel.equalsIgnoreCase (rel);
+            if (! ours && folder.getChildFile (rel).exists()) continue;       // never overwrite a file that is not this window's
+            used.insert (rel.toLowerCase());
+            return rel;
+        }
+        return sub + "/" + id + ext;
+    };
+
+    auto handle = [&] (const var& wv, const char* format, const char* key, const char* sub, const char* ext, juce::Array<var>& refs, const var& mixer)
+    {
+        const auto id = wv["id"].toString(), nm = wv["name"].toString();
+        var fr = obj();
+        put (fr, "format", format); put (fr, "version", 1); put (fr, key, wv);
+        if (mixer.isObject()) put (fr, "mixer", mixer);
+        const auto wtext = juce::JSON::toString (wv, true);
+        juce::Array<var> tl;
+        if (auto* ta = root["tracks"].getArray())
+            for (auto& t : *ta) { auto tid = t["id"].toString(); if (tid.isNotEmpty() && wtext.contains (tid)) tl.add (t); }
+        put (fr, "tracks", tl);
+        const auto text = juce::JSON::toString (fr, false);
+        const auto hash = String::toHexString (text.hashCode64());
+        const auto rel = place (id, nm, sub, ext);
+        auto prev = windowFiles.find (id);
+        const bool same = prev != windowFiles.end() && prev->second.rel == rel && prev->second.hash == hash && folder.getChildFile (rel).existsAsFile();
+        if (! same) pending.push_back ({ folder.getChildFile (rel), text });
+        next[id] = { rel, hash };
+        var ref = obj(); put (ref, "id", id); put (ref, "name", nm); put (ref, "file", rel);
+        refs.add (ref);
+    };
+
+    if (auto* ta = root["takeWindows"].getArray()) for (auto& w : *ta) handle (w, kTakeFormat, "window", "Take Windows", ".fmtake", takeRefs, var());
+    if (auto* ea = root["edits"].getArray())
+        for (auto& e : *ea)
+        {
+            var mixer;
+            if (auto* ma = root["mixers"].getArray())
+                for (auto& m : *ma) if (m["editId"].toString() == e["id"].toString()) mixer = m;
+            if (mixer.isObject()) editMixerIds.insert (mixer["id"].toString());
+            handle (e, kEditFormat, "edit", "Edits", ".fmedit", editRefs, mixer);
+        }
+    for (auto& m : missingWindowRefs)                      // files that could not be read: still listed
+        (m["kind"].toString() == "edit" ? editRefs : takeRefs).add (m);
+
+    for (auto& p : pending)                                // write everything first: if anything fails the project is saved whole
+    {
+        p.file.getParentDirectory().createDirectory();
+        juce::TemporaryFile tmp (p.file);
+        if (! tmp.getFile().replaceWithText (p.text) || ! tmp.overwriteTargetFileWithTemporary()) return false;
+    }
+
+    // files of windows that are gone (or that moved to a new name)
+    for (auto& kv : windowFiles)
+    {
+        auto it = next.find (kv.first);
+        if (it != next.end() && it->second.rel.equalsIgnoreCase (kv.second.rel)) continue;
+        auto old = folder.getChildFile (kv.second.rel);
+        if (! old.existsAsFile()) continue;
+        if (it != next.end()) { old.deleteFile(); continue; }            // renamed: the new file has the same content
+        auto dir = folder.getChildFile ("_removed"); dir.createDirectory();
+        old.moveFileTo (dir.getNonexistentChildFile (old.getFileNameWithoutExtension(), old.getFileExtension()));
+    }
+    windowFiles = next;
+
+    juce::Array<var> keepMixers;
+    if (auto* ma = root["mixers"].getArray()) for (auto& m : *ma) if (editMixerIds.count (m["id"].toString()) == 0) keepMixers.add (m);
+    put (root, "mixers", keepMixers);
+    put (root, "takeWindows", juce::Array<var>()); put (root, "edits", juce::Array<var>());
+    put (root, "takeWindowFiles", takeRefs); put (root, "editFiles", editRefs);
+    return true;
+}
+
+void Project::mergeWindowFiles (var& root)
+{
+    const auto base = loadBase();
+    auto go = [&] (const char* arrayKey, const char* refsKey, const char* fileKey, const char* format, const char* kind)
+    {
+        auto* refs = root[refsKey].getArray();
+        if (refs == nullptr) return;
+        var arr = root[arrayKey];
+        if (! arr.isArray()) { arr = var (juce::Array<var>()); put (root, arrayKey, arr); }
+        for (auto& r : *refs)
+        {
+            const auto rel = r["file"].toString();
+            const auto f = base.getChildFile (rel);
+            var fv; bool ok = false;
+            if (f.existsAsFile() && ! juce::JSON::parse (f.loadFileAsString(), fv).failed() && fv.isObject()
+                && fv["format"].toString() == format && fv[fileKey].isObject())
+                ok = true;
+            if (! ok)
+            {
+                loadNotes.add (String (kind) == "edit" ? "The edit \"" + r["name"].toString() + "\" is missing its file:  " + rel
+                                                         : "The take window \"" + r["name"].toString() + "\" is missing its file:  " + rel);
+                var m = obj(); put (m, "id", r["id"]); put (m, "name", r["name"]); put (m, "file", rel); put (m, "kind", kind);
+                missingWindowRefs.push_back (m);
+                continue;
+            }
+            arr.getArray()->add (fv[fileKey]);
+            if (fv["mixer"].isObject() && root["mixers"].isArray()) root["mixers"].getArray()->add (fv["mixer"]);
+            windowFiles[fv[fileKey]["id"].toString()] = { rel, {} };
+        }
+    };
+    go ("takeWindows", "takeWindowFiles", "window", kTakeFormat, "take");
+    go ("edits", "editFiles", "edit", kEditFormat, "edit");
+}
+
+void Project::forgetWindowFile (const String& id)
+{
+    auto it = windowFiles.find (id);
+    if (it == windowFiles.end()) return;
+    auto f = projectFolder().getChildFile (it->second.rel);
+    windowFiles.erase (it);
+    if (f.existsAsFile() && ! f.moveToTrash()) f.deleteFile();
+}
+
+bool Project::deleteEditAndFile (const juce::Uuid& id)
+{
+    for (size_t i = 0; i < edits.size(); ++i)
+        if (edits[i]->id == id)
+        {
+            edits.erase (edits.begin() + (std::ptrdiff_t) i);
+            syncEditMixers();
+            mastering.sync (edits);
+            forgetWindowFile (id.toString());
+            structureChanged();
+            return true;
+        }
+    return false;
+}
+
+bool Project::deleteTakeWindowAndFile (const juce::Uuid& id)
+{
+    for (size_t i = 0; i < takeWindows.size(); ++i)
+        if (takeWindows[i]->id == id)
+        {
+            removeTakeWindow ((int) i);
+            forgetWindowFile (id.toString());
+            return true;
+        }
+    return false;
+}
+
+int Project::missingAudioCount() const
+{
+    auto& self = const_cast<Project&> (*this);
+    int n = 0;
+    forEachAudioFile (self.takeWindows, self.edits, [&n] (juce::File& f) { if (! f.existsAsFile()) ++n; });
+    return n;
+}
+
+int Project::relinkAudio (const juce::File& searchFolder)
+{
+    std::map<String, juce::File> byName;
+    for (auto& f : searchFolder.findChildFiles (juce::File::findFiles, true, "*.wav;*.flac;*.aif;*.aiff;*.w64;*.caf"))
+        byName.emplace (f.getFileName().toLowerCase(), f);
+    int found = 0;
+    forEachAudioFile (takeWindows, edits, [&] (juce::File& f)
+    {
+        if (f.existsAsFile()) return;
+        auto it = byName.find (f.getFileName().toLowerCase());
+        if (it != byName.end()) { f = it->second; ++found; }
+    });
+    if (found > 0) structureChanged();
+    return found;
+}
+
+bool Project::importWindowFile (const juce::File& file, String& message, juce::Uuid* newId)
+{
+    var fv;
+    if (juce::JSON::parse (file.loadFileAsString(), fv).failed() || ! fv.isObject()) { message = "That is not a Fermata edit or take window file."; return false; }
+    const auto format = fv["format"].toString();
+    const bool isEdit = format == kEditFormat, isTake = format == kTakeFormat;
+    if (! isEdit && ! isTake) { message = "That is not a Fermata edit or take window file."; return false; }
+    var win = fv[isEdit ? "edit" : "window"];
+    if (! win.isObject()) { message = "That file is damaged (it has no " + String (isEdit ? "edit" : "take window") + " in it)."; return false; }
+
+    // ids to change: tracks are matched with this project's tracks by name; clashing window / region / take ids get new ones
+    std::vector<std::pair<String, String>> subs;
+    std::vector<std::tuple<juce::Uuid, String, int>> toRestore;
+    if (auto* ta = fv["tracks"].getArray())
+        for (auto& t : *ta)
+        {
+            juce::Uuid tid (t["id"].toString());
+            if (tid.isNull() || findTrack (tid) != nullptr) continue;
+            const int ch = t["inputs"].isArray() ? t["inputs"].size() : 1;
+            const auto nm = t["name"].toString();
+            TrackDef* same = nullptr;
+            for (auto& mine : tracks) if (mine.name.equalsIgnoreCase (nm) && mine.channelCount() == ch) { same = &mine; break; }
+            if (same != nullptr) subs.push_back ({ tid.toString(), same->id.toString() });
+            else toRestore.push_back ({ tid, nm, ch });
+        }
+    std::vector<String> renew;
+    if (isEdit)
+    {
+        if (findEdit (juce::Uuid (win["id"].toString())) != nullptr)
+        {
+            renew.push_back (win["id"].toString());
+            collectIds (win, renew, "regions"); collectIds (win, renew, "overdubs"); collectIds (win, renew, "autoLanes");
+            if (auto* ls = win["autoLanes"].getArray()) for (auto& l : *ls) collectIds (l, renew, "points");
+            if (fv["mixer"].isObject()) renew.push_back (fv["mixer"]["id"].toString());
+        }
+    }
+    else if (findTakeWindow (juce::Uuid (win["id"].toString())) != nullptr)
+    {
+        renew.push_back (win["id"].toString());
+        collectIds (win, renew, "groups");
+    }
+    for (auto& id : renew) if (id.isNotEmpty()) subs.push_back ({ id, juce::Uuid().toString() });
+    if (! subs.empty())
+    {
+        auto text = juce::JSON::toString (fv, true);
+        for (auto& s : subs) text = text.replace (s.first, s.second);
+        if (juce::JSON::parse (text, fv).failed()) { message = "Could not read that file."; return false; }
+        win = fv[isEdit ? "edit" : "window"];
+    }
+
+    // a name that is not used yet
+    {
+        const auto wanted = win["name"].toString();
+        auto taken = [&] (const String& n)
+        {
+            for (auto& e : edits) if (isEdit && e->name == n) return true;
+            for (auto& w : takeWindows) if (! isEdit && w->name == n) return true;
+            return false;
+        };
+        String n = wanted.isEmpty() ? String (isEdit ? "Edit" : "Take window") : wanted;
+        for (int i = 2; taken (n); ++i) n = wanted + " (" + String (i) + ")";
+        put (win, "name", n);
+        if (isEdit && fv["mixer"].isObject()) { var mx = fv["mixer"]; put (mx, "name", n); }
+    }
+
+    for (auto& r : toRestore) restoreTrack (std::get<0> (r), std::get<1> (r), std::get<2> (r));
+
+    // read it with a private project, then take the window over
+    Project tmp;
+    tmp.restoreSampleRate = restoreSampleRate; tmp.restoreBlock = restoreBlock;
+    tmp.readingFrom = loadBase();
+    var root = obj();
+    put (root, "format", "Fermata project"); put (root, "version", 1); put (root, "name", "import");
+    put (root, "tracks", fv["tracks"].isArray() ? fv["tracks"] : var (juce::Array<var>()));
+    juce::Array<var> tws, eds, mxs;
+    if (isEdit) { eds.add (win); if (fv["mixer"].isObject()) mxs.add (fv["mixer"]); } else tws.add (win);
+    put (root, "takeWindows", tws); put (root, "edits", eds); put (root, "mixers", mxs);
+    if (! tmp.fromVar (root)) { message = "Could not read that file."; return false; }
+
+    if (isTake)
+    {
+        if (tmp.takeWindows.empty()) { message = "That file has no take window in it."; return false; }
+        takeWindows.push_back (std::move (tmp.takeWindows.front()));
+        if (newId != nullptr) *newId = takeWindows.back()->id;
+    }
+    else
+    {
+        if (tmp.edits.empty()) { message = "That file has no edit in it."; return false; }
+        edits.push_back (std::move (tmp.edits.front()));
+        const auto eid = edits.back()->id;
+        if (newId != nullptr) *newId = eid;
+        syncEditMixers();                                  // the edit gets its mixer ...
+        if (auto* mine = mixerOfEdit (eid))                // ... and the levels it was saved with
+            if (auto* theirs = tmp.mixerOfEdit (eid))
+                applyMix (*mine, tmp.mixSnapshot (*theirs, false), restoreSampleRate, restoreBlock);
+        mastering.sync (edits);
+    }
+    structureChanged();
+    message = String (isEdit ? "Edit" : "Take window") + " \"" + win["name"].toString() + "\" added.";
+    const int missing = missingAudioCount();
+    if (missing > 0) message << "  " << missing << " of its audio files could not be found.";
     return true;
 }
 } // namespace td

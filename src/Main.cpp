@@ -111,6 +111,7 @@ public:
         ctx->showEdit = [this] (const juce::Uuid& id) { openEdit (id); };
         ctx->showEditBehind = [this] (const juce::Uuid& id, juce::Component* front) { openEdit (id, front); };
         ctx->showTrim = [this] (const juce::Uuid& e, const juce::Uuid& r, bool atEnd) { openTrim (e, r, atEnd); };
+        ctx->closeWindowByKey = [this] (const juce::String& key) { closeWindowLater (key); };
         ctx->closeTrim = [this] (const juce::Uuid& e) { closeWindowLater ("trim:" + e.toString()); };
         ctx->showDesign = [this] { openDesign(); };
         ctx->showBridge = [this] { toggleBridge(); };

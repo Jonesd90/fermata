@@ -173,6 +173,8 @@ private:
     void rebuildRows();
     void showProjectMenu();
     void showTakesMenu();
+    void importWindowFileDialog (bool isEdit);
+    void relinkAudioDialog (bool isEdit, const juce::Uuid& openAfter);
     void showMixersMenu();
     void rebuildAuditionBar();
     void showEditsMenu();
