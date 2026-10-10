@@ -7,8 +7,9 @@ namespace rehar
 {
 namespace
 {
-const juce::Colour cBg (0xff15120e), cPanel (0xff241f18), cPanel2 (0xff2f281e), cAmber (0xffffb43c), cAmberDim (0xff9a6c1c), cText (0xffe9dcc3),
-                   cLine (0xff4b402f), cGreen (0xff62d27e), cRed (0xffff5a4a), cKeyW (0xffe6dcc6), cKeyB (0xff2a251c);
+// sage-green chrome with dark picture and amber LCD readouts, like the original Re-HarmoniSer
+const juce::Colour cBg (0xff171d14), cPanel (0xffa8b1a2), cPanel2 (0xffc9ccc5), cDark (0xff241f18), cAmber (0xffffb43c), cAmberDim (0xff9a6c1c), cText (0xff1c2119), cLight (0xffe9dcc3),
+                   cLine (0xff6f786a), cGreen (0xff62d27e), cRed (0xffff5a4a), cKeyW (0xffe6dcc6), cKeyB (0xff2a251c);
 
 juce::Font lcdFont (float h) { return juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), h, juce::Font::plain)); }
 juce::Font uiFont (float h, bool bold = false) { return juce::Font (juce::FontOptions (h, bold ? juce::Font::bold : juce::Font::plain)); }
@@ -24,7 +25,7 @@ bool isBlackKey (int midi) { const int n = ((midi % 12) + 12) % 12; return n == 
 
 void styleButton (juce::TextButton& b, juce::Colour c = cPanel2)
 {
-    b.setColour (juce::TextButton::buttonColourId, c); b.setColour (juce::TextButton::textColourOffId, cText); b.setColour (juce::TextButton::textColourOnId, cAmber);
+    b.setColour (juce::TextButton::buttonColourId, c); b.setColour (juce::TextButton::textColourOffId, cText); b.setColour (juce::TextButton::textColourOnId, cText); b.setColour (juce::TextButton::buttonOnColourId, cAmber);
     b.setWantsKeyboardFocus (false);
 }
 void styleLabel (juce::Label& l, juce::Colour c = cText, float size = 13.0f) { l.setColour (juce::Label::textColourId, c); l.setFont (uiFont (size)); l.setMinimumHorizontalScale (0.8f); }
@@ -32,7 +33,7 @@ void styleSlider (juce::Slider& s, double lo, double hi, double step, double v, 
 {
     s.setSliderStyle (juce::Slider::LinearHorizontal); s.setRange (lo, hi, step); s.setValue (v, juce::dontSendNotification); s.setScrollWheelEnabled (false);
     s.setTextBoxStyle (juce::Slider::TextBoxRight, false, 62, 20); s.setTextValueSuffix (suffix);
-    s.setColour (juce::Slider::trackColourId, cAmberDim); s.setColour (juce::Slider::thumbColourId, cAmber); s.setColour (juce::Slider::textBoxTextColourId, cAmber);
+    s.setColour (juce::Slider::trackColourId, cBg); s.setColour (juce::Slider::thumbColourId, cPanel2); s.setColour (juce::Slider::textBoxTextColourId, cAmber);
     s.setColour (juce::Slider::textBoxBackgroundColourId, cBg); s.setColour (juce::Slider::textBoxOutlineColourId, cLine); s.setColour (juce::Slider::backgroundColourId, cBg);
     s.setWantsKeyboardFocus (false);
 }
@@ -91,7 +92,7 @@ struct ReHarmoniserEditor::VoiceRowC : public juce::Component
     void paint (juce::Graphics& g) override
     {
         g.setColour (col); g.fillRoundedRectangle (30.0f, 5.0f, 14.0f, (float) getHeight() - 10.0f, 3.0f);
-        g.setColour (cText); g.setFont (uiFont (12.5f)); g.drawText (text, 50, 0, 70, getHeight(), juce::Justification::centredLeft, false);
+        g.setColour (cLight); g.setFont (uiFont (12.5f)); g.drawText (text, 50, 0, 70, getHeight(), juce::Justification::centredLeft, false);
         g.setColour (cAmberDim); g.fillRect (124, 8, (int) (10 + 70 * strength), getHeight() - 16);
     }
 };
@@ -305,11 +306,11 @@ void ReHarmoniserEditor::View::paint (juce::Graphics& g)
         auto mark = [&] (double t, juce::Colour c) { if (t >= vt0 && t <= vt1) { g.setColour (c); g.drawVerticalLine (tX (t), (float) pl.getY(), (float) pl.getBottom()); } };
         if (ed.loopIn >= 0) mark (ed.loopIn, cGreen);
         if (ed.loopOut >= 0) mark (ed.loopOut, cGreen);
-        mark (ed.cueT, cText.withAlpha (0.7f));
+        mark (ed.cueT, cLight.withAlpha (0.7f));
         if (ed.playT >= 0) mark (ed.playT, cRed);
     }
     // the ruler
-    g.setColour (cPanel); g.fillRect (0, 0, getWidth(), kRuler);
+    g.setColour (cDark); g.fillRect (0, 0, getWidth(), kRuler);
     {
         const double span = vt1 - vt0; const double steps[] = { 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300 };
         double st = steps[12]; for (double s : steps) if (s / span * pl.getWidth() >= 70.0) { st = s; break; }
@@ -321,7 +322,7 @@ void ReHarmoniserEditor::View::paint (juce::Graphics& g)
         }
     }
     // the keys
-    g.setColour (cPanel); g.fillRect (0, kRuler, kKeys, getHeight() - kRuler);
+    g.setColour (cDark); g.fillRect (0, kRuler, kKeys, getHeight() - kRuler);
     {
         juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (juce::Rectangle<int> (0, kRuler, kKeys, getHeight() - kRuler));
         for (int m = (int) std::floor (vm0) - 1; m <= (int) std::ceil (vm1) + 1; ++m)
@@ -449,7 +450,7 @@ public:
     }
     void paint (juce::Graphics& g) override
     {
-        if (rows.empty()) { g.setColour (cAmberDim); g.setFont (uiFont (12.0f)); g.drawText ("None yet.", getLocalBounds().reduced (4, 2), juce::Justification::topLeft); }
+        if (rows.empty()) { g.setColour (cText); g.setFont (uiFont (12.0f)); g.drawText ("None yet.", getLocalBounds().reduced (4, 2), juce::Justification::topLeft); }
     }
 private:
     struct RowC { juce::ToggleButton on; juce::Label txt; juce::TextButton edit, rem; };
@@ -478,7 +479,7 @@ public:
     void resized() override { closeBtn.setBounds (getWidth() - 76, 6, 66, 24); }
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (cPanel); g.setColour (cLine); g.drawRect (getLocalBounds(), 1);
+        g.fillAll (cDark); g.setColour (cLight.withAlpha (0.3f)); g.drawRect (getLocalBounds(), 1);
         g.setColour (cAmber); g.setFont (uiFont (15.0f, true)); g.drawText ("Choir pitch through the recording", 12, 6, getWidth() - 100, 24, juce::Justification::centredLeft, false);
         const int L = 56, B = 30, T = 40, R = 14, infoH = 44;
         const juce::Rectangle<int> pl (L, T, getWidth() - L - R, getHeight() - T - B - infoH);
@@ -490,12 +491,12 @@ public:
         for (int c = (int) std::ceil (lo / 20.0) * 20; c <= hi; c += 20)
         {
             g.setColour (c == 0 ? juce::Colours::white.withAlpha (0.45f) : juce::Colours::white.withAlpha (0.1f)); g.drawHorizontalLine ((int) Y (c), (float) pl.getX(), (float) pl.getRight());
-            g.setColour (cText.withAlpha (0.8f)); g.drawText ((c > 0 ? "+" : "") + juce::String (c) + "c", 4, (int) Y (c) - 8, L - 8, 16, juce::Justification::centredLeft, false);
+            g.setColour (cLight.withAlpha (0.8f)); g.drawText ((c > 0 ? "+" : "") + juce::String (c) + "c", 4, (int) Y (c) - 8, L - 8, 16, juce::Justification::centredLeft, false);
         }
         const double step = juce::jmax (5.0, std::round (durSec / 8.0 / 5.0) * 5.0);
         for (double t = 0; t <= durSec; t += step)
         {
-            g.setColour (cText.withAlpha (0.8f)); g.drawText (juce::String ((int) (t / 60)) + ":" + juce::String ((int) std::round (std::fmod (t, 60.0))).paddedLeft ('0', 2), (int) X (t) - 20, pl.getBottom() + 4, 40, 16, juce::Justification::centred, false);
+            g.setColour (cLight.withAlpha (0.8f)); g.drawText (juce::String ((int) (t / 60)) + ":" + juce::String ((int) std::round (std::fmod (t, 60.0))).paddedLeft ('0', 2), (int) X (t) - 20, pl.getBottom() + 4, 40, 16, juce::Justification::centred, false);
         }
         const double cur = 1200.0 * std::log2 (curA4 / 440.0);
         { juce::Path d; d.startNewSubPath ((float) pl.getX(), Y (cur)); d.lineTo ((float) pl.getRight(), Y (cur));
@@ -505,7 +506,7 @@ public:
         for (auto& p : series) { if (first) { line.startNewSubPath (X (p.t), Y (p.cents)); first = false; } else line.lineTo (X (p.t), Y (p.cents)); }
         g.setColour (cGreen); g.strokePath (line, juce::PathStrokeType (1.8f));
         for (auto& p : series) g.fillEllipse (X (p.t) - 2.5f, Y (p.cents) - 2.5f, 5.0f, 5.0f);
-        g.setColour (cText); g.setFont (uiFont (12.0f));
+        g.setColour (cLight); g.setFont (uiFont (12.0f));
         g.drawFittedText ("Green: the choir's pitch in stretches of the recording (0 c = A=440). Amber dashes: the reference A4 now in the box (" + juce::String (curA4, 1)
                           + " Hz). Whole recording: A4 = " + juce::String (wholeA4, 1) + " Hz.", 12, getHeight() - infoH - 2, getWidth() - 24, infoH, juce::Justification::topLeft, 3);
     }
@@ -525,8 +526,8 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     editsList = std::make_unique<EditsList> (*this); editsView.setViewedComponent (editsList.get(), false); editsView.setScrollBarsShown (true, false);
     addAndMakeVisible (editsView);
     bar.setColour (juce::ProgressBar::foregroundColourId, cAmber); bar.setColour (juce::ProgressBar::backgroundColourId, cBg); addChildComponent (bar);
-    styleLabel (status, cAmber, 13.0f); status.setFont (lcdFont (12.5f)); status.setJustificationType (juce::Justification::centredLeft); addAndMakeVisible (status);
-    styleLabel (noteInfo, cAmber, 12.0f); noteInfo.setFont (lcdFont (12.0f)); noteInfo.setJustificationType (juce::Justification::topLeft); noteInfo.setMinimumHorizontalScale (0.7f); addAndMakeVisible (noteInfo);
+    styleLabel (status, cAmber, 13.0f); status.setFont (lcdFont (12.5f)); status.setColour (juce::Label::backgroundColourId, cBg); status.setJustificationType (juce::Justification::centredLeft); addAndMakeVisible (status);
+    styleLabel (noteInfo, cAmber, 12.0f); noteInfo.setFont (lcdFont (12.0f)); noteInfo.setColour (juce::Label::backgroundColourId, cBg); noteInfo.setJustificationType (juce::Justification::topLeft); noteInfo.setMinimumHorizontalScale (0.7f); addAndMakeVisible (noteInfo);
     styleLabel (tipLabel, cText, 12.0f); tipLabel.setJustificationType (juce::Justification::topLeft); addChildComponent (tipLabel);
     for (auto* b : { &playBtn, &stopBtn, &loopBtn, &originalBtn, &cancelBtn, &downBtn, &upBtn, &remeasureBtn, &tipUse, &tipIgnore, &detectBtn, &auditionBtn, &applyBtn, &deselectBtn, &clearBtn, &undoBtn, &redoBtn,
                      &zoomTIn, &zoomTOut, &zoomPIn, &zoomPOut, &loopClearBtn }) { styleButton (*b); addAndMakeVisible (b); }
@@ -534,13 +535,13 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     styleButton (applyBtn, juce::Colour (0xff8a5a10)); styleButton (playBtn, juce::Colour (0xff8a5a10));
     tipUse.setVisible (false); tipIgnore.setVisible (false);
     loopBtn.setClickingTogglesState (true); originalBtn.setClickingTogglesState (true);
-    loopBtn.setColour (juce::TextButton::buttonOnColourId, cAmberDim); originalBtn.setColour (juce::TextButton::buttonOnColourId, cAmberDim);
+    
 
     nameBox.setFont (lcdFont (14.0f)); nameBox.setColour (juce::TextEditor::backgroundColourId, cBg); nameBox.setColour (juce::TextEditor::textColourId, cAmber);
     nameBox.setColour (juce::TextEditor::outlineColourId, cLine); nameBox.setText ("", false); nameBox.setTooltip ("The note it should be, for example F5, Ab4, C#4, Bb3");
     nameBox.onReturnKey = [this] { const int m = parseNote (nameBox.getText()); if (m > 0 && cand.has) { cand.midi = m; midiLocked = true; replan(); } updateInfo(); };
     nameBox.onFocusLost = nameBox.onReturnKey;
-    addAndMakeVisible (nameBox); styleLabel (nameCap, cAmberDim, 12.0f); addAndMakeVisible (nameCap);
+    addAndMakeVisible (nameBox); styleLabel (nameCap, cText, 12.0f); addAndMakeVisible (nameCap);
     downBtn.onClick = [this] { if (cand.has) { --cand.midi; midiLocked = true; replan(); } };
     upBtn.onClick = [this] { if (cand.has) { ++cand.midi; midiLocked = true; replan(); } };
     remeasureBtn.onClick = [this] { if (cand.has) selectBox (cand.t0, cand.t1, cand.fLo, cand.fHi); };
@@ -551,7 +552,7 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     const char* titles[] = { "Ensemble ReCentre", "Note ReShape", "Section ReFinement", "Erase ReBrush", "See mixer", "Corrected Notes" };
     for (int i = 0; i < 6; ++i)
     {
-        auto s = std::make_unique<Section>(); s->title = titles[i]; s->header.setButtonText (titles[i]); styleButton (s->header, cPanel);
+        auto s = std::make_unique<Section>(); s->title = titles[i]; s->header.setButtonText (titles[i]); styleButton (s->header, cPanel2);
         s->header.setColour (juce::TextButton::textColourOffId, cAmber); addAndMakeVisible (s->header);
         const int idx = i; s->header.onClick = [this, idx] { openSection (openIdx == idx ? -1 : idx); };
         sections.push_back (std::move (s));
@@ -566,8 +567,8 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     addAndMakeVisible (a4Box); detectBtn.onClick = [this] { detectReference(); };
     refMode.addItem ("Around each note (+/- 10 s)", 1); refMode.addItem ("Whole audio", 2); refMode.addItem ("Typed by hand", 3); refMode.setSelectedId (1, juce::dontSendNotification);
     refMode.onChange = [this] { refModeId = refMode.getSelectedId(); };
-    refMode.setColour (juce::ComboBox::backgroundColourId, cBg); refMode.setColour (juce::ComboBox::textColourId, cText); refMode.setColour (juce::ComboBox::outlineColourId, cLine);
-    addAndMakeVisible (refMode); styleLabel (refInfo, cAmber, 12.0f); refInfo.setFont (lcdFont (12.0f)); addAndMakeVisible (refInfo);
+    refMode.setColour (juce::ComboBox::backgroundColourId, cBg); refMode.setColour (juce::ComboBox::textColourId, cAmber); refMode.setColour (juce::ComboBox::outlineColourId, cLine);
+    addAndMakeVisible (refMode); styleLabel (refInfo, cAmber, 12.0f); refInfo.setFont (lcdFont (12.0f)); refInfo.setColour (juce::Label::backgroundColourId, cBg); addAndMakeVisible (refInfo);
     chartBtn.setTooltip ("How far the choir's pitch sits from A=440 through the recording"); styleButton (chartBtn); chartBtn.onClick = [this] { showChart(); }; addChildComponent (chartBtn);
     sections[0]->kids = { &a4Cap, &a4Box, &detectBtn, &refMode, &refInfo, &chartBtn }; sections[0]->bodyH = 142;
     // -- Note ReShape
@@ -586,7 +587,7 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     row (bwRow, "Band width", 20, 120, 5, 45, " Hz", "Width of the band taken around each overtone. Wider removes more of the old pitch but can catch neighbouring voices.");
     partialBox.addItem ("Box is round: the note itself", 1); partialBox.addItem ("its 2nd line (octave up)", 2); partialBox.addItem ("its 3rd line", 3); partialBox.addItem ("its 4th line", 4);
     partialBox.setSelectedId (1, juce::dontSendNotification); partialBox.onChange = [this] { partial = partialBox.getSelectedId(); if (cand.has) measure(); };
-    partialBox.setColour (juce::ComboBox::backgroundColourId, cBg); partialBox.setColour (juce::ComboBox::textColourId, cText); partialBox.setColour (juce::ComboBox::outlineColourId, cLine);
+    partialBox.setColour (juce::ComboBox::backgroundColourId, cBg); partialBox.setColour (juce::ComboBox::textColourId, cAmber); partialBox.setColour (juce::ComboBox::outlineColourId, cLine);
     partialBox.setTooltip ("Which overtone you drew the box round. Leave on the note itself if you drew round the lowest line of the note.");
     addAndMakeVisible (partialBox);
     matchBox.setToggleState (true, juce::dontSendNotification); matchBox.setColour (juce::ToggleButton::textColourId, cText); matchBox.setColour (juce::ToggleButton::tickColourId, cAmber);
@@ -628,7 +629,7 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     voiceHelp.setText ("Several singers on one note and some are out of tune: draw a box round the note first, press Find voices, tick the voices to move, hear it with Preview move, then Apply correction. Voices closer than about 10 cents cannot be told apart.", juce::dontSendNotification);
     styleLabel (voiceHelp, cText, 11.5f); voiceHelp.setMinimumHorizontalScale (1.0f); addChildComponent (voiceHelp);
     voiceTarget.addItem ("Move them to the written note", 1); voiceTarget.addItem ("Move them to the strongest voice", 2); voiceTarget.setSelectedId (1, juce::dontSendNotification);
-    voiceTarget.setColour (juce::ComboBox::backgroundColourId, cBg); voiceTarget.setColour (juce::ComboBox::textColourId, cText); voiceTarget.setColour (juce::ComboBox::outlineColourId, cLine);
+    voiceTarget.setColour (juce::ComboBox::backgroundColourId, cBg); voiceTarget.setColour (juce::ComboBox::textColourId, cAmber); voiceTarget.setColour (juce::ComboBox::outlineColourId, cLine);
     voiceTarget.onChange = [this] { if (vcand.has && vcand.preview) auditionStale = true; };
     addChildComponent (voiceTarget);
     for (auto* b : { &voiceFindBtn, &voicePreviewBtn, &voiceApplyBtn, &voiceDiscardBtn }) { styleButton (*b); addChildComponent (b); }
@@ -1070,6 +1071,7 @@ void ReHarmoniserEditor::applyVoices()
     e.label = "Voices at " + fmtTime (e.t0) + "   " + juce::String (moved) + " moved";
     edits.push_back (e); undone.clear();
     vcand = VCand(); rebuildVoiceRows();
+    cand = Cand(); view->clearSelection(); nameBox.setText ("", false); hist.clear(); histPos = 0;
     rebuildEditsList(); updateInfo();
     renderAndSet (false, [this] { setStatus ("Voice correction applied and added to Corrected Notes. Press Space to listen; Original compares."); });
 }
@@ -1239,6 +1241,7 @@ void ReHarmoniserEditor::writeBack()
     if (busy || hostBusy) return;
     if (cand.has || bcand.has || (vcand.has && vcand.preview)) { setStatus ("A correction is not applied yet: press Apply correction / Erase (apply), or Deselect / Discard stroke, first.", true); return; }
     if (! hasAppliedChanges()) { setStatus ("Nothing has been changed yet. Press Cancel to close.", true); return; }
+    if (hostState == HostState::Corrected && ! originalMode) { if (host.writeBack) host.writeBack(); return; }
     renderAndSet (false, [this] { if (host.writeBack) host.writeBack(); });
 }
 

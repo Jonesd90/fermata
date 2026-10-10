@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.8.0
+- ReHarmoniSer: Section ReFinement no longer leaves a note selected after Apply correction, and Write back to clip uses the corrected audio that is already prepared, so the edit stays untouched until Write back is pressed.
+- ReHarmoniSer: new look closer to the original: sage-green panels, dark picture, amber LCD readouts, light buttons, dark slider tracks.
+
 ## 2.7.1
 - Fixed the Windows build error in 2.7.0 (the Pitch over time chart's Close button). No other change.
 
