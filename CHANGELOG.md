@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.6.0
+- ReHarmoniSer: new **Section ReFinement** (several singers on one note, some out of tune). Draw a box round the note, open Section ReFinement and press Find voices: each separate voice is drawn on the picture as a coloured line labelled with how many cents it is from the written note, and listed with a tick (voices already within about 6 cents start unticked) and a bar for how strong it is. Choose "Move them to the written note" or "to the strongest voice", press Preview move (then Space to listen) and Apply correction. Only the ticked voices are moved, in every channel the same way. Each move appears in Corrected Notes (switch off, Edit, X) and is written back with the rest.
+- It is now listed in the same order as the Python tool: Ensemble ReCentre, Note ReShape, Section ReFinement, Erase ReBrush, See mixer, Corrected Notes.
+
 ## 2.5.1
 - The window files now live in three folders named `Take Windows`, `Edit Windows` and `Mixer Windows`. Projects saved with 2.3.0 - 2.5.0 move their files into the new folders on the next save (the old files are removed once the new ones are written).
 - A new edit, take window or mixer gets its file straight away, not on the next automatic save.
