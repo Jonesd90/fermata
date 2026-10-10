@@ -31,6 +31,7 @@ AppContext::AppContext()
     project.structure.addChangeListener (this);
     devices.addChangeListener (this);
     startTimer (4000);
+    project.onNewWindow = [this] { juce::MessageManager::callAsync ([this] { if (project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording()) saveNow(); }); };      // a new edit / take window / mixer gets its file at once
     watcher.fn = [this] { if (engine.playbackFinished()) stopPlayback(); };   // tidy up when a play-through reaches its end
     watcher.startTimer (100);
     undoTicker.fn = [this] { if (undoHold <= 0) project.undoTick (engine.isRecording()); };

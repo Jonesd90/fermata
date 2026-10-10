@@ -2216,6 +2216,24 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
         if (st->applied) if (auto* e2 = app.project.findEdit (eid)) { e2->regions = st->base; app.project.changed(); }
         st->applied = false; discardFiles();
     };
+    // The corrected audio is only put into the edit while it is being played (so it goes through the edit's mixer); it is taken out again when playback stops,
+    // and it stays in the edit for good only when Write back to clip is pressed.
+    auto putIn = [&app, eid, st]() -> bool
+    {
+        if (st->jobs.empty() || st->applied) return true;
+        auto* e2 = app.project.findEdit (eid); if (e2 == nullptr) return false;
+        e2->regions = st->base; bool ok = true;
+        for (size_t i = st->jobs.size(); i-- > 0;) ok = applyRegionJob (*e2, st->jobs[i], "reharmonised") && ok;
+        if (! ok) { e2->regions = st->base; app.project.changed(); return false; }
+        st->applied = true; app.project.changed();
+        return true;
+    };
+    auto takeOut = [&app, eid, st]
+    {
+        if (! st->applied) return;
+        if (auto* e2 = app.project.findEdit (eid)) { e2->regions = st->base; app.project.changed(); }
+        st->applied = false;
+    };
     d->onClosing = [&app, st, unapply]
     {
         app.stopPlayback();
@@ -2227,16 +2245,17 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
     // ---- the editor's host
     auto& h = d->editor.host;
     h.log = [] (const juce::String& s) { juce::Logger::writeToLog (s); };
-    h.play = [&app, eid, from, rate, nm] (double x, double y, bool loop)
+    h.play = [&app, eid, from, rate, nm, putIn] (double x, double y, bool loop)
     {
+        if (! putIn()) { say (nm, "The corrected audio does not fit the edit any more."); return; }
         const auto err = app.playEdit (eid, (double) from / rate + x, (double) from / rate + y, loop);
         if (err.isNotEmpty()) say (nm, err);
         app.engine.setPlaybackLooping (loop);
     };
-    h.stop = [&app] { app.stopPlayback(); };
-    h.playPosition = [&app, eid, from, rate]
+    h.stop = [&app, takeOut] { app.stopPlayback(); takeOut(); };
+    h.playPosition = [&app, eid, from, rate, takeOut]
     {
-        if (! app.isPlaying() || app.playInfo.kind != AppContext::PlayInfo::Kind::Edit || app.playInfo.id != eid) return -1.0;
+        if (! app.isPlaying() || app.playInfo.kind != AppContext::PlayInfo::Kind::Edit || app.playInfo.id != eid) { takeOut(); return -1.0; }
         return juce::jmax (0.0, app.playheadSeconds() - (double) from / rate);
     };
     h.playTone = [&app, eid, nm] (double hz, double levelDb)         // a piano key: a short tone, to the outputs the edit's mixer uses
@@ -2267,10 +2286,12 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
         if (err.isNotEmpty()) say (nm, err);
     };
     h.cancel = [self] { if (self != nullptr) self->closeMe(); };
-    h.writeBack = [&app, eid, st, self]
+    h.writeBack = [&app, eid, st, self, putIn]
     {
         if (self == nullptr) return;
-        if (! st->applied) { self->editor.setStatus ("Nothing to write back.", true); return; }
+        if (st->jobs.empty()) { self->editor.setStatus ("Nothing to write back.", true); return; }
+        app.stopPlayback();
+        if (! putIn()) { self->editor.setStatus ("The corrected audio does not fit the edit any more.", true); return; }
         for (auto& rj : st->jobs) rj.results.clear();              // the new files are kept now
         st->jobs.clear(); st->applied = false; st->accepted = true;
         setUndoForEdit (app, eid, st->base, "reharmoniser");
@@ -2353,10 +2374,7 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
             auto* e2 = app.project.findEdit (eid);
             if (e2 == nullptr) { done ("The edit is gone."); return; }
             st->jobs.clear(); for (auto& p : *pieces) st->jobs.push_back (p.rj);
-            e2->regions = st->base; bool ok = true;
-            for (size_t i = st->jobs.size(); i-- > 0;) ok = applyRegionJob (*e2, st->jobs[i], "reharmonised") && ok;
-            if (! ok) { e2->regions = st->base; for (auto& rj : st->jobs) for (auto& r : rj.results) r.file.deleteFile(); st->jobs.clear(); done ("The corrected audio does not fit the edit."); return; }
-            st->applied = true; app.project.changed();
+            e2->regions = st->base; st->applied = false;                 // (the edit itself is not changed here: the corrected audio goes in when it is played, and for good at Write back to clip)
             done ({});
         });
     };

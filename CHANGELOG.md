@@ -6,6 +6,11 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.5.1
+- The window files now live in three folders named `Take Windows`, `Edit Windows` and `Mixer Windows`. Projects saved with 2.3.0 - 2.5.0 move their files into the new folders on the next save (the old files are removed once the new ones are written).
+- A new edit, take window or mixer gets its file straight away, not on the next automatic save.
+- ReHarmoniSer: Apply correction / Erase (apply) no longer changes the edit. The corrected audio is put into the edit only while you play it inside ReHarmoniSer (so it goes through the edit's mixer) and taken out again when playback stops. It stays in the edit only when you press Write back to clip. Cancel or closing leaves the edit exactly as it was.
+
 ## 2.5.0
 - Every mixer (the processing mixer and the cue mixers) is now saved in its own file too: `Mixers/<name>.fmmix` in the project folder. With the edit and take window files, the whole project except the recordings is now in separate files. The Edit mixers stay inside their edit's `.fmedit` file. If the processing mixer's file is missing when a project opens, you are told and a new empty one is made (the missing file is not deleted).
 - Mixers menu: "Import a mixer file (.fmmix) as a new mixer..." (strips are matched with this project's tracks and buses by name).

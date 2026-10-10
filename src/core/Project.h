@@ -218,6 +218,7 @@ public:
     struct WindowFile { juce::String rel; juce::String hash; };
     std::map<juce::String, WindowFile> windowFiles;     // window id -> its file (path from the project folder)
     std::vector<juce::var> missingWindowRefs;            // listed by the project file but not readable when it was opened: kept in the list so nothing is forgotten
+    std::function<void()> onNewWindow;                   // the program sets this: called when an edit, take window or mixer is made, so its file is written at once
     juce::StringArray loadNotes;                         // things to tell the person after the project was opened
     /** Reads a .fmedit / .fmtake file (from another project, or a copy) and adds it. Same-named windows get a number, ids that clash are renewed, tracks are matched by name. */
     bool importWindowFile (const juce::File&, juce::String& message, juce::Uuid* newId = nullptr);

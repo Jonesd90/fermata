@@ -655,7 +655,7 @@ void MainComponent::openProjectDialog()
 void MainComponent::importWindowFileDialog (bool isEdit)
 {
     if (app.engine.isRecording()) { showError ("Recording", "Stop recording first."); return; }
-    auto start = app.project.projectFolder().getChildFile (isEdit ? "Edits" : "Take Windows");
+    auto start = app.project.projectFolder().getChildFile (isEdit ? "Edit Windows" : "Take Windows");
     if (! start.isDirectory()) start = app.project.projectFolder();
     chooser = std::make_unique<juce::FileChooser> (isEdit ? "Choose an edit file (.fmedit)" : "Choose a take window file (.fmtake)", start, isEdit ? "*.fmedit" : "*.fmtake");
     chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this, isEdit] (const juce::FileChooser& fc)
@@ -823,7 +823,7 @@ void MainComponent::showMixersMenu()
         if (r == 1001)
         {
             if (app.engine.isRecording()) { showError ("Recording", "Stop recording first."); return; }
-            auto start = app.project.projectFolder().getChildFile ("Mixers");
+            auto start = app.project.projectFolder().getChildFile ("Mixer Windows");
             if (! start.isDirectory()) start = app.project.projectFolder();
             chooser = std::make_unique<juce::FileChooser> ("Choose a mixer file (.fmmix)", start, "*.fmmix");
             chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this] (const juce::FileChooser& fc)

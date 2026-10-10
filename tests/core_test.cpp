@@ -2457,7 +2457,7 @@ int main()
     {
         juce::String er; CHECK (p.save (er));
         const auto folder = p.projectFolder();
-        auto editFiles = folder.getChildFile ("Edits").findChildFiles (juce::File::findFiles, false, "*.fmedit");
+        auto editFiles = folder.getChildFile ("Edit Windows").findChildFiles (juce::File::findFiles, false, "*.fmedit");
         auto takeFiles = folder.getChildFile ("Take Windows").findChildFiles (juce::File::findFiles, false, "*.fmtake");
         CHECK (p.windowFiles.size() == p.edits.size() + p.takeWindows.size() + (size_t) p.cueEnd() && ! p.edits.empty() && ! p.takeWindows.empty());
         for (auto& kv : p.windowFiles) CHECK (folder.getChildFile (kv.second.rel).existsAsFile());
@@ -2479,12 +2479,12 @@ int main()
         const auto oldRel = p.windowFiles[p.edits.front()->id.toString()].rel;
         p.edits.front()->name = "Zed edit"; p.changed();
         CHECK (p.save (er));
-        CHECK (! folder.getChildFile (oldRel).existsAsFile() && folder.getChildFile ("Edits/Zed edit.fmedit").existsAsFile());
+        CHECK (! folder.getChildFile (oldRel).existsAsFile() && folder.getChildFile ("Edit Windows/Zed edit.fmedit").existsAsFile());
 
         // import a copy into the same project: the ids are renewed and the name made unique
         const auto before = p.edits.size();
         juce::Uuid newId; juce::String msg;
-        const auto zed = folder.getChildFile ("Edits/Zed edit.fmedit");
+        const auto zed = folder.getChildFile ("Edit Windows/Zed edit.fmedit");
         CHECK (p.importWindowFile (zed, msg, &newId) && p.edits.size() == before + 1);
         auto* ne = p.findEdit (newId);
         CHECK (ne != nullptr && ne->id != p.edits.front()->id && ne->name == "Zed edit (2)" && ne->regions.size() == p.edits.front()->regions.size());
@@ -2495,7 +2495,7 @@ int main()
             const auto nTracks = r.tracks.size();
             CHECK (r.importWindowFile (zed, msg, &newId) && r.edits.size() == 1 && r.edits[0]->name == "Zed edit");
             CHECK (r.tracks.size() >= nTracks && r.missingAudioCount() == 0);
-            CHECK (r.save (er) && r.projectFolder().getChildFile ("Edits/Zed edit.fmedit").existsAsFile());
+            CHECK (r.save (er) && r.projectFolder().getChildFile ("Edit Windows/Zed edit.fmedit").existsAsFile());
         }
         const auto tf = folder.getChildFile (p.windowFiles[p.takeWindows.front()->id.toString()].rel);
         CHECK (p.importWindowFile (tf, msg, &newId) && p.findTakeWindow (newId) != nullptr && p.findTakeWindow (newId)->name != p.takeWindows.front()->name);
@@ -2522,7 +2522,7 @@ int main()
         const auto folder = p.projectFolder();
         const int nMix = p.cueEnd();
         int files = 0;
-        for (auto& kv : p.windowFiles) if (kv.second.rel.startsWith ("Mixers/") && folder.getChildFile (kv.second.rel).existsAsFile()) ++files;
+        for (auto& kv : p.windowFiles) if (kv.second.rel.startsWith ("Mixer Windows/") && folder.getChildFile (kv.second.rel).existsAsFile()) ++files;
         CHECK (files == nMix && nMix >= 2);
         auto pv = juce::JSON::parse (p.projectFile);
         CHECK (pv.hasProperty ("mixerFiles") && pv["mixerFiles"].size() == nMix);

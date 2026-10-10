@@ -436,6 +436,7 @@ MixerState& Project::addMixer (const String& mixerName)
     mixers.insert (mixers.begin() + (std::ptrdiff_t) at, std::move (m));
     syncMixers();
     structureChanged();
+    if (onNewWindow) onNewWindow();
     return *mixers[at];
 }
 
@@ -452,6 +453,7 @@ TakeWindowDef& Project::addTakeWindow (const String& windowName)
     w->name = windowName;
     takeWindows.push_back (std::move (w));
     structureChanged();
+    if (onNewWindow) onNewWindow();
     return *takeWindows.back();
 }
 
@@ -469,6 +471,7 @@ EditDef& Project::addEdit (const String& editName, const juce::Uuid& windowId)
     edits.push_back (std::move (e));
     if (syncEditMixers()) structureChanged();           // the new Edit gets its own mixer
     else changed();
+    if (onNewWindow) onNewWindow();
     return *edits.back();
 }
 
@@ -1381,7 +1384,7 @@ bool Project::splitWindowFiles (var& root)
             if (auto* ma = root["mixers"].getArray())
                 for (auto& m : *ma) if (m["editId"].toString() == e["id"].toString()) mixer = m;
             if (mixer.isObject()) editMixerIds.insert (mixer["id"].toString());
-            handle (e, kEditFormat, "edit", "Edits", ".fmedit", editRefs, mixer);
+            handle (e, kEditFormat, "edit", "Edit Windows", ".fmedit", editRefs, mixer);
         }
     juce::Array<var> mixerRefs;
     if (auto* ma = root["mixers"].getArray())              // the mixers that are not an Edit's own (the processing mixer, the cue mixers)
@@ -1394,7 +1397,7 @@ bool Project::splitWindowFiles (var& root)
             put (fr, "tracks", root["tracks"]); put (fr, "buses", root["buses"]);       // (what the strips refer to: lets another project match them by name)
             const auto text = juce::JSON::toString (fr, false);
             const auto hash = String::toHexString (text.hashCode64());
-            const auto rel = place (id, nm, "Mixers", ".fmmix");
+            const auto rel = place (id, nm, "Mixer Windows", ".fmmix");
             auto prev = windowFiles.find (id);
             const bool same = prev != windowFiles.end() && prev->second.rel == rel && prev->second.hash == hash && folder.getChildFile (rel).existsAsFile();
             if (! same) pending.push_back ({ folder.getChildFile (rel), text });
