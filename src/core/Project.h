@@ -221,6 +221,8 @@ public:
     juce::StringArray loadNotes;                         // things to tell the person after the project was opened
     /** Reads a .fmedit / .fmtake file (from another project, or a copy) and adds it. Same-named windows get a number, ids that clash are renewed, tracks are matched by name. */
     bool importWindowFile (const juce::File&, juce::String& message, juce::Uuid* newId = nullptr);
+    /** Reads a .fmmix mixer file and adds it as a new mixer (the strips are matched with this project's tracks and buses by name). */
+    bool importMixerFile (const juce::File&, juce::String& message);
     /** How many audio files used by the edits and take windows cannot be found. */
     int missingAudioCount() const;
     /** Looks for the missing audio files by name inside a folder (and its sub-folders). Returns how many were found. */

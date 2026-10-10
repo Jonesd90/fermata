@@ -19,6 +19,7 @@ struct NoteEdit
     Vec ts, f0, off;                               // the measured note (seconds, Hz) and the correction (cents) on the same grid
     bool enabled = true;
     juce::String label;
+    bool isBrush = false; Brush brush;             // an Erase ReBrush stroke instead of a note (ts / f0 / off are empty then)
 };
 
 /** What the editor needs from whoever hosts it. Every call is made on the message thread. All of them are optional. */
@@ -64,6 +65,7 @@ private:
     friend class View;
     struct Cand { bool has = false; double t0 = 0, t1 = 0, fLo = 0, fHi = 0; Vec ts, f0; int hint = 1, midi = 57; Plan plan; } cand;
     struct Hist { Params p; };
+    struct BCand { bool has = false; Brush b; } bcand;
 
     // ---- the work
     void timerCallback() override;
@@ -97,6 +99,14 @@ private:
     Vec seeGainsDb() const;                          // the See mixer as dB per channel (muted / not soloed = -100); empty = all flat
     void seeChanged();
     void recombine();
+    void brushChanged();
+    void applyBrush();
+    void discardBrush();
+    void loadBrushAsPending (const NoteEdit&);
+    void strokeBegin();
+    void strokePoint (double t, double hz);
+    void strokeEnd();
+    bool brushMode() const { return openIdx == 2; }
     juce::String noteName (int midi) const;
     static int parseNote (const juce::String&);
     double notePitchHz (int midi) const { return midiHz (midi, a4); }
@@ -133,6 +143,8 @@ private:
     juce::Label a4Cap { {}, "Reference A4" }; juce::TextEditor a4Box; juce::TextButton detectBtn { "Detect" }; juce::ComboBox refMode; juce::Label refInfo;
     struct Row { juce::Label cap; juce::Slider s; };
     Row moveRow, snapRow, strengthRow, keepRow, smoothRow, easeRow, holdRow, bwRow, linesRow, gainRow, keyRow;
+    Row brushTRow, brushCRow, brushAmtRow; juce::Label brushHelp; juce::ToggleButton brushHarm { "Also the overtones above" };
+    juce::TextButton brushAuditionBtn { "Audition" }, brushApplyBtn { "Erase (apply)" }, brushDiscardBtn { "Discard stroke" };
     struct SeeStrip { juce::Label name; juce::TextButton m { "M" }, s { "S" }; juce::Slider g; };
     std::vector<std::unique_ptr<SeeStrip>> seeStrips; juce::Component seeHolder; juce::Viewport seeView;
     juce::ComboBox partialBox; juce::ToggleButton matchBox { "Level smoothing" }; juce::ToggleButton advancedBtn { "Advanced" };

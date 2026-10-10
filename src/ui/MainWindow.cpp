@@ -805,6 +805,7 @@ void MainComponent::showMixersMenu()
     }
     m.addSeparator();
     m.addItem (1000, "New cue mixer");
+    m.addItem (1001, "Import a mixer file (.fmmix) as a new mixer...");
     if (ce > 1)
     {
         juce::PopupMenu del;
@@ -817,6 +818,23 @@ void MainComponent::showMixersMenu()
         {
             const auto id = app.project.mixers[(size_t) (r - 2000)]->id;
             confirmAsync ("Delete cue mixer", "Delete the cue mixer '" + app.project.mixers[(size_t) (r - 2000)]->name + "'?\n\nIts levels, sends and plug-ins are lost. Nothing else is touched.", "Delete", [this, id] { app.deleteMixer (id); });
+            return;
+        }
+        if (r == 1001)
+        {
+            if (app.engine.isRecording()) { showError ("Recording", "Stop recording first."); return; }
+            auto start = app.project.projectFolder().getChildFile ("Mixers");
+            if (! start.isDirectory()) start = app.project.projectFolder();
+            chooser = std::make_unique<juce::FileChooser> ("Choose a mixer file (.fmmix)", start, "*.fmmix");
+            chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this] (const juce::FileChooser& fc)
+            {
+                auto f = fc.getResult();
+                if (! f.existsAsFile()) return;
+                juce::String msg;
+                if (! app.project.importMixerFile (f, msg)) { showError ("Import", msg); return; }
+                app.saveNow();
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Imported", msg);
+            });
             return;
         }
         if (r == 1000)

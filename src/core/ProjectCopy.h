@@ -55,7 +55,7 @@ inline juce::String run (juce::var root, const juce::File& srcFolder, const juce
     {
         for (auto& f : srcFolder.findChildFiles (juce::File::findFiles, true, "*"))
         {
-            if (f.hasFileExtension ("takedaw") || f.hasFileExtension ("fermata") || f.hasFileExtension ("fmedit") || f.hasFileExtension ("fmtake") || f.getFileName().endsWith ("~")) continue;
+            if (f.hasFileExtension ("takedaw") || f.hasFileExtension ("fermata") || f.hasFileExtension ("fmedit") || f.hasFileExtension ("fmtake") || f.hasFileExtension ("fmmix") || f.getFileName().endsWith ("~")) continue;
             add (f, destFolder.getChildFile (f.getRelativePathFrom (srcFolder)));
         }
         std::vector<juce::var> objs; collect (root, objs);

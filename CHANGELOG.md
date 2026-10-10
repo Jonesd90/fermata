@@ -6,6 +6,11 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.5.0
+- Every mixer (the processing mixer and the cue mixers) is now saved in its own file too: `Mixers/<name>.fmmix` in the project folder. With the edit and take window files, the whole project except the recordings is now in separate files. The Edit mixers stay inside their edit's `.fmedit` file. If the processing mixer's file is missing when a project opens, you are told and a new empty one is made (the missing file is not deleted).
+- Mixers menu: "Import a mixer file (.fmmix) as a new mixer..." (strips are matched with this project's tracks and buses by name).
+- ReHarmoniSer: new **Erase ReBrush** section. Hold the mouse down and drag along a sound on the picture (a cough, a squeak, a stray voice): a red stroke with its reach shows. Set Time radius, Pitch radius and Amount, Audition, then Erase (apply). Erasures appear in Corrected Notes (switch off, Edit, X) and are written back with the notes, the same on every channel.
+
 ## 2.4.0
 - ReHarmoniSer: new **See mixer** section in the right-hand panel. One row per audio channel (named after its track): M hides the channel from the picture, S shows only the soloed channels, and the slider makes that channel brighter or darker in the picture. It only changes what you SEE (and which channels are used to measure a note); what you hear still goes through the edit's own mixer. The picture updates a moment after you stop moving a slider.
 - ReHarmoniSer: clicking a piano key on the left of the picture now plays that note. New **Key level** slider in the View block sets how loud the key notes are. The tone goes to the same outputs as the edit's mixer.

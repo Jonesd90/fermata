@@ -154,8 +154,8 @@ public:
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
     ReHarmoniserEditor& ed; juce::Image image; std::array<juce::Colour, 256> lut;
-    enum class Mode { none, box, keys, ruler } mode = Mode::none;
-    juce::Point<int> downPos; double anchorT = 0, anchorM = 0, panM0 = 0, panM1 = 0; bool moved = false;
+    enum class Mode { none, box, keys, ruler, brush } mode = Mode::none;
+    juce::Point<int> downPos, lastStroke; double anchorT = 0, anchorM = 0, panM0 = 0, panM1 = 0; bool moved = false;
 };
 
 void ReHarmoniserEditor::View::rebuildImage (juce::Rectangle<int> pl)
@@ -247,6 +247,25 @@ void ReHarmoniserEditor::View::paint (juce::Graphics& g)
             g.setColour (cAmber.withAlpha (0.12f)); g.fillRect (r);
             g.setColour (cAmber); g.drawRect (r, 1);
         }
+        // erase strokes: the pending one, and (faint) the ones already applied
+        {
+            auto drawStroke = [&] (const Brush& b, float alpha)
+            {
+                const double ppm = (double) pl.getHeight() / juce::jmax (1.0, vm1 - vm0), pps = (double) pl.getWidth() / juce::jmax (1.0e-6, vt1 - vt0);
+                const float rx = (float) (b.rt * pps), ry = (float) (b.rc / 100.0 * ppm);
+                juce::Path line; bool first = true; juce::Point<float> last (-1000.0f, -1000.0f);
+                g.setColour (cRed.withAlpha (alpha * 0.35f));
+                for (auto& pt : b.pts)
+                {
+                    const float x = (float) tX (pt.first), y = (float) mY (hzM (pt.second));
+                    if (first) { line.startNewSubPath (x, y); first = false; } else line.lineTo (x, y);
+                    if (std::abs (x - last.x) + std::abs (y - last.y) > juce::jmax (4.0f, ry * 0.5f)) { g.fillEllipse (x - rx, y - ry, 2.0f * rx, 2.0f * ry); last = { x, y }; }
+                }
+                g.setColour (cRed.withAlpha (alpha)); g.strokePath (line, juce::PathStrokeType (1.6f));
+            };
+            for (auto& e : ed.edits) if (e.isBrush && e.enabled) drawStroke (e.brush, 0.35f);
+            if (ed.bcand.has || ! ed.bcand.b.pts.empty()) drawStroke (ed.bcand.b, 0.95f);
+        }
         // loop markers, the cue and the playhead
         if (ed.loopIn >= 0 && ed.loopOut > ed.loopIn)
         {
@@ -294,6 +313,12 @@ void ReHarmoniserEditor::View::mouseDown (const juce::MouseEvent& e)
     downPos = e.getPosition(); moved = false; ed.grabKeyboardFocus();
     if (e.x < kKeys && e.y >= kRuler) { mode = Mode::keys; panM0 = vm0; panM1 = vm1; anchorM = yM (e.y); return; }
     if (e.y < kRuler) { mode = Mode::ruler; ed.cueT = juce::jlimit (0.0, ed.dur, xT (e.x)); repaint(); return; }
+    if (ed.brushMode() && ed.mix != nullptr)
+    {
+        mode = Mode::brush; ed.strokeBegin(); lastStroke = e.getPosition();
+        ed.strokePoint (juce::jlimit (0.0, ed.dur, xT (e.x)), midiHz (yM (e.y), ed.a4));
+        return;
+    }
     mode = Mode::box; anchorT = xT (e.x); anchorM = yM (e.y);
 }
 
@@ -306,6 +331,10 @@ void ReHarmoniserEditor::View::mouseDrag (const juce::MouseEvent& e)
         vm0 = panM0 + dm; vm1 = panM1 + dm; clampView();
     }
     else if (mode == Mode::ruler) { ed.cueT = juce::jlimit (0.0, ed.dur, xT (e.x)); repaint(); }
+    else if (mode == Mode::brush)
+    {
+        if (e.getPosition().getDistanceFrom (lastStroke) >= 3) { lastStroke = e.getPosition(); ed.strokePoint (juce::jlimit (0.0, ed.dur, xT (e.x)), midiHz (yM (e.y), ed.a4)); }
+    }
     else if (mode == Mode::box && moved)
     {
         hasSel = true; sT0 = anchorT; sT1 = juce::jlimit (0.0, ed.dur, xT (e.x)); sM0 = anchorM; sM1 = yM (e.y); repaint();
@@ -319,6 +348,7 @@ void ReHarmoniserEditor::View::mouseUp (const juce::MouseEvent&)
         const int m = (int) std::lround (anchorM);
         if (ed.host.playTone) ed.host.playTone (midiHz (m, ed.a4), ed.keyRow.s.getValue());
     }
+    else if (mode == Mode::brush) ed.strokeEnd();
     else if (mode == Mode::box && moved && hasSel)
     {
         ed.selectBox (juce::jmin (sT0, sT1), juce::jmax (sT0, sT1), midiHz (juce::jmin (sM0, sM1), ed.a4), midiHz (juce::jmax (sM0, sM1), ed.a4));
@@ -364,7 +394,7 @@ public:
             r->edit.onClick = [this, id]
             {
                 for (size_t i = 0; i < ed.edits.size(); ++i) if (ed.edits[i].id == id)
-                { auto copy = ed.edits[i]; ed.edits.erase (ed.edits.begin() + (long) i); ed.loadAsPending (copy); return; }
+                { auto copy = ed.edits[i]; ed.edits.erase (ed.edits.begin() + (long) i); if (copy.isBrush) ed.loadBrushAsPending (copy); else ed.loadAsPending (copy); return; }
             };
             r->rem.onClick = [this, id]
             {
@@ -444,8 +474,8 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     tipIgnore.onClick = [this] { cand.hint = 1; updateInfo(); };
 
     // sections: Ensemble ReCentre, Note ReShape, Corrected Notes
-    const char* titles[] = { "Ensemble ReCentre", "Note ReShape", "See mixer", "Corrected Notes" };
-    for (int i = 0; i < 4; ++i)
+    const char* titles[] = { "Ensemble ReCentre", "Note ReShape", "Erase ReBrush", "See mixer", "Corrected Notes" };
+    for (int i = 0; i < 5; ++i)
     {
         auto s = std::make_unique<Section>(); s->title = titles[i]; s->header.setButtonText (titles[i]); styleButton (s->header, cPanel);
         s->header.setColour (juce::TextButton::textColourOffId, cAmber); addAndMakeVisible (s->header);
@@ -501,12 +531,25 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     loopClearBtn.onClick = [this] { loopIn = loopOut = -1.0; view->repaint(); };
     styleLabel (zoomCap, cText, 12.0f); addAndMakeVisible (zoomCap);
     sections[1]->kids = { &moveRow.cap, &moveRow.s, &snapRow.cap, &snapRow.s, &advancedBtn, &auditionBtn, &applyBtn, &deselectBtn, &clearBtn, &undoBtn, &redoBtn };
-    sections[3]->kids = { &editsView };
+    sections[4]->kids = { &editsView };
     // -- See mixer: what the picture shows (not what you hear)
     seeView.setViewedComponent (&seeHolder, false); seeView.setScrollBarsShown (true, false); addChildComponent (seeView);
-    sections[2]->kids = { &seeView };
+    sections[3]->kids = { &seeView };
     // -- Key level
     row (keyRow, "Key level", -50, 0, 1, -20, " dB", "How loud the piano-key notes are when you click a key on the left of the picture.");
+    // -- Erase ReBrush
+    brushHelp.setText ("Paint over a sound you want gone (a cough, a squeak, one stray voice): hold the mouse down and drag along it on the picture. Then Audition, and Erase (apply).", juce::dontSendNotification);
+    styleLabel (brushHelp, cText, 11.5f); brushHelp.setMinimumHorizontalScale (1.0f); addChildComponent (brushHelp);
+    row (brushTRow, "Time radius", 0.05, 1.0, 0.01, 0.2, " s", "How far along the time the brush reaches either side of the line you painted.");
+    row (brushCRow, "Pitch radius", 20, 300, 5, 60, " c", "How far up and down (in cents) the brush reaches from the line you painted. 100 cents = one semitone.");
+    row (brushAmtRow, "Amount", 5, 100, 5, 100, " %", "How much of the sound is taken out. 100% = as much as possible.");
+    for (auto* r : { &brushTRow, &brushCRow, &brushAmtRow }) { r->cap.setVisible (false); r->s.setVisible (false); r->s.onValueChange = [this] { brushChanged(); }; }
+    brushHarm.setToggleState (true, juce::dontSendNotification); brushHarm.setColour (juce::ToggleButton::textColourId, cText); brushHarm.setColour (juce::ToggleButton::tickColourId, cAmber);
+    brushHarm.setWantsKeyboardFocus (false); brushHarm.onClick = [this] { brushChanged(); }; addChildComponent (brushHarm);
+    for (auto* b : { &brushAuditionBtn, &brushApplyBtn, &brushDiscardBtn }) { styleButton (*b); addChildComponent (b); }
+    brushAuditionBtn.onClick = [this] { if (bcand.has && ! busy) renderAndSet (true, [this] { setStatus ("Ready: press Space (or Play) to hear it. Original plays without the changes."); }); };
+    brushApplyBtn.onClick = [this] { applyBrush(); }; brushDiscardBtn.onClick = [this] { discardBrush(); };
+    sections[2]->kids = { &brushHelp, &brushTRow.cap, &brushTRow.s, &brushCRow.cap, &brushCRow.s, &brushAmtRow.cap, &brushAmtRow.s, &brushHarm, &brushAuditionBtn, &brushApplyBtn, &brushDiscardBtn };
     // transport
     playBtn.onClick = [this] { togglePlay(); }; stopBtn.onClick = [this] { if (host.stop) host.stop(); };
     loopBtn.onClick = [this] { looping = loopBtn.getToggleState(); };
@@ -727,6 +770,10 @@ void ReHarmoniserEditor::renderAndSet (bool withPending, std::function<void()> t
     if (orig == nullptr || (busy && analysing)) return;
     std::vector<NoteEdit> list;
     for (auto& e : edits) if (e.enabled) list.push_back (e);
+    if (withPending && bcand.has)
+    {
+        NoteEdit p; p.isBrush = true; p.brush = bcand.b; list.push_back (std::move (p));
+    }
     if (withPending && cand.has)
     {
         NoteEdit p; p.t0 = cand.t0; p.t1 = cand.t1; p.fLo = cand.fLo; p.fHi = cand.fHi; p.midi = cand.midi; p.a4 = a4; p.params = params; p.ts = cand.ts; p.f0 = cand.f0; p.off = cand.plan.off;
@@ -742,13 +789,26 @@ void ReHarmoniserEditor::renderAndSet (bool withPending, std::function<void()> t
     }
     auto audio = orig; const int rate = sr; const double total = dur;
     auto out = std::make_shared<Block>();
-    const auto newState = withPending && cand.has ? HostState::CorrectedWithPending : HostState::Corrected;
+    const auto newState = withPending && (cand.has || bcand.has) ? HostState::CorrectedWithPending : HostState::Corrected;
     startJob ("Correcting the notes", [audio, rate, total, list, out] (Worker& w) -> juce::String
     {
         *out = *audio; auto h = w.hooks();
         for (size_t k = 0; k < list.size(); ++k)
         {
             const auto& e = list[k];
+            if (e.isBrush)
+            {
+                const auto rg = brushRegion (e.brush);
+                const double a0 = juce::jmax (0.0, rg.first - 0.3), b0 = juce::jmin (total, rg.second + 0.3);
+                const size_t j0 = (size_t) std::floor (a0 * rate), j1 = juce::jmin ((*out)[0].size(), (size_t) std::floor (b0 * rate));
+                if (j1 <= j0 + 16) continue;
+                Block sg ((*out).size()); for (size_t c = 0; c < sg.size(); ++c) sg[c].assign ((*out)[c].begin() + (long) j0, (*out)[c].begin() + (long) j1);
+                Hooks sb; sb.cancelled = h.cancelled;
+                sb.progress = [&] (const char*, double f) { h.report ("Correcting the notes", ((double) k + f) / (double) list.size()); };
+                const Block done = brushSegment (sg, rate, (double) j0 / rate, e.brush, 10, sb);
+                for (size_t c = 0; c < done.size(); ++c) std::copy (done[c].begin(), done[c].end(), (*out)[c].begin() + (long) j0);
+                continue;
+            }
             const double a = juce::jmax (0.0, e.ts.front() - 0.15 - 0.3), b = juce::jmin (total, e.ts.back() + e.params.hold + e.params.fadeOut + 0.3);
             const size_t i0 = (size_t) std::floor (a * rate), i1 = juce::jmin ((*out)[0].size(), (size_t) std::floor (b * rate));
             if (i1 <= i0 + 16) continue;
@@ -788,6 +848,65 @@ void ReHarmoniserEditor::applyCorrection()
     cand = Cand(); view->clearSelection(); nameBox.setText ("", false); hist.clear(); histPos = 0;
     rebuildEditsList(); updateInfo();
     renderAndSet (false, [this] { setStatus ("Applied and added to Corrected Notes. Press Space to listen; Original compares."); });
+}
+
+void ReHarmoniserEditor::strokeBegin()
+{
+    if (busy) return;
+    bcand = BCand(); bcand.has = false;
+    bcand.b.rt = brushTRow.s.getValue(); bcand.b.rc = brushCRow.s.getValue(); bcand.b.amount = brushAmtRow.s.getValue() / 100.0; bcand.b.harm = brushHarm.getToggleState();
+}
+
+void ReHarmoniserEditor::strokePoint (double t, double hz)
+{
+    bcand.b.pts.push_back ({ t, hz });
+    view->repaint();
+}
+
+void ReHarmoniserEditor::strokeEnd()
+{
+    if (bcand.b.pts.empty()) return;
+    if (bcand.b.pts.size() == 1) bcand.b.pts.push_back ({ bcand.b.pts[0].first + 0.02, bcand.b.pts[0].second });
+    bcand.has = true; auditionStale = true;
+    setStatus ("Stroke painted. Change the radius or Amount if you like, then Audition (Space to listen) and Erase (apply).");
+    updateButtons(); view->repaint();
+}
+
+void ReHarmoniserEditor::brushChanged()
+{
+    if (! bcand.has) return;
+    bcand.b.rt = brushTRow.s.getValue(); bcand.b.rc = brushCRow.s.getValue(); bcand.b.amount = brushAmtRow.s.getValue() / 100.0; bcand.b.harm = brushHarm.getToggleState();
+    if (hostState == HostState::CorrectedWithPending) auditionStale = true;
+    view->repaint();
+}
+
+void ReHarmoniserEditor::applyBrush()
+{
+    if (! bcand.has || busy) return;
+    NoteEdit e; e.id = nextId++; e.isBrush = true; e.brush = bcand.b;
+    const auto rg = brushRegion (e.brush);
+    e.t0 = rg.first; e.t1 = rg.second;
+    e.label = "Erase at " + fmtTime (rg.first) + "   " + juce::String (rg.second - rg.first, 1) + " s";
+    edits.push_back (e); undone.clear();
+    bcand = BCand(); view->repaint();
+    rebuildEditsList(); updateInfo();
+    renderAndSet (false, [this] { setStatus ("Erased and added to Corrected Notes. Press Space to listen; Original compares."); });
+}
+
+void ReHarmoniserEditor::discardBrush()
+{
+    const bool wasHeard = hostState == HostState::CorrectedWithPending;
+    bcand = BCand(); view->repaint(); updateButtons();
+    if (wasHeard) renderAndSet (cand.has);
+}
+
+void ReHarmoniserEditor::loadBrushAsPending (const NoteEdit& e)
+{
+    bcand = BCand(); bcand.has = true; bcand.b = e.brush;
+    brushTRow.s.setValue (e.brush.rt, juce::dontSendNotification); brushCRow.s.setValue (e.brush.rc, juce::dontSendNotification);
+    brushAmtRow.s.setValue (e.brush.amount * 100.0, juce::dontSendNotification); brushHarm.setToggleState (e.brush.harm, juce::dontSendNotification);
+    rebuildEditsList(); openSection (2); setStatus ("Taken back out of Corrected Notes. Change it, then Erase (apply) again.");
+    renderAndSet (false);
 }
 
 void ReHarmoniserEditor::deselect()
@@ -843,7 +962,7 @@ void ReHarmoniserEditor::loadAsPending (const NoteEdit& e)
 void ReHarmoniserEditor::rebuildEditsList()
 {
     editsList->setSize (juce::jmax (100, editsView.getWidth() - 14), editsList->getHeight()); editsList->rebuild();
-    sections[3]->header.setButtonText ("Corrected Notes" + juce::String (edits.empty() ? "" : " (" + juce::String ((int) edits.size()) + ")"));
+    sections[4]->header.setButtonText ("Corrected Notes" + juce::String (edits.empty() ? "" : " (" + juce::String ((int) edits.size()) + ")"));
 }
 
 void ReHarmoniserEditor::audition()
@@ -868,7 +987,7 @@ void ReHarmoniserEditor::togglePlay()
     if (orig == nullptr || busy || hostBusy) return;
     if (playT >= 0) { if (host.stop) host.stop(); return; }
     // a correction that was changed after the last Audition has to be made again before it can be heard
-    if (hostState == HostState::CorrectedWithPending && auditionStale && cand.has) { renderAndSet (true, [this] { togglePlay(); }); return; }
+    if (hostState == HostState::CorrectedWithPending && auditionStale && (cand.has || bcand.has)) { renderAndSet (true, [this] { togglePlay(); }); return; }
     const bool useLoop = looping && loopIn >= 0 && loopOut > loopIn;
     const double from = useLoop ? loopIn : cueT, to = useLoop ? loopOut : dur;
     if (host.play) host.play (from, to, looping);
@@ -877,7 +996,7 @@ void ReHarmoniserEditor::togglePlay()
 void ReHarmoniserEditor::writeBack()
 {
     if (busy || hostBusy) return;
-    if (cand.has) { setStatus ("A correction is not applied yet: press Apply correction (or Deselect) first.", true); return; }
+    if (cand.has || bcand.has) { setStatus ("A correction is not applied yet: press Apply correction / Erase (apply), or Deselect / Discard stroke, first.", true); return; }
     if (! hasAppliedChanges()) { setStatus ("Nothing has been changed yet. Press Cancel to close.", true); return; }
     renderAndSet (false, [this] { if (host.writeBack) host.writeBack(); });
 }
@@ -974,7 +1093,8 @@ void ReHarmoniserEditor::updateButtons()
     const bool idle = ! busy && ! hostBusy;
     const bool haveAudio = orig != nullptr && mix != nullptr;
     playBtn.setEnabled (haveAudio && idle); stopBtn.setEnabled (haveAudio);
-    originalBtn.setEnabled (idle && (hasAppliedChanges() || cand.has)); 
+    originalBtn.setEnabled (idle && (hasAppliedChanges() || cand.has || bcand.has)); 
+    brushAuditionBtn.setEnabled (idle && bcand.has); brushApplyBtn.setEnabled (idle && bcand.has); brushDiscardBtn.setEnabled (bcand.has);
     applyBtn.setEnabled (idle && cand.has); auditionBtn.setEnabled (idle && cand.has);
     deselectBtn.setEnabled (cand.has); clearBtn.setEnabled (cand.has);
     undoBtn.setEnabled (idle && ((cand.has && histPos > 0) || (! cand.has && ! edits.empty())));
@@ -1063,6 +1183,20 @@ void ReHarmoniserEditor::resized()
             }
         }
         else if (i == 2)
+        {
+            for (auto* k : sec.kids) k->setVisible (open);
+            if (open)
+            {
+                auto b = s.removeFromTop (juce::jmin (36 + 26 * 3 + 26 + 30 + 8, s.getHeight()));
+                brushHelp.setBounds (b.removeFromTop (48)); 
+                auto rw = [&] (Row& rr) { auto q = b.removeFromTop (26); rr.cap.setBounds (q.removeFromLeft (92)); rr.s.setBounds (q); };
+                rw (brushTRow); rw (brushCRow); rw (brushAmtRow);
+                brushHarm.setBounds (b.removeFromTop (24)); b.removeFromTop (4);
+                auto b1 = b.removeFromTop (28); brushAuditionBtn.setBounds (b1.removeFromLeft (84)); b1.removeFromLeft (4); brushApplyBtn.setBounds (b1.removeFromLeft (110)); b1.removeFromLeft (4); brushDiscardBtn.setBounds (b1);
+                s.removeFromTop (4);
+            }
+        }
+        else if (i == 3)
         {
             seeView.setVisible (open);
             if (open)

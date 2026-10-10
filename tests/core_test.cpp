@@ -2459,14 +2459,14 @@ int main()
         const auto folder = p.projectFolder();
         auto editFiles = folder.getChildFile ("Edits").findChildFiles (juce::File::findFiles, false, "*.fmedit");
         auto takeFiles = folder.getChildFile ("Take Windows").findChildFiles (juce::File::findFiles, false, "*.fmtake");
-        CHECK (p.windowFiles.size() == p.edits.size() + p.takeWindows.size() && ! p.edits.empty() && ! p.takeWindows.empty());
+        CHECK (p.windowFiles.size() == p.edits.size() + p.takeWindows.size() + (size_t) p.cueEnd() && ! p.edits.empty() && ! p.takeWindows.empty());
         for (auto& kv : p.windowFiles) CHECK (folder.getChildFile (kv.second.rel).existsAsFile());
         auto pv = juce::JSON::parse (p.projectFile);
         CHECK (pv.hasProperty ("editFiles") && pv["edits"].size() == 0 && pv["takeWindows"].size() == 0);
         Project q; CHECK (q.load (p.projectFile, er));
         CHECK (q.edits.size() == p.edits.size() && q.takeWindows.size() == p.takeWindows.size());
         CHECK (q.edits.front()->regions.size() == p.edits.front()->regions.size() && q.mixerOfEdit (q.edits.front()->id) != nullptr);
-        CHECK (q.windowFiles.size() == p.edits.size() + p.takeWindows.size());
+        CHECK (q.windowFiles.size() == p.edits.size() + p.takeWindows.size() + (size_t) p.cueEnd());
 
         // the file is the source of truth: change the name inside the file, open the project again
         auto ef = folder.getChildFile (p.windowFiles[p.edits.front()->id.toString()].rel);
@@ -2511,6 +2511,39 @@ int main()
         const auto neId = ne->id;
         CHECK (p.deleteEditAndFile (neId) && p.findEdit (neId) == nullptr && ! folder.getChildFile (copyRel).existsAsFile());
         CHECK (audio == juce::File() || audio.existsAsFile());
+        CHECK (p.save (er));
+    }
+
+    SECTION ("mixer files: every mixer in its own .fmmix");
+    {
+        juce::String er;
+        p.addMixer ("Cue test");
+        CHECK (p.save (er));
+        const auto folder = p.projectFolder();
+        const int nMix = p.cueEnd();
+        int files = 0;
+        for (auto& kv : p.windowFiles) if (kv.second.rel.startsWith ("Mixers/") && folder.getChildFile (kv.second.rel).existsAsFile()) ++files;
+        CHECK (files == nMix && nMix >= 2);
+        auto pv = juce::JSON::parse (p.projectFile);
+        CHECK (pv.hasProperty ("mixerFiles") && pv["mixerFiles"].size() == nMix);
+        // a changed level in the file is what is read back
+        const auto cueId = p.mixers[(size_t) nMix - 1]->id;
+        auto mf = folder.getChildFile (p.windowFiles[cueId.toString()].rel);
+        auto mv = juce::JSON::parse (mf.loadFileAsString());
+        { auto mo = mv["mixer"]; mo.getDynamicObject()->setProperty ("name", "Renamed in file"); }
+        CHECK (mf.replaceWithText (juce::JSON::toString (mv, false)));
+        Project q; CHECK (q.load (p.projectFile, er));
+        CHECK (q.cueEnd() == nMix && q.mixers[(size_t) nMix - 1]->name == "Renamed in file" && q.mixers.front()->name == p.mixers.front()->name);
+        CHECK (q.mixers.size() == p.mixers.size() && q.loadNotes.isEmpty());
+        // a missing processing-mixer file does not break the project
+        auto pm = folder.getChildFile (p.windowFiles[p.mixers.front()->id.toString()].rel);
+        auto saved = pm.loadFileAsString(); pm.deleteFile();
+        Project q2; CHECK (q2.load (p.projectFile, er) && q2.cueEnd() >= 1 && ! q2.loadNotes.isEmpty());
+        CHECK (pm.replaceWithText (saved));
+        // import a mixer file into a project as a new mixer
+        const auto before = p.mixers.size();
+        juce::String msg;
+        CHECK (p.importMixerFile (mf, msg) && p.mixers.size() == before + 1 && p.mixers[(size_t) p.cueEnd() - 1]->name == "Renamed in file");
         CHECK (p.save (er));
     }
     eng.rebuildPlan();

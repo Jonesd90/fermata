@@ -1275,6 +1275,14 @@ bool Project::load (const juce::File& f, juce::String& error)
         }
         mergeWindowFiles (v);
         ok = fromVar (v);
+        if (ok && cueEnd() == 0)                           // the processing mixer's file is missing: start a fresh one (the missing file stays listed only if it is not replaced)
+        {
+            auto m = std::make_unique<MixerState>(); m->name = "Processing mixer";
+            mixers.insert (mixers.begin(), std::move (m));
+            syncMixers(); syncEditMixers();
+            missingWindowRefs.erase (std::remove_if (missingWindowRefs.begin(), missingWindowRefs.end(), [] (const var& r) { return r["kind"].toString() == "mixer"; }), missingWindowRefs.end());
+            loadNotes.add ("A new, empty processing mixer was made. Put the missing mixer file back and open the project again to get the old one.");
+        }
     }
     readingFrom = juce::File();
     if (! ok) { error = "Not a valid Fermata project file"; return false; }
@@ -1287,6 +1295,7 @@ namespace
 {
 const char* const kEditFormat = "Fermata edit";
 const char* const kTakeFormat = "Fermata take window";
+const char* const kMixerFormat = "Fermata mixer";
 
 /** Calls f for every audio file the takes and edits use. */
 template <typename F> void forEachAudioFile (std::vector<std::unique_ptr<TakeWindowDef>>& tws, std::vector<std::unique_ptr<EditDef>>& eds, F&& f)
@@ -1374,8 +1383,30 @@ bool Project::splitWindowFiles (var& root)
             if (mixer.isObject()) editMixerIds.insert (mixer["id"].toString());
             handle (e, kEditFormat, "edit", "Edits", ".fmedit", editRefs, mixer);
         }
+    juce::Array<var> mixerRefs;
+    if (auto* ma = root["mixers"].getArray())              // the mixers that are not an Edit's own (the processing mixer, the cue mixers)
+        for (auto& m : *ma)
+        {
+            if (m["editId"].toString().isNotEmpty()) continue;
+            const auto id = m["id"].toString(), nm = m["name"].toString();
+            var fr = obj();
+            put (fr, "format", kMixerFormat); put (fr, "version", 1); put (fr, "mixer", m);
+            put (fr, "tracks", root["tracks"]); put (fr, "buses", root["buses"]);       // (what the strips refer to: lets another project match them by name)
+            const auto text = juce::JSON::toString (fr, false);
+            const auto hash = String::toHexString (text.hashCode64());
+            const auto rel = place (id, nm, "Mixers", ".fmmix");
+            auto prev = windowFiles.find (id);
+            const bool same = prev != windowFiles.end() && prev->second.rel == rel && prev->second.hash == hash && folder.getChildFile (rel).existsAsFile();
+            if (! same) pending.push_back ({ folder.getChildFile (rel), text });
+            next[id] = { rel, hash };
+            var ref = obj(); put (ref, "id", id); put (ref, "name", nm); put (ref, "file", rel);
+            mixerRefs.add (ref);
+        }
     for (auto& m : missingWindowRefs)                      // files that could not be read: still listed
-        (m["kind"].toString() == "edit" ? editRefs : takeRefs).add (m);
+    {
+        const auto k = m["kind"].toString();
+        (k == "edit" ? editRefs : k == "mixer" ? mixerRefs : takeRefs).add (m);
+    }
 
     for (auto& p : pending)                                // write everything first: if anything fails the project is saved whole
     {
@@ -1398,8 +1429,8 @@ bool Project::splitWindowFiles (var& root)
     windowFiles = next;
 
     juce::Array<var> keepMixers;
-    if (auto* ma = root["mixers"].getArray()) for (auto& m : *ma) if (editMixerIds.count (m["id"].toString()) == 0) keepMixers.add (m);
-    put (root, "mixers", keepMixers);
+    if (auto* ma = root["mixers"].getArray()) for (auto& m : *ma) if (m["editId"].toString().isNotEmpty() && editMixerIds.count (m["id"].toString()) == 0) keepMixers.add (m);   // (an Edit mixer whose edit is not there)
+    put (root, "mixers", keepMixers); put (root, "mixerFiles", mixerRefs);
     put (root, "takeWindows", juce::Array<var>()); put (root, "edits", juce::Array<var>());
     put (root, "takeWindowFiles", takeRefs); put (root, "editFiles", editRefs);
     return true;
@@ -1435,6 +1466,28 @@ void Project::mergeWindowFiles (var& root)
             windowFiles[fv[fileKey]["id"].toString()] = { rel, {} };
         }
     };
+    if (auto* refs = root["mixerFiles"].getArray())         // the mixers first, in their saved order (the first is the processing mixer)
+    {
+        juce::Array<var> all;
+        for (auto& r : *refs)
+        {
+            const auto rel = r["file"].toString();
+            const auto f = base.getChildFile (rel);
+            var fv;
+            if (f.existsAsFile() && ! juce::JSON::parse (f.loadFileAsString(), fv).failed() && fv.isObject() && fv["format"].toString() == kMixerFormat && fv["mixer"].isObject())
+            {
+                all.add (fv["mixer"]); windowFiles[fv["mixer"]["id"].toString()] = { rel, {} };
+            }
+            else
+            {
+                loadNotes.add ("The mixer \"" + r["name"].toString() + "\" is missing its file:  " + rel);
+                var m = obj(); put (m, "id", r["id"]); put (m, "name", r["name"]); put (m, "file", rel); put (m, "kind", "mixer");
+                missingWindowRefs.push_back (m);
+            }
+        }
+        if (auto* old = root["mixers"].getArray()) for (auto& m : *old) all.add (m);
+        put (root, "mixers", all);
+    }
     go ("takeWindows", "takeWindowFiles", "window", kTakeFormat, "take");
     go ("edits", "editFiles", "edit", kEditFormat, "edit");
 }
@@ -1497,6 +1550,52 @@ int Project::relinkAudio (const juce::File& searchFolder)
     });
     if (found > 0) structureChanged();
     return found;
+}
+
+bool Project::importMixerFile (const juce::File& file, String& message)
+{
+    var fv;
+    if (juce::JSON::parse (file.loadFileAsString(), fv).failed() || ! fv.isObject() || fv["format"].toString() != kMixerFormat || ! fv["mixer"].isObject())
+    { message = "That is not a Fermata mixer file."; return false; }
+    // tracks and buses of the file are matched with this project's by name; the strips of the ones that are not here are left out
+    std::vector<std::pair<String, String>> subs;
+    if (auto* ta = fv["tracks"].getArray())
+        for (auto& t : *ta)
+        {
+            const auto nm = t["name"].toString(); const int ch = t["inputs"].isArray() ? t["inputs"].size() : 1;
+            for (auto& mine : tracks) if (mine.name.equalsIgnoreCase (nm) && mine.channelCount() == ch) { subs.push_back ({ t["id"].toString(), mine.id.toString() }); break; }
+        }
+    if (auto* ba = fv["buses"].getArray())
+        for (auto& b : *ba)
+        {
+            const auto nm = b["name"].toString(); const bool ext = (bool) b["external"];
+            for (auto& mine : buses) if (mine.name.equalsIgnoreCase (nm) && mine.external == ext) { subs.push_back ({ b["id"].toString(), mine.id.toString() }); break; }
+        }
+    auto text = juce::JSON::toString (fv, true);
+    for (auto& sb : subs) text = text.replace (sb.first, sb.second);
+    if (juce::JSON::parse (text, fv).failed()) { message = "Could not read that file."; return false; }
+    // keep only what exists here
+    juce::Array<var> tk, bs;
+    if (auto* ta = fv["tracks"].getArray()) for (auto& t : *ta) if (findTrack (juce::Uuid (t["id"].toString())) != nullptr) tk.add (t);
+    for (auto& b : buses) { var o = obj(); put (o, "id", b.id.toString()); put (o, "name", b.name); put (o, "external", b.external); put (o, "colour", (juce::int64) b.colour); bs.add (o); }
+    Project tmp;
+    tmp.restoreSampleRate = restoreSampleRate; tmp.restoreBlock = restoreBlock; tmp.insertFactory = insertFactory;
+    var root = obj();
+    put (root, "format", "Fermata project"); put (root, "version", 1); put (root, "name", "import");
+    put (root, "tracks", tk); put (root, "buses", bs);
+    var mv = fv["mixer"];
+    put (mv, "editId", ""); put (mv, "id", juce::Uuid().toString());
+    juce::Array<var> mxs; mxs.add (mv); put (root, "mixers", mxs);
+    if (! tmp.fromVar (root) || tmp.mixers.empty()) { message = "Could not read that file."; return false; }
+    String nm = fv["mixer"]["name"].toString(); if (nm.isEmpty()) nm = "Mixer";
+    auto taken = [&] (const String& n) { for (auto& m : mixers) if (m->name == n) return true; return false; };
+    String use = nm; for (int i = 2; taken (use); ++i) use = nm + " (" + String (i) + ")";
+    auto& m = addMixer (use);
+    applyMix (m, tmp.mixSnapshot (*tmp.mixers.front(), true), restoreSampleRate, restoreBlock);
+    m.ditherBits.store (tmp.mixers.front()->ditherBits.load());
+    message = "Mixer \"" + use + "\" added as a new mixer. Its output buttons and driver outputs are as in the file for the strips that matched; check the outputs of its Ext Buses.";
+    structureChanged();
+    return true;
 }
 
 bool Project::importWindowFile (const juce::File& file, String& message, juce::Uuid* newId)
