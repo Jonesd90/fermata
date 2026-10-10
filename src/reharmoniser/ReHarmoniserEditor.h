@@ -29,7 +29,7 @@ struct EditorHost
     std::function<void (double fromSec, double toSec, bool loop)> play;      // seconds from the start of the audio
     std::function<void()> stop;
     std::function<double()> playPosition;                                    // seconds from the start of the audio, or a negative number when not playing
-    std::function<void (double hz)> playTone;                                // a short sine tone (the piano keys)
+    std::function<void (double hz, double levelDb)> playTone;                // a short tone (the piano keys), at this level in dB (the Key level slider)
     std::function<void()> writeBack;                                         // the user pressed "Write back to clip" (setCorrected has already been called with the final audio)
     std::function<void()> cancel;                                            // the user pressed Cancel
     std::function<void (const juce::String&)> log;                           // errors and notes for the log file
@@ -48,6 +48,9 @@ public:
     bool hasPending() const { return cand.has; }
     int appliedCount() const;
     const std::vector<NoteEdit>& editList() const { return edits; }
+
+    /** Names for the channels of the audio (for the See mixer), in the order of the Block. Call before or after setAudio. */
+    void setChannelNames (const juce::StringArray&);
 
     /** Shows a message on the status line (the host uses it while it is loading the audio). */
     void setStatus (const juce::String&, bool error = false);
@@ -89,6 +92,11 @@ private:
     void updateButtons();
     void openSection (int idx);
     void layoutSections();
+    void rebuildSeeStrips();
+    void layoutSeeStrips();
+    Vec seeGainsDb() const;                          // the See mixer as dB per channel (muted / not soloed = -100); empty = all flat
+    void seeChanged();
+    void recombine();
     juce::String noteName (int midi) const;
     static int parseNote (const juce::String&);
     double notePitchHz (int midi) const { return midiHz (midi, a4); }
@@ -96,7 +104,10 @@ private:
     // ---- state
     std::shared_ptr<const Block> orig; int sr = 0; double dur = 0.0;
     struct Mix { size_t nf = 0, nb = 0; double hopSec = 0.01, df = 1.0; std::vector<uint8_t> v; };
+    static std::shared_ptr<Mix> makeMix (const Spectrogram&);
     std::shared_ptr<const Mix> mix; double refDb = 0.0;
+    std::shared_ptr<Spectrogram> spec;               // the per-channel pictures (the See mixer adds them again with new gains)
+    bool seeDirty = false; juce::uint32 seeDirtyAt = 0; juce::StringArray chanNames;
     double a4 = 440.0; bool midiLocked = false;
     Params params; int partial = 1;
     std::vector<NoteEdit> edits, undone; int nextId = 1;
@@ -121,7 +132,9 @@ private:
     std::vector<std::unique_ptr<Section>> sections; int openIdx = 2;
     juce::Label a4Cap { {}, "Reference A4" }; juce::TextEditor a4Box; juce::TextButton detectBtn { "Detect" }; juce::ComboBox refMode; juce::Label refInfo;
     struct Row { juce::Label cap; juce::Slider s; };
-    Row moveRow, snapRow, strengthRow, keepRow, smoothRow, easeRow, holdRow, bwRow, linesRow, gainRow;
+    Row moveRow, snapRow, strengthRow, keepRow, smoothRow, easeRow, holdRow, bwRow, linesRow, gainRow, keyRow;
+    struct SeeStrip { juce::Label name; juce::TextButton m { "M" }, s { "S" }; juce::Slider g; };
+    std::vector<std::unique_ptr<SeeStrip>> seeStrips; juce::Component seeHolder; juce::Viewport seeView;
     juce::ComboBox partialBox; juce::ToggleButton matchBox { "Level smoothing" }; juce::ToggleButton advancedBtn { "Advanced" };
     juce::TextButton auditionBtn { "Audition" }, applyBtn { "Apply correction" }, deselectBtn { "Deselect" }, clearBtn { "Clear changes" }, undoBtn { "Undo" }, redoBtn { "Redo" };
     juce::TextButton zoomTIn { "+" }, zoomTOut { "-" }, zoomPIn { "+" }, zoomPOut { "-" }, loopClearBtn { "Clear loop" };

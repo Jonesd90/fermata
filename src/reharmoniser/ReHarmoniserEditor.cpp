@@ -317,7 +317,7 @@ void ReHarmoniserEditor::View::mouseUp (const juce::MouseEvent&)
     if (mode == Mode::keys && ! moved)
     {
         const int m = (int) std::lround (anchorM);
-        if (ed.host.playTone) ed.host.playTone (midiHz (m, ed.a4));
+        if (ed.host.playTone) ed.host.playTone (midiHz (m, ed.a4), ed.keyRow.s.getValue());
     }
     else if (mode == Mode::box && moved && hasSel)
     {
@@ -395,6 +395,18 @@ private:
     ReHarmoniserEditor& ed; std::vector<std::unique_ptr<RowC>> rows;
 };
 
+std::shared_ptr<ReHarmoniserEditor::Mix> ReHarmoniserEditor::makeMix (const Spectrogram& sp)
+{
+    auto m = std::make_shared<Mix>(); m->nf = sp.nf; m->nb = sp.nb; m->df = sp.df; m->hopSec = (double) sp.hop / sp.sr2; m->v.resize (sp.nf * sp.nb);
+    const double range = 70.0; std::vector<float> d;
+    for (size_t f = 0; f < sp.nf; ++f)
+    {
+        sp.combineFrame (f, d);
+        for (size_t b = 0; b < sp.nb; ++b) m->v[f * sp.nb + b] = (uint8_t) juce::jlimit (0.0, 255.0, ((double) d[b] - (sp.ref - range)) / range * 255.0);
+    }
+    return m;
+}
+
 struct ReHarmoniserEditor::Section
 {
     juce::String title; juce::TextButton header; std::vector<juce::Component*> kids; int bodyH = 100;
@@ -432,8 +444,8 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     tipIgnore.onClick = [this] { cand.hint = 1; updateInfo(); };
 
     // sections: Ensemble ReCentre, Note ReShape, Corrected Notes
-    const char* titles[] = { "Ensemble ReCentre", "Note ReShape", "Corrected Notes" };
-    for (int i = 0; i < 3; ++i)
+    const char* titles[] = { "Ensemble ReCentre", "Note ReShape", "See mixer", "Corrected Notes" };
+    for (int i = 0; i < 4; ++i)
     {
         auto s = std::make_unique<Section>(); s->title = titles[i]; s->header.setButtonText (titles[i]); styleButton (s->header, cPanel);
         s->header.setColour (juce::TextButton::textColourOffId, cAmber); addAndMakeVisible (s->header);
@@ -489,7 +501,12 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     loopClearBtn.onClick = [this] { loopIn = loopOut = -1.0; view->repaint(); };
     styleLabel (zoomCap, cText, 12.0f); addAndMakeVisible (zoomCap);
     sections[1]->kids = { &moveRow.cap, &moveRow.s, &snapRow.cap, &snapRow.s, &advancedBtn, &auditionBtn, &applyBtn, &deselectBtn, &clearBtn, &undoBtn, &redoBtn };
-    sections[2]->kids = { &editsView };
+    sections[3]->kids = { &editsView };
+    // -- See mixer: what the picture shows (not what you hear)
+    seeView.setViewedComponent (&seeHolder, false); seeView.setScrollBarsShown (true, false); addChildComponent (seeView);
+    sections[2]->kids = { &seeView };
+    // -- Key level
+    row (keyRow, "Key level", -50, 0, 1, -20, " dB", "How loud the piano-key notes are when you click a key on the left of the picture.");
     // transport
     playBtn.onClick = [this] { togglePlay(); }; stopBtn.onClick = [this] { if (host.stop) host.stop(); };
     loopBtn.onClick = [this] { looping = loopBtn.getToggleState(); };
@@ -545,6 +562,7 @@ void ReHarmoniserEditor::setAudio (std::shared_ptr<const Block> audio, int sampl
     orig = std::move (audio); sr = sampleRate;
     if (orig == nullptr || orig->empty() || (*orig)[0].empty() || sr <= 0) { setStatus ("There is no audio to work on.", true); return; }
     dur = (double) (*orig)[0].size() / sr;
+    rebuildSeeStrips(); spec = nullptr;
     view->vt0 = 0; view->vt1 = dur; view->vm0 = 43; view->vm1 = 88; view->clampView();
     startAnalysis();
 }
@@ -554,22 +572,17 @@ void ReHarmoniserEditor::startAnalysis()
     analysing = true; mix = nullptr; view->repaint();
     auto audio = orig; const int rate = sr;
     auto result = std::make_shared<std::pair<std::shared_ptr<Mix>, double>>();
-    startJob ("Analysing the audio", [audio, rate, result] (Worker& w) -> juce::String
+    auto specOut = std::make_shared<std::shared_ptr<Spectrogram>>();
+    startJob ("Analysing the audio", [audio, rate, result, specOut] (Worker& w) -> juce::String
     {
-        Spectrogram sp; sp.build (spansOf (*audio), rate, Spectrogram::Detail::Balanced, w.hooks());
-        auto m = std::make_shared<Mix>(); m->nf = sp.nf; m->nb = sp.nb; m->df = sp.df; m->hopSec = (double) sp.hop / sp.sr2; m->v.resize (sp.nf * sp.nb);
-        const double range = 70.0; std::vector<float> d;
-        for (size_t f = 0; f < sp.nf; ++f)
-        {
-            sp.combineFrame (f, d);
-            for (size_t b = 0; b < sp.nb; ++b) m->v[f * sp.nb + b] = (uint8_t) juce::jlimit (0.0, 255.0, ((double) d[b] - (sp.ref - range)) / range * 255.0);
-        }
-        *result = { m, sp.ref };
+        auto sp = std::make_shared<Spectrogram>(); sp->build (spansOf (*audio), rate, Spectrogram::Detail::Balanced, w.hooks());
+        *result = { makeMix (*sp), sp->ref }; *specOut = sp;
         return {};
     },
-    [this, result] (const juce::String& err)
+    [this, result, specOut] (const juce::String& err)
     {
         analysing = false;
+        if (err.isEmpty()) { spec = *specOut; if (seeDirty) seeDirtyAt = 0; }
         if (err.isNotEmpty()) { setStatus (err == "Cancelled." ? err : "Could not analyse the audio: " + err, err != "Cancelled."); view->repaint(); return; }
         mix = result->first; refDb = result->second; view->dirty = true; view->repaint();
         setStatus ("Drag a box round a note on the picture (time across, pitch up). Space plays; click the ruler to put the playhead.");
@@ -593,7 +606,7 @@ void ReHarmoniserEditor::selectBox (double t0, double t1, double fLo, double fHi
 void ReHarmoniserEditor::measure()
 {
     if (orig == nullptr) return;
-    const double t0 = cand.t0, t1 = cand.t1, fLo = cand.fLo, fHi = cand.fHi; const int mode = refModeId, part = partial; const double a4in = a4;
+    const double t0 = cand.t0, t1 = cand.t1, fLo = cand.fLo, fHi = cand.fHi; const int mode = refModeId, part = partial; const double a4in = a4; const Vec vis = seeGainsDb();
     auto audio = orig; const int rate = sr; const double total = dur;
     struct Res { Vec ts, f0; int hint = 1; double a4 = 440.0; bool refFound = false; };
     auto res = std::make_shared<Res>();
@@ -620,7 +633,7 @@ void ReHarmoniserEditor::measure()
         }
         h.report ("Measuring the note", 0.1);
         double s0; Block seg = slice (t0 - 0.8, t1 + 0.8, s0);
-        const auto tk = trackingInputs (spansOf (seg), rate, fLo, fHi);
+        const auto tk = trackingInputs (spansOf (seg), rate, fLo, fHi, vis);
         std::vector<Span> chans; for (int c : tk.channels) chans.push_back ({ seg[(size_t) c].data(), seg[(size_t) c].size() });
         auto tr = trackNote (chans, tk.weights, rate, s0, t0, t1, fLo, fHi);
         h.report ("Measuring the note", 0.6); h.check();
@@ -830,7 +843,7 @@ void ReHarmoniserEditor::loadAsPending (const NoteEdit& e)
 void ReHarmoniserEditor::rebuildEditsList()
 {
     editsList->setSize (juce::jmax (100, editsView.getWidth() - 14), editsList->getHeight()); editsList->rebuild();
-    sections[2]->header.setButtonText ("Corrected Notes" + juce::String (edits.empty() ? "" : " (" + juce::String ((int) edits.size()) + ")"));
+    sections[3]->header.setButtonText ("Corrected Notes" + juce::String (edits.empty() ? "" : " (" + juce::String ((int) edits.size()) + ")"));
 }
 
 void ReHarmoniserEditor::audition()
@@ -870,6 +883,87 @@ void ReHarmoniserEditor::writeBack()
 }
 
 // ---------------------------------------------------------------------------------------------------- the layout
+void ReHarmoniserEditor::setChannelNames (const juce::StringArray& n)
+{
+    chanNames = n;
+    if (orig != nullptr) rebuildSeeStrips();
+}
+
+void ReHarmoniserEditor::rebuildSeeStrips()
+{
+    seeStrips.clear(); seeHolder.removeAllChildren();
+    const size_t n = orig != nullptr ? orig->size() : 0;
+    for (size_t c = 0; c < n; ++c)
+    {
+        auto st = std::make_unique<SeeStrip>();
+        st->name.setText ((int) c < chanNames.size() ? chanNames[(int) c] : "Ch " + juce::String ((int) c + 1), juce::dontSendNotification);
+        styleLabel (st->name, cText, 12.0f);
+        styleButton (st->m); styleButton (st->s); st->m.setClickingTogglesState (true); st->s.setClickingTogglesState (true);
+        st->m.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffb04a3a)); st->s.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffc9a227));
+        st->m.setTooltip ("Hide this channel from the picture (and from measuring). It does not change what you hear.");
+        st->s.setTooltip ("Show only the soloed channels in the picture (and measure with them). It does not change what you hear.");
+        styleSlider (st->g, -24, 12, 0.5, 0.0, " dB"); st->g.setDoubleClickReturnValue (true, 0.0);
+        st->g.setTooltip ("How bright this channel is in the picture. It does not change what you hear.");
+        st->m.onClick = [this] { seeChanged(); }; st->s.onClick = [this] { seeChanged(); }; st->g.onValueChange = [this] { seeChanged(); };
+        seeHolder.addAndMakeVisible (st->name); seeHolder.addAndMakeVisible (st->m); seeHolder.addAndMakeVisible (st->s); seeHolder.addAndMakeVisible (st->g);
+        seeStrips.push_back (std::move (st));
+    }
+    layoutSeeStrips();
+}
+
+void ReHarmoniserEditor::layoutSeeStrips()
+{
+    const int w = juce::jmax (150, seeView.getWidth() - (seeView.isVerticalScrollBarShown() ? 14 : 0));
+    seeHolder.setSize (w, (int) seeStrips.size() * 28 + 4);
+    int y = 2;
+    for (auto& st : seeStrips)
+    {
+        auto r = juce::Rectangle<int> (0, y, w, 26); y += 28;
+        st->name.setBounds (r.removeFromLeft (62)); st->m.setBounds (r.removeFromLeft (26).reduced (0, 2)); r.removeFromLeft (2); st->s.setBounds (r.removeFromLeft (26).reduced (0, 2)); r.removeFromLeft (4);
+        st->g.setBounds (r);
+    }
+}
+
+Vec ReHarmoniserEditor::seeGainsDb() const
+{
+    bool anySolo = false, anyShown = false;
+    for (auto& st : seeStrips) if (st->s.getToggleState()) anySolo = true;
+    Vec g;
+    for (auto& st : seeStrips)
+    {
+        const bool shown = ! st->m.getToggleState() && (! anySolo || st->s.getToggleState());
+        if (shown) anyShown = true;
+        g.push_back (shown ? st->g.getValue() : -100.0);
+    }
+    if (! anyShown) return {};                         // everything hidden: treat as flat rather than a blank picture
+    bool flat = true; for (double v : g) if (v != 0.0) flat = false;
+    if (flat) return {};
+    return g;
+}
+
+void ReHarmoniserEditor::seeChanged() { seeDirty = true; seeDirtyAt = juce::Time::getMillisecondCounter(); }
+
+void ReHarmoniserEditor::recombine()
+{
+    if (spec == nullptr || busy) return;
+    seeDirty = false;
+    Vec lin;
+    { const auto db = seeGainsDb(); lin.assign (spec->gain.size(), 1.0); for (size_t c = 0; c < db.size() && c < lin.size(); ++c) lin[c] = db[c] <= -99.0 ? 0.0 : std::pow (10.0, db[c] / 20.0); }
+    auto sp = spec; auto res = std::make_shared<std::pair<std::shared_ptr<Mix>, double>>();
+    startJob ("Updating the picture", [sp, lin, res] (Worker&) -> juce::String
+    {
+        sp->setGains (lin);
+        *res = { makeMix (*sp), sp->ref };
+        return {};
+    },
+    [this, res] (const juce::String& err)
+    {
+        if (err.isNotEmpty()) { setStatus (err, true); return; }
+        mix = res->first; refDb = res->second; view->dirty = true; view->repaint();
+        setStatus ("The picture is updated. The See mixer only changes the picture, not what you hear.");
+    });
+}
+
 void ReHarmoniserEditor::openSection (int idx)
 {
     openIdx = idx; layoutSections(); repaint();
@@ -919,14 +1013,15 @@ void ReHarmoniserEditor::resized()
       if (tip) { tipLabel.setBounds (b.removeFromTop (18)); tipUse.setBounds (b.removeFromLeft (110).reduced (0, 1)); b.removeFromLeft (6); tipIgnore.setBounds (b.removeFromLeft (80).reduced (0, 1)); } }
     remeasureBtn.setBounds (s.removeFromTop (26).removeFromLeft (130)); s.removeFromTop (6);
     // the View block at the bottom
-    const int viewH = 122;
+    const int viewH = 150;
     auto viewArea = s.removeFromBottom (viewH); s.removeFromBottom (6);
     { auto a = viewArea; a.removeFromTop (2);
       auto z = a.removeFromTop (24); zoomCap.setBounds (z.removeFromLeft (120)); zoomTIn.setBounds (z.removeFromLeft (28)); z.removeFromLeft (2); zoomTOut.setBounds (z.removeFromLeft (28)); z.removeFromLeft (14);
       zoomPIn.setBounds (z.removeFromLeft (28)); z.removeFromLeft (2); zoomPOut.setBounds (z.removeFromLeft (28));
       a.removeFromTop (3); loopClearBtn.setBounds (a.removeFromTop (24).removeFromLeft (110)); a.removeFromTop (3);
       auto l1 = a.removeFromTop (26); linesRow.cap.setBounds (l1.removeFromLeft (92)); linesRow.s.setBounds (l1);
-      auto l2 = a.removeFromTop (26); gainRow.cap.setBounds (l2.removeFromLeft (92)); gainRow.s.setBounds (l2); }
+      auto l2 = a.removeFromTop (26); gainRow.cap.setBounds (l2.removeFromLeft (92)); gainRow.s.setBounds (l2);
+      auto l3 = a.removeFromTop (26); keyRow.cap.setBounds (l3.removeFromLeft (92)); keyRow.s.setBounds (l3); }
     // the sections: headers always, the open one's body between them
     auto place = [] (juce::Component& c, juce::Rectangle<int>& a, int h) { c.setBounds (a.removeFromTop (h)); };
     for (auto* k : { (juce::Component*) &a4Cap, (juce::Component*) &a4Box, (juce::Component*) &detectBtn, (juce::Component*) &refMode, (juce::Component*) &refInfo }) k->setVisible (openIdx == 0);
@@ -967,6 +1062,17 @@ void ReHarmoniserEditor::resized()
                 s.removeFromTop (4);
             }
         }
+        else if (i == 2)
+        {
+            seeView.setVisible (open);
+            if (open)
+            {
+                const int want = (int) seeStrips.size() * 28 + 6;
+                const int h = juce::jlimit (40, juce::jmax (40, s.getHeight() - 70), want);
+                seeView.setBounds (s.removeFromTop (h)); s.removeFromTop (4);
+                layoutSeeStrips();
+            }
+        }
         else
         {
             editsView.setVisible (open);
@@ -1005,6 +1111,7 @@ bool ReHarmoniserEditor::keyPressed (const juce::KeyPress& k)
 
 void ReHarmoniserEditor::timerCallback()
 {
+    if (seeDirty && ! busy && spec != nullptr && juce::Time::getMillisecondCounter() - seeDirtyAt > 350) recombine();
     if (busy) { progressValue = worker->progress(); const auto st = worker->stage(); if (st.isNotEmpty()) status.setText (st + "...", juce::dontSendNotification); }
     const double p = host.playPosition ? host.playPosition() : -1.0;
     if (p != playT)

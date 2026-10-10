@@ -6,6 +6,11 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.4.0
+- ReHarmoniSer: new **See mixer** section in the right-hand panel. One row per audio channel (named after its track): M hides the channel from the picture, S shows only the soloed channels, and the slider makes that channel brighter or darker in the picture. It only changes what you SEE (and which channels are used to measure a note); what you hear still goes through the edit's own mixer. The picture updates a moment after you stop moving a slider.
+- ReHarmoniSer: clicking a piano key on the left of the picture now plays that note. New **Key level** slider in the View block sets how loud the key notes are. The tone goes to the same outputs as the edit's mixer.
+- Not in this version yet: Section ReFinement (nudging single voices), Erase ReBrush, the pitch chart, the standalone program.
+
 ## 2.3.0
 - Every edit is now saved in its own file (`Edits/<name>.fmedit`) and every take window in its own file (`Take Windows/<name>.fmtake`), inside the project folder. The project file only lists them. The files are updated every time the project is saved, and they are what Fermata reads when it opens the project.
 - Old projects convert on their first save. The old project file is kept once as `<project>.fermata.before-window-files`.

@@ -2239,6 +2239,33 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
         if (! app.isPlaying() || app.playInfo.kind != AppContext::PlayInfo::Kind::Edit || app.playInfo.id != eid) return -1.0;
         return juce::jmax (0.0, app.playheadSeconds() - (double) from / rate);
     };
+    h.playTone = [&app, eid, nm] (double hz, double levelDb)         // a piano key: a short tone, to the outputs the edit's mixer uses
+    {
+        const double sr = app.engine.getSampleRate();
+        if (sr < 8000.0 || hz < 20.0 || hz > 8000.0) return;
+        const int n = (int) (sr * 1.3);
+        std::vector<float> ch ((size_t) n);
+        const double amp = std::pow (10.0, juce::jlimit (-60.0, 0.0, levelDb) / 20.0) / 1.3;
+        for (int i = 0; i < n; ++i)
+        {
+            const double t = (double) i / sr;
+            const double env = juce::jmin (1.0, t / 0.02, juce::jmax (0.0, (1.3 - t) / 0.25));
+            ch[(size_t) i] = (float) (amp * env * (std::sin (juce::MathConstants<double>::twoPi * hz * t) + 0.3 * std::sin (juce::MathConstants<double>::twoPi * 2.0 * hz * t)));
+        }
+        const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("fermata-key-tone.wav");
+        app.stopPlayback();
+        if (! audioops::writeWav (file, { ch, ch }, sr)) return;
+        int outFirst = 0;
+        if (auto* mx = app.project.mixerOfEdit (eid))
+        {
+            auto outOf = [&] (const juce::Uuid& busId) { for (auto& b : mx->busPool) if (b->busId == busId) return b->outFirst.load(); return -1; };
+            int f = outOf (mx->mainBus);
+            if (f < 0) for (auto& b : app.project.buses) if (b.external) { f = outOf (b.id); if (f >= 0) break; }
+            if (f >= 0) outFirst = f;
+        }
+        const auto err = app.playRenders ({ { file, 0.0, sr, (juce::int64) n } }, 0.0, -1.0, juce::Uuid::null(), outFirst);
+        if (err.isNotEmpty()) say (nm, err);
+    };
     h.cancel = [self] { if (self != nullptr) self->closeMe(); };
     h.writeBack = [&app, eid, st, self]
     {
@@ -2368,10 +2395,19 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
         }
         return {};
     },
-    [self, loaded, rate] (const juce::String& err)
+    [&app, st, self, loaded, rate] (const juce::String& err)
     {
         if (self == nullptr) return;
         if (err.isNotEmpty()) { self->editor.setStatus (err, true); return; }
+        juce::StringArray names;                                    // for the See mixer: the track names (L / R when a track has two channels)
+        for (size_t i = 0; i < st->trackIds.size(); ++i)
+        {
+            const auto* tr = app.project.findTrack (st->trackIds[i]);
+            const auto tn = tr != nullptr ? tr->name : juce::String ("Track " + juce::String ((int) i + 1));
+            const int cnt = i < st->chCount.size() ? st->chCount[i] : 1;
+            for (int c = 0; c < cnt; ++c) names.add (cnt > 1 ? tn + (cnt == 2 ? (c == 0 ? " L" : " R") : " " + juce::String (c + 1)) : tn);
+        }
+        self->editor.setChannelNames (names);
         self->editor.setAudio (loaded, (int) std::lround (rate));
     });
     launchDialog (std::move (dlg), nm, parent, true);
