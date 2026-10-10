@@ -70,7 +70,7 @@ private:
     struct VCand { bool has = false, preview = false; VoiceSet vs; } vcand;
     struct VoiceRowC; class ChartPanel;
     std::unique_ptr<ChartPanel> chartPanel; juce::TextButton chartBtn { "Pitch over time..." };
-    void showChart(); void closeChart();
+    void showChart(); void closeChart(); void closeChartSoon();
 
     // ---- the work
     void timerCallback() override;

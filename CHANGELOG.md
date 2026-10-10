@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.7.1
+- Fixed the Windows build error in 2.7.0 (the Pitch over time chart's Close button). No other change.
+
 ## 2.7.0
 - ReHarmoniSer: **Pitch over time...** button in Ensemble ReCentre. It measures the whole recording and shows a chart of how far the choir's pitch sits from A=440 (green line, 0 c = A=440), with the reference A4 now in the box as an amber dashed line and the whole-recording A4 underneath. Esc or Close goes back.
 

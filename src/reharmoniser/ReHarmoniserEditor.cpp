@@ -839,6 +839,11 @@ void ReHarmoniserEditor::closeChart()
     removeChildComponent (chartPanel.get()); chartPanel.reset(); grabKeyboardFocus();
 }
 
+void ReHarmoniserEditor::closeChartSoon()
+{
+    juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<ReHarmoniserEditor> (this)] { if (safe != nullptr) safe->closeChart(); });
+}
+
 void ReHarmoniserEditor::showChart()
 {
     if (orig == nullptr || busy) return;
@@ -856,7 +861,7 @@ void ReHarmoniserEditor::showChart()
         closeChart();
         chartPanel = std::make_unique<ChartPanel>();
         chartPanel->series = *ser; chartPanel->durSec = dur; chartPanel->curA4 = a4; chartPanel->wholeA4 = st->ok ? st->a4 : 440.0;
-        chartPanel->onClose = [this] { juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<ReHarmoniserEditor> (this)] { if (safe != nullptr) safe->closeChart(); }); };
+        chartPanel->onClose = [this] { closeChartSoon(); };
         addAndMakeVisible (*chartPanel); resized(); chartPanel->toFront (false);
         setStatus ("The choir's pitch through the recording. Press Esc or Close to go back.");
     });
