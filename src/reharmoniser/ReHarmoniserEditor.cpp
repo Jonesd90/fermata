@@ -33,10 +33,60 @@ void styleSlider (juce::Slider& s, double lo, double hi, double step, double v, 
 {
     s.setSliderStyle (juce::Slider::LinearHorizontal); s.setRange (lo, hi, step); s.setValue (v, juce::dontSendNotification); s.setScrollWheelEnabled (false);
     s.setTextBoxStyle (juce::Slider::TextBoxRight, false, 62, 20); s.setTextValueSuffix (suffix);
-    s.setColour (juce::Slider::trackColourId, cBg); s.setColour (juce::Slider::thumbColourId, cPanel2); s.setColour (juce::Slider::textBoxTextColourId, cAmber);
-    s.setColour (juce::Slider::textBoxBackgroundColourId, cBg); s.setColour (juce::Slider::textBoxOutlineColourId, cLine); s.setColour (juce::Slider::backgroundColourId, cBg);
+    s.setColour (juce::Slider::trackColourId, cBg); s.setColour (juce::Slider::thumbColourId, cPanel2); s.setColour (juce::Slider::textBoxTextColourId, cText);
+    s.setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack); s.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack); s.setColour (juce::Slider::backgroundColourId, cBg);
     s.setWantsKeyboardFocus (false);
 }
+
+/** The look of the original Re-HarmoniSer: light rounded buttons, dark slider tracks with a light grip, dark amber readouts. */
+class SageLook : public juce::LookAndFeel_V4
+{
+public:
+    SageLook() { setColour (juce::PopupMenu::backgroundColourId, cBg); setColour (juce::PopupMenu::textColourId, cAmber); setColour (juce::PopupMenu::highlightedBackgroundColourId, cAmberDim);
+                 setColour (juce::PopupMenu::highlightedTextColourId, juce::Colours::white); setColour (juce::TooltipWindow::backgroundColourId, cBg); setColour (juce::TooltipWindow::textColourId, cAmber); }
+    juce::Font getTextButtonFont (juce::TextButton&, int) override { return uiFont (13.0f, true); }
+    juce::Font getComboBoxFont (juce::ComboBox&) override { return lcdFont (14.0f); }
+    int getSliderThumbRadius (juce::Slider&) override { return 9; }
+    juce::Label* createSliderTextBox (juce::Slider& s) override { auto* l = juce::LookAndFeel_V4::createSliderTextBox (s); l->setFont (lcdFont (13.0f)); l->setJustificationType (juce::Justification::centredRight); return l; }
+    void drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour& bg, bool hi, bool down) override
+    {
+        auto r = b.getLocalBounds().toFloat().reduced (0.5f);
+        auto base = bg; if (! b.isEnabled()) base = base.withAlpha (0.5f);
+        if (down) base = base.darker (0.15f); else if (hi) base = base.brighter (0.08f);
+        if (base.getBrightness() < 0.55f) { g.setColour (base); g.fillRoundedRectangle (r, 6.0f); }
+        else { g.setGradientFill (juce::ColourGradient (base.brighter (0.45f), 0.0f, r.getY(), base.darker (0.06f), 0.0f, r.getBottom(), false)); g.fillRoundedRectangle (r, 6.0f); }
+        g.setColour (cLine.darker (0.2f)); g.drawRoundedRectangle (r, 6.0f, 1.0f);
+    }
+    void drawButtonText (juce::Graphics& g, juce::TextButton& b, bool hi, bool down) override
+    {
+        const auto t = b.getButtonText();
+        if (t == "dn" || t == "up")
+        {
+            juce::Path p; const auto c = b.getLocalBounds().toFloat().getCentre(); const float s = 7.0f;
+            if (t == "dn") p.addTriangle (c.x - s, c.y - s * 0.6f, c.x + s, c.y - s * 0.6f, c.x, c.y + s * 0.8f); else p.addTriangle (c.x - s, c.y + s * 0.6f, c.x + s, c.y + s * 0.6f, c.x, c.y - s * 0.8f);
+            g.setColour (cText.withAlpha (b.isEnabled() ? 1.0f : 0.35f)); g.fillPath (p); return;
+        }
+        juce::LookAndFeel_V4::drawButtonText (g, b, hi, down);
+    }
+    void drawComboBox (juce::Graphics& g, int w, int h, bool, int, int, int, int, juce::ComboBox&) override
+    {
+        auto r = juce::Rectangle<float> (0.0f, 0.0f, (float) w, (float) h).reduced (0.5f);
+        g.setColour (cBg); g.fillRoundedRectangle (r, 6.0f); g.setColour (cLine.darker (0.3f)); g.drawRoundedRectangle (r, 6.0f, 1.0f);
+        juce::Path p; p.startNewSubPath ((float) w - 22.0f, (float) h * 0.5f - 3.0f); p.lineTo ((float) w - 16.0f, (float) h * 0.5f + 2.5f); p.lineTo ((float) w - 10.0f, (float) h * 0.5f - 3.0f);
+        g.setColour (cAmber); g.strokePath (p, juce::PathStrokeType (2.0f));
+    }
+    void drawLinearSlider (juce::Graphics& g, int x, int y, int w, int h, float pos, float mn, float mx, juce::Slider::SliderStyle st, juce::Slider& s) override
+    {
+        if (st != juce::Slider::LinearHorizontal) { juce::LookAndFeel_V4::drawLinearSlider (g, x, y, w, h, pos, mn, mx, st, s); return; }
+        const float cy = (float) y + (float) h * 0.5f;
+        g.setColour (s.findColour (juce::Slider::trackColourId)); g.fillRoundedRectangle ((float) x, cy - 2.5f, (float) w, 5.0f, 2.5f);
+        const float tw = 17.0f, th = juce::jmin (24.0f, (float) h - 2.0f);
+        juce::Rectangle<float> t (pos - tw * 0.5f, cy - th * 0.5f, tw, th);
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xfff2f3ef), 0.0f, t.getY(), juce::Colour (0xffb5b9b0), 0.0f, t.getBottom(), false)); g.fillRoundedRectangle (t, 4.0f);
+        g.setColour (cLine.darker (0.5f)); g.drawRoundedRectangle (t, 4.0f, 1.0f);
+        g.setColour (cLine.withAlpha (0.8f)); for (int i = -1; i <= 1; ++i) g.drawVerticalLine ((int) (pos + i * 3), t.getY() + 6.0f, t.getBottom() - 6.0f);
+    }
+};
 } // namespace
 
 // ================================================================================================== the background worker
@@ -113,7 +163,7 @@ public:
         }
     }
     double vt0 = 0.0, vt1 = 10.0, vm0 = 43.0, vm1 = 88.0;      // what is in view: seconds, and pitch as MIDI numbers (bottom, top)
-    double lineOp = 0.18, gainDb = 0.0;
+    double lineOp = 0.18, gainDb = 0.0, opacity = 0.85, contrast = 1.0;
     bool hasSel = false; double sT0 = 0, sT1 = 0, sM0 = 0, sM1 = 0;      // the box: seconds, MIDI (fractional)
     bool dirty = true;
 
@@ -201,7 +251,7 @@ void ReHarmoniserEditor::View::rebuildImage (juce::Rectangle<int> pl)
             const int b = b0[(size_t) y];
             float v = 0.0f;
             if (b >= 0) v = (float) col[b] * (1.0f - fr[(size_t) y]) + (float) col[b + 1] * fr[(size_t) y];
-            bd.setPixelColour (x, y, lut[(size_t) juce::jlimit (0, 255, (int) (v + add))]);
+            bd.setPixelColour (x, y, lut[(size_t) juce::jlimit (0, 255, (int) ((v - 128.0f) * (float) contrast + 128.0f + add))]);
         }
     }
 }
@@ -218,7 +268,7 @@ void ReHarmoniserEditor::View::paint (juce::Graphics& g)
     else
     {
         if (dirty || image.getWidth() != pl.getWidth() || image.getHeight() != pl.getHeight()) rebuildImage (pl);
-        if (image.isValid()) g.drawImageAt (image, pl.getX(), pl.getY());
+        if (image.isValid()) { juce::Graphics::ScopedSaveState ssv (g); g.setOpacity ((float) opacity); g.drawImageAt (image, pl.getX(), pl.getY()); }
     }
     {
         juce::Graphics::ScopedSaveState ss (g);
@@ -512,14 +562,33 @@ public:
     }
 };
 
+/** A flat bold heading with a small triangle (right = closed, down = open) and a thin line under it, like the original. */
+class ReHarmoniserEditor::SectionHeader : public juce::Button
+{
+public:
+    SectionHeader() : juce::Button ({}) { setWantsKeyboardFocus (false); setMouseCursor (juce::MouseCursor::PointingHandCursor); }
+    bool isOpen = false; bool rule = true; juce::Colour tri = cText.withAlpha (0.7f);
+    void paintButton (juce::Graphics& g, bool over, bool) override
+    {
+        const float w = (float) getWidth(), h = (float) getHeight();
+        if (over) { g.setColour (juce::Colours::white.withAlpha (0.12f)); g.fillRect (0.0f, 0.0f, w, h - 1.0f); }
+        juce::Path p; const float cx = 15.0f, cy = (h - 1.0f) * 0.5f, k = 4.5f;
+        if (isOpen) p.addTriangle (cx - k, cy - k * 0.6f, cx + k, cy - k * 0.6f, cx, cy + k * 0.8f); else p.addTriangle (cx - k * 0.6f, cy - k, cx - k * 0.6f, cy + k, cx + k * 0.9f, cy);
+        g.setColour (tri); g.fillPath (p);
+        g.setColour (cText); g.setFont (uiFont (18.0f, true)); g.drawText (getButtonText(), 34, 0, (int) w - 36, (int) h - 1, juce::Justification::centredLeft, true);
+        if (rule) { g.setColour (cLine); g.drawHorizontalLine ((int) h - 1, 0.0f, w); }
+    }
+};
+
 struct ReHarmoniserEditor::Section
 {
-    juce::String title; juce::TextButton header; std::vector<juce::Component*> kids; int bodyH = 100;
+    juce::String title; SectionHeader header; std::vector<juce::Component*> kids; int bodyH = 100;
 };
 
 // ================================================================================================== the editor
 ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
 {
+    look = std::make_unique<SageLook>(); setLookAndFeel (look.get());
     setWantsKeyboardFocus (true);
     worker = std::make_unique<Worker>();
     view = std::make_unique<View> (*this); addAndMakeVisible (*view);
@@ -529,12 +598,23 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     styleLabel (status, cAmber, 13.0f); status.setFont (lcdFont (12.5f)); status.setColour (juce::Label::backgroundColourId, cBg); status.setJustificationType (juce::Justification::centredLeft); addAndMakeVisible (status);
     styleLabel (noteInfo, cAmber, 12.0f); noteInfo.setFont (lcdFont (12.0f)); noteInfo.setColour (juce::Label::backgroundColourId, cBg); noteInfo.setJustificationType (juce::Justification::topLeft); noteInfo.setMinimumHorizontalScale (0.7f); addAndMakeVisible (noteInfo);
     styleLabel (tipLabel, cText, 12.0f); tipLabel.setJustificationType (juce::Justification::topLeft); addChildComponent (tipLabel);
-    for (auto* b : { &playBtn, &stopBtn, &loopBtn, &originalBtn, &cancelBtn, &downBtn, &upBtn, &remeasureBtn, &tipUse, &tipIgnore, &detectBtn, &auditionBtn, &applyBtn, &deselectBtn, &clearBtn, &undoBtn, &redoBtn,
+    for (auto* b : { &startBtn, &endBtn, &isoBtn, &playBtn, &stopBtn, &loopBtn, &originalBtn, &cancelBtn, &downBtn, &upBtn, &remeasureBtn, &tipUse, &tipIgnore, &detectBtn, &auditionBtn, &applyBtn, &deselectBtn, &clearBtn, &undoBtn, &redoBtn,
                      &zoomTIn, &zoomTOut, &zoomPIn, &zoomPOut, &loopClearBtn }) { styleButton (*b); addAndMakeVisible (b); }
     styleButton (writeBtn, juce::Colour (0xff1f7a46)); addAndMakeVisible (writeBtn);
     styleButton (applyBtn, juce::Colour (0xff8a5a10)); styleButton (playBtn, juce::Colour (0xff8a5a10));
+    for (auto* b : { &applyBtn, &playBtn, &writeBtn }) { b->setColour (juce::TextButton::textColourOffId, juce::Colours::white); b->setColour (juce::TextButton::textColourOnId, juce::Colours::white); }
     tipUse.setVisible (false); tipIgnore.setVisible (false);
-    loopBtn.setClickingTogglesState (true); originalBtn.setClickingTogglesState (true);
+    loopBtn.setClickingTogglesState (true); originalBtn.setClickingTogglesState (true); isoBtn.setClickingTogglesState (true);
+    startBtn.setTooltip ("Puts the playhead at the start"); endBtn.setTooltip ("Puts the playhead at the end");
+    startBtn.onClick = [this] { cueT = 0.0; view->follow (0.0); view->repaint(); };
+    endBtn.onClick = [this] { cueT = juce::jmax (0.0, dur - 0.05); view->follow (cueT); view->repaint(); };
+    isoBtn.setTooltip ("Isolate: Audition and Play then give just the picked note, with some of the music before and after it (see the lead-in and tail in Note ReShape, Advanced). The rest of the sound under the note is taken away. Needs a note picked first.");
+    isoBtn.onClick = [this]
+    {
+        isolating = isoBtn.getToggleState();
+        if (cand.has && ! busy) renderAndSet (true, [this] { setStatus (isolating ? "Isolate is on: press Space (or Play) to hear just the picked note." : "Isolate is off: the whole picture is heard again."); });
+        else setStatus (isolating ? "Isolate is on: pick a note first, then press Space (or Play)." : "Isolate is off.");
+    };
     
 
     nameBox.setFont (lcdFont (14.0f)); nameBox.setColour (juce::TextEditor::backgroundColourId, cBg); nameBox.setColour (juce::TextEditor::textColourId, cAmber);
@@ -552,8 +632,7 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     const char* titles[] = { "Ensemble ReCentre", "Note ReShape", "Section ReFinement", "Erase ReBrush", "See mixer", "Corrected Notes" };
     for (int i = 0; i < 6; ++i)
     {
-        auto s = std::make_unique<Section>(); s->title = titles[i]; s->header.setButtonText (titles[i]); styleButton (s->header, cPanel2);
-        s->header.setColour (juce::TextButton::textColourOffId, cAmber); addAndMakeVisible (s->header);
+        auto s = std::make_unique<Section>(); s->title = titles[i]; s->header.setButtonText (titles[i]); addAndMakeVisible (s->header);
         const int idx = i; s->header.onClick = [this, idx] { openSection (openIdx == idx ? -1 : idx); };
         sections.push_back (std::move (s));
     }
@@ -570,7 +649,7 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     refMode.setColour (juce::ComboBox::backgroundColourId, cBg); refMode.setColour (juce::ComboBox::textColourId, cAmber); refMode.setColour (juce::ComboBox::outlineColourId, cLine);
     addAndMakeVisible (refMode); styleLabel (refInfo, cAmber, 12.0f); refInfo.setFont (lcdFont (12.0f)); refInfo.setColour (juce::Label::backgroundColourId, cBg); addAndMakeVisible (refInfo);
     chartBtn.setTooltip ("How far the choir's pitch sits from A=440 through the recording"); styleButton (chartBtn); chartBtn.onClick = [this] { showChart(); }; addChildComponent (chartBtn);
-    sections[0]->kids = { &a4Cap, &a4Box, &detectBtn, &refMode, &refInfo, &chartBtn }; sections[0]->bodyH = 142;
+    sections[0]->kids = { &a4Cap, &a4Box, &detectBtn, &refMode, &refInfo, &chartBtn }; sections[0]->bodyH = 120;
     // -- Note ReShape
     auto row = [this] (Row& r, const juce::String& cap, double lo, double hi, double step, double v, const juce::String& suffix, const juce::String& tip)
     {
@@ -592,7 +671,7 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     addAndMakeVisible (partialBox);
     matchBox.setToggleState (true, juce::dontSendNotification); matchBox.setColour (juce::ToggleButton::textColourId, cText); matchBox.setColour (juce::ToggleButton::tickColourId, cAmber);
     matchBox.onClick = [this] { sliderChanged(); }; matchBox.setWantsKeyboardFocus (false); addAndMakeVisible (matchBox);
-    advancedBtn.setColour (juce::ToggleButton::textColourId, cAmber); advancedBtn.setColour (juce::ToggleButton::tickColourId, cAmber); advancedBtn.setWantsKeyboardFocus (false);
+    advancedBtn.setColour (juce::ToggleButton::textColourId, cText); advancedBtn.setColour (juce::ToggleButton::tickColourId, cAmber); advancedBtn.setWantsKeyboardFocus (false);
     advancedBtn.onClick = [this] { layoutSections(); }; addAndMakeVisible (advancedBtn);
     auditionBtn.setTooltip ("Hears the correction that is not applied yet. It only gets ready: press Space or Play to listen."); auditionBtn.onClick = [this] { audition(); };
     applyBtn.onClick = [this] { applyCorrection(); }; deselectBtn.onClick = [this] { deselect(); }; clearBtn.onClick = [this] { clearChanges(); };
@@ -611,6 +690,37 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     // -- See mixer: what the picture shows (not what you hear)
     seeView.setViewedComponent (&seeHolder, false); seeView.setScrollBarsShown (true, false); addChildComponent (seeView);
     sections[4]->kids = { &seeView };
+    // -- the original's Note Selection title, from / to, and the rest of the View block
+    styleLabel (noteSelTitle, cText, 19.0f); noteSelTitle.setFont (uiFont (19.0f, true)); addAndMakeVisible (noteSelTitle);
+    styleLabel (fromCap, cText, 13.0f); styleLabel (toCap, cText, 13.0f); addAndMakeVisible (fromCap); addAndMakeVisible (toCap);
+    for (auto* e : { &fromBox, &toBox })
+    {
+        e->setFont (lcdFont (14.0f)); e->setColour (juce::TextEditor::backgroundColourId, cBg); e->setColour (juce::TextEditor::textColourId, cAmber); e->setColour (juce::TextEditor::outlineColourId, cLine);
+        e->setColour (juce::TextEditor::focusedOutlineColourId, cAmber); e->setInputRestrictions (10, "0123456789.:"); e->setTooltip ("Start and end of the box, in seconds (or minutes:seconds). Press Set to change the box."); addAndMakeVisible (e);
+    }
+    styleButton (setBtn); addAndMakeVisible (setBtn);
+    setBtn.onClick = [this]
+    {
+        if (! cand.has || busy) return;
+        auto pt = [] (juce::String t) { t = t.trim(); return t.containsChar (':') ? t.upToFirstOccurrenceOf (":", false, false).getDoubleValue() * 60.0 + t.fromFirstOccurrenceOf (":", false, false).getDoubleValue() : t.getDoubleValue(); };
+        selectBox (pt (fromBox.getText()), pt (toBox.getText()), cand.fLo * partial, cand.fHi * partial);
+    };
+    row (isoPreRow, "Isolate lead-in", 0, 30, 0.5, 3, " s", "Isolate plays this much music before the picked note.");
+    row (isoPostRow, "Isolate tail", 0, 30, 0.5, 3, " s", "Isolate plays this much music after the picked note.");
+    isoPreRow.s.onValueChange = [this] {}; isoPostRow.s.onValueChange = [this] {};
+    row (opacityRow, "Spectrogram", 10, 100, 5, 85, " %", "How strongly the picture shows over the dark background.");
+    row (contrastRow, "Colour contrast", 25, 300, 5, 100, " %", "Makes the difference between loud and quiet parts of the picture stronger or weaker.");
+    opacityRow.s.onValueChange = [this] { view->opacity = opacityRow.s.getValue() / 100.0; view->repaint(); };
+    contrastRow.s.onValueChange = [this] { view->contrast = contrastRow.s.getValue() / 100.0; view->dirty = true; view->repaint(); };
+    styleLabel (pitchCap, cText, 12.0f); styleLabel (loopCap, cText, 12.0f); styleLabel (detailCap, cText, 12.0f);
+    addAndMakeVisible (pitchCap); addAndMakeVisible (loopCap); addAndMakeVisible (detailCap);
+    detailBox.addItem ("Pitch (sharper notes)", 1); detailBox.addItem ("Balanced", 2); detailBox.addItem ("Time (sharper timing)", 3); detailBox.setSelectedId (2, juce::dontSendNotification);
+    detailBox.setColour (juce::ComboBox::textColourId, cAmber); detailBox.setColour (juce::ComboBox::outlineColourId, cLine);
+    detailBox.setTooltip ("Pitch makes the notes sharper on the picture, Time makes the beginnings and endings sharper. The picture is worked out again when you change it.");
+    detailBox.onChange = [this] { detailMode = detailBox.getSelectedId() - 1; if (orig != nullptr && ! busy) startAnalysis(); };
+    addAndMakeVisible (detailBox);
+    viewHeader = std::make_unique<SectionHeader>(); viewHeader->setButtonText ("View"); viewHeader->tri = cAmber; viewHeader->rule = false; viewHeader->isOpen = true; addAndMakeVisible (*viewHeader);
+    viewHeader->onClick = [this] { viewAuto = false; viewOpen = ! viewOpen; viewHeader->isOpen = viewOpen; resized(); repaint(); };
     // -- Key level
     row (keyRow, "Key level", -50, 0, 1, -20, " dB", "How loud the piano-key notes are when you click a key on the left of the picture.");
     // -- Erase ReBrush
@@ -646,12 +756,12 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     originalBtn.onClick = [this] { toggleOriginal(); };
     writeBtn.onClick = [this] { writeBack(); }; cancelBtn.onClick = [this] { if (worker->running()) worker->cancel(); if (host.cancel) host.cancel(); };
     writeBtn.setTooltip ("Puts all the corrected notes back into the clip and closes this window");
-    openSection (1); updateButtons(); updateInfo();
+    openSection (-1); updateButtons(); updateInfo();
     setSize (1280, 800);
     startTimerHz (30);
 }
 
-ReHarmoniserEditor::~ReHarmoniserEditor() { stopTimer(); if (worker) worker->cancel(); }
+ReHarmoniserEditor::~ReHarmoniserEditor() { setLookAndFeel (nullptr); stopTimer(); if (worker) worker->cancel(); }
 
 int ReHarmoniserEditor::appliedCount() const { int n = 0; for (auto& e : edits) if (e.enabled) ++n; return n; }
 bool ReHarmoniserEditor::hasAppliedChanges() const { return appliedCount() > 0; }
@@ -702,12 +812,12 @@ void ReHarmoniserEditor::setAudio (std::shared_ptr<const Block> audio, int sampl
 void ReHarmoniserEditor::startAnalysis()
 {
     analysing = true; mix = nullptr; view->repaint();
-    auto audio = orig; const int rate = sr;
+    auto audio = orig; const int rate = sr; const auto detail = detailMode == 0 ? Spectrogram::Detail::Pitch : detailMode == 2 ? Spectrogram::Detail::Time : Spectrogram::Detail::Balanced;
     auto result = std::make_shared<std::pair<std::shared_ptr<Mix>, double>>();
     auto specOut = std::make_shared<std::shared_ptr<Spectrogram>>();
-    startJob ("Analysing the audio", [audio, rate, result, specOut] (Worker& w) -> juce::String
+    startJob ("Analysing the audio", [audio, rate, detail, result, specOut] (Worker& w) -> juce::String
     {
-        auto sp = std::make_shared<Spectrogram>(); sp->build (spansOf (*audio), rate, Spectrogram::Detail::Balanced, w.hooks());
+        auto sp = std::make_shared<Spectrogram>(); sp->build (spansOf (*audio), rate, detail, w.hooks());
         *result = { makeMix (*sp), sp->ref }; *specOut = sp;
         return {};
     },
@@ -799,6 +909,9 @@ void ReHarmoniserEditor::replan()
 
 void ReHarmoniserEditor::updateInfo()
 {
+    if (! fromBox.hasKeyboardFocus (false) && ! toBox.hasKeyboardFocus (false))
+    { fromBox.setText (cand.has ? juce::String (cand.t0, 2) : juce::String(), false); toBox.setText (cand.has ? juce::String (cand.t1, 2) : juce::String(), false); }
+    setBtn.setEnabled (cand.has && ! busy);
     if (orig == nullptr) { noteInfo.setText ("", juce::dontSendNotification); return; }
     if (measuring) { noteInfo.setText ("Measuring the note...", juce::dontSendNotification); return; }
     if (! cand.has) { noteInfo.setText ("Drag a box round a note\non the picture.", juce::dontSendNotification); return; }
@@ -915,9 +1028,13 @@ void ReHarmoniserEditor::renderAndSet (bool withPending, std::function<void()> t
         return;
     }
     auto audio = orig; const int rate = sr; const double total = dur;
+    // Isolate: the picked note on its own (as it would sound after the planned correction), the music around it unchanged
+    Vec isoTs, isoF; const Params isoP = params;
+    if (isolating && withPending && cand.has && ! cand.ts.empty() && cand.plan.off.size() == cand.f0.size() && cand.f0.size() == cand.ts.size())
+    { isoTs = cand.ts; isoF.resize (cand.f0.size()); for (size_t i = 0; i < isoF.size(); ++i) isoF[i] = cand.f0[i] * std::pow (2.0, cand.plan.off[i] / 1200.0); }
     auto out = std::make_shared<Block>();
     const auto newState = withPending && (cand.has || bcand.has || (vcand.has && vcand.preview)) ? HostState::CorrectedWithPending : HostState::Corrected;
-    startJob ("Correcting the notes", [audio, rate, total, list, out] (Worker& w) -> juce::String
+    startJob ("Correcting the notes", [audio, rate, total, list, out, isoTs, isoF, isoP] (Worker& w) -> juce::String
     {
         *out = *audio; auto h = w.hooks();
         for (size_t k = 0; k < list.size(); ++k)
@@ -957,6 +1074,17 @@ void ReHarmoniserEditor::renderAndSet (bool withPending, std::function<void()> t
             sub.progress = [&] (const char*, double f) { h.report ("Correcting the notes", ((double) k + f) / (double) list.size()); };
             const Block fixed = retuneSegment (seg, rate, (double) i0 / rate, e.ts, e.f0, e.off, e.params, sub);
             for (size_t c = 0; c < fixed.size(); ++c) std::copy (fixed[c].begin(), fixed[c].end(), (*out)[c].begin() + (long) i0);
+        }
+        if (! isoTs.empty())
+        {
+            const double a = juce::jmax (0.0, isoTs.front() - 0.5), b = juce::jmin (total, isoTs.back() + 0.5);
+            const size_t i0 = (size_t) std::floor (a * rate), i1 = juce::jmin ((*out)[0].size(), (size_t) std::floor (b * rate));
+            if (i1 > i0 + 16)
+            {
+                Block seg ((*out).size()); for (size_t c = 0; c < seg.size(); ++c) seg[c].assign ((*out)[c].begin() + (long) i0, (*out)[c].begin() + (long) i1);
+                const Block so = soloSegment (seg, rate, (double) i0 / rate, isoTs, isoF, isoP, isoTs.front(), isoTs.back());
+                for (size_t c = 0; c < so.size(); ++c) std::copy (so[c].begin(), so[c].end(), (*out)[c].begin() + (long) i0);
+            }
         }
         return {};
     },
@@ -1232,7 +1360,8 @@ void ReHarmoniserEditor::togglePlay()
     // a correction that was changed after the last Audition has to be made again before it can be heard
     if (hostState == HostState::CorrectedWithPending && auditionStale && (cand.has || bcand.has || vcand.has)) { renderAndSet (true, [this] { togglePlay(); }); return; }
     const bool useLoop = looping && loopIn >= 0 && loopOut > loopIn;
-    const double from = useLoop ? loopIn : cueT, to = useLoop ? loopOut : dur;
+    double from = useLoop ? loopIn : cueT, to = useLoop ? loopOut : dur;
+    if (isolating && cand.has && ! useLoop && hostState == HostState::CorrectedWithPending) { from = juce::jmax (0.0, cand.t0 - isoPreRow.s.getValue()); to = juce::jmin (dur, cand.t1 + isoPostRow.s.getValue()); }
     if (host.play) host.play (from, to, looping);
 }
 
@@ -1329,7 +1458,13 @@ void ReHarmoniserEditor::recombine()
 
 void ReHarmoniserEditor::openSection (int idx)
 {
-    openIdx = idx; layoutSections(); repaint();
+    openIdx = idx;
+    for (size_t i = 0; i < sections.size(); ++i) sections[i]->header.isOpen = ((int) i == idx);
+    // the View block folds away while a section is open (there is not room for both) and comes back when it closes
+    if (idx >= 0 && viewOpen) { viewOpen = false; viewAuto = true; }
+    else if (idx < 0 && viewAuto) { viewOpen = true; viewAuto = false; }
+    if (viewHeader != nullptr) viewHeader->isOpen = viewOpen;
+    layoutSections(); repaint();
 }
 
 void ReHarmoniserEditor::updateButtons()
@@ -1359,42 +1494,62 @@ void ReHarmoniserEditor::resized()
     if (chartPanel != nullptr) chartPanel->setBounds (getLocalBounds().reduced (juce::jmax (10, (getWidth() - 760) / 2), juce::jmax (10, (getHeight() - 360) / 2)));
     auto r = getLocalBounds().reduced (8);
     auto bottom = r.removeFromBottom (64); r.removeFromBottom (6);
-    auto side = r.removeFromRight (310); r.removeFromRight (8);
+    auto side = r.removeFromRight (336); r.removeFromRight (8);
     view->setBounds (r);
     // transport
     auto t = bottom.removeFromTop (30);
-    playBtn.setBounds (t.removeFromLeft (80)); t.removeFromLeft (6); stopBtn.setBounds (t.removeFromLeft (66)); t.removeFromLeft (6);
-    loopBtn.setBounds (t.removeFromLeft (66)); t.removeFromLeft (16); originalBtn.setBounds (t.removeFromLeft (100)); t.removeFromLeft (16);
+    startBtn.setBounds (t.removeFromLeft (36)); t.removeFromLeft (4); playBtn.setBounds (t.removeFromLeft (80)); t.removeFromLeft (4); stopBtn.setBounds (t.removeFromLeft (66)); t.removeFromLeft (4); endBtn.setBounds (t.removeFromLeft (36)); t.removeFromLeft (10);
+    loopBtn.setBounds (t.removeFromLeft (66)); t.removeFromLeft (10); originalBtn.setBounds (t.removeFromLeft (90)); t.removeFromLeft (6); isoBtn.setBounds (t.removeFromLeft (80)); t.removeFromLeft (16);
     cancelBtn.setBounds (t.removeFromRight (90)); t.removeFromRight (8); writeBtn.setBounds (t.removeFromRight (170)); t.removeFromRight (16);
     bar.setBounds (t.reduced (0, 5));
     status.setBounds (bottom.reduced (0, 2));
-    // right-hand panel
-    auto s = side;
-    // Note Selection
-    { auto b = s.removeFromTop (28); upBtn.setBounds (b.removeFromRight (30)); b.removeFromRight (4); downBtn.setBounds (b.removeFromRight (30)); b.removeFromRight (6);
-      nameCap.setBounds (b.removeFromLeft (80)); nameBox.setBounds (b.reduced (0, 1)); }
+    // right-hand panel (the look of the original: bold titles with thin lines, the View block at the bottom)
+    auto s = side.reduced (8, 0);
+    ruleYs.clear(); ruleX0 = side.getX(); ruleX1 = side.getRight();
     s.removeFromTop (4);
-    noteInfo.setBounds (s.removeFromTop (66));
+    noteSelTitle.setBounds (s.removeFromTop (30)); ruleYs.push_back (s.getY()); s.removeFromTop (8);
+    { auto b = s.removeFromTop (30);
+      nameBox.setBounds (b.removeFromLeft (80).reduced (0, 1)); b.removeFromLeft (8);
+      downBtn.setBounds (b.removeFromLeft (38)); b.removeFromLeft (4); upBtn.setBounds (b.removeFromLeft (38)); b.removeFromLeft (8);
+      nameCap.setBounds (b); }
+    s.removeFromTop (6);
+    { auto b = s.removeFromTop (30); fromCap.setBounds (b.removeFromLeft (38)); setBtn.setBounds (b.removeFromRight (50)); b.removeFromRight (6);
+      const int half = (b.getWidth() - 28) / 2; fromBox.setBounds (b.removeFromLeft (half).reduced (0, 1)); toCap.setBounds (b.removeFromLeft (28).withTrimmedLeft (4)); toBox.setBounds (b.reduced (0, 1)); }
+    s.removeFromTop (6);
+    noteInfo.setBounds (s.removeFromTop (58));
     { const bool tip = tipLabel.isVisible(); auto b = s.removeFromTop (tip ? 44 : 0);
       if (tip) { tipLabel.setBounds (b.removeFromTop (18)); tipUse.setBounds (b.removeFromLeft (110).reduced (0, 1)); b.removeFromLeft (6); tipIgnore.setBounds (b.removeFromLeft (80).reduced (0, 1)); } }
-    remeasureBtn.setBounds (s.removeFromTop (26).removeFromLeft (130)); s.removeFromTop (6);
+    s.removeFromTop (4); remeasureBtn.setBounds (s.removeFromTop (26).removeFromLeft (130)); s.removeFromTop (6);
+    ruleYs.push_back (s.getY()); s.removeFromTop (2);
     // the View block at the bottom
-    const int viewH = 150;
-    auto viewArea = s.removeFromBottom (viewH); s.removeFromBottom (6);
-    { auto a = viewArea; a.removeFromTop (2);
-      auto z = a.removeFromTop (24); zoomCap.setBounds (z.removeFromLeft (120)); zoomTIn.setBounds (z.removeFromLeft (28)); z.removeFromLeft (2); zoomTOut.setBounds (z.removeFromLeft (28)); z.removeFromLeft (14);
-      zoomPIn.setBounds (z.removeFromLeft (28)); z.removeFromLeft (2); zoomPOut.setBounds (z.removeFromLeft (28));
-      a.removeFromTop (3); loopClearBtn.setBounds (a.removeFromTop (24).removeFromLeft (110)); a.removeFromTop (3);
-      auto l1 = a.removeFromTop (26); linesRow.cap.setBounds (l1.removeFromLeft (92)); linesRow.s.setBounds (l1);
-      auto l2 = a.removeFromTop (26); gainRow.cap.setBounds (l2.removeFromLeft (92)); gainRow.s.setBounds (l2);
-      auto l3 = a.removeFromTop (26); keyRow.cap.setBounds (l3.removeFromLeft (92)); keyRow.s.setBounds (l3); }
+    {
+        const int viewH = viewOpen ? 34 + 8 * 28 + 6 : 36;
+        auto viewArea = s.removeFromBottom (viewH); ruleYs.push_back (viewArea.getY()); s.removeFromBottom (4);
+        auto a = viewArea; a.removeFromTop (2);
+        viewHeader->setBounds (a.removeFromTop (32));
+        for (auto* k : { (juce::Component*) &loopCap, (juce::Component*) &loopClearBtn, (juce::Component*) &zoomCap, (juce::Component*) &zoomTIn, (juce::Component*) &zoomTOut, (juce::Component*) &pitchCap,
+                         (juce::Component*) &zoomPIn, (juce::Component*) &zoomPOut, (juce::Component*) &linesRow.cap, (juce::Component*) &linesRow.s, (juce::Component*) &opacityRow.cap, (juce::Component*) &opacityRow.s,
+                         (juce::Component*) &gainRow.cap, (juce::Component*) &gainRow.s, (juce::Component*) &contrastRow.cap, (juce::Component*) &contrastRow.s, (juce::Component*) &keyRow.cap, (juce::Component*) &keyRow.s,
+                         (juce::Component*) &detailCap, (juce::Component*) &detailBox }) k->setVisible (viewOpen);
+        if (viewOpen)
+        {
+            auto l0 = a.removeFromTop (28); loopCap.setBounds (l0.removeFromLeft (112)); loopClearBtn.setBounds (l0.reduced (0, 1));
+            auto z = a.removeFromTop (28); zoomCap.setBounds (z.removeFromLeft (76)); zoomTIn.setBounds (z.removeFromLeft (40).reduced (0, 1)); z.removeFromLeft (4); zoomTOut.setBounds (z.removeFromLeft (40).reduced (0, 1)); z.removeFromLeft (10);
+            pitchCap.setBounds (z.removeFromLeft (40)); zoomPIn.setBounds (z.removeFromLeft (32).reduced (0, 1)); z.removeFromLeft (4); zoomPOut.setBounds (z.removeFromLeft (32).reduced (0, 1));
+            auto rw = [&] (Row& rr) { auto q = a.removeFromTop (28); rr.cap.setBounds (q.removeFromLeft (112)); rr.s.setBounds (q); };
+            rw (linesRow); rw (opacityRow); rw (gainRow); rw (contrastRow); rw (keyRow);
+            auto d = a.removeFromTop (28); detailCap.setBounds (d.removeFromLeft (112)); detailBox.setBounds (d.reduced (0, 1));
+        }
+    }
     // the sections: headers always, the open one's body between them
     auto place = [] (juce::Component& c, juce::Rectangle<int>& a, int h) { c.setBounds (a.removeFromTop (h)); };
     for (auto* k : { (juce::Component*) &a4Cap, (juce::Component*) &a4Box, (juce::Component*) &detectBtn, (juce::Component*) &refMode, (juce::Component*) &refInfo, (juce::Component*) &chartBtn }) k->setVisible (openIdx == 0);
-    for (int i = 0; i < (int) sections.size(); ++i)
+    const int order[] = { 0, 1, 2, 3, 5, 4 };                  // as in the original: Corrected Notes last of the five, the See mixer after it
+    for (int oi = 0; oi < (int) sections.size(); ++oi)
     {
+        const int i = order[oi];
         auto& sec = *sections[(size_t) i];
-        sec.header.setBounds (s.removeFromTop (26)); s.removeFromTop (2);
+        sec.header.setBounds (s.removeFromTop (32));
         const bool open = openIdx == i;
         if (i == 1)
         {
@@ -1402,15 +1557,15 @@ void ReHarmoniserEditor::resized()
             for (auto* k : sec.kids) k->setVisible (open);
             for (auto* k : { (juce::Component*) &strengthRow.cap, (juce::Component*) &strengthRow.s, (juce::Component*) &keepRow.cap, (juce::Component*) &keepRow.s, (juce::Component*) &smoothRow.cap, (juce::Component*) &smoothRow.s,
                              (juce::Component*) &easeRow.cap, (juce::Component*) &easeRow.s, (juce::Component*) &holdRow.cap, (juce::Component*) &holdRow.s, (juce::Component*) &bwRow.cap, (juce::Component*) &bwRow.s,
-                             (juce::Component*) &partialBox, (juce::Component*) &matchBox }) k->setVisible (open && adv);
+                             (juce::Component*) &partialBox, (juce::Component*) &matchBox, (juce::Component*) &isoPreRow.cap, (juce::Component*) &isoPreRow.s, (juce::Component*) &isoPostRow.cap, (juce::Component*) &isoPostRow.s }) k->setVisible (open && adv);
             if (open)
             {
-                const int h = 26 * 2 + 26 + (adv ? 26 * 6 + 26 + 24 : 0) + 30 + 30 + 6;
+                const int h = 26 * 2 + 26 + (adv ? 26 * 8 + 26 + 24 : 0) + 30 + 30 + 6;
                 auto b = s.removeFromTop (juce::jmin (h, s.getHeight()));
                 auto rw = [&] (Row& rr) { auto q = b.removeFromTop (26); rr.cap.setBounds (q.removeFromLeft (112)); rr.s.setBounds (q); };
                 rw (moveRow); rw (snapRow);
                 advancedBtn.setBounds (b.removeFromTop (26).removeFromLeft (120));
-                if (adv) { rw (strengthRow); rw (keepRow); rw (smoothRow); rw (easeRow); rw (holdRow); rw (bwRow); partialBox.setBounds (b.removeFromTop (26).reduced (0, 1)); matchBox.setBounds (b.removeFromTop (24)); }
+                if (adv) { rw (strengthRow); rw (keepRow); rw (smoothRow); rw (easeRow); rw (holdRow); rw (bwRow); rw (isoPreRow); rw (isoPostRow); partialBox.setBounds (b.removeFromTop (26).reduced (0, 1)); matchBox.setBounds (b.removeFromTop (24)); }
                 b.removeFromTop (4);
                 auto b1 = b.removeFromTop (28); auditionBtn.setBounds (b1.removeFromLeft (84)); b1.removeFromLeft (4); applyBtn.setBounds (b1.removeFromLeft (118)); b1.removeFromLeft (4); deselectBtn.setBounds (b1);
                 b.removeFromTop (2);
@@ -1486,6 +1641,7 @@ void ReHarmoniserEditor::paint (juce::Graphics& g)
 {
     g.fillAll (cPanel);
     g.setColour (cLine); g.drawRect (getLocalBounds(), 1);
+    for (int y : ruleYs) g.drawHorizontalLine (y, (float) ruleX0 + 8.0f, (float) ruleX1 - 8.0f);
 }
 
 bool ReHarmoniserEditor::keyPressed (const juce::KeyPress& k)

@@ -62,8 +62,9 @@ public:
     bool keyPressed (const juce::KeyPress&) override;
 
 private:
-    class View; class Worker; class EditsList; struct Section;
+    class View; class Worker; class EditsList; struct Section; class SectionHeader;
     friend class View;
+    std::unique_ptr<juce::LookAndFeel_V4> look;      // (declared first so it is destroyed last)
     struct Cand { bool has = false; double t0 = 0, t1 = 0, fLo = 0, fHi = 0; Vec ts, f0; int hint = 1, midi = 57; Plan plan; } cand;
     struct Hist { Params p; };
     struct BCand { bool has = false; Brush b; } bcand;
@@ -145,13 +146,13 @@ private:
     std::unique_ptr<View> view;
     std::unique_ptr<Worker> worker;
     juce::Label status, noteInfo, tipLabel;
-    juce::TextButton playBtn { "Play" }, stopBtn { "Stop" }, loopBtn { "Loop" }, originalBtn { "Original" }, writeBtn { "Write back to clip" }, cancelBtn { "Cancel" };
+    juce::TextButton startBtn { "|<" }, endBtn { ">|" }, isoBtn { "Isolate" }, playBtn { "Play" }, stopBtn { "Stop" }, loopBtn { "Loop" }, originalBtn { "Original" }, writeBtn { "Write back to clip" }, cancelBtn { "Cancel" };
     double progressValue = 0.0; juce::ProgressBar bar;
     // Note Selection
-    juce::Label nameCap { {}, "meant to be" }; juce::TextEditor nameBox; juce::TextButton downBtn { "-" }, upBtn { "+" }, remeasureBtn { "Measure again" };
+    juce::Label nameCap { {}, "meant to be" }; juce::TextEditor nameBox; juce::TextButton downBtn { "dn" }, upBtn { "up" }, remeasureBtn { "Measure again" };
     juce::TextButton tipUse { "Use it" }, tipIgnore { "Ignore" };
     // sections
-    std::vector<std::unique_ptr<Section>> sections; int openIdx = 2;
+    std::vector<std::unique_ptr<Section>> sections; int openIdx = -1;
     juce::Label a4Cap { {}, "Reference A4" }; juce::TextEditor a4Box; juce::TextButton detectBtn { "Detect" }; juce::ComboBox refMode; juce::Label refInfo;
     struct Row { juce::Label cap; juce::Slider s; };
     Row moveRow, snapRow, strengthRow, keepRow, smoothRow, easeRow, holdRow, bwRow, linesRow, gainRow, keyRow;
@@ -164,7 +165,13 @@ private:
     juce::ComboBox partialBox; juce::ToggleButton matchBox { "Level smoothing" }; juce::ToggleButton advancedBtn { "Advanced" };
     juce::TextButton auditionBtn { "Audition" }, applyBtn { "Apply correction" }, deselectBtn { "Deselect" }, clearBtn { "Clear changes" }, undoBtn { "Undo" }, redoBtn { "Redo" };
     juce::TextButton zoomTIn { "+" }, zoomTOut { "-" }, zoomPIn { "+" }, zoomPOut { "-" }, loopClearBtn { "Clear loop" };
-    juce::Label zoomCap { {}, "Zoom time / pitch" };
+    juce::Label zoomCap { {}, "Zoom time" }, pitchCap { {}, "pitch" }, loopCap { {}, "Loop markers" }, detailCap { {}, "Detail" };
+    // the look of the original: Note Selection title, from / to, View block
+    juce::Label noteSelTitle { {}, "Note Selection" }, fromCap { {}, "from" }, toCap { {}, "to" };
+    juce::TextEditor fromBox, toBox; juce::TextButton setBtn { "Set" };
+    Row contrastRow, opacityRow, isoPreRow, isoPostRow; bool isolating = false; juce::ComboBox detailBox; int detailMode = 1;
+    std::unique_ptr<SectionHeader> viewHeader; bool viewOpen = true, viewAuto = false;
+    std::vector<int> ruleYs; int ruleX0 = 0, ruleX1 = 0;
     std::unique_ptr<EditsList> editsList; juce::Viewport editsView;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ReHarmoniserEditor)
 };

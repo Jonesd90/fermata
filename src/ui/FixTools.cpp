@@ -2326,6 +2326,14 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
             Piece p; p.editStart = r.startSample; p.srcIn = r.srcIn;
             const auto a = r.srcIn + (r0 - r.startSample), b = r.srcIn + (r1 - r.startSample);
             if (! prepRegionJob (fixFolder, r, p.rj, a, b, a - h1, b + h1, a, b, spec)) continue;
+            // a file can be a little shorter than the region says (the recording stopped a few samples early): the piece ends where the shortest file ends
+            {
+                juce::int64 lastOk = b;
+                for (size_t k = 0; k < p.rj.src.size(); ++k)
+                    if (auto rd = audioops::openReader (formats(), p.rj.src[k])) lastOk = juce::jmin (lastOk, p.rj.fileStart[k] + (juce::int64) rd->lengthInSamples);
+                if (lastOk < b) { p.rj.b = lastOk; p.rj.fixTo = lastOk; p.rj.outTo = juce::jmin (p.rj.outTo, lastOk); }
+                if (p.rj.b - p.rj.a < 2) continue;
+            }
             for (size_t k = 0; k < p.rj.idx.size(); ++k)
             {
                 const auto& f = r.files[p.rj.idx[k]];
