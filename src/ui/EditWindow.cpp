@@ -9,7 +9,8 @@ namespace td
 {
 /** How many different takes the edit is made from (a take used in several pieces counts once). */
 static int takesInEdit (const EditDef& e) { std::set<juce::String> t; for (auto& r : e.regions) t.insert (r.takeId.toString()); return (int) t.size(); }
-static constexpr int kRulerH = 22, kLaneH = 38, kNameW = 150;
+static constexpr int kRulerH = 22, kLaneH = 38;
+static int kNameW = 210;                        // width of the track-name column (drag its right edge to change it; shared by all edit windows)
 
 class EditTimeline : public juce::Component, private juce::ChangeListener, private juce::Timer
 {
@@ -382,7 +383,7 @@ public:
             {
                 auto nameArea = r.reduced (8, 0);
                 auto bottom = nameArea.removeFromBottom (juce::jmin (20, nameArea.getHeight() / 2 + 2));
-                g.drawText (tracks[i].name, nameArea, juce::Justification::centredLeft, true);
+                g.drawFittedText (tracks[i].name, nameArea.withTrimmedRight (46), juce::Justification::centredLeft, 2, 1.0f);
                 const auto* lane = e->findLane (tracks[i].id, selOf (tracks[i].id).param, selOf (tracks[i].id).mixer);
                 const bool locked = lane != nullptr && lane->locked;
                 auto lockR = lockRect (sx, top + (int) i * rowH);
@@ -393,8 +394,15 @@ public:
                 drawPadlock (g, lockR.toFloat(), locked, locked ? juce::Colour (0xffe0b800) : theme::dimText);
                 (void) bottom;
             }
-            else g.drawText (tracks[i].name, r.reduced (8, 0), juce::Justification::centredLeft, true);
+            else
+            {
+                const int rowTop = top + (int) i * rowH;
+                g.drawFittedText (tracks[i].name, r.reduced (8, 2).withTrimmedRight (46).withTrimmedBottom (rowH >= 40 ? 10 : 0), juce::Justification::centredLeft, 2, 1.0f);
+                paintStripBits (g, tracks[i].id, sx, rowTop, rowH >= 40);
+            }
+            if (e->automationOn) paintStripBits (g, tracks[i].id, sx, top + (int) i * rowH, false);
         }
+        g.setColour (juce::Colour (0x55ffffff)); g.fillRect (sx + kNameW - 2, kRulerH + kLaneH, 2, juce::jmax (0, getHeight() - kRulerH - kLaneH));
         if (! clipMoveRegion.isNull() && clipMoveToRow >= 0)                           // Shift + drag: the row the clip will go to
         {
             g.setColour (juce::Colour (0xffffc83d)); g.drawRect (juce::Rectangle<int> (sx + kNameW, top + clipMoveToRow * rowH, getWidth() - sx - kNameW, rowH), 3);
@@ -417,6 +425,23 @@ public:
         const double rate = juce::jmax (1.0, ed->sampleRate);
         if (! e.mods.isCommandDown() && ! e.mods.isCtrlDown() && ! e.mods.isPopupMenu() && ! (e.x > kNameW && e.y >= kRulerH + kLaneH))   // a click anywhere but on the audio lets go of the selected pieces
         { selectedRegion = juce::Uuid::null(); selectedRegions.clear(); moveRegion = juce::Uuid::null(); repaint(); }
+        {
+            const int sxv = viewport.getViewPositionX();
+            if (std::abs (e.x - (sxv + kNameW)) <= 4 && e.y >= kRulerH && ! e.mods.isPopupMenu()) { widthDrag = true; return; }
+            if (e.y >= kRulerH + kLaneH && ! e.mods.isPopupMenu() && e.x >= sxv && e.x < sxv + kNameW)
+            {
+                const int row = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
+                if (juce::isPositiveAndBelow (row, (int) rowTracks().size()))
+                {
+                    const int rowTop = kRulerH + kLaneH + row * rowH;
+                    if (auto* st = stripOf (rowTracks()[(size_t) row].id))
+                    {
+                        if (muteRect (sxv, rowTop).expanded (1).contains (e.getPosition())) { st->mute.set (! st->mute.get()); app.project.markDirty(); repaint(); return; }
+                        if (soloRect (sxv, rowTop).expanded (1).contains (e.getPosition())) { st->solo.set (! st->solo.get()); app.project.markDirty(); repaint(); return; }
+                    }
+                }
+            }
+        }
         if (ed->automationOn && automationMouseDown (e, *ed)) return;
         if (e.mods.isPopupMenu() && e.x >= viewport.getViewPositionX() && e.x < viewport.getViewPositionX() + kNameW && e.y >= kRulerH + kLaneH)   // right-click on a track name: its colour
         {
@@ -592,6 +617,7 @@ public:
     {
         auto* ed = edit();
         if (ed == nullptr) return;
+        if (widthDrag) { kNameW = juce::jlimit (110, 700, e.x - viewport.getViewPositionX()); updateSize(); repaint(); return; }
         if (autoDragIndex >= 0) { automationDrag (e, *ed); return; }
         if (! clipMoveRegion.isNull())
         {
@@ -658,6 +684,7 @@ public:
     void mouseMove (const juce::MouseEvent& e) override
     {
         auto* ed = edit(); EditRegion* fr = nullptr; bool isIn = true;
+        if (std::abs (e.x - (viewport.getViewPositionX() + kNameW)) <= 4 && e.y >= kRulerH) { setMouseCursor (juce::MouseCursor::LeftRightResizeCursor); return; }
         const bool over = ed != nullptr && e.x > kNameW && fadeHandleAt (*ed, e.getPosition(), juce::jmax (1.0, ed->sampleRate), fr, isIn);
         setMouseCursor (over ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
         (void) isIn;
@@ -665,6 +692,7 @@ public:
 
     void mouseUp (const juce::MouseEvent&) override
     {
+        if (widthDrag) { widthDrag = false; setMouseCursor (juce::MouseCursor::NormalCursor); repaint(); return; }
         if (! clipMoveRegion.isNull())
         {
             finishClipMove();
@@ -727,6 +755,36 @@ private:
     juce::Uuid autoDragLane = juce::Uuid::null(); int autoDragIndex = -1; int autoDragRow = 0; float autoPrevY = 0.0f;
 
     LaneSel& selOf (const juce::Uuid& trackId) { return laneSel[trackId.toString()]; }
+    juce::Rectangle<int> muteRect (int sx, int rowTop) const { return { sx + kNameW - 42, rowTop + 3, 18, 16 }; }
+    juce::Rectangle<int> soloRect (int sx, int rowTop) const { return { sx + kNameW - 22, rowTop + 3, 18, 16 }; }
+    StripState* stripOf (const juce::Uuid& trackId) const
+    {
+        auto* m = mixerFor (juce::Uuid::null());
+        return m != nullptr ? m->stripFor (trackId) : nullptr;
+    }
+    /** Mute / Solo buttons (the same flags as on the linked mixer) and a small horizontal meter. */
+    void paintStripBits (juce::Graphics& g, const juce::Uuid& trackId, int sx, int rowTop, bool withMeter)
+    {
+        auto* st = stripOf (trackId);
+        if (st == nullptr) return;
+        auto drawBtn = [&] (juce::Rectangle<int> r, const char* t, bool on, juce::Colour c)
+        {
+            g.setColour (on ? c : juce::Colour (0xff2a2f36)); g.fillRoundedRectangle (r.toFloat(), 3.0f);
+            g.setColour (theme::border); g.drawRoundedRectangle (r.toFloat(), 3.0f, 1.0f);
+            g.setColour (on ? juce::Colours::black : theme::text); g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+            g.drawText (t, r, juce::Justification::centred, false);
+        };
+        drawBtn (muteRect (sx, rowTop), "M", st->mute.get(), juce::Colour (0xffe05a3a));
+        drawBtn (soloRect (sx, rowTop), "S", st->solo.get(), juce::Colour (0xfff2c200));
+        if (! withMeter) return;
+        auto mr = juce::Rectangle<float> ((float) sx + 12.0f, (float) (rowTop + rowH - 11), (float) kNameW - 24.0f, 6.0f);
+        g.setColour (juce::Colour (0xff15181c)); g.fillRoundedRectangle (mr, 2.0f);
+        auto lvl = [&] (float lin) { const float db = juce::Decibels::gainToDecibels (lin, -60.0f); return juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 60.0f); };
+        const float l = lvl (juce::jmax (st->rmsL.get(), st->rmsR.get() * 0.0f)), r2 = lvl (st->rmsR.get());
+        const float v = juce::jmax (l, r2);
+        g.setColour (v > 0.95f ? juce::Colour (0xffe03030) : v > 0.85f ? juce::Colour (0xffe0b800) : juce::Colour (0xff3fbf5f));
+        g.fillRoundedRectangle (mr.withWidth (mr.getWidth() * v), 2.0f);
+    }
     juce::Rectangle<int> lockRect (int sx, int rowTop) const { return { sx + kNameW - 24, rowTop + rowH - 22, 18, 18 }; }
     juce::Rectangle<int> paramRect (int sx, int rowTop) const { return { sx + 12, rowTop + rowH - 22, kNameW - 44, 18 }; }
 
@@ -1126,9 +1184,11 @@ private:
         if (auto* ed = edit())                      // the playhead moved by itself (Stop leaves it where playback got to): the cursor follows
             if (std::abs (ed->playheadSeconds - lastHead) > 1.0e-9) { lastHead = ed->playheadSeconds; cursorSeconds = ed->playheadSeconds; repaint(); }
         if (app.isPlaying()) { updateSize(); followPlayhead(); repaint(); }
+        else if (app.engine.isRecording() || ++meterTick % 3 == 0) repaint (viewport.getViewPositionX(), kRulerH + kLaneH, kNameW, getHeight());
         else followActive = false;
     }
     double lastHead = 0.0;
+    bool widthDrag = false; int meterTick = 0;
     bool followActive = false; int lastFollowX = 0;
     /** While this edit plays: when the playhead reaches the right edge the view turns a whole page (also beyond the end of the audio). */
     void followPlayhead()

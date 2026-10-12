@@ -55,7 +55,7 @@ AppContext::AppContext()
         if (minus && ! minusWasDown) tbWanted = ! tbWanted;
         minusWasDown = minus;
         const bool remoteCr = remoteCrKey.update (remoteCrDown, juce::Time::getMillisecondCounter());
-        crWanted = cr || remoteCr;
+        crWanted = cr || remoteCr || crClickLatch;
         applyTalkback();
     };
     talkbackPoller.startTimerHz (60);

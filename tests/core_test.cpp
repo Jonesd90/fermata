@@ -1734,6 +1734,16 @@ int main()
             CHECK (p3.takes.size() == 2 && p3.takes[0].parts.size() == 2);
             { std::vector<ImportSource> one; for (auto n : { "Mic 1", "Mic 2", "Mic 3" }) one.push_back (src (juce::String (n) + ".wav", 1, 96000));
               CHECK (buildImportPlan (one).takes.size() == 1); }
+            // a whole session of mono files named "<piece> <take>_<instrument>-<L|R|C>": all takes share the same tracks
+            {
+                std::vector<ImportSource> m;
+                for (auto t : { 15, 16, 17 }) for (auto n : { "piano-L", "piano-R", "violin-C" })
+                    m.push_back (src ("A Winter Ride " + juce::String (t).paddedLeft ('0', 3) + "_" + n + ".wav", 1, 300000 + 777 * t));
+                auto p5 = buildImportPlan (m);
+                CHECK (p5.takes.size() == 3 && p5.tracks.size() == 3);
+                bool v = false; for (auto& t : p5.tracks) v = v || t.name == "violin";
+                CHECK (v && p5.takes[0].number == 15 && p5.takes[2].number == 17);
+            }
             // a polyphonic file is one take, one track per channel
             std::vector<ImportSource> poly; auto ps = src ("Session 003.wav", 6, 1000000); ps.channelNames.add ("Violin"); ps.channelNames.add ({}); poly.push_back (ps);
             poly.push_back (src ("Session 004.wav", 6, 900000));

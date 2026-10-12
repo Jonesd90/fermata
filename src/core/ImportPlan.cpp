@@ -2,6 +2,7 @@
 #include "Dither.h"
 #include <map>
 #include <set>
+#include <regex>
 
 namespace td
 {
@@ -95,6 +96,53 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
             plan.takes.push_back (std::move (t));
         }
         else flat.push_back ({ i, tokensOf (S[(size_t) i].file.getFileNameWithoutExtension()), S[(size_t) i].file.getFileNameWithoutExtension() });
+    }
+
+    // ---- names like "A Winter Ride 015_piano-L.wav": <piece> <take number>_<instrument or mic>[-L|-R|-C]. Every file that follows this pattern
+    //      is placed by what its name says: all takes of one piece share the same tracks (one per instrument / mic name).
+    {
+        static const std::regex pat (R"(^(.*?)[ ]+(\d{2,4})_(.+)$)");
+        struct Hit { int idx; juce::String piece, inst; int num; };
+        std::vector<Hit> hits;
+        for (int k = 0; k < (int) flat.size(); ++k)
+        {
+            std::smatch m; const std::string stem = flat[(size_t) k].stem.toStdString();
+            if (std::regex_match (stem, m, pat) && m[1].length() > 0)
+                hits.push_back ({ k, juce::String (m[1].str()).trim(), juce::String (m[3].str()).trim(), juce::String (m[2].str()).getIntValue() });
+        }
+        if (hits.size() >= 2 && hits.size() * 5 >= flat.size() * 4)       // at least 80 % of the files follow the pattern
+        {
+            std::set<juce::String> pieces; for (auto& h : hits) pieces.insert (h.piece.toLowerCase());
+            std::map<std::pair<juce::String, int>, std::vector<Hit>> groups;
+            for (auto& h : hits) groups[{ h.piece.toLowerCase(), h.num }].push_back (h);
+            for (auto& kv : groups)
+            {
+                ImportTake t; const auto& first = S[(size_t) flat[(size_t) kv.second.front().idx].src];
+                t.length = first.length; t.sampleRate = first.sampleRate; t.modified = first.modified; t.number = kv.first.second;
+                std::set<juce::String> used;
+                for (auto& h : kv.second)
+                {
+                    const auto& src = S[(size_t) flat[(size_t) h.idx].src];
+                    ImportPart p; p.source = flat[(size_t) h.idx].src; p.channel = -1;
+                    juce::String inst = h.inst;
+                    if (inst.endsWithIgnoreCase ("-C") || inst.endsWithIgnoreCase ("_C")) inst = inst.dropLastCharacters (2).trim();   // "C" = a mono track
+                    if (inst.isEmpty()) inst = h.inst;
+                    p.trackName = pieces.size() > 1 ? h.piece + " " + inst : inst;
+                    p.trackKey = p.trackName.toLowerCase();
+                    if (used.count (p.trackKey)) continue;
+                    used.insert (p.trackKey);
+                    p.trackChannels = src.channels >= 2 ? 2 : 1;
+                    t.length = juce::jmax (t.length, src.length);
+                    if (src.modified < t.modified) t.modified = src.modified;
+                    t.parts.push_back (p);
+                }
+                plan.takes.push_back (std::move (t));
+            }
+            plan.notes.add ("The file names (piece, take number, instrument) were used to put every take of a piece on the same tracks.");
+            std::set<int> taken; for (auto& h : hits) taken.insert (h.idx);
+            std::vector<Item> rest; for (int k = 0; k < (int) flat.size(); ++k) if (! taken.count (k)) rest.push_back (flat[(size_t) k]);
+            flat = std::move(rest);
+        }
     }
 
     // ---- mono / stereo files: the ones with the same length (and rate) are one take

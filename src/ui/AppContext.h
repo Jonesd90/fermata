@@ -116,7 +116,7 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     void setTransportHandler (const void* owner, std::function<void()> fn) { transportOwner = owner; transportHandler = std::move (fn); }
     void clearTransportHandler (const void* owner) { if (transportOwner == owner) { transportOwner = nullptr; transportHandler = nullptr; } }
     std::function<void()> transportHandler; const void* transportOwner = nullptr;
-    bool crWanted = false, tbWanted = false, minusWasDown = false;
+    bool crWanted = false, tbWanted = false, minusWasDown = false, crClickLatch = false;     // crClickLatch: the C-R square in the menu bar was clicked (it stays on until clicked again)
     std::unique_ptr<TalkbackOverlay> talkbackOverlay;
     struct TalkbackPoller : juce::Timer { std::function<void()> fn; void timerCallback() override { if (fn) fn(); } } talkbackPoller;
     /** Display Organiser: the open windows (key, title), and putting windows into parts of the screen (key, fraction of the display). Set by Main.cpp. */

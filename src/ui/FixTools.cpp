@@ -2157,6 +2157,9 @@ public:
     void resized() override { editor.setBounds (getLocalBounds()); }
     void start (AudioJob::Work w, std::function<void (const juce::String&)> d) { runJob (std::move (w), std::move (d)); }
     void closeMe() { closeDialogOf (this); }
+    juce::String jobText = "Working";                                   // what the progress bar in the editor says while a job runs
+    void timerCallback() override { JobDialogBase::timerCallback(); editor.setProgress ((double) job.progress(), jobText); }
+    void jobEnded (const juce::String&) override { editor.setProgress (-2.0); }
     rehar::ReHarmoniserEditor editor;
     std::function<void()> onClosing;
 };
@@ -2291,8 +2294,12 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
             const double env = juce::jmin (1.0, t / 0.02, juce::jmax (0.0, (1.3 - t) / 0.25));
             ch[(size_t) i] = (float) (amp * env * (std::sin (juce::MathConstants<double>::twoPi * hz * t) + 0.3 * std::sin (juce::MathConstants<double>::twoPi * 2.0 * hz * t)));
         }
-        const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("fermata-key-tone.wav");
+        static int toneCounter = 0;
+        toneCounter = (toneCounter + 1) % 12;
+        const auto tmpDir = juce::File::getSpecialLocation (juce::File::tempDirectory);
+        const auto file = tmpDir.getChildFile ("fermata-key-tone-" + juce::String (toneCounter) + ".wav");
         app.stopPlayback();
+        file.deleteFile();                                           // (a WAV writer adds to a file that is already there, so an old one must go first)
         if (! audioops::writeWav (file, { ch, ch }, sr)) return;
         int outFirst = 0;
         if (auto* mx = app.project.mixerOfEdit (eid))
@@ -2365,6 +2372,7 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
             pieces->push_back (std::move (p));
         }
         if (pieces->empty()) { done ("Nothing to write in this area."); return; }
+        self->jobText = "Making the corrected audio";
         self->start ([pieces, corr, from, nch, rate, fixFolder] (AudioJob& j) -> juce::String
         {
             fixFolder.createDirectory();
@@ -2441,6 +2449,7 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
     auto loaded = std::make_shared<rehar::Block>();
     st->chBase.assign (parts.size(), 0); st->chCount.assign (parts.size(), 1);
     d->editor.setStatus ("Reading the audio...");
+    d->jobText = "Reading the audio";
     d->start ([parts, regs, from, to, total, st, loaded] (AudioJob& j) -> juce::String
     {
         int nch = 0;

@@ -6,7 +6,7 @@ namespace td
 namespace
 {
 constexpr int kStripW = 90;
-constexpr int kBandH = 16, kPlateH = 26, kInputRowH = 19, kSlotH = 16, kSendCellH = 50, kPanRowH = 30, kMSH = 24, kFaderH = 280, kOutRowH = 20, kSecH = 11, kToTrackH = 20;
+constexpr int kBandH = 16, kPlateH = 26, kInputRowH = 19, kSlotH = 16, kSendCellH = 50, kPanRowH = 30, kMSH = 24, kFaderH = 280, kFaderMin = 110, kOutRowH = 20, kSecH = 11, kToTrackH = 20;
 
 /** A small recessed read-out field (peak value, fader value, pan position). */
 void styleField (juce::Label& l, float size = 10.0f, bool bold = true)
@@ -748,7 +748,7 @@ public:
         auto r = body();
         outRow.setBounds (r.removeFromBottom (kOutRowH));
         r.removeFromBottom (3);
-        auto faderArea = r.removeFromBottom (kFaderH);
+        auto faderArea = r.removeFromBottom (juce::jmax (kFaderMin, kFaderH + getHeight() - heightFor (2 * juce::jmax (1, sendRows), nSlots)));   // a taller / shorter window stretches the fader
         wells.push_back (faderArea.expanded (2, 0));
         r.removeFromBottom (3);
         auto ms = r.removeFromBottom (kMSH);
@@ -890,7 +890,7 @@ public:
         auto r = body();
         outRow.setBounds (r.removeFromBottom (kOutRowH));
         r.removeFromBottom (3);
-        auto faderArea = r.removeFromBottom (kFaderH);                       // same vertical positions as on the audio track strips
+        auto faderArea = r.removeFromBottom (juce::jmax (kFaderMin, kFaderH + getHeight() - ChannelStrip::heightFor (2 * juce::jmax (1, sendRows), nSlots)));   // same vertical positions as on the audio track strips
         wells.push_back (faderArea.expanded (2, 0));
         r.removeFromBottom (3);
         auto ms = r.removeFromBottom (kMSH);
@@ -1064,6 +1064,7 @@ public:
     /** Keeps the dark ground behind the strips filling the whole window. */
     void setMinimumSize (int w, int h) { minW = w; minH = h; setSize (juce::jmax (naturalW, minW), juce::jmax (naturalH, minH)); }
     int getNaturalWidth() const noexcept  { return naturalW; }
+    int getNumStrips() const noexcept { return strips.size(); }
     int getNaturalHeight() const noexcept { return naturalH; }
     void refreshFromModel() { for (auto* s : strips) s->refreshFromModel(); }
     void tick() { for (auto* s : strips) s->tick(); }
@@ -1160,7 +1161,7 @@ int MixerComponent::topBarMinWidth() const
     const bool other = m != nullptr && ! app.isEngineerMixer (m->id);
     return 84 + 180 + 76 + 140 + (other ? 410 : 0);                // name, the two icons, a little room for messages
 }
-int MixerComponent::slotsNeeded() const
+int MixerComponent::slotsNeeded()
 {
     auto* m = mixer();
     int highest = -1;                                              // the highest insert slot in use anywhere in this mixer
@@ -1169,10 +1170,32 @@ int MixerComponent::slotsNeeded() const
         for (auto& s : m->stripPool) for (int i = 0; i < kNumSlots; ++i) if (s->slots[i].mightBeLoaded()) highest = juce::jmax (highest, i);
         for (auto& b : m->busPool)   for (int i = 0; i < kNumSlots; ++i) if (b->slots[i].mightBeLoaded()) highest = juce::jmax (highest, i);
     }
-    return juce::jlimit (1, kNumSlots, highest + 2);               // always one free slot beyond the last used
+    slotsBase = juce::jlimit (1, kNumSlots, highest + 2);          // always one free slot beyond the last used
+    return juce::jlimit (1, kNumSlots, slotsBase + extraSlots);    // (a big window shows more empty slots)
 }
 int MixerComponent::naturalContentW() const { return juce::jmax (topBarMinWidth(), holder->getNaturalWidth()); }
-int MixerComponent::naturalContentH() const { return 30 + holder->getNaturalHeight(); }
+/** The height the strips like to have (full-size fader). */
+int MixerComponent::naturalContentH() const { return 30 + ChannelStrip::heightFor (maxDialsCached, slotCount) + 2 * MixerStripsHolder::kEdge; }
+/** The least height before a scroll bar is needed (the faders shrink to their smallest). */
+int MixerComponent::minContentH() const { return 30 + ChannelStrip::heightFor (maxDialsCached, slotCount) - (kFaderH - kFaderMin) + 2 * MixerStripsHolder::kEdge; }
+
+/** Gives the strips the height of the window: more height = more empty insert slots and a taller fader; less = a shorter fader (down to a minimum). */
+void MixerComponent::applyHeight()
+{
+    const int availH = viewport.getHeight() - 2 * MixerStripsHolder::kEdge;
+    int h = ChannelStrip::heightFor (maxDialsCached, slotCount);
+    if (availH > 0)
+    {
+        const int surplus = availH - ChannelStrip::heightFor (maxDialsCached, slotsBase);
+        const int want = juce::jlimit (0, kNumSlots - slotsBase, surplus > 0 ? (surplus * 2 / 5) / kSlotH : 0);
+        if (want != extraSlots && ! inApply)
+        {
+            extraSlots = want; inApply = true; rebuild(); inApply = false; return;
+        }
+        h = juce::jmax (ChannelStrip::heightFor (maxDialsCached, slotCount) - (kFaderH - kFaderMin), availH);
+    }
+    holder->layout (h);
+}
 
 /** Windows applies the biggest-size limit to the whole window, frame and title bar included, while the sizes here are for the inside: with the limit set exactly to
     the strips' size, the window was cut short by the width of the frame (about 14 x 37 points) and scroll bars appeared. The limit is therefore a little looser; the
@@ -1192,19 +1215,19 @@ void MixerComponent::updateWindowLimits()
     // on the screen do they need bars; a bar then takes room from the other direction, so the window may be that much bigger.)
     const auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (win->getBounds())->userArea;
     const int maxW = naturalContentW() + borderW + 0;
-    const int maxH = naturalContentH() + borderH + 0;
+    const int maxH = juce::jmin (naturalContentH() + borderH, area.getHeight());          // never taller than the screen when opened
     if (auto* c = win->getConstrainer())
     {
         c->setMinimumSize (juce::jmin (topBarMinWidth() + borderW, maxW), juce::jmin (260, maxH));
-        c->setMaximumSize (maxW + kLimitSlack, maxH + kLimitSlack);
+        c->setMaximumSize (juce::jmax (maxW + kLimitSlack, area.getWidth() + 40), juce::jmax (maxH + kLimitSlack, area.getHeight() + 40));   // free to grow: a big window shows more
     }
     const bool firstTime = lastMaxW == 0 || lastMaxH == 0;          // a window that has never been fitted opens showing everything
-    const bool wasFullW = firstTime || win->getWidth() >= lastMaxW, wasFullH = firstTime || win->getHeight() >= lastMaxH;
+    const bool wasFullW = firstTime || win->getWidth() == lastMaxW, wasFullH = firstTime || win->getHeight() == lastMaxH;
     lastMaxW = maxW; lastMaxH = maxH;
     // a window that showed everything keeps showing everything when the strips change (e.g. another insert slot appears).
     // It may be taller than the screen: the whole strip is always reachable (the title bar stays on the screen, the rest hangs off the bottom).
-    const int w = wasFullW ? maxW : juce::jmin (win->getWidth(), maxW);
-    const int h = wasFullH ? maxH : juce::jmin (win->getHeight(), maxH);
+    const int w = wasFullW ? maxW : win->getWidth();
+    const int h = wasFullH ? maxH : win->getHeight();
     if ((w != win->getWidth() || h != win->getHeight()) && ! win->isFullScreen())
     {
         win->setSize (w, h);
@@ -1217,8 +1240,9 @@ void MixerComponent::fitWindowToStrips()
     auto* win = dynamic_cast<juce::DocumentWindow*> (getTopLevelComponent());
     if (win == nullptr || win->getContentComponent() != this || win->isFullScreen()) return;
     const auto frame = win->getContentComponentBorder();
-    const int w = naturalContentW() + frame.getLeftAndRight(), h = naturalContentH() + frame.getTopAndBottom();
-    if (auto* c = win->getConstrainer()) { c->setMinimumSize (juce::jmin (topBarMinWidth() + frame.getLeftAndRight(), w), juce::jmin (260, h)); c->setMaximumSize (w + kLimitSlack, h + kLimitSlack); }
+    const auto scr = juce::Desktop::getInstance().getDisplays().getDisplayForRect (win->getBounds())->userArea;
+    const int w = naturalContentW() + frame.getLeftAndRight(), h = juce::jmin (naturalContentH() + frame.getTopAndBottom(), scr.getHeight());
+    if (auto* c = win->getConstrainer()) { c->setMinimumSize (juce::jmin (topBarMinWidth() + frame.getLeftAndRight(), w), juce::jmin (260, h)); c->setMaximumSize (juce::jmax (w + kLimitSlack, scr.getWidth() + 40), juce::jmax (h + kLimitSlack, scr.getHeight() + 40)); }
     lastMaxW = w; lastMaxH = h;
     win->setSize (w, h);
     const auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (win->getBounds())->userArea;
@@ -1261,7 +1285,8 @@ void MixerComponent::rebuild()
     for (auto* c : chans) c->setSendRows (rows);
     for (auto* b : busStrips) b->setSendRows (rows);
     holder->add (new MeterSettingsStrip (app, mixerId, [this] { holder->resetPeaks(); }), 112);
-    holder->layout (ChannelStrip::heightFor (maxDials, slotCount));
+    maxDialsCached = maxDials;
+    applyHeight();
     updateBars();
     updateWindowLimits();
 }
@@ -1272,7 +1297,7 @@ void MixerComponent::updateBars()
 {
     const int bar = viewport.getScrollBarThickness();
     const int w = viewport.getWidth(), h = viewport.getHeight();
-    const int nw = holder->getNaturalWidth(), nh = holder->getNaturalHeight();
+    const int nw = holder->getNaturalWidth(), nh = minContentH() - 30;
     bool needV = h < nh, needH = (w - (needV ? bar : 0)) < nw;
     needV = (h - (needH ? bar : 0)) < nh;
     needH = (w - (needV ? bar : 0)) < nw;
@@ -1360,6 +1385,7 @@ void MixerComponent::resized()
     statusLabel.setBounds (top.reduced (8, 0));
     // Big enough for every strip: no scroll bars at all (never one that is only there because the other one takes some room). Smaller: bars.
     viewport.setBounds (r);
+    if (! inApply && holder->getNumStrips() > 0) applyHeight();
     updateBars();
     if (! inLimits) { inLimits = true; updateWindowLimits(); inLimits = false; }
 }

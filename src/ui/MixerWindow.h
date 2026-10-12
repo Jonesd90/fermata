@@ -89,6 +89,10 @@ private:
     void rebuild();
     int naturalContentW() const;
     int naturalContentH() const;
+    int minContentH() const;
+    void applyHeight();
+    bool inApply = false;
+    int maxDialsCached = 0, slotsBase = 1, extraSlots = 0;
     void updateWindowLimits();
     void updateBars();
     bool inLimits = false;
@@ -102,7 +106,7 @@ private:
     MixIconButton themeButton { MixIconButton::Kind::Look }, copyButton { MixIconButton::Kind::CopyMix }, altButton { MixIconButton::Kind::AltDeck };
     juce::TextButton auditionButton, deleteButton { "Delete this mixer" };
     int slotCount = 1;                    // insert slots shown on every strip: one more than the highest one in use
-    int slotsNeeded() const;
+    int slotsNeeded();
     int topBarMinWidth() const;
     void showCopyMenu();
     bool withInsertsToggle = false;

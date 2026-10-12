@@ -6,6 +6,14 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.11.0
+- ReHarmoniSer: a separate movable playhead (click the picture or ruler to place it; playback starts there), a progress bar while it reads, corrects and writes back, ONE Audition button beside the transport, drawn symbols on the transport buttons, each piano key plays its own note, and the explanation box is tall enough for its text.
+- Edit window: track names wrap onto two lines, the right edge of the name column can be dragged wider, and each track has a small level meter plus Mute and Solo buttons that are the same switches as on the edit's mixer.
+- Import: file names like "A Winter Ride 015_piano-L.wav" (piece, take number, instrument / mic) are now read, so every take of a piece goes on the same tracks as separate takes instead of new tracks for each take.
+- Mixer: the strips fit the window height (taller window = more empty insert slots and a taller fader; shorter = a shorter fader), and the window can be maximised.
+- Pin button (next to the sun / moon) on every window: a pinned window stays in front; only one window is pinned at a time.
+- Top row: the Pre-Rec, C-R and P-B squares are now buttons; the separate Pre-Rec button between Take Window and Edit Window is gone.
+
 ## 2.10.0
 - ReHarmoniSer and crossfades. The marked section is now loaded the way it sounds, with the crossfades between the takes applied, so the picture and the pitch measurements see an edit point as you hear it.
 - On Write back to clip, each piece of the edit is corrected from its OWN audio (every track of that piece, with up to 1 s of the take either side that its crossfades use), so the two takes on either side of an edit point each get the pitch change for their own sound, including the tail that hangs over the join. Edit points keep their numbers, fade lengths, fade positions and fade curves exactly as they were, so you can still change a crossfade later (the audio under it is corrected as far as the extra second either side).

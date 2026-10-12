@@ -70,6 +70,8 @@ public:
 
     /** Shows a message on the status line (the host uses it while it is loading the audio). */
     void setStatus (const juce::String&, bool error = false);
+    /** Shows the progress bar while the host is working (writing the corrected audio, say): fraction 0..1, or below -1 to hide it again (text is then shown on the status line). */
+    void setProgress (double fraction, const juce::String& text = {});
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -101,6 +103,8 @@ private:
     void redoStep();
     void pushHistory();
     void audition();
+    void auditionAny();                              // the one Audition button: the note, the voices or the brush stroke, whichever is being worked on
+    void afterAudition(); bool autoPlayNext = false, extProgress = false;
     void togglePlay();
     void toggleOriginal();
     void writeBack();

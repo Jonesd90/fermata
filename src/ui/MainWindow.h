@@ -129,6 +129,9 @@ class StatusFlag : public juce::Component, public juce::SettableTooltipClient
 public:
     StatusFlag (juce::String text, juce::Colour colour, juce::String tip) : label (std::move (text)), lit (colour) { setTooltip (tip); setInterceptsMouseClicks (true, false); }
     void set (bool on) { if (on != isOn) { isOn = on; repaint(); } }
+    std::function<void()> onClick;                                  // the square is also a button
+    void mouseDown (const juce::MouseEvent&) override { if (onClick) onClick(); }
+    juce::MouseCursor getMouseCursor() override { return onClick ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor; }
     void paint (juce::Graphics& g) override
     {
         auto b = getLocalBounds().toFloat().reduced (1.0f, 4.0f);
@@ -189,15 +192,15 @@ private:
                   sessionButton { "Pre-Rec" }, takeDisplayButton { "Take Display" }, organiserButton { "Display Organiser" };
     int menuBarH = 34;
     std::unique_ptr<MenuBarStrip> menuStrip;                  // declared after the buttons: it goes first when this window is destroyed
-    std::vector<MenuBarButton*> menuItems() { return { &projectButton, &audioButton, &preampsButton, &designButton, &takesButton, &sessionButton, &editsButton, &mixersButton, &bridgeButton, &takeDisplayButton, &organiserButton, &mediaButton, &masteringButton }; }
+    std::vector<MenuBarButton*> menuItems() { return { &projectButton, &audioButton, &preampsButton, &designButton, &takesButton, &editsButton, &mixersButton, &bridgeButton, &takeDisplayButton, &organiserButton, &mediaButton, &masteringButton }; }
     LogoBadge logo;
     static constexpr int kTakeBoxW = 40;                       // the take counter at the left of the menu bar
     NextTakeBox takeBox;
     // always-visible status squares at the right end of the menu bar (they replaced the coloured borders)
     static constexpr int kFlagsW = 186;
-    StatusFlag flagPre { "Pre-Rec", juce::Colour (0xffe53935), "Pre-Rec (red): session mode is ON - the inputs are kept for the last 6 seconds, so a take starts 6 seconds before you press Record" },
-               flagCr  { "C-R", juce::Colour (0xffa83cff), "C-R (purple): the control-room mic is OPEN - you are talking to the talkback speakers" },
-               flagPb  { "P-B", juce::Colour (0xffffd21f), "P-B (yellow): playback - recorded material only is being played to the talkback output" };
+    StatusFlag flagPre { "Pre-Rec", juce::Colour (0xffe53935), "Pre-Rec (red): session mode is ON - the inputs are kept for the last 6 seconds, so a take starts 6 seconds before you press Record. Click it to switch Pre-Rec on or off." },
+               flagCr  { "C-R", juce::Colour (0xffa83cff), "C-R (purple): the control-room mic is OPEN - you are talking to the talkback speakers. Click it to open or close the mic (it stays as you leave it)." },
+               flagPb  { "P-B", juce::Colour (0xffffd21f), "P-B (yellow): playback - recorded material only is being played to the talkback output. Click it to switch it on or off." };
     DockBar dock;
     juce::Label projectName, timeLabel, recStatus, statusLabel, inputsCaption, outputsCaption;
     // Driver inputs (left) and outputs (right) are always shown; the divider between them can be dragged

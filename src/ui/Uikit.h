@@ -455,6 +455,34 @@ inline std::function<juce::Rectangle<int>()>& menuBarAvoidArea() { static std::f
 /** Brings the menu bar strip back in front of the other Fermata windows (not in front of other programs). Set by the main window. */
 inline std::function<void()>& menuBarRaise() { static std::function<void()> f; return f; }
 
+/** The little drawing-pin button next to the sun / moon: a pinned window stays in front of the other windows. Only one window is pinned at a time. */
+class PinButton : public juce::Button
+{
+public:
+    PinButton() : juce::Button ({})
+    {
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+        setWantsKeyboardFocus (false);
+        setClickingTogglesState (false);
+        setTooltip ("Pin: keeps this window in front of the others. Only one window can be pinned - pinning another one unpins this one.");
+        setSize (24, 22);
+    }
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        auto b = getLocalBounds().toFloat().reduced (0.5f);
+        const bool on = getToggleState();
+        g.setColour ((on ? juce::Colour (0xff2f7fd8) : down ? theme::grid : over ? theme::button.brighter (0.15f) : theme::button).withAlpha (0.92f)); g.fillRoundedRectangle (b, 4.0f);
+        g.setColour (on ? juce::Colour (0xff9fcbff) : theme::border); g.drawRoundedRectangle (b, 4.0f, 1.0f);
+        g.setColour (on ? juce::Colours::white : theme::text);
+        auto c = b.getCentre();
+        juce::Path pin;                                           // a drawing pin seen from the side, tilted
+        pin.addRoundedRectangle (-4.0f, -7.0f, 8.0f, 3.5f, 1.0f);   // the head
+        pin.addRectangle (-2.2f, -3.6f, 4.4f, 5.0f);                // the body
+        pin.addRectangle (-0.6f, 1.4f, 1.2f, 5.0f);                 // the needle
+        g.fillPath (pin, juce::AffineTransform::rotation (0.6f).translated (c.x, c.y));
+    }
+};
+
 class ToolWindow : public juce::DocumentWindow
 {
 public:
@@ -464,8 +492,26 @@ public:
         setUsingNativeTitleBar (true);
         setResizable (true, true);
     }
-    ~ToolWindow() override { DockHub::get().remove (this); }
-    void resized() override { juce::DocumentWindow::resized(); placeThemeToggle (*this, themeToggle); keepTitleBarClear(); reportBounds(); }
+    ~ToolWindow() override { DockHub::get().remove (this); if (pinnedWindow().getComponent() == this) pinnedWindow() = nullptr; }
+    static juce::Component::SafePointer<ToolWindow>& pinnedWindow() { static juce::Component::SafePointer<ToolWindow> p; return p; }
+    /** Pins this window (always in front) and unpins the one that was pinned before; false unpins it. */
+    void setPinned (bool on)
+    {
+        if (on)
+        {
+            if (auto* old = pinnedWindow().getComponent()) if (old != this) { old->setAlwaysOnTop (false); old->pinButton.setToggleState (false, juce::dontSendNotification); }
+            pinnedWindow() = this; setAlwaysOnTop (true); toFront (false);
+        }
+        else { if (pinnedWindow().getComponent() == this) pinnedWindow() = nullptr; setAlwaysOnTop (false); }
+        pinButton.setToggleState (on, juce::dontSendNotification);
+    }
+    void resized() override
+    {
+        juce::DocumentWindow::resized(); placeThemeToggle (*this, themeToggle);
+        if (pinButton.getParentComponent() != this) { addAndMakeVisible (pinButton); pinButton.onClick = [this] { setPinned (! pinButton.getToggleState()); }; }
+        pinButton.setTopLeftPosition (themeToggle.getX() - pinButton.getWidth() - 4, themeToggle.getY()); pinButton.toFront (false);
+        keepTitleBarClear(); reportBounds();
+    }
     void moved() override { juce::DocumentWindow::moved(); keepTitleBarClear(); reportBounds(); }
     /** Set by the application once the window is in place: told the window's position and size whenever the user changes them (kept in the project). */
     std::function<void (const juce::String&)> onBoundsChanged;
@@ -503,6 +549,7 @@ public:
         });
     }
     ThemeToggleButton themeToggle;
+    PinButton pinButton;
     bool adjusting = false;
     /** When this window was last the active one (a counter): used to put the windows back in the same order in front of the main window. */
     int lastActive = 0;

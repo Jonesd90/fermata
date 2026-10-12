@@ -336,7 +336,18 @@ MainComponent::MainComponent (AppContext& a) : app (a)
     sessionButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffd32f2f));
     sessionButton.setTooltip ("Pre-Rec (session mode): the inputs are kept for the last 6 seconds all the time, so when you press Record the take starts 6 seconds BEFORE you pressed it. "
                               "The red Pre-Rec square at the right of this bar shows it is on. Listening is never interrupted.");
-    sessionButton.onClick = [this] { app.setSessionMode (! app.sessionMode()); };
+    // the three squares at the right of the bar are buttons
+    flagPre.onClick = [this] { app.setSessionMode (! app.sessionMode()); };
+    flagCr.onClick  = [this]
+    {
+        if (! app.talkbackReady()) { juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Control-room mic", "Set up the talkback first: choose at least one control-room mic input and one talkback output pair in the Project Designer."); return; }
+        app.crClickLatch = ! app.crClickLatch;
+    };
+    flagPb.onClick  = [this]
+    {
+        if (app.project.tbOutputs.empty()) { juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Talkback playback", "Set up a talkback output pair first in the Project Designer."); return; }
+        app.remotePlayback();
+    };
     if (auto* st = app.props.getUserSettings()) if (st->getBoolValue ("sessionMode", false)) app.engine.setSessionMode (true);
     mediaButton.setTooltip ("A folder tree of where every file of the project is saved");
     preampsButton.setTooltip ("Set up the Anubis / Hapi / MT48 devices whose preamps Fermata controls");
