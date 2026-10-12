@@ -1027,83 +1027,84 @@ void ReHarmoniserEditor::renderAndSet (bool withPending, std::function<void()> t
         else if (then) then();
         return;
     }
-    auto audio = orig; const int rate = sr; const double total = dur;
     // Isolate: the picked note on its own (as it would sound after the planned correction), the music around it unchanged
-    Vec isoTs, isoF; const Params isoP = params;
+    auto corr = std::make_shared<Correction>();
+    corr->list = std::move (list);
     if (isolating && withPending && cand.has && ! cand.ts.empty() && cand.plan.off.size() == cand.f0.size() && cand.f0.size() == cand.ts.size())
-    { isoTs = cand.ts; isoF.resize (cand.f0.size()); for (size_t i = 0; i < isoF.size(); ++i) isoF[i] = cand.f0[i] * std::pow (2.0, cand.plan.off[i] / 1200.0); }
-    auto out = std::make_shared<Block>();
+    {
+        corr->isoTs = cand.ts; corr->isoF.resize (cand.f0.size());
+        for (size_t i = 0; i < corr->isoF.size(); ++i) corr->isoF[i] = cand.f0[i] * std::pow (2.0, cand.plan.off[i] / 1200.0);
+        corr->isoP = params;
+    }
     const auto newState = withPending && (cand.has || bcand.has || (vcand.has && vcand.preview)) ? HostState::CorrectedWithPending : HostState::Corrected;
-    startJob ("Correcting the notes", [audio, rate, total, list, out, isoTs, isoF, isoP] (Worker& w) -> juce::String
+    if (host.setCorrected)
     {
-        *out = *audio; auto h = w.hooks();
-        for (size_t k = 0; k < list.size(); ++k)
+        hostBusy = true; updateButtons();
+        host.setCorrected (corr, [this, then, newState] (const juce::String& e2)
         {
-            const auto& e = list[k];
-            if (e.isVoices)
-            {
-                const double a0 = juce::jmax (0.0, e.vs.t0 - 0.8), b0 = juce::jmin (total, e.vs.t1 + 0.8);
-                const size_t j0 = (size_t) std::floor (a0 * rate), j1 = juce::jmin ((*out)[0].size(), (size_t) std::floor (b0 * rate));
-                if (j1 <= j0 + 16) continue;
-                Block sg ((*out).size()); for (size_t c = 0; c < sg.size(); ++c) sg[c].assign ((*out)[c].begin() + (long) j0, (*out)[c].begin() + (long) j1);
-                Hooks sb; sb.cancelled = h.cancelled;
-                sb.progress = [&] (const char*, double f) { h.report ("Correcting the notes", ((double) k + f) / (double) list.size()); };
-                const auto trk = voiceInputs (spansOf (sg), rate, e.vs.fT, e.vis);
-                const Block done = retuneVoices (sg, rate, (double) j0 / rate, e.vs.fT, e.vs.ts, e.vs.C, e.offs, e.vs.t0, e.vs.t1, trk, sb);
-                for (size_t c = 0; c < done.size(); ++c) std::copy (done[c].begin(), done[c].end(), (*out)[c].begin() + (long) j0);
-                continue;
-            }
-            if (e.isBrush)
-            {
-                const auto rg = brushRegion (e.brush);
-                const double a0 = juce::jmax (0.0, rg.first - 0.3), b0 = juce::jmin (total, rg.second + 0.3);
-                const size_t j0 = (size_t) std::floor (a0 * rate), j1 = juce::jmin ((*out)[0].size(), (size_t) std::floor (b0 * rate));
-                if (j1 <= j0 + 16) continue;
-                Block sg ((*out).size()); for (size_t c = 0; c < sg.size(); ++c) sg[c].assign ((*out)[c].begin() + (long) j0, (*out)[c].begin() + (long) j1);
-                Hooks sb; sb.cancelled = h.cancelled;
-                sb.progress = [&] (const char*, double f) { h.report ("Correcting the notes", ((double) k + f) / (double) list.size()); };
-                const Block done = brushSegment (sg, rate, (double) j0 / rate, e.brush, 10, sb);
-                for (size_t c = 0; c < done.size(); ++c) std::copy (done[c].begin(), done[c].end(), (*out)[c].begin() + (long) j0);
-                continue;
-            }
-            const double a = juce::jmax (0.0, e.ts.front() - 0.15 - 0.3), b = juce::jmin (total, e.ts.back() + e.params.hold + e.params.fadeOut + 0.3);
-            const size_t i0 = (size_t) std::floor (a * rate), i1 = juce::jmin ((*out)[0].size(), (size_t) std::floor (b * rate));
-            if (i1 <= i0 + 16) continue;
-            Block seg ((*out).size()); for (size_t c = 0; c < seg.size(); ++c) seg[c].assign ((*out)[c].begin() + (long) i0, (*out)[c].begin() + (long) i1);
-            Hooks sub; sub.cancelled = h.cancelled;
-            sub.progress = [&] (const char*, double f) { h.report ("Correcting the notes", ((double) k + f) / (double) list.size()); };
-            const Block fixed = retuneSegment (seg, rate, (double) i0 / rate, e.ts, e.f0, e.off, e.params, sub);
-            for (size_t c = 0; c < fixed.size(); ++c) std::copy (fixed[c].begin(), fixed[c].end(), (*out)[c].begin() + (long) i0);
-        }
-        if (! isoTs.empty())
-        {
-            const double a = juce::jmax (0.0, isoTs.front() - 0.5), b = juce::jmin (total, isoTs.back() + 0.5);
-            const size_t i0 = (size_t) std::floor (a * rate), i1 = juce::jmin ((*out)[0].size(), (size_t) std::floor (b * rate));
-            if (i1 > i0 + 16)
-            {
-                Block seg ((*out).size()); for (size_t c = 0; c < seg.size(); ++c) seg[c].assign ((*out)[c].begin() + (long) i0, (*out)[c].begin() + (long) i1);
-                const Block so = soloSegment (seg, rate, (double) i0 / rate, isoTs, isoF, isoP, isoTs.front(), isoTs.back());
-                for (size_t c = 0; c < so.size(); ++c) std::copy (so[c].begin(), so[c].end(), (*out)[c].begin() + (long) i0);
-            }
-        }
-        return {};
-    },
-    [this, out, newState, then] (const juce::String& err)
+            hostBusy = false; updateButtons();
+            if (e2.isNotEmpty()) { setStatus (e2 == "Cancelled." ? e2 : e2, e2 != "Cancelled."); return; }
+            hostState = newState; auditionStale = false;
+            if (then) then();
+        });
+    }
+    else { hostState = newState; auditionStale = false; if (then) then(); }
+}
+
+bool correctionReaches (const Correction& c, double t0, double t1)
+{
+    auto hit = [&] (double a, double b) { return a < t1 && b > t0; };
+    for (auto& e : c.list)
     {
-        if (err.isNotEmpty()) { setStatus (err == "Cancelled." ? err : "Could not correct the note: " + err, err != "Cancelled."); return; }
-        hostState = newState; auditionStale = false;
-        if (host.setCorrected)
+        if (e.isVoices) { if (hit (e.vs.t0 - 0.8, e.vs.t1 + 0.8)) return true; continue; }
+        if (e.isBrush) { const auto rg = brushRegion (e.brush); if (hit (rg.first - 0.3, rg.second + 0.3)) return true; continue; }
+        if (! e.ts.empty() && hit (e.ts.front() - 0.45, e.ts.back() + e.params.hold + e.params.fadeOut + 0.3)) return true;
+    }
+    return ! c.isoTs.empty() && hit (c.isoTs.front() - 0.5, c.isoTs.back() + 0.5);
+}
+
+void renderCorrection (const Correction& c, Block& out, int rate, double origin, const Hooks& h)
+{
+    if (out.empty() || out[0].empty() || rate <= 0) return;
+    const size_t len = out[0].size();
+    const double lo = origin, hi = origin + (double) len / (double) rate;
+    auto cut = [&] (double a, double b, size_t& i0, size_t& i1)       // the stretch [a, b] seconds as frames of the block; false when it is empty
+    {
+        a = juce::jmax (lo, a); b = juce::jmin (hi, b);
+        if (b <= a) return false;
+        i0 = (size_t) std::floor ((a - origin) * rate); i1 = juce::jmin (len, (size_t) std::floor ((b - origin) * rate));
+        return i1 > i0 + 16;
+    };
+    auto take = [&] (size_t i0, size_t i1) { Block sg (out.size()); for (size_t ch = 0; ch < sg.size(); ++ch) sg[ch].assign (out[ch].begin() + (long) i0, out[ch].begin() + (long) i1); return sg; };
+    auto put = [&] (const Block& done, size_t i0) { for (size_t ch = 0; ch < done.size() && ch < out.size(); ++ch) std::copy (done[ch].begin(), done[ch].end(), out[ch].begin() + (long) i0); };
+    const size_t n = c.list.size();
+    for (size_t k = 0; k < n; ++k)
+    {
+        const auto& e = c.list[k];
+        Hooks sub; sub.cancelled = h.cancelled;
+        sub.progress = [&] (const char*, double f) { h.report ("Correcting the notes", ((double) k + f) / (double) juce::jmax ((size_t) 1, n)); };
+        size_t i0 = 0, i1 = 0;
+        if (e.isVoices)
         {
-            hostBusy = true;
-            host.setCorrected (out, [this, then] (const juce::String& e2)
-            {
-                hostBusy = false; updateButtons();
-                if (e2.isNotEmpty()) { setStatus (e2, true); return; }
-                if (then) then();
-            });
+            if (! cut (e.vs.t0 - 0.8, e.vs.t1 + 0.8, i0, i1)) continue;
+            const Block sg = take (i0, i1);
+            const auto trk = voiceInputs (spansOf (sg), rate, e.vs.fT, e.vis);
+            put (retuneVoices (sg, rate, origin + (double) i0 / rate, e.vs.fT, e.vs.ts, e.vs.C, e.offs, e.vs.t0, e.vs.t1, trk, sub), i0);
+            continue;
         }
-        else if (then) then();
-    });
+        if (e.isBrush)
+        {
+            const auto rg = brushRegion (e.brush);
+            if (! cut (rg.first - 0.3, rg.second + 0.3, i0, i1)) continue;
+            put (brushSegment (take (i0, i1), rate, origin + (double) i0 / rate, e.brush, 10, sub), i0);
+            continue;
+        }
+        if (e.ts.empty() || ! cut (e.ts.front() - 0.15 - 0.3, e.ts.back() + e.params.hold + e.params.fadeOut + 0.3, i0, i1)) continue;
+        put (retuneSegment (take (i0, i1), rate, origin + (double) i0 / rate, e.ts, e.f0, e.off, e.params, sub), i0);
+    }
+    size_t i0 = 0, i1 = 0;
+    if (! c.isoTs.empty() && cut (c.isoTs.front() - 0.5, c.isoTs.back() + 0.5, i0, i1))
+        put (soloSegment (take (i0, i1), rate, origin + (double) i0 / rate, c.isoTs, c.isoF, c.isoP, c.isoTs.front(), c.isoTs.back()), i0);
 }
 
 void ReHarmoniserEditor::applyCorrection()

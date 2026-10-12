@@ -80,7 +80,7 @@ public:
             for (int i = 0; i <= steps; ++i)
             {
                 const float x = x0 + (x1 - x0) * (float) i / steps;
-                const float gain = EditRegion::fadeGainFor (A.curve, (float) i / steps, fadeIn);
+                const float gain = EditRegion::fadeGainFor (fadeIn ? B.curve : A.outCurveValue(), (float) i / steps, fadeIn);
                 const float y = (float) lane.getBottom() - gain * (float) lane.getHeight();
                 if (i == 0) p.startNewSubPath (x, y); else p.lineTo (x, y);
             }
@@ -401,8 +401,8 @@ TrimComponent::TrimComponent (AppContext& a, const juce::Uuid& eid, const juce::
         const auto rf = refs();
         if (! rf.ok()) return;
         const auto c = (FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, curveBox.getSelectedId() - 1);
-        if (rf.A != nullptr) rf.A->curve = c;
-        if (rf.B != nullptr) rf.B->curve = c;
+        if (rf.A != nullptr) rf.A->setOutCurve (c);
+        if (rf.B != nullptr) rf.B->setInCurve (c);
         app.project.changed();
     };
     trackBox.onChange = [this] { if (! updatingControls) { refreshReaders(); waves->invalidate(); } };
@@ -554,7 +554,7 @@ void TrimComponent::refreshControls()
     {
         const bool hasA = rf.A != nullptr, hasB = rf.B != nullptr;
         describe();
-        curveBox.setSelectedId ((int) (hasB ? rf.B->curve : rf.A->curve) + 1, juce::dontSendNotification);
+        curveBox.setSelectedId ((int) (hasB ? rf.B->curve : rf.A->outCurveValue()) + 1, juce::dontSendNotification);
 
         // tracks that exist in the pieces shown
         std::vector<int> ids;
@@ -678,8 +678,8 @@ void TrimComponent::resetFades()
     if (rf.A != nullptr && rf.B != nullptr) rf.e->setDefaultJoinFades (rf.k);
     else if (rf.B != nullptr) { rf.B->inStart = 0.0; rf.B->inEnd = kDefaultEdgeFade; rf.e->clampFades (rf.k); }              // the start of the edit: the default short fade-in
     else { rf.A->outStart = -kDefaultEdgeFade; rf.A->outEnd = 0.0; rf.e->clampFades (rf.k - 1); }                           // the end: the default short fade-out
-    if (rf.A != nullptr) rf.A->curve = FadeCurve::EqualPower;
-    if (rf.B != nullptr) rf.B->curve = FadeCurve::EqualPower;
+    if (rf.A != nullptr) rf.A->setOutCurve (FadeCurve::EqualPower);
+    if (rf.B != nullptr) rf.B->setInCurve (FadeCurve::EqualPower);
     app.project.changed();
 }
 

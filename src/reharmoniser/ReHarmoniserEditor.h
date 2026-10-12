@@ -23,16 +23,30 @@ struct NoteEdit
     bool isBrush = false; Brush brush;             // an Erase ReBrush stroke instead of a note (ts / f0 / off are empty then)
 };
 
+/** Everything needed to make the corrected audio: the confirmed corrections (and the one being tried), and the Isolate settings.
+    The host applies it to whatever audio it has, with renderCorrection (so Fermata can do it on each clip's own audio, crossfades kept). */
+struct Correction
+{
+    std::vector<NoteEdit> list;
+    Vec isoTs, isoF; Params isoP;                  // Isolate: the picked note on its own (empty = off)
+};
+/** Applies a Correction to block[channel][frame]. originSec is the time (in the editor's seconds) of the first frame of the block, so the
+    block can be any stretch of the audio. The length of the block never changes. Throws Cancelled if the hook says so. */
+void renderCorrection (const Correction&, Block& block, int sampleRate, double originSec, const Hooks& hooks = {});
+/** True when the Correction can change anything between fromSec and toSec (so a host can leave alone the pieces it cannot reach). */
+bool correctionReaches (const Correction&, double fromSec, double toSec);
+
 /** What the editor needs from whoever hosts it. Every call is made on the message thread. All of them are optional. */
 struct EditorHost
 {
-    /** Make the host play the audio with these corrected channels (the same length as the original), or the original when null. done (error) when it is ready to play. */
-    std::function<void (std::shared_ptr<const Block> corrected, std::function<void (const juce::String&)> done)> setCorrected;
+    /** Make the host play the audio with these corrections applied (it calls renderCorrection on its own copy of the audio, which has the same length as
+        the one given to setAudio), or the original when null. done (error) when it is ready to play. */
+    std::function<void (std::shared_ptr<const Correction> corrections, std::function<void (const juce::String&)> done)> setCorrected;
     std::function<void (double fromSec, double toSec, bool loop)> play;      // seconds from the start of the audio
     std::function<void()> stop;
     std::function<double()> playPosition;                                    // seconds from the start of the audio, or a negative number when not playing
     std::function<void (double hz, double levelDb)> playTone;                // a short tone (the piano keys), at this level in dB (the Key level slider)
-    std::function<void()> writeBack;                                         // the user pressed "Write back to clip" (setCorrected has already been called with the final audio)
+    std::function<void()> writeBack;                                         // the user pressed "Write back to clip" (setCorrected has already been called with the final corrections)
     std::function<void()> cancel;                                            // the user pressed Cancel
     std::function<void (const juce::String&)> log;                           // errors and notes for the log file
 };

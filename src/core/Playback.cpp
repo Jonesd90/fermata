@@ -199,7 +199,7 @@ static void addRegionSegments (const Project& p, const EditRegion& r, std::vecto
         if (r.fadeInFinish() > r.fadeInBegin())
             { s.fadeInStart = r.fadeInBegin(); s.fadeInLen = r.fadeInFinish() - r.fadeInBegin(); s.inCurve = r.curve; }
         if (r.fadeOutFinish() > r.fadeOutBegin())
-            { s.fadeOutStart = r.fadeOutBegin(); s.fadeOutLen = r.fadeOutFinish() - r.fadeOutBegin(); s.outCurve = r.curve; }
+            { s.fadeOutStart = r.fadeOutBegin(); s.fadeOutLen = r.fadeOutFinish() - r.fadeOutBegin(); s.outCurve = r.outCurveValue(); }
         for (size_t k = 0; k < r.gains.size(); ++k)                                  // this file's volume changes, with the level each one starts from
         {
             const auto& g = r.gains[k];

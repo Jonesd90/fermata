@@ -2546,6 +2546,33 @@ int main()
         CHECK (p.importMixerFile (mf, msg) && p.mixers.size() == before + 1 && p.mixers[(size_t) p.cueEnd() - 1]->name == "Renamed in file");
         CHECK (p.save (er));
     }
+    SECTION ("fade curves are separate for the two ends of a region");
+    {
+        auto dir = tmp.getChildFile ("xc"); dir.createDirectory();
+        auto fa = makeConstWav (dir.getChildFile ("A.wav"), 0.5, 5);
+        Project xp; xp.tracks.clear();
+        auto tid = xp.addTrack ("t", TrackFormat::Mono, 0).id;
+        auto& ed = xp.addEdit ("Edit", juce::Uuid::null());
+        EditRegion r; r.srcIn = 48000; r.srcOut = 3 * 48000; r.sampleRate = 48000.0; r.sourceLength = 5 * 48000;
+        RegionFile rf; rf.trackId = tid; rf.trackName = "t"; rf.file = fa; r.files.push_back (rf);
+        ed.insertRegion (r);
+        auto& a = ed.regions[0];
+        a.curve = FadeCurve::EqualPower; a.outCurveOwn = false;
+        CHECK (a.outCurveValue() == FadeCurve::EqualPower);
+        a.setOutCurve (FadeCurve::Linear);                                   // only the fade-out
+        CHECK (a.curve == FadeCurve::EqualPower && a.outCurveValue() == FadeCurve::Linear && a.outCurveOwn);
+        a.setInCurve (FadeCurve::Linear);                                    // now both are linear, the fade-out keeps its own value
+        CHECK (a.curve == FadeCurve::Linear && a.outCurveValue() == FadeCurve::Linear && ! a.outCurveOwn);
+        a.setInCurve (FadeCurve::EqualPower);                                // the fade-in changes, the fade-out stays linear
+        CHECK (a.curve == FadeCurve::EqualPower && a.outCurveValue() == FadeCurve::Linear && a.outCurveOwn);
+        a.outStart = -0.1; a.outEnd = 0.1; a.inStart = 0.0; a.inEnd = 0.1;
+        const auto mid = a.endSample();                                     // the middle of the fade-out: linear gives 0.5, equal-power would give 0.707
+        CHECK (std::abs (a.gainAt (mid) - 0.5f) < 0.01f);
+        const auto segs = segmentsForEdit (xp, ed);
+        CHECK (! segs.empty() && segs[0].outCurve == FadeCurve::Linear && segs[0].inCurve == FadeCurve::EqualPower);
+        a.curve = FadeCurve::EqualPower; a.setOutCurve (FadeCurve::EqualPower);
+        CHECK (a.outCurveValue() == FadeCurve::EqualPower && ! a.outCurveOwn);
+    }
     eng.rebuildPlan();
     tmp.deleteRecursively();
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

@@ -6,6 +6,13 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.10.0
+- ReHarmoniSer and crossfades. The marked section is now loaded the way it sounds, with the crossfades between the takes applied, so the picture and the pitch measurements see an edit point as you hear it.
+- On Write back to clip, each piece of the edit is corrected from its OWN audio (every track of that piece, with up to 1 s of the take either side that its crossfades use), so the two takes on either side of an edit point each get the pitch change for their own sound, including the tail that hangs over the join. Edit points keep their numbers, fade lengths, fade positions and fade curves exactly as they were, so you can still change a crossfade later (the audio under it is corrected as far as the extra second either side).
+- The joins made at the start and end of the marked area (not edit points) are linear fades; the existing crossfades are never changed to linear any more. For this a region can now have a different curve for its fade-in and its fade-out (shown correctly in the Trim window and saved in the project).
+- A piece of the edit that the corrections cannot reach is left exactly as it is (no new files, no new joins). Outside the marks, the audio next to a new join is the original, sample for sample.
+- The sample-accurate length checks of 2.9.1 still apply.
+
 ## 2.9.1
 - ReHarmoniSer: the corrected audio is now checked to be exactly the same length as the original, to the sample. If the audio handed back is not the same length, or putting it into the edit would change the edit's length or move any clip, it is refused with a message and the edit is left untouched.
 

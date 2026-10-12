@@ -95,7 +95,11 @@ struct EditRegion
 
     double       inStart = 0.0,  inEnd = 0.0;      // fade-in,  seconds relative to the region start
     double       outStart = 0.0, outEnd = 0.0;     // fade-out, seconds relative to the region end
-    FadeCurve    curve = FadeCurve::EqualPower;
+    FadeCurve    curve = FadeCurve::EqualPower;    // the curve of the fade-in (and, unless outCurveOwn, of the fade-out as well)
+    FadeCurve    outCurve = FadeCurve::EqualPower; bool outCurveOwn = false;   // a fade-out with a curve of its own (a processing join next to a real edit point)
+    FadeCurve outCurveValue() const noexcept { return outCurveOwn ? outCurve : curve; }
+    void setOutCurve (FadeCurve c) noexcept { if (c == curve) outCurveOwn = false; else { outCurve = c; outCurveOwn = true; } }
+    void setInCurve (FadeCurve c) noexcept { const auto o = outCurveValue(); curve = c; setOutCurve (o); }      // (changes the fade-in only: the fade-out keeps its curve)
     bool         fixIn = false, fixOut = false;    // the join at its start / end was made by an offline fix (pitch, repair, de-click, export for processing), not by an edit: it is not counted as an edit point
     std::vector<GainChange> gains;     // volume changes inside this piece, sorted by 'at'
 
@@ -154,7 +158,7 @@ struct EditRegion
         float g = 1.0f;
         if (ie > ib) g *= t < ib ? 0.0f : t >= ie ? 1.0f : fadeGainFor (curve, (float) (t - ib) / (float) (ie - ib), true);
         else         g *= t < ib ? 0.0f : 1.0f;
-        if (oe > ob) g *= t < ob ? 1.0f : t >= oe ? 0.0f : fadeGainFor (curve, (float) (t - ob) / (float) (oe - ob), false);
+        if (oe > ob) g *= t < ob ? 1.0f : t >= oe ? 0.0f : fadeGainFor (outCurveValue(), (float) (t - ob) / (float) (oe - ob), false);
         else         g *= t < ob ? 1.0f : 0.0f;
         return g;
     }
@@ -573,7 +577,7 @@ struct EditDef
     {
         if (k < 1 || k >= (int) regions.size()) return;
         auto& a = regions[(size_t) k - 1]; auto& b = regions[(size_t) k];
-        b.inStart = a.outStart; b.inEnd = a.outEnd; b.curve = a.curve;
+        b.inStart = a.outStart; b.inEnd = a.outEnd; b.setInCurve (a.outCurveValue());
         clampFades (k);
     }
     /** 'Z' key: the other way round. */
@@ -581,7 +585,7 @@ struct EditDef
     {
         if (k < 1 || k >= (int) regions.size()) return;
         auto& a = regions[(size_t) k - 1]; auto& b = regions[(size_t) k];
-        a.outStart = b.inStart; a.outEnd = b.inEnd; a.curve = b.curve;
+        a.outStart = b.inStart; a.outEnd = b.inEnd; a.setOutCurve (b.curve);
         clampFades (k - 1);
     }
 };

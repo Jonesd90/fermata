@@ -1716,9 +1716,9 @@ static bool applyRegionJob (EditDef& e, const RegionJob& j, const juce::String& 
     auto& mid = e.regions[(size_t) i];
     // The new piece and the old audio around it are almost the same sound, so the crossfades where they meet are LINEAR:
     // the two gains then always add up to exactly 1 and there is no bump (an equal-power fade would add about 3 dB in the middle).
-    mid.curve = FadeCurve::Linear;
-    if (cutBefore && i > 0) e.regions[(size_t) i - 1].curve = FadeCurve::Linear;
-    if (cutAfter && i + 1 < (int) e.regions.size()) e.regions[(size_t) i + 1].curve = FadeCurve::Linear;
+    // ONLY the joins made here get the linear fade. A fade at the original edge of the region (a real edit point) keeps the curve the user chose.
+    if (cutBefore) { mid.setInCurve (FadeCurve::Linear); if (i > 0) e.regions[(size_t) i - 1].setOutCurve (FadeCurve::Linear); }
+    if (cutAfter)  { mid.setOutCurve (FadeCurve::Linear); if (i + 1 < (int) e.regions.size()) e.regions[(size_t) i + 1].setInCurve (FadeCurve::Linear); }
     // the joins made here are only there to put the fixed audio in: they are not edit points (no number, skipped by next / previous fade in the Trim window)
     if (cutBefore) { mid.fixIn = true; if (i > 0) e.regions[(size_t) i - 1].fixOut = true; }
     if (cutAfter)  { mid.fixOut = true; if (i + 1 < (int) e.regions.size()) e.regions[(size_t) i + 1].fixIn = true; }
@@ -2175,31 +2175,24 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
     const auto from = tIn, to = juce::jmin (tOut, lastEnd);
     if (to - from < (juce::int64) (0.5 * rate)) { say (nm, "The marked area is too short (at least about half a second, and at least 2 seconds is best)."); return; }
     const auto only = e->fixTracks;
-    struct Part { juce::File file; juce::int64 fileStart = 0, srcA = 0, n = 0, dst = 0; };
+    struct Part { juce::File file; juce::int64 fileStart = 0; size_t reg = 0; };       // a file of a region that is heard between the marks
     std::vector<juce::Uuid> trackIds; std::vector<std::vector<Part>> parts;
-    for (auto& r : e->regions) if (r.endSample() > from && r.startSample < to)
-        for (auto& f : r.files)
-        {
-            if (! only.empty() && std::find (only.begin(), only.end(), f.trackId) == only.end()) continue;
-            if (std::find (trackIds.begin(), trackIds.end(), f.trackId) == trackIds.end()) { trackIds.push_back (f.trackId); parts.emplace_back(); }
-        }
+    auto regs = std::make_shared<std::vector<EditRegion>>();                              // the regions heard between the marks (their fades can reach a little past their ends)
     {
-        std::vector<juce::int64> cuts { from, to };
-        for (auto& r : e->regions) { if (r.startSample > from && r.startSample < to) cuts.push_back (r.startSample); if (r.endSample() > from && r.endSample() < to) cuts.push_back (r.endSample()); }
-        std::sort (cuts.begin(), cuts.end()); cuts.erase (std::unique (cuts.begin(), cuts.end()), cuts.end());
-        for (size_t k = 0; k + 1 < cuts.size(); ++k)
-        {
-            const auto t0 = cuts[k], t1 = cuts[k + 1];
-            const int ri = e->regionAt (t0 + (t1 - t0) / 2);
-            if (ri < 0) continue;
-            const auto& r = e->regions[(size_t) ri];
+        for (auto& r : e->regions) if (r.endSample() > from && r.startSample < to)
             for (auto& f : r.files)
+            {
+                if (! only.empty() && std::find (only.begin(), only.end(), f.trackId) == only.end()) continue;
+                if (std::find (trackIds.begin(), trackIds.end(), f.trackId) == trackIds.end()) { trackIds.push_back (f.trackId); parts.emplace_back(); }
+            }
+        for (auto& r : e->regions) if (r.fadeOutFinish() > from && r.fadeInBegin() < to) regs->push_back (r);
+        for (size_t ri = 0; ri < regs->size(); ++ri)
+            for (auto& f : (*regs)[ri].files)
             {
                 const auto ti = std::find (trackIds.begin(), trackIds.end(), f.trackId);
                 if (ti == trackIds.end()) continue;
-                parts[(size_t) (ti - trackIds.begin())].push_back ({ f.file, f.fileStart, r.srcIn + (t0 - r.startSample), t1 - t0, t0 - from });
+                parts[(size_t) (ti - trackIds.begin())].push_back ({ f.file, f.fileStart, ri });
             }
-        }
     }
     if (trackIds.empty()) { say (nm, "None of the tracks you marked with Alt + drag are in the marked area."); return; }
 
@@ -2233,6 +2226,21 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
         auto* e2 = app.project.findEdit (eid); if (e2 == nullptr) return false;
         e2->regions = st->base; bool ok = true; gApplyWhy = {};
         for (size_t i = st->jobs.size(); i-- > 0;) ok = applyRegionJob (*e2, st->jobs[i], "reharmonised") && ok;
+        // the real edit points keep their crossfades exactly as they were: the first piece of each original region has its fade-in back, the last piece its fade-out
+        // (only the joins made for this fix are new, and they are linear)
+        if (ok)
+            for (size_t j = 0; j < st->base.size(); ++j)
+            {
+                const auto& ob = st->base[j];
+                const int first = e2->indexOf (ob.id);
+                if (first < 0) continue;
+                const int last = j + 1 < st->base.size() ? e2->indexOf (st->base[j + 1].id) - 1 : (int) e2->regions.size() - 1;
+                if (last < first) continue;
+                auto& f = e2->regions[(size_t) first]; auto& l = e2->regions[(size_t) last];
+                f.inStart = ob.inStart; f.inEnd = ob.inEnd; f.curve = ob.curve; f.fixIn = ob.fixIn;
+                l.outStart = ob.outStart; l.outEnd = ob.outEnd; l.outCurve = ob.outCurve; l.outCurveOwn = ob.outCurveOwn; l.fixOut = ob.fixOut;
+                if (first == last) { f.setOutCurve (ob.outCurveValue()); }
+            }
         // the edit must come out exactly as long as it went in, to the sample, with every region where it was
         auto span = [] (const std::vector<EditRegion>& v) { juce::int64 sum = 0, lo = std::numeric_limits<juce::int64>::max(), hi = 0; for (auto& r : v) { sum += r.length(); lo = juce::jmin (lo, r.startSample); hi = juce::jmax (hi, r.endSample()); } return std::array<juce::int64, 3> { sum, lo, hi }; };
         if (ok && span (e2->regions) != span (st->base)) { ok = false; gApplyWhy = "the edit would have changed length"; juce::Logger::writeToLog ("ReHarmoniSer: refused, the edit would not be the same length"); }
@@ -2310,18 +2318,20 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
         app.project.changed();
         self->closeMe();
     };
-    h.setCorrected = [&app, eid, st, self, unapply, fixFolder, from, to, total, rate] (std::shared_ptr<const rehar::Block> block, std::function<void (const juce::String&)> done)
+    h.setCorrected = [&app, eid, st, self, unapply, fixFolder, from, to, rate] (std::shared_ptr<const rehar::Correction> corr, std::function<void (const juce::String&)> done)
     {
         if (self == nullptr) return;
         app.stopPlayback();
         unapply();
-        if (block == nullptr) { done ({}); return; }
-        for (auto& chn : *block) if ((juce::int64) chn.size() != total) { done ("The corrected audio is not exactly the same length as the original (" + juce::String ((juce::int64) chn.size()) + " against " + juce::String (total) + " samples), so it was not used."); return; }
-        // each piece of the edit that the marks touch is made again from its own files, with the corrected samples put in (and 1 s of untouched sound either side for the fades)
-        struct Piece { RegionJob rj; juce::int64 editStart = 0, srcIn = 0; std::vector<int> base, cnt; };
+        if (corr == nullptr) { done ({}); return; }
+        // Each piece of the edit that the marks touch is made again from its OWN files: every track of that piece is loaded together with up to 1 s of
+        // untouched sound either side (the part of the take that its crossfades use), the corrections are applied to that, and the new files are written.
+        // So the takes on either side of an edit point each get the pitch change for their own sound, and the edit points and their fades stay as they were.
+        struct Piece { RegionJob rj; juce::int64 editStart = 0, srcIn = 0, A = 0, B = 0; bool rawBefore = false, rawAfter = false; std::vector<int> base, cnt; };
         auto pieces = std::make_shared<std::vector<Piece>>();
         const auto h1 = (juce::int64) (1.0 * rate);
         FixSpec spec; spec.kind = FixSpec::Kind::Reharmonise;
+        int nch = 0; for (int c : st->chCount) nch += c;
         for (auto& r : st->base)
         {
             if (r.endSample() <= from || r.startSample >= to) continue;
@@ -2330,14 +2340,21 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
             Piece p; p.editStart = r.startSample; p.srcIn = r.srcIn;
             const auto a = r.srcIn + (r0 - r.startSample), b = r.srcIn + (r1 - r.startSample);
             if (! prepRegionJob (fixFolder, r, p.rj, a, b, a - h1, b + h1, a, b, spec)) continue;
-            // a file can be a little shorter than the region says (the recording stopped a few samples early): the piece ends where the shortest file ends
+            // the stretch [A, B) that every file of the piece can give. A file can be a little shorter than the region says (the recording stopped a few
+            // samples early): the piece then ends where the files end, and what is beyond stays exactly as it was.
+            juce::int64 A = a - h1, B = b + h1; bool ok = true;
+            for (size_t k = 0; k < p.rj.src.size(); ++k)
             {
-                juce::int64 lastOk = b;
-                for (size_t k = 0; k < p.rj.src.size(); ++k)
-                    if (auto rd = audioops::openReader (formats(), p.rj.src[k])) lastOk = juce::jmin (lastOk, p.rj.fileStart[k] + (juce::int64) rd->lengthInSamples);
-                if (lastOk < b) { p.rj.b = lastOk; p.rj.fixTo = lastOk; p.rj.outTo = juce::jmin (p.rj.outTo, lastOk); }
-                if (p.rj.b - p.rj.a < 2) continue;
+                auto rd = audioops::openReader (formats(), p.rj.src[k]);
+                if (rd == nullptr) { ok = false; break; }
+                A = juce::jmax (A, p.rj.fileStart[k]); B = juce::jmin (B, p.rj.fileStart[k] + (juce::int64) rd->lengthInSamples);
             }
+            const auto a2 = juce::jmax (a, A), b2 = juce::jmin (b, B);
+            if (! ok || b2 - a2 < 2) continue;
+            // a piece the corrections cannot reach is left exactly as it is (no new files, no new joins)
+            if (! rehar::correctionReaches (*corr, (double) ((r.startSample + (A - r.srcIn)) - from) / rate, (double) ((r.startSample + (B - r.srcIn)) - from) / rate)) continue;
+            p.rj.a = a2; p.rj.b = b2; p.rj.fixFrom = a2; p.rj.fixTo = b2; p.rj.outFrom = A; p.rj.outTo = B; p.A = A; p.B = B;
+            p.rawBefore = a2 > r.srcIn; p.rawAfter = b2 < r.srcOut;           // a join made here (not an edit point): outside the marks it must be exactly the original
             for (size_t k = 0; k < p.rj.idx.size(); ++k)
             {
                 const auto& f = r.files[p.rj.idx[k]];
@@ -2348,37 +2365,57 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
             pieces->push_back (std::move (p));
         }
         if (pieces->empty()) { done ("Nothing to write in this area."); return; }
-        self->start ([pieces, block, from, total, fixFolder] (AudioJob& j) -> juce::String
+        self->start ([pieces, corr, from, nch, rate, fixFolder] (AudioJob& j) -> juce::String
         {
             fixFolder.createDirectory();
+            auto cleanup = [&] { for (auto& p : *pieces) { for (auto& r : p.rj.results) r.file.deleteFile(); p.rj.results.clear(); } };
             for (size_t pi = 0; pi < pieces->size(); ++pi)
             {
                 auto& p = (*pieces)[pi]; auto& rj = p.rj; rj.results.clear();
+                const auto n = p.B - p.A;
+                if (n < 16) { cleanup(); return "Nothing to process in this piece."; }
+                if (j.cancelled()) { cleanup(); return "Cancelled."; }
+                // the piece's own audio, every track together (what the corrections work on)
+                rehar::Block blk ((size_t) nch, std::vector<float> ((size_t) n, 0.0f));
+                std::vector<std::vector<std::vector<float>>> raw (rj.src.size());
+                std::vector<double> fileRate (rj.src.size(), rate);
                 for (size_t k = 0; k < rj.src.size(); ++k)
                 {
-                    if (j.cancelled()) { for (auto& r : rj.results) r.file.deleteFile(); rj.results.clear(); return "Cancelled."; }
-                    j.setProgress (((float) pi + (float) k / (float) rj.src.size()) / (float) pieces->size());
                     auto rd = audioops::openReader (formats(), rj.src[k]);
-                    if (rd == nullptr) return "Cannot read " + rj.src[k].getFileName();
-                    const auto fileEnd = rj.fileStart[k] + rd->lengthInSamples;
-                    const auto oFrom = juce::jmax (rj.fileStart[k], rj.outFrom), oTo = juce::jmin (fileEnd, rj.outTo);
-                    if (oTo - oFrom < 16) return "Nothing to process in " + rj.src[k].getFileName();
-                    std::vector<std::vector<float>> ch;
-                    if (! audioops::readRange (*rd, oFrom - rj.fileStart[k], oTo - oFrom, ch)) return "Cannot read " + rj.src[k].getFileName();
-                    const double sr = rd->sampleRate;
+                    if (rd == nullptr) { cleanup(); return "Cannot read " + rj.src[k].getFileName(); }
+                    fileRate[k] = rd->sampleRate;
+                    if (! audioops::readRange (*rd, p.A - rj.fileStart[k], n, raw[k])) { cleanup(); return "Cannot read " + rj.src[k].getFileName(); }
                     if (p.base[k] >= 0)
-                        for (juce::int64 t = juce::jmax (oFrom, rj.a); t < juce::jmin (oTo, rj.b); ++t)
+                        for (size_t c = 0; c < raw[k].size(); ++c)
                         {
-                            const auto bi = (p.editStart + (t - p.srcIn)) - from;
-                            if (bi < 0 || bi >= total) continue;
-                            for (size_t c = 0; c < ch.size(); ++c)
-                            {
-                                const size_t bc = (size_t) p.base[k] + juce::jmin (c, (size_t) p.cnt[k] - 1);
-                                if (bc < block->size()) ch[c][(size_t) (t - oFrom)] = (*block)[bc][(size_t) bi];
-                            }
+                            auto& dstv = blk[(size_t) p.base[k] + juce::jmin (c, (size_t) p.cnt[k] - 1)];
+                            for (size_t q = 0; q < raw[k][c].size() && q < dstv.size(); ++q) dstv[q] = raw[k][c][q];
                         }
-                    if (! audioops::writeWav (rj.dest[k], ch, sr)) return "Cannot write " + rj.dest[k].getFileName();
-                    audioops::PieceResult res; res.file = rj.dest[k]; res.from = oFrom; res.to = oTo; res.ok = true;
+                    if (p.base[k] >= 0) raw[k].clear();                       // (the corrected channels are written, not these)
+                }
+                const size_t nBefore = (size_t) (p.rj.a - p.A), nAfter = (size_t) (p.B - p.rj.b);
+                rehar::Block keepBefore, keepAfter;
+                if (p.rawBefore) { keepBefore.assign (blk.size(), {}); for (size_t c = 0; c < blk.size(); ++c) keepBefore[c].assign (blk[c].begin(), blk[c].begin() + (long) nBefore); }
+                if (p.rawAfter)  { keepAfter.assign (blk.size(), {});  for (size_t c = 0; c < blk.size(); ++c) keepAfter[c].assign (blk[c].end() - (long) nAfter, blk[c].end()); }
+                rehar::Hooks hk; hk.cancelled = [&j] { return j.cancelled(); };
+                hk.progress = [&j, pi, np = pieces->size()] (const char*, double f) { j.setProgress ((float) (((double) pi + 0.9 * f) / (double) np)); };
+                try { rehar::renderCorrection (*corr, blk, (int) std::lround (rate), (double) ((p.editStart + (p.A - p.srcIn)) - from) / rate, hk); }
+                catch (const rehar::Cancelled&) { cleanup(); return "Cancelled."; }
+                for (auto& chn : blk) if ((juce::int64) chn.size() != n) { cleanup(); return "The corrected audio is not exactly the same length as the original, so it was not used."; }
+                if (p.rawBefore) for (size_t c = 0; c < blk.size(); ++c) std::copy (keepBefore[c].begin(), keepBefore[c].end(), blk[c].begin());
+                if (p.rawAfter)  for (size_t c = 0; c < blk.size(); ++c) std::copy (keepAfter[c].begin(), keepAfter[c].end(), blk[c].end() - (long) nAfter);
+                for (size_t k = 0; k < rj.src.size(); ++k)
+                {
+                    std::vector<std::vector<float>> ch = std::move (raw[k]);
+                    if (p.base[k] >= 0)
+                    {
+                        auto rd = audioops::openReader (formats(), rj.src[k]);
+                        const size_t nc = rd != nullptr ? (size_t) rd->numChannels : (size_t) 1;
+                        ch.assign (nc, {});
+                        for (size_t c = 0; c < nc; ++c) ch[c] = blk[(size_t) p.base[k] + juce::jmin (c, (size_t) p.cnt[k] - 1)];
+                    }
+                    if (! audioops::writeWav (rj.dest[k], ch, fileRate[k])) { cleanup(); return "Cannot write " + rj.dest[k].getFileName(); }
+                    audioops::PieceResult res; res.file = rj.dest[k]; res.from = p.A; res.to = p.B; res.ok = true;
                     rj.results.push_back (res);
                 }
             }
@@ -2404,7 +2441,7 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
     auto loaded = std::make_shared<rehar::Block>();
     st->chBase.assign (parts.size(), 0); st->chCount.assign (parts.size(), 1);
     d->editor.setStatus ("Reading the audio...");
-    d->start ([parts, total, st, loaded] (AudioJob& j) -> juce::String
+    d->start ([parts, regs, from, to, total, st, loaded] (AudioJob& j) -> juce::String
     {
         int nch = 0;
         for (size_t i = 0; i < parts.size(); ++i)
@@ -2414,21 +2451,36 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
             st->chBase[i] = nch; st->chCount[i] = juce::jmax (1, cnt); nch += st->chCount[i];
         }
         loaded->assign ((size_t) nch, std::vector<float> ((size_t) total, 0.0f));
+        // what is loaded is what is heard: each region's own fades (the crossfades between the takes) are applied, so the picture and the pitch
+        // measurements see the join as it sounds. (Volume changes are not applied: the files themselves are corrected, and those play on top.)
+        std::vector<std::vector<float>> gains (regs->size());
+        std::vector<juce::int64> gainFrom (regs->size(), 0);
+        for (size_t ri = 0; ri < regs->size(); ++ri)
+        {
+            const auto& r = (*regs)[ri];
+            const auto t0 = juce::jmax (from, r.fadeInBegin()), t1 = juce::jmin (to, r.fadeOutFinish());
+            if (t1 <= t0) continue;
+            gainFrom[ri] = t0; gains[ri].resize ((size_t) (t1 - t0));
+            for (juce::int64 t = t0; t < t1; ++t) gains[ri][(size_t) (t - t0)] = r.gainAt (t);
+        }
         for (size_t i = 0; i < parts.size(); ++i)
         {
             if (j.cancelled()) return "Cancelled.";
             j.setProgress ((float) i / (float) juce::jmax ((size_t) 1, parts.size()));
             for (auto& pt : parts[i])
             {
-                auto r = audioops::openReader (formats(), pt.file); if (r == nullptr) continue;
-                juce::int64 rel = pt.srcA - pt.fileStart, n = pt.n, dst = pt.dst;
-                if (rel < 0) { n += rel; dst -= rel; rel = 0; }
+                const auto& r = (*regs)[pt.reg]; const auto& g = gains[pt.reg];
+                if (g.empty()) continue;
+                auto rd = audioops::openReader (formats(), pt.file); if (rd == nullptr) continue;
+                const auto t0 = gainFrom[pt.reg];
+                juce::int64 rel = (r.srcIn + (t0 - r.startSample)) - pt.fileStart, n = (juce::int64) g.size(), dst = t0 - from, gi = 0;
+                if (rel < 0) { n += rel; dst -= rel; gi -= rel; rel = 0; }                       // before the start of the file: silence
                 if (n <= 0) continue;
-                std::vector<std::vector<float>> ch; audioops::readRange (*r, rel, n, ch);
+                std::vector<std::vector<float>> ch; audioops::readRange (*rd, rel, n, ch);
                 for (size_t c = 0; c < ch.size(); ++c)
                 {
                     auto& out = (*loaded)[(size_t) st->chBase[i] + juce::jmin (c, (size_t) st->chCount[i] - 1)];
-                    for (size_t k = 0; k < ch[c].size() && dst + (juce::int64) k < total; ++k) out[(size_t) dst + k] = ch[c][k];
+                    for (size_t k = 0; k < ch[c].size() && dst + (juce::int64) k < total; ++k) out[(size_t) dst + k] += ch[c][k] * g[(size_t) (gi + (juce::int64) k)];
                 }
             }
         }
@@ -2810,9 +2862,8 @@ void exportForProcessingEdit (AppContext& app, const juce::Uuid& eid, juce::Comp
             auto& mid = e2->regions[(size_t) i];
             mid.waiting.name = name; mid.waiting.from = a; mid.waiting.to = b; mid.waiting.files = j->dest;
             mid.waiting.tracks = subset ? trk : std::vector<juce::Uuid>();
-            mid.curve = FadeCurve::Linear;
-            if (cutBefore && i > 0) e2->regions[(size_t) i - 1].curve = FadeCurve::Linear;
-            if (cutAfter && i + 1 < (int) e2->regions.size()) e2->regions[(size_t) i + 1].curve = FadeCurve::Linear;
+            if (cutBefore) { mid.setInCurve (FadeCurve::Linear); if (i > 0) e2->regions[(size_t) i - 1].setOutCurve (FadeCurve::Linear); }
+            if (cutAfter)  { mid.setOutCurve (FadeCurve::Linear); if (i + 1 < (int) e2->regions.size()) e2->regions[(size_t) i + 1].setInCurve (FadeCurve::Linear); }
             if (cutBefore) { mid.fixIn = true; if (i > 0) e2->regions[(size_t) i - 1].fixOut = true; }                 // not edit points
             if (cutAfter)  { mid.fixOut = true; if (i + 1 < (int) e2->regions.size()) e2->regions[(size_t) i + 1].fixIn = true; }
             setUndoForEdit (app, eid, old, "export for processing");
