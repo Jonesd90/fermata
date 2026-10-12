@@ -2233,6 +2233,9 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
         auto* e2 = app.project.findEdit (eid); if (e2 == nullptr) return false;
         e2->regions = st->base; bool ok = true; gApplyWhy = {};
         for (size_t i = st->jobs.size(); i-- > 0;) ok = applyRegionJob (*e2, st->jobs[i], "reharmonised") && ok;
+        // the edit must come out exactly as long as it went in, to the sample, with every region where it was
+        auto span = [] (const std::vector<EditRegion>& v) { juce::int64 sum = 0, lo = std::numeric_limits<juce::int64>::max(), hi = 0; for (auto& r : v) { sum += r.length(); lo = juce::jmin (lo, r.startSample); hi = juce::jmax (hi, r.endSample()); } return std::array<juce::int64, 3> { sum, lo, hi }; };
+        if (ok && span (e2->regions) != span (st->base)) { ok = false; gApplyWhy = "the edit would have changed length"; juce::Logger::writeToLog ("ReHarmoniSer: refused, the edit would not be the same length"); }
         if (! ok) { e2->regions = st->base; app.project.changed(); return false; }
         st->applied = true; app.project.changed();
         return true;
@@ -2313,6 +2316,7 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
         app.stopPlayback();
         unapply();
         if (block == nullptr) { done ({}); return; }
+        for (auto& chn : *block) if ((juce::int64) chn.size() != total) { done ("The corrected audio is not exactly the same length as the original (" + juce::String ((juce::int64) chn.size()) + " against " + juce::String (total) + " samples), so it was not used."); return; }
         // each piece of the edit that the marks touch is made again from its own files, with the corrected samples put in (and 1 s of untouched sound either side for the fades)
         struct Piece { RegionJob rj; juce::int64 editStart = 0, srcIn = 0; std::vector<int> base, cnt; };
         auto pieces = std::make_shared<std::vector<Piece>>();

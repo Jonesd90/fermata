@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.9.1
+- ReHarmoniSer: the corrected audio is now checked to be exactly the same length as the original, to the sample. If the audio handed back is not the same length, or putting it into the edit would change the edit's length or move any clip, it is refused with a message and the edit is left untouched.
+
 ## 2.9.0
 - ReHarmoniSer: **Write back to clip now works** when a recording file ends a few samples before the region it belongs to (the error "a corrected file covers ... but ... is needed"). The corrected piece simply ends where the shortest file ends.
 - ReHarmoniSer: the window is redesigned to match the original: sage-green right panel with bold titles and thin lines, Note Selection with the note box, down / up arrows, "meant to be" and from / to / Set, collapsible section headers (all closed when the window opens), the View block at the bottom (Loop markers, Zoom time / pitch, Note lines, Spectrogram opacity, Colour gain, Colour contrast, Detail), amber LCD readouts, rounded light buttons, dark slider tracks with a light grip, transport row with |<, Play, Stop, >|, Loop, Original and Isolate, and a dark status bar.
