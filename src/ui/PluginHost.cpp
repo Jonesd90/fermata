@@ -21,6 +21,8 @@ public:
         prepared = true;
     }
 
+    int getLatencySamples() const override { return plugin != nullptr ? plugin->getLatencySamples() : 0; }
+
     void process (juce::AudioBuffer<float>& b) override
     {
         const int n = b.getNumSamples(), nc = b.getNumChannels();

@@ -26,4 +26,16 @@ bool makeOwnedBy (juce::Component& child, juce::Component& owner)
     return false;
 #endif
 }
+
+void keepTopmost (juce::Component& c)
+{
+#if JUCE_WINDOWS
+    auto* pc = c.getPeer();
+    if (pc == nullptr || pc->isMinimised()) return;
+    if (auto hc = (HWND) pc->getNativeHandle())
+        SetWindowPos (hc, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+#else
+    juce::ignoreUnused (c);
+#endif
+}
 } // namespace td

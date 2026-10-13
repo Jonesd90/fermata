@@ -120,10 +120,13 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
             douts.push_back (std::make_unique<DitherOut> (*writers.back(), true, 0x2545F491u + (juce::uint32) o * 7919u));
         }
 
-        for (juce::int64 done = 0; done < total;)
+        // delay compensation: plug-ins that hold the sound back make everything come out late by the same amount; render that much extra and throw the start away
+        const juce::int64 skip = engine->offlineLatency();
+        const juce::int64 renderTotal = total + skip;
+        for (juce::int64 done = 0; done < renderTotal;)
         {
             if (cancel != nullptr && cancel->load()) { writers.clear(); cleanUp(); res.cancelled = true; return res; }
-            const int n = (int) juce::jmin ((juce::int64) kBlock, total - done);
+            const int n = (int) juce::jmin ((juce::int64) kBlock, renderTotal - done);
             PlaybackSession::renderSegments (readers, segs, first + done, n, trackBufs, scratch);
             // the padding is silence going in (so plug-ins settle and tails ring out); only the piece itself is fed in
             const auto pos0 = first + done;
@@ -134,14 +137,16 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
                             for (int c = 0; c < tb.getNumChannels(); ++c) tb.setSample (c, i, 0.0f);
             if (autoPlan != nullptr) autoPlan->apply (first + done);
             engine->renderOffline (trackBufs, n, captures);
-            for (int o = 0; o < numOut; ++o)
-            {
-                auto& cap = captures[(size_t) o];
-                for (int c = 0; c < 2; ++c) { const auto mm = cap.findMinMax (c, 0, n); peaks[(size_t) o] = juce::jmax (peaks[(size_t) o], std::abs (mm.getStart()), std::abs (mm.getEnd())); }
-                douts[(size_t) o]->write (cap, 0, n);
-            }
+            const int from = (int) juce::jlimit ((juce::int64) 0, (juce::int64) n, skip - done);          // the first 'skip' samples of the render are the lead-in of the delay
+            if (from < n)
+                for (int o = 0; o < numOut; ++o)
+                {
+                    auto& cap = captures[(size_t) o];
+                    for (int c = 0; c < 2; ++c) { const auto mm = cap.findMinMax (c, from, n - from); peaks[(size_t) o] = juce::jmax (peaks[(size_t) o], std::abs (mm.getStart()), std::abs (mm.getEnd())); }
+                    douts[(size_t) o]->write (cap, from, n - from);
+                }
             done += n; doneAll += n;
-            if (progress != nullptr) progress->store ((float) (doneAll / totalAll));
+            if (progress != nullptr) progress->store ((float) juce::jmin (1.0, doneAll / totalAll));
         }
         writers.clear();
 

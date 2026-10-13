@@ -60,6 +60,7 @@ struct GainChange
     juce::int64        at = 0;
     double             ramp = 0.0;
     std::vector<float> db;
+    bool               autoNorm = false;   // made by "normalise volume over next take" (kept up to date by Fermata; do not edit by hand)
 };
 inline float dbToLinear (float db) noexcept { return db <= -99.0f ? 0.0f : std::pow (10.0f, db / 20.0f); }
 
@@ -103,6 +104,7 @@ struct EditRegion
     void setInCurve (FadeCurve c) noexcept { const auto o = outCurveValue(); curve = c; setOutCurve (o); }      // (changes the fade-in only: the fade-out keeps its curve)
     bool         fixIn = false, fixOut = false;    // the join at its start / end was made by an offline fix (pitch, repair, de-click, export for processing), not by an edit: it is not counted as an edit point
     std::vector<GainChange> gains;     // volume changes inside this piece, sorted by 'at'
+    bool         normaliseIn = false;  // trim window: the level given to this piece at its start glides back to 0 dB by the next crossfade (see EditDef::refreshNormalised)
 
     juce::int64 length()    const noexcept { return srcOut - srcIn; }
 
@@ -125,6 +127,34 @@ struct EditRegion
     float levelAt (size_t fileIndex, juce::int64 rel) const noexcept { return levelAfter (fileIndex, gains.size(), rel); }
     float levelDbAt (size_t fileIndex, juce::int64 rel) const noexcept { return juce::Decibels::gainToDecibels (levelAt (fileIndex, rel), -100.0f); }
 
+    /** The level this piece is given as a whole, in dB: the average of the change that sits at its very start (0 when there is none). This is what the faders of
+        the trim window show; the same change is what the volume dialogs ("between fades") show and edit. */
+    float pieceLevelDb() const noexcept
+    {
+        const auto tol = (juce::int64) (0.001 * sampleRate);
+        for (auto& g : gains)
+            if (! g.autoNorm && g.at <= tol && ! g.db.empty())
+            {
+                double sum = 0.0;
+                for (float d : g.db) sum += juce::jmax (-100.0f, d);
+                return (float) (sum / (double) g.db.size());
+            }
+        return 0.0f;
+    }
+    /** Moves the level of the whole piece to 'target' dB, keeping the balance between its files (every file moves by the same amount). */
+    void setPieceLevelDb (float target)
+    {
+        const auto tol = (juce::int64) (0.001 * sampleRate);
+        const float d = target - pieceLevelDb();
+        std::vector<float> db (files.size(), 0.0f);
+        double ramp = 0.0;
+        for (auto& g : gains)
+            if (! g.autoNorm && g.at <= tol && ! g.db.empty()) { for (size_t k = 0; k < db.size() && k < g.db.size(); ++k) db[k] = g.db[k]; ramp = g.ramp; break; }
+        bool allZero = true;
+        for (auto& x : db) { if (x > -99.0f) x = juce::jlimit (-99.0f, 24.0f, x + d); allZero = allZero && std::abs (x) < 0.0005f; }
+        if (allZero) { for (size_t i = 0; i < gains.size(); ++i) if (! gains[i].autoNorm && gains[i].at <= tol) { gains.erase (gains.begin() + (long) i); break; } return; }
+        setGainChange (0, ramp, db);
+    }
     /** Adds a change (or replaces the one at the same place, within 1 ms). */
     void setGainChange (juce::int64 at, double ramp, std::vector<float> db)
     {
@@ -251,6 +281,26 @@ struct EditDef
 
     /** Called after ANY change to the edit's pieces. Every point goes to where its audio is now. A point whose audio has gone is put where the
         edit's change suggests (it moves like its nearest surviving neighbours, in proportion) and marked 'floating' so it can be checked. */
+    /** "Normalise volume over next take": a piece whose level was raised or lowered at its start (to make the edit into it work) and that has this ticked glides
+        back to 0 dB, in a straight line, from the end of its crossfade until the start of the next crossfade. The glide is a volume change made and removed here,
+        so it follows the crossfades whenever they are moved. */
+    void refreshNormalised()
+    {
+        for (auto& r : regions)
+        {
+            r.gains.erase (std::remove_if (r.gains.begin(), r.gains.end(), [] (const GainChange& g) { return g.autoNorm; }), r.gains.end());
+            if (! r.normaliseIn) continue;
+            const auto tol = (juce::int64) (0.001 * r.sampleRate);
+            bool raised = false;
+            for (auto& g : r.gains) if (g.at <= tol) for (float d : g.db) raised = raised || std::abs (d) > 0.0005f;
+            if (! raised) continue;
+            const juce::int64 from = juce::jmax (r.samples (r.inEnd), 3 * tol);                 // the end of the crossfade into this piece
+            const juce::int64 to = r.length() + r.samples (r.outStart);                         // where the crossfade out of it begins (the end of the piece when it has none)
+            if (to <= from + tol) continue;
+            GainChange c; c.at = from; c.ramp = (double) (to - from) / r.sampleRate; c.db.assign (r.files.size(), 0.0f); c.autoNorm = true;
+            r.gains.insert (std::upper_bound (r.gains.begin(), r.gains.end(), c, [] (const GainChange& a, const GainChange& b) { return a.at < b.at; }), c);
+        }
+    }
     void resolveAutomation()
     {
         for (auto& lane : lanes)
@@ -444,7 +494,8 @@ struct EditDef
         right.fixIn = false; left.fixOut = false;                            // (the new join is an edit; the caller of a fix marks it as a fix join)
         right.srcIn += offset; right.startSample += offset;
         right.gains.clear();
-        for (auto& g : left.gains) if (g.at >= offset) { auto c = g; c.at -= offset; right.gains.push_back (c); }
+        right.normaliseIn = false;
+        for (auto& g : left.gains) if (g.at >= offset && ! g.autoNorm) { auto c = g; c.at -= offset; right.gains.push_back (c); }
         if (! left.gains.empty())                                             // the right half starts at the level the left half had reached
         {
             std::vector<float> start;

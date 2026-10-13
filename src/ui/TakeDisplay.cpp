@@ -159,6 +159,7 @@ TakeDisplayWindow::TakeDisplayWindow (AppContext& a, TakeDisplayHub& h, int disp
     setBounds (area);
     setAlwaysOnTop (true);
     setVisible (true);
+    stayOnTop = std::make_unique<StayOnTop> (*this);          // in front of everything on the desktop, for good
 }
 
 TakeDisplayWindow::~TakeDisplayWindow() {}

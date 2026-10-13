@@ -762,7 +762,7 @@ var Project::editToVar (const EditDef& eref) const
         put (ro, "id", r.id.toString()); put (ro, "window", r.windowId.toString()); put (ro, "take", r.takeId.toString());
         put (ro, "takeName", r.takeName); put (ro, "in", (juce::int64) r.srcIn); put (ro, "out", (juce::int64) r.srcOut);
         put (ro, "start", (juce::int64) r.startSample); put (ro, "sourceLength", (juce::int64) r.sourceLength); put (ro, "barIn", r.barIn); put (ro, "barOut", r.barOut);
-        put (ro, "rate", r.sampleRate); put (ro, "curve", (int) r.curve); if (r.outCurveOwn) put (ro, "outCurve", (int) r.outCurve); if (r.fixIn) put (ro, "fixIn", true); if (r.fixOut) put (ro, "fixOut", true);
+        put (ro, "rate", r.sampleRate); put (ro, "curve", (int) r.curve); if (r.outCurveOwn) put (ro, "outCurve", (int) r.outCurve); if (r.fixIn) put (ro, "fixIn", true); if (r.fixOut) put (ro, "fixOut", true); if (r.normaliseIn) put (ro, "normaliseIn", true);
         put (ro, "inStart", r.inStart); put (ro, "inEnd", r.inEnd); put (ro, "outStart", r.outStart); put (ro, "outEnd", r.outEnd);
         juce::Array<var> rf;
         for (auto& f : r.files)
@@ -779,7 +779,7 @@ var Project::editToVar (const EditDef& eref) const
         for (auto& g : r.gains)
         {
             var go = obj();
-            put (go, "at", (juce::int64) g.at); put (go, "ramp", g.ramp);
+            put (go, "at", (juce::int64) g.at); put (go, "ramp", g.ramp); if (g.autoNorm) put (go, "autoNorm", true);
             juce::Array<var> dbs; for (float d : g.db) dbs.add ((double) d);
             put (go, "db", dbs);
             gs.add (go);
@@ -1069,7 +1069,7 @@ bool Project::fromVar (const var& root)
                 r.startSample = (juce::int64) rv["start"]; r.sourceLength = (juce::int64) rv["sourceLength"];
                 r.barIn = juce::jmax (0, (int) rv["barIn"]); r.barOut = juce::jmax (0, (int) rv["barOut"]);
                 r.sampleRate = (double) rv["rate"]; r.curve = (FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv["curve"]);
-                r.fixIn = (bool) rv["fixIn"]; r.fixOut = (bool) rv["fixOut"];
+                r.fixIn = (bool) rv["fixIn"]; r.fixOut = (bool) rv["fixOut"]; r.normaliseIn = (bool) rv["normaliseIn"];
                 if (rv.hasProperty ("outCurve")) r.setOutCurve ((FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv["outCurve"]));
                 r.inStart = (double) rv["inStart"]; r.inEnd = (double) rv["inEnd"]; r.outStart = (double) rv["outStart"]; r.outEnd = (double) rv["outEnd"];
                 if (auto* fs = rv["files"].getArray())
@@ -1084,7 +1084,7 @@ bool Project::fromVar (const var& root)
                 if (auto* gs = rv["gains"].getArray())
                     for (auto& gv : *gs)
                     {
-                        GainChange g; g.at = (juce::int64) gv["at"]; g.ramp = (double) gv["ramp"];
+                        GainChange g; g.at = (juce::int64) gv["at"]; g.ramp = (double) gv["ramp"]; g.autoNorm = (bool) gv["autoNorm"];
                         if (auto* dbs = gv["db"].getArray()) for (auto& d : *dbs) g.db.push_back ((float) (double) d);
                         g.db.resize (r.files.size(), 0.0f);
                         r.gains.push_back (g);

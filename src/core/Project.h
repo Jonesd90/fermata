@@ -271,7 +271,8 @@ public:
     /** Anything edited: take moved/renamed, preamp changed, recording finished... (listen on the Project itself) */
     /** Re-places every automation point on the audio it belongs to (the edits' pieces may have moved). Cheap; safe to call at any time. */
     void resolveAllAutomation() { for (auto& e : edits) if (e != nullptr && ! e->lanes.empty()) e->resolveAutomation(); }
-    void changed()          { resolveAllAutomation(); dirty = true; undoPending = true; undoDirtyAt = juce::Time::getMillisecondCounter(); sendChangeMessage(); }
+    void refreshNormalisedGains() { for (auto& e : edits) if (e != nullptr) e->refreshNormalised(); }
+    void changed()          { resolveAllAutomation(); refreshNormalisedGains(); dirty = true; undoPending = true; undoDirtyAt = juce::Time::getMillisecondCounter(); sendChangeMessage(); }
     /** Tracks / effects channels / mixers / inputs / outputs / names changed: UI must rebuild, engine must re-plan. */
     void structureChanged() { resolveAllAutomation(); dirty = true; undoPending = true; undoDirtyAt = juce::Time::getMillisecondCounter(); structure.sendChangeMessage(); sendChangeMessage(); }
     void markDirty() noexcept { dirty = true; }          // value tweaks (faders etc.) that need saving but no UI refresh

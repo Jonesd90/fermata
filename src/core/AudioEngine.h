@@ -26,6 +26,13 @@ public:
 
     /** Call after any change to tracks / mixers / effects channels (message thread). */
     void rebuildPlan();
+    /** Delay compensation. Message thread, about a few times a second: asks every loaded plug-in how late it is and, when anything changed (a plug-in
+        loaded, bypassed, or one that changed its own delay), rebuilds the plan so that all paths are lined up again. */
+    void checkLatency();
+    /** The most this mixer delays its outputs by, in samples (the longest plug-in path through it). 0 for an unknown mixer. */
+    int mixerLatency (const MixerState*) const;
+    /** Offline render: how many samples the captured signals are late by (the first that many samples of every capture are to be thrown away; render that many extra at the end). */
+    int offlineLatency() const;
 
     // --- offline rendering (bounce out). Use on a private engine that belongs to a private copy of the project; no audio device needed. ---
     /** Choose the mixer to render and what to capture from it: the post-fader signal of any audio tracks / Int Buses / Ext Buses
@@ -159,7 +166,7 @@ public:
 
 private:
     struct Node;
-    struct SendPlan { SendState* st; Node* dest; };
+    struct SendPlan { SendState* st; Node* dest; PathDelay delay; };     // delay: holds this path back so it arrives together with the others (delay compensation)
     /** One channel of a mixer: an Audio Track, an Int Bus or an Ext Bus. The nodes are kept in an order in which every
         channel comes after all the channels that send to it. */
     struct Node
@@ -173,12 +180,20 @@ private:
         bool isMainOut = false;                 // the mixer's main Ext Bus (what 'talkback playback' takes from the processing mixer)
         int tapIdx = -1;                        // offline render: which capture output its post-fader signal goes to (-1 = none)
         juce::AudioBuffer<float> incoming;      // stereo: the sum of what they send
+        // delay compensation (samples): when the signals arrive at this channel, and when they leave it, counted from the sources
+        int inLat = 0, outLat = 0;
+        PathDelay srcDelay;                     // Audio Track: holds back its own source (disk / live input) to meet what is sent to it
+        PathDelay outDelay;                     // Ext Bus: holds back the driver outputs so every Ext Bus of the mixer comes out together
+        PathDelay tapDelay;                     // offline render: the same, for the captured signals
     };
     struct MixerPlan
     {
         MixerState* mixer = nullptr;
         std::vector<std::unique_ptr<Node>> order;
         juce::AudioBuffer<float> chanBuf, pre, post, preSend, sendTmp;
+        int latency = 0;                        // the longest path through the mixer (samples): all Ext Bus outputs are this late
+        int tapLatency = 0;                     // offline render: the captured signals are this late
+        bool wasPlaying = false;                // audio thread
     };
     struct TrackPlan { int numCh = 1; int inputs[kMaxTrackChannels] {}; std::shared_ptr<TrackLive> live; };
     struct Plan
@@ -240,6 +255,7 @@ private:
     void ensurePreRoll();                           // message thread: (re)makes the ring when session mode is on and nothing is recording
     void deliverFromRing (RecordingSession&, juce::int64 from, juce::int64 to);
     std::unique_ptr<Plan> buildPlan() const;
+    juce::int64 latencySignature (bool refresh) const;      // changes whenever any plug-in's delay (or whether it is loaded / bypassed) changes
 
     Project& project;
     double sampleRate = 48000.0;
@@ -247,6 +263,7 @@ private:
     int deviceInputs = 0, deviceOutputs = 0;
 
     std::atomic<Plan*> plan { nullptr };
+    std::atomic<juce::int64> planLatencySig { 0 };
     std::atomic<RecordingSession*> rec { nullptr };
     std::atomic<PlaybackSession*> playback { nullptr };
     std::atomic<PreRoll*> preRollPtr { nullptr };

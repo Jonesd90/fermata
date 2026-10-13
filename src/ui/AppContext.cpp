@@ -267,6 +267,7 @@ void AppContext::applyAudioSettings()
 
 void AppContext::timerCallback()
 {
+    engine.checkLatency();
     if (project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording())
         saveNow();
 }

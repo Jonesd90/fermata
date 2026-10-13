@@ -11,6 +11,8 @@ public:
     virtual void prepare (double sampleRate, int maxBlock, int numChannels) = 0;
     virtual void process (juce::AudioBuffer<float>&) = 0;   // audio thread
     virtual juce::String getName() const = 0;
+    /** How many samples later this processor's output comes than its input (look-ahead, linear-phase filters ...). Valid after prepare(). */
+    virtual int          getLatencySamples() const          { return 0; }
     virtual juce::String getDescription() const  { return {}; }       // for saving
     virtual juce::String getStateBase64() const  { return {}; }       // for saving
 
@@ -22,6 +24,37 @@ public:
     virtual void         setParamNorm (int, float)          {}
 };
 
+/** A fixed delay for a block of channels: used to line up the paths of the mixer when plug-ins delay some of them (delay compensation).
+    Made (init) on the message thread when the plan is built; run() on the audio thread never allocates. */
+struct PathDelay
+{
+    int len = 0, ch = 0, pos = 0;
+    std::vector<float> data;
+    void init (int samples, int channels)
+    {
+        len = juce::jlimit (0, 1 << 20, samples); ch = channels; pos = 0;
+        data.assign ((size_t) len * (size_t) juce::jmax (0, ch), 0.0f);
+    }
+    void clear() noexcept { std::fill (data.begin(), data.end(), 0.0f); pos = 0; }
+    void run (float* const* chans, int numCh, int n) noexcept
+    {
+        if (len <= 0) return;
+        const int nc = juce::jmin (numCh, ch);
+        for (int c = 0; c < nc; ++c)
+        {
+            float* d = data.data() + (size_t) c * (size_t) len;
+            float* x = chans[c];
+            int p = pos;
+            for (int i = 0; i < n; ++i)
+            {
+                const float o = d[p]; d[p] = x[i]; x[i] = o;
+                if (++p == len) p = 0;
+            }
+        }
+        pos = (pos + n) % len;
+    }
+};
+
 /** One insert slot. The audio thread only ever try-locks, so loading a plugin can never block audio. */
 class InsertSlot
 {
@@ -30,6 +63,7 @@ public:
     {
         if (p != nullptr)
             p->prepare (sr, maxBlock, numCh);
+        latency.store (p != nullptr ? juce::jmax (0, p->getLatencySamples()) : 0, std::memory_order_relaxed);
         std::unique_ptr<InsertProcessor> old;
         {
             const juce::SpinLock::ScopedLockType sl (lock);
@@ -48,8 +82,17 @@ public:
     void reprepare (double sr, int maxBlock, int numCh)
     {
         const juce::SpinLock::ScopedLockType sl (lock);
-        if (proc != nullptr) proc->prepare (sr, maxBlock, numCh);
+        if (proc != nullptr) { proc->prepare (sr, maxBlock, numCh); latency.store (juce::jmax (0, proc->getLatencySamples()), std::memory_order_relaxed); }
     }
+
+    /** Message thread: asks the plug-in again how late it is (some change it while they work). Only the message thread ever changes 'proc', so no lock is needed. */
+    void refreshLatency() noexcept
+    {
+        if (auto* q = proc.get()) latency.store (juce::jmax (0, q->getLatencySamples()), std::memory_order_relaxed);
+        else latency.store (0, std::memory_order_relaxed);
+    }
+    /** How many samples this slot delays the signal right now: 0 when empty or bypassed. */
+    int latencySamples() const noexcept { return (loadedHint.load (std::memory_order_relaxed) && ! bypass.get()) ? latency.load (std::memory_order_relaxed) : 0; }
 
     void process (juce::AudioBuffer<float>& b) noexcept
     {
@@ -81,6 +124,7 @@ private:
     mutable juce::SpinLock lock;
     std::unique_ptr<InsertProcessor> proc;
     std::atomic<bool> loadedHint { false };
+    std::atomic<int> latency { 0 };
 };
 
 /** One send: a copy of a channel's signal going to another channel of the same mixer (an audio track, an internal bus or an external bus).

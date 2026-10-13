@@ -65,6 +65,26 @@ struct HalfGain : InsertProcessor
     juce::String getName() const override { return "HalfGain"; }
 };
 
+/** An insert that delays by a fixed number of samples and says so (like a look-ahead or linear-phase plug-in). */
+struct LatencyInsert : InsertProcessor
+{
+    explicit LatencyInsert (int n) : lat (n) {}
+    void prepare (double, int, int) override { line.assign ((size_t) (2 * (lat + 1)), 0.0f); pos = 0; }
+    void process (juce::AudioBuffer<float>& b) override
+    {
+        for (int c = 0; c < b.getNumChannels() && c < 2; ++c)
+        {
+            auto* x = b.getWritePointer (c); auto* d = line.data() + (size_t) c * (size_t) (lat + 1);
+            int q = pos;
+            for (int i = 0; i < b.getNumSamples(); ++i) { const float o = lat == 0 ? x[i] : d[q]; if (lat > 0) { d[q] = x[i]; if (++q == lat) q = 0; } x[i] = o; }
+        }
+        pos = lat > 0 ? (pos + b.getNumSamples()) % lat : 0;
+    }
+    int getLatencySamples() const override { return lat; }
+    juce::String getName() const override { return "LatencyInsert"; }
+    int lat, pos = 0; std::vector<float> line;
+};
+
 static juce::File makeConstWav (const juce::File& f, double value, int seconds, double sr = 48000.0)
 {
     juce::WavAudioFormat wav;
@@ -2811,6 +2831,94 @@ int main()
         std::vector<std::vector<juce::File>> out; std::vector<int> nums { 1, 2 };
         CHECK (copyImportFiles (fm2, lp, tmp.getChildFile ("linkout"), "P", nums, out, nullptr, true).isEmpty());
         CHECK (out.size() == 2 && out[0].size() == 2 && out[0][0].getParentDirectory() == dir && ! tmp.getChildFile ("linkout").findChildFiles (juce::File::findFiles, false).size());
+    }
+
+    SECTION ("delay compensation: a plug-in that delays one track does not put it out of time with the others");
+    {
+        Project q;
+        q.projectFile = tmp.getChildFile ("Pdc.fermata");
+        q.setInputCount (2); q.setOutputCount (2);
+        q.tracks.clear();
+        const auto ta = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        const auto tb = q.addTrack ("B", TrackFormat::Mono, 1).id;
+        q.retireAllMixers();
+        const auto ob = q.addBus ("Out", true).id;
+        auto& mq = q.addMixer ("M");
+        AudioEngine e2 (q);
+        e2.prepare (48000.0, 64);
+        q.setSendLevel (mq, ta, ob, 0.0f); q.setSendLevel (mq, tb, ob, 0.0f);
+        mq.busFor (ob)->outFirst.store (0);
+        e2.rebuildPlan();
+        auto runImpulse = [&] (std::vector<float>& outL)
+        {
+            outL.clear();
+            for (int blk = 0; blk < 8; ++blk)
+            {
+                std::vector<float> i0 (64, 0.0f), i1 (64, 0.0f), o0 (64, 0.0f), o1 (64, 0.0f);
+                if (blk == 1) { i0[0] = 1.0f; i1[0] = 1.0f; }       // (block 0 lets the faders settle)
+                const float* in[2] = { i0.data(), i1.data() }; float* out[2] = { o0.data(), o1.data() };
+                e2.process (in, 2, out, 2, 64);
+                outL.insert (outL.end(), o0.begin(), o0.end());
+            }
+        };
+        std::vector<float> o;
+        runImpulse (o);
+        CHECK (std::abs (o[64] - 1.41421f) < 0.01f && e2.mixerLatency (&mq) == 0);                // no plug-ins: both arrive at once, no delay added
+        mq.stripFor (ta)->slots[0].set (std::make_unique<LatencyInsert> (100), 48000.0, 64, 2);
+        e2.checkLatency();
+        CHECK (e2.mixerLatency (&mq) == 100 && mq.stripFor (ta)->slots[0].latencySamples() == 100);
+        runImpulse (o);
+        int peaks = 0, at = -1;
+        for (int i = 0; i < (int) o.size(); ++i) if (std::abs (o[(size_t) i]) > 0.01f) { ++peaks; at = i; }
+        CHECK (peaks == 1 && at == 164 && std::abs (o[164] - 1.41421f) < 0.01f);                 // both tracks line up, one impulse, 100 samples late
+        mq.stripFor (ta)->slots[0].bypass.set (true);
+        e2.checkLatency();
+        CHECK (e2.mixerLatency (&mq) == 0);                                                      // bypassed: no delay, nothing to compensate
+        runImpulse (o);
+        CHECK (std::abs (o[64] - 1.41421f) < 0.01f);
+        mq.stripFor (ta)->slots[0].bypass.set (false);
+        mq.stripFor (tb)->slots[0].set (std::make_unique<LatencyInsert> (30), 48000.0, 64, 2);
+        e2.checkLatency();
+        CHECK (e2.mixerLatency (&mq) == 100);                                                    // the longest path wins
+        runImpulse (o);
+        peaks = 0; at = -1;
+        for (int i = 0; i < (int) o.size(); ++i) if (std::abs (o[(size_t) i]) > 0.01f) { ++peaks; at = i; }
+        CHECK (peaks == 1 && at == 164);
+        // through a send: track A (100 late) also feeds a bus that B's signal does not pass; both reach the output together
+        q.setSendLevel (mq, ta, ob, -100.0f); e2.rebuildPlan();
+    }
+
+    SECTION ("trim window levels: a take raised at the join, and normalised back over the next take");
+    {
+        EditDef ed;
+        ed.sampleRate = 48000.0;
+        EditRegion A, B;
+        for (auto* r : { &A, &B }) { r->sampleRate = 48000.0; RegionFile f; f.trackId = juce::Uuid(); r->files.push_back (f); RegionFile f2 = f; f2.trackId = juce::Uuid(); r->files.push_back (f2); }
+        A.srcIn = 0; A.srcOut = 48000 * 20; A.startSample = 0;
+        B.srcIn = 0; B.srcOut = 48000 * 30; B.startSample = A.endSample() - 48000;
+        B.inStart = 0.0; B.inEnd = 1.0; A.outStart = -1.0; A.outEnd = 0.0;
+        B.outStart = -2.0; B.outEnd = 0.0;                                     // the crossfade out of B begins 2 s before its end
+        ed.regions = { A, B };
+        auto& b = ed.regions[1];
+        CHECK (std::abs (b.pieceLevelDb()) < 0.001f);
+        b.setPieceLevelDb (4.0f);
+        CHECK (std::abs (b.pieceLevelDb() - 4.0f) < 0.001f && b.gains.size() == 1 && std::abs (b.levelDbAt (0, 48000 * 10) - 4.0f) < 0.01f);
+        b.setPieceLevelDb (5.0f);
+        CHECK (std::abs (b.pieceLevelDb() - 5.0f) < 0.001f && b.gains.size() == 1);
+        b.setPieceLevelDb (4.0f);
+        b.normaliseIn = true;
+        ed.refreshNormalised();
+        CHECK (b.gains.size() == 2 && b.gains[1].autoNorm && b.gains[1].at == 48000);                       // the glide starts when the crossfade into B ends
+        CHECK (std::abs (b.levelDbAt (0, 48000) - 4.0f) < 0.01f);                                           // still +4 dB at the end of the crossfade
+        CHECK (std::abs (b.levelDbAt (0, 48000 * 28)) < 0.01f && std::abs (b.levelDbAt (0, 48000 * 29)) < 0.01f);   // back to 0 dB where the next crossfade starts (28 s)
+        const float mid = b.levelDbAt (0, 48000 * 14 + 24000);
+        CHECK (mid > 0.5f && mid < 3.5f);                                                                    // on its way
+        b.inEnd = 3.0; b.outStart = -4.0;                                                                    // the crossfades move: the glide follows
+        ed.refreshNormalised();
+        CHECK (b.gains.size() == 2 && b.gains[1].at == 3 * 48000 && std::abs (b.gains[1].ramp - 23.0) < 0.001);
+        b.setPieceLevelDb (0.0f);
+        ed.refreshNormalised();
+        CHECK (b.gains.empty());                                                                             // no change at the start, nothing to glide back from
     }
 
     eng.rebuildPlan();

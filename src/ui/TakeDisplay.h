@@ -1,4 +1,5 @@
 #pragma once
+#include "WinOwner.h"
 #include "AppContext.h"
 
 namespace td
@@ -37,6 +38,7 @@ private:
     TakeDisplayHub& hub;
     int index;
     TakeDisplayView view;
+    std::unique_ptr<StayOnTop> stayOnTop;
 };
 
 /** Which displays currently show the Take Display. Lives in the AppContext, so the displays stay up when the control window is closed. */

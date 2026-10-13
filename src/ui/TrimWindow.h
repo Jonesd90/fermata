@@ -77,7 +77,9 @@ private:
     std::unique_ptr<TrimWaves> waves;
     juce::Label infoLabel, fadeLabel, trackCaption, curveCaption, rollCaption;
     juce::ComboBox trackBox, curveBox;
-    juce::Slider preSlider, postSlider;
+    juce::Slider preSlider, postSlider, levelA, levelB;
+    juce::Label levelACap, levelBCap;
+    juce::ToggleButton normaliseBox { "Normalise volume over next take" };
     juce::TextButton zoomIn { "Zoom +" }, zoomOut { "Zoom -" }, centreButton { "Centre on join" }, resetFade { "Reset crossfade" },
                      acceptButton { "Accept  [Enter]" }, revertButton { "Revert this join" },
                      prevButton { "<< Accept, previous fade  [" }, nextButton { "Accept, next fade  ] >>" },

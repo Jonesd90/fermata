@@ -1173,10 +1173,10 @@ private:
         if (ed.fixIn >= 0 && ed.fixOut > ed.fixIn) { rangeFrom = (juce::int64) std::llround (ed.fixIn * rate); rangeTo = (juce::int64) std::llround (ed.fixOut * rate); }
         else if (ed.markIn >= 0 && ed.markOut > ed.markIn) { rangeFrom = (juce::int64) std::llround (ed.markIn * rate); rangeTo = (juce::int64) std::llround (ed.markOut * rate); }
         const bool haveRange = rangeTo > rangeFrom && ! isOver;
-        m.addItem (7, "Volume change between the marks...", haveRange);
+        m.addItem (1, "Change volume from here to next edit...");
+        m.addItem (7, "Change volume between the 1/2 marks...", haveRange);
+        m.addItem (2, "Change volume between fades (this take only)...");
         m.addSeparator();
-        m.addItem (1, "Volume change from here on...");
-        m.addItem (2, "Volume of the whole piece...");
         m.addItem (3, "Remove all volume changes in this piece", hasGains);
         if (isOver) { m.addSeparator(); m.addItem (4, "Delete this overdub"); }
         if (piece->waiting.active())
@@ -1194,7 +1194,7 @@ private:
             if (p2 == nullptr) return;
             if (r == 1) showVolumeChange (*appPtr, eid, rid, rel);
             else if (r == 2) showVolumeChange (*appPtr, eid, rid, 0);
-            else if (r == 3) { p2->gains.clear(); appPtr->project.changed(); }
+            else if (r == 3) { p2->gains.clear(); p2->normaliseIn = false; appPtr->project.changed(); }
             else if (r == 7) showRangeVolumeChange (*appPtr, eid, rangeFrom, rangeTo);
             else if (r == 5) fixtools::relinkEdit (*appPtr, eid, rid, self.getComponent());
             else if (r == 6) { p2->waiting = WaitingPiece(); appPtr->project.changed(); }

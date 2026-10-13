@@ -7,7 +7,7 @@ namespace td
 namespace
 {
 constexpr int kStripW = 90;
-constexpr int kBandH = 16, kPlateH = 26, kInputRowH = 19, kSlotH = 16, kSendCellH = 50, kPanRowH = 30, kMSH = 24, kFaderH = 280, kFaderMin = 110, kOutRowH = 20, kSecH = 11, kToTrackH = 20;
+constexpr int kBandH = 16, kPlateH = 26, kInputRowH = 19, kSlotH = 16, kSendCellH = 50, kPanRowH = 30, kMSH = 24, kFaderH = 280, kFaderMin = 110, kOutRowH = 20, kSecH = 11, kToTrackH = 20, kLatH = 13;
 
 /** A small recessed read-out field (peak value, fader value, pan position). */
 void styleField (juce::Label& l, float size = 10.0f, bool bold = true)
@@ -224,12 +224,12 @@ private:
     {
         auto& slot = slots[i];
         if (r == 1) { app.plugins.showEditor (slot.getProcessorUnsafe()); return; }
-        if (r == 2) { slot.bypass.set (! slot.bypass.get()); app.project.markDirty(); refresh(); return; }
+        if (r == 2) { slot.bypass.set (! slot.bypass.get()); app.project.markDirty(); app.engine.checkLatency(); refresh(); return; }
         if (r == 3)
         {
             app.plugins.closeEditorsFor (slot.getProcessorUnsafe());
             slot.clear (app.engine.getSampleRate(), app.engine.getMaxBlock(), 2);
-            app.project.markDirty(); refresh(); return;
+            app.project.markDirty(); app.engine.checkLatency(); refresh(); return;
         }
         if (r == 9)
         {
@@ -244,7 +244,7 @@ private:
             if (p == nullptr) { showError ("Plug-in", "Could not load " + descs[(size_t) (r - 1000)].name + ":\n" + err); return; }
             app.plugins.closeEditorsFor (slot.getProcessorUnsafe());
             slot.set (std::move (p), app.engine.getSampleRate(), app.engine.getMaxBlock(), 2);
-            app.project.markDirty(); refresh();
+            app.project.markDirty(); app.engine.checkLatency(); refresh();
             app.plugins.showEditor (slot.getProcessorUnsafe());
         }
     }
@@ -477,6 +477,13 @@ public:
         g.setColour (chan::textOn (c));          g.setFont (juce::FontOptions (9.0f, juce::Font::bold));
         g.drawText (bandText(), band.reduced (4, 0), juce::Justification::centredLeft, true);
 
+        if (const int lat = shownLatency(); lat >= 0)
+        {
+            const bool zero = lat == 0;
+            g.setColour (zero ? t.dim : t.text);
+            g.setFont (juce::FontOptions (9.5f, zero ? juce::Font::plain : juce::Font::bold));
+            g.drawText (juce::String (lat) + (lat == 1 ? " sample" : " samples"), latencyRect(), juce::Justification::centred, false);
+        }
         if (appPtr != nullptr)
         {
             auto plate = plateRect();
@@ -503,7 +510,18 @@ protected:
     juce::Rectangle<int> plateRect() const { return { 1, getHeight() - 1 - kPlateH, getWidth() - 2, kPlateH }; }
 
     /** The area between the two coloured bars, with a little air on each side. */
-    juce::Rectangle<int> body() const { return getLocalBounds().withTrimmedTop (1 + kBandH + 3).withTrimmedBottom (1 + kPlateH + 3).reduced (4, 0); }
+    juce::Rectangle<int> body() const { return getLocalBounds().withTrimmedTop (1 + kBandH + 3).withTrimmedBottom (1 + kPlateH + 3 + (shownLatency() >= 0 ? kLatH : 0)).reduced (4, 0); }
+    /** Delay compensation: the samples this channel's plug-ins hold the sound back by (-1: this kind of strip shows nothing). */
+    virtual int shownLatency() const { return -1; }
+    void setLatencyTip (int own, const MixerState& m)
+    {
+        if (appPtr == nullptr) return;
+        const double sr = appPtr->engine.getSampleRate() > 0 ? appPtr->engine.getSampleRate() : 48000.0;
+        setTooltip ("Click the coloured bar to change this channel's colour (it is used in the take and edit windows too)\n\n"
+                    "Plug-in delay of this channel: " + juce::String (own) + " samples (" + juce::String (own * 1000.0 / sr, 2) + " ms). Fermata holds the shorter paths back by the same "
+                    "amount (delay compensation), so everything stays in time. Longest path in this mixer: " + juce::String (appPtr->engine.mixerLatency (&m)) + " samples.");
+    }
+    juce::Rectangle<int> latencyRect() const { return { 1, getHeight() - 1 - kPlateH - kLatH, getWidth() - 2, kLatH }; }
 
     AppContext* appPtr; juce::Uuid nodeId;
     std::vector<juce::Rectangle<int>> wells;
@@ -721,8 +739,11 @@ public:
         updating = false;
     }
 
+    int shownLatency() const override { int t = 0; for (auto& sl : strip.slots) t += sl.latencySamples(); return t; }
     void refreshFromModel() override
     {
+        setLatencyTip (shownLatency(), mixer);
+        repaint();
         slots.refresh();
         refreshInputs();
         outRow.fill();
@@ -849,7 +870,7 @@ public:
     {
         const int rows = juce::jmax (1, (maxDials + 1) / 2);
         return 1 + kBandH + 3 + 2 * kInputRowH + 3 + kSecH + slotCount * kSlotH + 2 + 4 + kSecH + rows * kSendCellH + kToTrackH
-               + 2 * kPanRowH + 4 + kMSH + 3 + kFaderH + 3 + kOutRowH + 3 + kPlateH + 1 + 4;
+               + 2 * kPanRowH + 4 + kMSH + 3 + kFaderH + 3 + kOutRowH + 3 + kLatH + kPlateH + 1 + 4;
     }
 
 protected:
@@ -914,8 +935,11 @@ public:
     }
     int dialCount() const { return dials.size(); }
     void setSendRows (int rows) { sendRows = rows; }
+    int shownLatency() const override { int t = 0; for (auto& sl : st.slots) t += sl.latencySamples(); return t; }
     void refreshFromModel() override
     {
+        setLatencyTip (shownLatency(), mixer);
+        repaint();
         slots.refresh();
         outRow.fill();
         fader.setAccent (colour());
@@ -1461,6 +1485,7 @@ void MixerComponent::timerCallback()
     static int counter = 0;
     if (++counter % 10 == 0)                                // 3 Hz: plug-in names, solo / mute changes
     {
+        app.engine.checkLatency();                          // a plug-in's delay changed (loaded, bypassed ...): line the paths up again
         if (slotsNeeded() != slotCount) { rebuild(); resized(); }        // an insert was used (or removed): every strip gets the new number of slots
         else holder->refreshFromModel();
     }

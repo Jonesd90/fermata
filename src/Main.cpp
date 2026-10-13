@@ -473,7 +473,8 @@ private:
         showWindow (key, "Meter bridge", [this] { return new MeterBridgeComponent (*ctx); });
         if (auto it = windows.find (key); it != windows.end())
         {
-            it->second->setAlwaysOnTop (true);                 // floats above the other windows
+            it->second->setAlwaysOnTop (true);                 // floats above the other windows (of every program)
+            bridgeTop = std::make_unique<StayOnTop> (*it->second);
             if (ctx->project.windowBounds.find (key) == ctx->project.windowBounds.end()) { it->second->setSize (1100, 420); it->second->setTopLeftPosition (20, 20); }
         }
     }
@@ -619,6 +620,7 @@ private:
     std::unique_ptr<RemoteControlServer> remoteServer;       // the control port for a Stream Deck (127.0.0.1 only)
     std::unique_ptr<ToolWindowMain> mainWindow;
     std::map<juce::String, std::unique_ptr<ToolWindow>> windows;
+    std::unique_ptr<StayOnTop> bridgeTop;                    // keeps the meter bridge in front of everything (see StayOnTop)
 };
 
 START_JUCE_APPLICATION (FermataApplication)

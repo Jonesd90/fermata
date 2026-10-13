@@ -6,6 +6,18 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.17.0
+- **Trim window: level faders for the two takes.** "Level of A (out)" and "Level of B (in)" raise or lower the take going out of the edit or the take coming into it (up to 12 dB either way, double-click for 0) so both sides match. Each fader sets the level of that whole take, which is the same volume change that "Change volume between fades" shows and edits, so you see and change it in both places.
+- **Trim window: "Normalise volume over next take".** With it ticked, a change made to the level of B at the edit glides back to 0 dB in a straight line from the end of this crossfade to the start of the next crossfade (for example +4 dB falling to 0 dB over 15 s). The glide follows the crossfades whenever either of them is moved.
+- **Right-click on a piece in the edit window:** the volume choices are now "Change volume from here to next edit", "Change volume between the 1/2 marks" (all tracks, or just those chosen with Alt + drag) and "Change volume between fades (this take only)".
+
+## 2.16.3
+- **Delay compensation in the mixer.** Plug-ins that hold the sound back (look-ahead, linear-phase filters, some reverbs and de-essers) used to leave their channel late against the others. Fermata now asks every plug-in how late it is and holds all the shorter paths back by the difference, so every track, bus and send arrives together: sends into a channel, buses into buses, and all the Ext Buses of a mixer come out of the driver outputs at the same moment. It follows loading, replacing, removing and bypassing a plug-in by itself, and plug-ins that change their own delay while working.
+- **Strip display:** at the bottom of every audio track and bus strip, above the name, a number shows how many samples the plug-ins on that channel delay the engine by (0 when there is none or they are bypassed). Hover the strip for the milliseconds and the longest path in the mixer.
+- **Bounce Out is compensated too:** the first samples (the lead-in of the longest delay) are thrown away and the same amount is rendered at the end, so bounced files line up with the timeline and with each other.
+- With any compensation in use, everything the mixer plays is that many samples late against the transport (that is how compensation works); the delay is the longest plug-in path, shown in the strip tooltip.
+- **Meter bridge and big take clock:** both stay in front of everything on the desktop; the topmost state is re-asserted every second so Windows cannot quietly drop it.
+
 ## 2.16.2
 - **Trim window: click the time ruler to move the centre line.** Click (or drag) along the ruler above the two waveforms and the view re-centres on that spot; zooming in and out then keeps that spot in the middle, as in the take and edit windows.
 

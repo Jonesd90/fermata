@@ -174,6 +174,33 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
                 nd->tapIdx = it != offlineTaps.end() ? idxOf[(size_t) (it - offlineTaps.begin())] : -1;
             }
         }
+        // ---- delay compensation: every path through the mixer is made equally long, so a plug-in that holds the sound back (look-ahead,
+        // linear phase) on one channel does not put that channel out of time with the others.
+        {
+            auto chainLat = [] (const InsertSlot* sl, int count) { int t = 0; for (int i = 0; i < count; ++i) t += sl[i].latencySamples(); return t; };
+            for (auto& nd : mp->order)                                       // nodes come after all the nodes that feed them
+            {
+                const int own = nd->kind == NodeKind::Track ? chainLat (nd->strip->slots, kNumSlots) : chainLat (nd->bus->slots, kNumSlots);
+                nd->outLat = nd->inLat + own;
+                for (auto& sp : nd->sends)
+                    sp.dest->inLat = juce::jmax (sp.dest->inLat, nd->outLat + chainLat (sp.st->slots, kSendSlots));
+            }
+            int longest = 0;
+            for (auto& nd : mp->order)
+            {
+                for (auto& sp : nd->sends)
+                    sp.delay.init (sp.dest->inLat - (nd->outLat + chainLat (sp.st->slots, kSendSlots)), 2);
+                if (nd->kind == NodeKind::Track && nd->inLat > 0)
+                    nd->srcDelay.init (nd->inLat, juce::jlimit (1, (int) kMaxTrackChannels, p->tracks[(size_t) nd->trackIndex].numCh));
+                if (nd->kind == NodeKind::ExtBus) longest = juce::jmax (longest, nd->outLat);
+            }
+            for (auto& nd : mp->order) if (nd->kind == NodeKind::ExtBus) nd->outDelay.init (longest - nd->outLat, 2);
+            mp->latency = longest;
+            int tapLongest = 0;
+            for (auto& nd : mp->order) if (nd->tapIdx >= 0) tapLongest = juce::jmax (tapLongest, nd->outLat);
+            for (auto& nd : mp->order) if (nd->tapIdx >= 0) nd->tapDelay.init (tapLongest - nd->outLat, 2);
+            mp->tapLatency = tapLongest;
+        }
         mp->chanBuf.setSize (kMaxTrackChannels, maxBlock);
         mp->pre.setSize (2, maxBlock); mp->post.setSize (2, maxBlock); mp->preSend.setSize (2, maxBlock);
         mp->sendTmp.setSize (2, maxBlock);
@@ -187,10 +214,50 @@ void AudioEngine::rebuildPlan()
     const juce::ScopedLock sl (planLock);
     // mixers' strip pools must be complete before the audio thread can see them
     project.syncMixers();
+    planLatencySig.store (latencySignature (true));
     auto fresh = buildPlan();
     auto* old = plan.exchange (fresh.release());
     if (waitForAudioThread()) delete old;           // (if the audio thread stalled, the old plan is left in memory rather than freed under it)
     ensurePreRoll();                                 // a track patched to a new input starts being kept for the pre-roll
+}
+
+juce::int64 AudioEngine::latencySignature (bool refresh) const
+{
+    juce::int64 sig = 17;
+    auto one = [&] (InsertSlot* sl, int count)
+    {
+        for (int i = 0; i < count; ++i)
+        {
+            if (refresh) sl[i].refreshLatency();
+            sig = sig * 1000003 + sl[i].latencySamples() + (sl[i].mightBeLoaded() ? 5 : 3) + (sl[i].bypass.get() ? 11 : 0);
+        }
+    };
+    for (auto& m : project.mixers)
+    {
+        for (auto& st : m->stripPool) { one (st->slots, kNumSlots); for (auto& sd : st->sends.pool) one (sd->slots, kSendSlots); one (st->outSend.slots, kSendSlots); }
+        for (auto& f : m->busPool)    { one (f->slots, kNumSlots);  for (auto& sd : f->sends.pool) one (sd->slots, kSendSlots); one (f->outSend.slots, kSendSlots); }
+    }
+    return sig;
+}
+
+void AudioEngine::checkLatency()
+{
+    if (sampleRate <= 0.0 || plan.load() == nullptr) return;
+    if (latencySignature (true) != planLatencySig.load()) rebuildPlan();
+}
+
+int AudioEngine::mixerLatency (const MixerState* m) const
+{
+    if (auto* pl = plan.load (std::memory_order_acquire))
+        for (auto& mp : pl->mixers) if (mp->mixer == m) return mp->latency;
+    return 0;
+}
+
+int AudioEngine::offlineLatency() const
+{
+    if (auto* pl = plan.load (std::memory_order_acquire))
+        for (auto& mp : pl->mixers) if (mp->mixer->id == offlineMixerId) return mp->tapLatency;
+    return 0;
 }
 
 void AudioEngine::setSessionMode (bool on)
@@ -571,6 +638,15 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
     for (auto& nd : mp.order) anySolo = anySolo || (nd->kind == NodeKind::Track && nd->strip->solo.get());
 
     for (auto& nd : mp.order) if (nd->receives) nd->incoming.clear (0, n);
+    if (playing != mp.wasPlaying)                          // playing starts or stops (or jumps): old audio must not come out of the delay lines
+    {
+        mp.wasPlaying = playing;
+        for (auto& nd : mp.order)
+        {
+            nd->srcDelay.clear(); nd->outDelay.clear(); nd->tapDelay.clear();
+            for (auto& sp : nd->sends) sp.delay.clear();
+        }
+    }
 
     auto* plan_ = &pl;                                  // the plan that this block was started with (a rebuild during the block must not mix two plans)
     const bool recordingNow = rec.load (std::memory_order_relaxed) != nullptr;
@@ -614,6 +690,12 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                 const int idx = route.inputs[c];
                 if (liveOn && idx >= 0 && idx < numIn && in[idx] != nullptr)
                     juce::FloatVectorOperations::add (dst, in[idx] + offset, n);
+            }
+            if (nd.srcDelay.len > 0)                            // other channels send here through plug-ins that delay them: the track's own sound waits for them
+            {
+                float* chp[kMaxTrackChannels];
+                for (int c = 0; c < nc; ++c) chp[c] = mp.chanBuf.getWritePointer (c);
+                nd.srcDelay.run (chp, nc, n);
             }
             if (nd.receives)                                    // what other channels send to this track joins its own signal
             {
@@ -716,7 +798,17 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             }
 
         if (nd.tapIdx >= 0 && captureBufs != nullptr && nd.tapIdx < (int) captureBufs->size())   // offline render: this channel is one of the outputs being captured
-            for (int c = 0; c < 2; ++c) (*captureBufs)[(size_t) nd.tapIdx].addFrom (c, 0, mp.post, c, 0, n);
+        {
+            const juce::AudioBuffer<float>* capSrc = &mp.post;
+            if (nd.tapDelay.len > 0)
+            {
+                for (int c = 0; c < 2; ++c) mp.sendTmp.copyFrom (c, 0, mp.post, c, 0, n);
+                float* chp[2] = { mp.sendTmp.getWritePointer (0), mp.sendTmp.getWritePointer (1) };
+                nd.tapDelay.run (chp, 2, n);
+                capSrc = &mp.sendTmp;
+            }
+            for (int c = 0; c < 2; ++c) (*captureBufs)[(size_t) nd.tapIdx].addFrom (c, 0, *capSrc, c, 0, n);
+        }
 
         // sends (pre-fader ones still obey mute / solo, but not the fader)
         bool needPre = false;
@@ -742,6 +834,13 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                 for (auto& slot : sd->slots) slot.process (view);
                 src = &mp.sendTmp;
             }
+            if (sp.delay.len > 0)                                 // this path is shorter than the longest one into the same channel: hold it back
+            {
+                if (src != &mp.sendTmp) for (int c = 0; c < 2; ++c) mp.sendTmp.copyFrom (c, 0, *src, c, 0, n);
+                float* chp[2] = { mp.sendTmp.getWritePointer (0), mp.sendTmp.getWritePointer (1) };
+                sp.delay.run (chp, 2, n);
+                src = &mp.sendTmp;
+            }
             for (int c = 0; c < 2; ++c) sp.dest->incoming.addFromWithRamp (c, 0, src->getReadPointer (c), n, sd->lastGain, st1);
             sd->lastGain = st1;
         }
@@ -750,18 +849,26 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
         if (nd.kind == NodeKind::ExtBus)
         {
             const int first = nd.bus->outFirst.load (std::memory_order_relaxed);
+            const juce::AudioBuffer<float>* outBuf = &mp.post;                     // (all Ext Buses of the mixer come out together: the shorter ones wait)
+            if (nd.outDelay.len > 0)
+            {
+                for (int c = 0; c < 2; ++c) mp.sendTmp.copyFrom (c, 0, mp.post, c, 0, n);
+                float* chp[2] = { mp.sendTmp.getWritePointer (0), mp.sendTmp.getWritePointer (1) };
+                nd.outDelay.run (chp, 2, n);
+                outBuf = &mp.sendTmp;
+            }
             if (tapL != nullptr && nd.isMainOut)                                  // talkback playback: the processing mixer's main output, for the TB pair
             {
-                juce::FloatVectorOperations::copy (tapL + offset, mp.post.getReadPointer (0), n);
-                juce::FloatVectorOperations::copy (tapR + offset, mp.post.getReadPointer (1), n);
+                juce::FloatVectorOperations::copy (tapL + offset, outBuf->getReadPointer (0), n);
+                juce::FloatVectorOperations::copy (tapR + offset, outBuf->getReadPointer (1), n);
             }
             for (int c = 0; c < 2; ++c)
             {
                 if (first >= 0 && ! silenceOwnOutput && first + c < numOut && out[first + c] != nullptr)
-                    juce::FloatVectorOperations::add (out[first + c] + offset, mp.post.getReadPointer (c), n);
+                    juce::FloatVectorOperations::add (out[first + c] + offset, outBuf->getReadPointer (c), n);
                 const int ac = alsoToFirst + c;                          // the audited cue mixer is also heard on the engineer's output pair
                 if (alsoToFirst >= 0 && ac != first + c && ac < numOut && out[ac] != nullptr)
-                    juce::FloatVectorOperations::add (out[ac] + offset, mp.post.getReadPointer (c), n);
+                    juce::FloatVectorOperations::add (out[ac] + offset, outBuf->getReadPointer (c), n);
             }
         }
     }

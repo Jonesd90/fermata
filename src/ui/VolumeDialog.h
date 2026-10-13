@@ -58,7 +58,7 @@ public:
         for (int i = 1; i <= 10; ++i) fadeLen.addItem (juce::String (i / 10.0, 1) + " s", i);
         fadeLen.setSelectedId (juce::jlimit (1, 10, (int) std::lround ((existing && initialRamp > 0.0 ? initialRamp : 0.3) * 10.0)), juce::dontSendNotification);
         addAndMakeVisible (fadeLen);
-        wholeBox.setButtonText ("Whole piece (from its start)");
+        wholeBox.setButtonText ("Between fades: the whole take (from its start)");
         wholeBox.setTooltip ("Set the level for the whole piece, instead of starting the change at the point you clicked");
         wholeBox.setToggleState (false, juce::dontSendNotification);
         wholeBox.onClick = [this] { fadeBox.setEnabled (! wholeBox.getToggleState()); fadeLen.setEnabled (! wholeBox.getToggleState()); };
@@ -158,7 +158,7 @@ inline void showVolumeChange (AppContext& app, const juce::Uuid& editId, const j
         if (holder->w) { holder->w->exitModalState (0); }
     });
     juce::DialogWindow::LaunchOptions o;
-    o.dialogTitle = "Volume change";
+    o.dialogTitle = "Change volume";
     o.content.setOwned (panel.release());
     o.componentToCentreAround = nullptr;
     o.dialogBackgroundColour = theme::panel;
@@ -311,7 +311,7 @@ inline void showRangeVolumeChange (AppContext& app, const juce::Uuid& editId, ju
     auto holder = std::make_shared<Holder>();
     auto panel = std::make_unique<RangeVolumePanel> (app, editId, from, to, [holder] { if (holder->w) holder->w->exitModalState (0); });
     juce::DialogWindow::LaunchOptions o;
-    o.dialogTitle = "Volume change between the marks";
+    o.dialogTitle = "Change volume between the 1/2 marks";
     o.content.setOwned (panel.release());
     o.componentToCentreAround = nullptr;
     o.dialogBackgroundColour = theme::panel;

@@ -475,13 +475,56 @@ TrimComponent::TrimComponent (AppContext& a, const juce::Uuid& eid, const juce::
     trackBox.setWantsKeyboardFocus (false); curveBox.setWantsKeyboardFocus (false);
     preSlider.setWantsKeyboardFocus (false); postSlider.setWantsKeyboardFocus (false);
 
+    // the level faders: raise or lower the take going OUT (A) or the take coming IN (B) so the two sides of the edit match. They set the level of the whole piece
+    // (the same volume change the right-click "Change volume between fades" shows and edits).
+    for (auto* l : { &levelACap, &levelBCap }) { addAndMakeVisible (l); l->setFont (juce::FontOptions (13.0f, juce::Font::bold)); }
+    levelACap.setText ("Level of A (out):", juce::dontSendNotification);
+    levelBCap.setText ("Level of B (in):", juce::dontSendNotification);
+    for (auto* s : { &levelA, &levelB })
+    {
+        s->setSliderStyle (juce::Slider::LinearHorizontal);
+        s->setTextBoxStyle (juce::Slider::TextBoxRight, false, 64, 20);
+        s->setRange (-12.0, 12.0, 0.1);
+        s->setDoubleClickReturnValue (true, 0.0);
+        s->setTextValueSuffix (" dB");
+        s->setWantsKeyboardFocus (false);
+        s->textFromValueFunction = [] (double v) { return (v > 0.04 ? "+" : "") + juce::String (v, 1); };
+        addAndMakeVisible (s);
+    }
+    levelA.setTooltip ("Raises or lowers the whole take that is going OUT of this edit (A), by up to 12 dB. 0 = untouched. Double-click for 0.");
+    levelB.setTooltip ("Raises or lowers the whole take that is coming IN at this edit (B), by up to 12 dB. 0 = untouched. Double-click for 0.");
+    auto levelChanged = [this] (bool isA)
+    {
+        if (updatingControls) return;
+        const auto rf = refs();
+        if (! rf.ok()) return;
+        auto* r = isA ? rf.A : rf.B;
+        if (r == nullptr) return;
+        r->setPieceLevelDb ((float) (isA ? levelA : levelB).getValue());
+        app.project.changed();
+    };
+    levelA.onValueChange = [levelChanged] { levelChanged (true); };
+    levelB.onValueChange = [levelChanged] { levelChanged (false); };
+    normaliseBox.setTooltip ("When B has been raised or lowered: the change glides back to 0 dB in a straight line from the end of this crossfade until the start of the next one. "
+                             "If the crossfades are moved the glide follows them.");
+    normaliseBox.setWantsKeyboardFocus (false);
+    normaliseBox.onClick = [this]
+    {
+        if (updatingControls) return;
+        const auto rf = refs();
+        if (! rf.ok() || rf.B == nullptr) return;
+        rf.B->normaliseIn = normaliseBox.getToggleState();
+        app.project.changed();
+    };
+    addAndMakeVisible (normaliseBox);
+
     takeSnapshot();
     recentre();
     refreshControls();
     refreshReaders();
     app.project.addChangeListener (this);
     startTimerHz (15);
-    setSize (1100, 700);
+    setSize (1100, 735);
 }
 
 TrimComponent::~TrimComponent()
@@ -596,6 +639,10 @@ void TrimComponent::refreshControls()
             prevButton.setVisible (! onFix); nextButton.setVisible (! onFix);
             prevButton.setEnabled (havePrev); nextButton.setEnabled (haveNext);
         }
+        levelA.setEnabled (hasA); levelB.setEnabled (hasB); normaliseBox.setEnabled (hasB);
+        levelA.setValue (hasA ? rf.A->pieceLevelDb() : 0.0f, juce::dontSendNotification);
+        levelB.setValue (hasB ? rf.B->pieceLevelDb() : 0.0f, juce::dontSendNotification);
+        normaliseBox.setToggleState (hasB && rf.B->normaliseIn, juce::dontSendNotification);
         const bool both = hasA && hasB;
         for (auto* b : std::initializer_list<juce::Component*> { &copyOutIn, &copyInOut, &origA, &origB, &slipLeftToggle, &slipRightToggle })
             b->setEnabled (both || b == &origA || b == &origB);
@@ -839,6 +886,13 @@ void TrimComponent::resized()
     auto r3 = row (30);
     copyOutIn.setBounds (r3.removeFromLeft (190).reduced (2));
     copyInOut.setBounds (r3.removeFromLeft (190).reduced (2));
+
+    auto rL = row (28);                                                       // the levels of the two takes
+    levelACap.setBounds (rL.removeFromLeft (125)); levelA.setBounds (rL.removeFromLeft (270));
+    rL.removeFromLeft (14);
+    levelBCap.setBounds (rL.removeFromLeft (115)); levelB.setBounds (rL.removeFromLeft (270));
+    rL.removeFromLeft (14);
+    normaliseBox.setBounds (rL.removeFromLeft (250));
 
     for (auto* g : { &gA, &gB, &gJ })
     {
