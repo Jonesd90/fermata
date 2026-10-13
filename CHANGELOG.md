@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.16.2
+- **Trim window: click the time ruler to move the centre line.** Click (or drag) along the ruler above the two waveforms and the view re-centres on that spot; zooming in and out then keeps that spot in the middle, as in the take and edit windows.
+
 ## 2.16.1
 - **Sending a selection to the edit window no longer brings it up.** "To edit" from the take window now leaves the edit window exactly as it is: if it is closed it stays closed, if it is minimised it stays minimised, if it is behind it stays behind. The material is added to the edit and appears when you open the edit window yourself.
 

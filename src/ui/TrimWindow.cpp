@@ -134,6 +134,7 @@ public:
         const int k = owner.joinIndex();
         mode = Mode::None;
         if (ed == nullptr || k < 0) return;
+        if (e.y < kRulerH) { mode = Mode::Ruler; setCentreFromX (e.x); return; }       // the time ruler: click (or drag) to put the centre line there; zooming then keeps it in the middle
         mode = hit (e.getPosition());
         if (mode == Mode::None)
         {
@@ -149,6 +150,7 @@ public:
     {
         auto* ed = owner.edit();
         const int k = owner.joinIndex();
+        if (ed != nullptr && k >= 0 && mode == Mode::Ruler) { setCentreFromX (e.x); return; }
         if (ed != nullptr && k >= 0 && mode == Mode::Pan)
         {
             const double rt = ed->sampleRate > 0 ? ed->sampleRate : 48000.0;
@@ -197,14 +199,25 @@ public:
         owner.dragChanged();
     }
 
+    void setCentreFromX (int x)
+    {
+        auto* ed = owner.edit();
+        if (ed == nullptr) return;
+        const double rt = ed->sampleRate > 0 ? ed->sampleRate : 48000.0;
+        const double t = (double) owner.centreSample + (x - getWidth() * 0.5) * owner.viewSeconds * rt / juce::jmax (1, getWidth());
+        owner.centreSample = juce::jlimit ((juce::int64) 0, juce::jmax ((juce::int64) 0, ed->lengthSamples()), (juce::int64) std::llround (t));
+        owner.viewMoved();
+    }
+
     void mouseUp (const juce::MouseEvent&) override
     {
-        if (mode != Mode::None && mode != Mode::Pan) owner.dragFinished();
+        if (mode != Mode::None && mode != Mode::Pan && mode != Mode::Ruler) owner.dragFinished();
         mode = Mode::None;
     }
 
     void mouseMove (const juce::MouseEvent& e) override
     {
+        if (e.y < kRulerH) { setMouseCursor (juce::MouseCursor::PointingHandCursor); return; }
         const auto lanes = laneRects();
         if (hit (e.getPosition()) == Mode::None && e.y >= lanes.a.getBottom() && e.y < lanes.b.getY()) { setMouseCursor (juce::MouseCursor::DraggingHandCursor); return; }
         switch (hit (e.getPosition()))
@@ -221,7 +234,7 @@ public:
     float extraZoom = 1.0f;                                  // the . and , keys
 
 private:
-    enum class Mode { None, Pan, SlipA, SlipB, OutStart, OutEnd, OutBody, InStart, InEnd, InBody, MidStart, MidEnd, MidBody };
+    enum class Mode { None, Pan, Ruler, SlipA, SlipB, OutStart, OutEnd, OutBody, InStart, InEnd, InBody, MidStart, MidEnd, MidBody };
     struct Lanes { juce::Rectangle<int> a, b; };
     struct Cache { std::vector<float> lo, hi; };
     struct Key { int flags = 0; int w = -1; double view = 0; juce::int64 t0 = 0, aStart = 0, aIn = 0, bStart = 0, bIn = 0; int stamp = -1;
