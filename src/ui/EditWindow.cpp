@@ -4,12 +4,13 @@
 #include "FixTools.h"
 #include "ColourPicker.h"
 #include "VolumeDialog.h"
+#include "MarkerStrip.h"
 
 namespace td
 {
 /** How many different takes the edit is made from (a take used in several pieces counts once). */
 static int takesInEdit (const EditDef& e) { std::set<juce::String> t; for (auto& r : e.regions) t.insert (r.takeId.toString()); return (int) t.size(); }
-static constexpr int kRulerH = 22, kLaneH = 38;
+static constexpr int kRulerH = 22 + markerui::kStripH, kLaneH = 38;        // (the top 14 pixels of the ruler band are the marker strip)
 static int kNameW = 210;                        // width of the track-name column (drag its right edge to change it; shared by all edit windows)
 
 class EditTimeline : public juce::Component, private juce::ChangeListener, private juce::Timer
@@ -140,6 +141,7 @@ public:
             g.fillRect (0, y, getWidth(), rowH);
         }
         g.setColour (theme::ruler); g.fillRect (0, 0, getWidth(), kRulerH);
+        g.setColour (juce::Colours::black.withAlpha (0.22f)); g.fillRect (0, 0, getWidth(), markerui::kStripH);          // the marker strip
         const double step = pixelsPerSecond >= 200 ? 0.5 : pixelsPerSecond >= 60 ? 1.0 : pixelsPerSecond >= 24 ? 5.0 : pixelsPerSecond >= 8 ? 10.0 : pixelsPerSecond >= 3 ? 60.0 : 300.0;
         // fainter unlabelled lines between the labelled ones: 5 s -> every 1 s, 1 s -> every 0.5 s, then 0.25 s (two zoom steps), then 0.1 s however far in
         const double minor = pixelsPerSecond >= 450 ? 0.1 : pixelsPerSecond >= 200 ? 0.25 : pixelsPerSecond >= 60 ? 0.5 : pixelsPerSecond >= 24 ? 1.0 : pixelsPerSecond >= 8 ? 5.0 : pixelsPerSecond >= 3 ? 10.0 : 60.0;
@@ -154,7 +156,7 @@ public:
         {
             const int x = xOf (s);
             g.setColour (theme::grid); g.drawVerticalLine (x, (float) kRulerH - 8, (float) getHeight());
-            g.setColour (theme::dimText); g.drawText (formatTime (s).substring (3, 8), x + 3, 2, 60, 16, juce::Justification::left);
+            g.setColour (theme::dimText); g.drawText (formatTime (s).substring (3, 8), x + 3, 2 + markerui::kStripH, 60, 16, juce::Justification::left);
         }
 
         if (e->isEmpty())
@@ -326,8 +328,8 @@ public:
         if (e->playheadSeconds > 0)                                  // where key 4 / an overdub in the take window will be placed
         {
             const int x = xOf (e->playheadSeconds);
-            g.setColour (juce::Colour (0xff6a4cc2)); g.fillRect (x, 0, 1, kRulerH);
-            juce::Path tri; tri.addTriangle ((float) x - 5, 0.0f, (float) x + 6, 0.0f, (float) x, 9.0f); g.fillPath (tri);
+            g.setColour (juce::Colour (0xff6a4cc2)); g.fillRect (x, markerui::kStripH, 1, kRulerH - markerui::kStripH);
+            juce::Path tri; tri.addTriangle ((float) x - 5, (float) markerui::kStripH, (float) x + 6, (float) markerui::kStripH, (float) x, (float) markerui::kStripH + 9.0f); g.fillPath (tri);
         }
         if (e->markIn >= 0 || e->markOut >= 0)                      // I / O points (used by Bounce Out)
         {
@@ -411,6 +413,7 @@ public:
             }
             if (e->automationOn) paintStripBits (g, tracks[i].id, sx, top + (int) i * rowH, false);
         }
+        markerui::paintFlags (g, e->markers, [this] (double s) { return xOf (s); }, sx + kNameW, getHeight(), markers.draggedId());
         g.setColour (juce::Colour (0x55ffffff)); g.fillRect (sx + kNameW - 2, kRulerH + kLaneH, 2, juce::jmax (0, getHeight() - kRulerH - kLaneH));
         if (! clipMoveRegion.isNull() && clipMoveToRow >= 0)                           // Shift + drag: the row the clip will go to
         {
@@ -431,6 +434,8 @@ public:
         dragging = false; markDrag = false; markActive = false;
         auto* ed = this->edit();
         if (ed == nullptr) return;
+        markers.setNameWidth (viewport.getViewPositionX() + kNameW);
+        if (markers.mouseDown (e)) return;                                 // the marker strip along the top: right-click for Add Marker / Clear All; drag a marker
         const double rate = juce::jmax (1.0, ed->sampleRate);
         if (! e.mods.isCommandDown() && ! e.mods.isCtrlDown() && ! e.mods.isPopupMenu() && ! (e.x > kNameW && e.y >= kRulerH + kLaneH))   // a click anywhere but on the audio lets go of the selected pieces
         { selectedRegion = juce::Uuid::null(); selectedRegions.clear(); moveRegion = juce::Uuid::null(); repaint(); }
@@ -626,6 +631,7 @@ public:
     {
         auto* ed = edit();
         if (ed == nullptr) return;
+        if (markers.mouseDrag (e)) return;
         if (widthDrag) { kNameW = juce::jlimit (110, 700, e.x - viewport.getViewPositionX()); updateSize(); repaint(); return; }
         if (autoDragIndex >= 0) { automationDrag (e, *ed); return; }
         if (! clipMoveRegion.isNull())
@@ -699,8 +705,9 @@ public:
         (void) isIn;
     }
 
-    void mouseUp (const juce::MouseEvent&) override
+    void mouseUp (const juce::MouseEvent& e) override
     {
+        if (markers.mouseUp (e)) return;
         if (widthDrag) { widthDrag = false; setMouseCursor (juce::MouseCursor::NormalCursor); repaint(); return; }
         if (! clipMoveRegion.isNull())
         {
@@ -1070,6 +1077,11 @@ private:
     }
 
     int xOf (double seconds) const { return kNameW + (int) (seconds * pixelsPerSecond); }
+    markerui::Controller markers { *this, kNameW,
+        [this] () -> std::vector<Marker>* { auto* d = edit(); return d != nullptr ? &d->markers : nullptr; },
+        [this] (int x) { return juce::jmax (0.0, (double) (x - kNameW) / pixelsPerSecond); },
+        [this] (double s) { return xOf (s); },
+        [this] { app.project.markDirty(); } };
 
     /** Every piece starts and ends with a short fade (25 ms unless changed). Its two outer corners are handles; the fade is drawn as a white slope. */
     void drawFadeHandles (juce::Graphics& g, juce::Rectangle<int> lane, const EditRegion& r, double rate, bool showIn, bool showOut)

@@ -1,6 +1,7 @@
 #pragma once
 #include "Common.h"
 #include "Automation.h"
+#include "Markers.h"
 
 namespace td
 {
@@ -188,6 +189,7 @@ struct EditDef
 
     // ---- automation (drawn in the edit window; only plays from the edit) ----
     bool                 showLtc = false;       // the LTC track's row is shown in this edit window (the triangle button)
+    std::vector<Marker>  markers;               // quick markers along the top of this edit window (not part of undo)
     bool                 automationOn = false;
     std::vector<AutoLane> lanes;
 

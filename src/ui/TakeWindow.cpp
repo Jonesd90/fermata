@@ -3,10 +3,11 @@
 #include "TakeWindow.h"
 #include "FixTools.h"
 #include "ColourPicker.h"
+#include "MarkerStrip.h"
 
 namespace td
 {
-static constexpr int kRulerH = 34, kLaneH = 50, kNameW = 150;
+static constexpr int kRulerH = 34 + markerui::kStripH, kLaneH = 50, kNameW = 150;      // (the top 14 pixels of the ruler band are the marker strip)
 
 /** The scrolling content: ruler, one lane of take names, then one row per track. */
 /** The little non-modal box for a take's IN Bar / OUT Bar (so it can be filled in while recording, with the keyboard already in the IN box). */
@@ -175,6 +176,7 @@ public:
         }
 
         g.setColour (theme::ruler); g.fillRect (0, 0, getWidth(), kRulerH);
+        g.setColour (juce::Colours::black.withAlpha (0.22f)); g.fillRect (0, 0, getWidth(), markerui::kStripH);          // the marker strip
         const double step = pixelsPerSecond >= 200 ? 0.5 : pixelsPerSecond >= 60 ? 1.0 : pixelsPerSecond >= 24 ? 5.0 : pixelsPerSecond >= 8 ? 10.0 : pixelsPerSecond >= 3 ? 60.0 : 300.0;
         // fainter unlabelled lines between the labelled ones: 5 s -> every 1 s, 1 s -> every 0.5 s, then 0.25 s (two zoom steps), then 0.1 s however far in
         const double minor = pixelsPerSecond >= 450 ? 0.1 : pixelsPerSecond >= 200 ? 0.25 : pixelsPerSecond >= 60 ? 0.5 : pixelsPerSecond >= 24 ? 1.0 : pixelsPerSecond >= 8 ? 5.0 : pixelsPerSecond >= 3 ? 10.0 : 60.0;
@@ -189,7 +191,7 @@ public:
         {
             const int x = kNameW + (int) (s * pixelsPerSecond);
             g.setColour (theme::grid); g.drawVerticalLine (x, (float) kRulerH - 12, (float) getHeight());
-            g.setColour (theme::dimText); g.setFont (12.0f); g.drawText (formatTime (s).substring (3, 8), x + 3, 3, 64, 16, juce::Justification::left);
+            g.setColour (theme::dimText); g.setFont (12.0f); g.drawText (formatTime (s).substring (3, 8), x + 3, 3 + markerui::kStripH, 64, 16, juce::Justification::left);
         }
         g.setColour (theme::border); g.fillRect (0, kRulerH - 1, getWidth(), 1);
 
@@ -343,6 +345,7 @@ public:
             g.fillPath (tri);
         }
 
+        markerui::paintFlags (g, w->markers, [this] (double s) { return xOf (s); }, viewport.getViewPositionX() + kNameW, getHeight(), markers.draggedId());
         const int sx = viewport.getViewPositionX();
         for (size_t i = 0; i < tracks.size(); ++i)
         {
@@ -398,6 +401,8 @@ public:
         grabKeyboardFocus();
         auto* w = def();
         if (w == nullptr) return;
+        markers.setNameWidth (viewport.getViewPositionX() + kNameW);
+        if (markers.mouseDown (e)) return;                                 // the marker strip along the top: right-click for Add Marker / Clear All; drag a marker
         flagDrag = 0;
         if (! e.mods.isPopupMenu() && (flagDrag = editFlagAt (*w, e.getPosition())) != 0) return;       // grab an Edit IN / OUT flag to move it
         if (e.mods.isPopupMenu() && e.x >= kNameW)                         // right-click on a part waiting for corrected audio: re-link it
@@ -513,6 +518,7 @@ public:
     {
         auto* w = def();
         if (w == nullptr) return;
+        if (markers.mouseDrag (e)) return;
         if (fadeDrag != 0)
         {
             if (auto* fg = w->findGroup (fadeTake))
@@ -576,8 +582,9 @@ public:
         setMouseCursor (w != nullptr && (fadeHandleAt (*w, e.getPosition(), isIn) != nullptr || editFlagAt (*w, e.getPosition()) != 0) ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
     }
 
-    void mouseUp (const juce::MouseEvent&) override
+    void mouseUp (const juce::MouseEvent& e) override
     {
+        if (markers.mouseUp (e)) return;
         if (markActive) { markActive = false; app.project.changed(); }
         if (flagDrag != 0) { flagDrag = 0; app.project.changed(); }
         markDragTake = {};
@@ -617,6 +624,11 @@ private:
         return { sx + kNameW - 36, rowTop + juce::jmax (2, (rowH - 18) / 2), 32, 18 };
     }
     int xOf (double seconds) const { return kNameW + (int) (seconds * pixelsPerSecond); }
+    markerui::Controller markers { *this, kNameW,
+        [this] () -> std::vector<Marker>* { auto* d = def(); return d != nullptr ? &d->markers : nullptr; },
+        [this] (int x) { return juce::jmax (0.0, (double) (x - kNameW) / pixelsPerSecond); },
+        [this] (double s) { return xOf (s); },
+        [this] { app.project.markDirty(); } };
 
     bool scrubMoved = false;
     /** While a take of this window is playing, moving the playhead makes the music carry on from the new spot (no need to stop first). */

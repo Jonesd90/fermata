@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.14.0
+- **Quick markers** in both the take window and the edit window. A thin strip along the very top (above the time ruler): right-click it for "Add Marker" or "Clear All Markers". A new marker asks for a name (Enter keeps what you type; click away and it keeps its sequential number 1, 2, 3 ...). Drag a marker to move it; right-click it to rename or delete it (double-click also renames). Markers are saved with the window and are not undo steps.
+
 ## 2.13.0
 - **LTC (timecode as audio).** Two labelled lamps in the always-visible top bar: "LTC in" is red when no timecode is detected and green with the frame rate (24, 25, 29.97, 29.97 DF, 30...) when it is. The source is any audio input - including the Hapi TC input routed in Aneman, which is just another driver channel. "LTC out" sends generated timecode through an output channel of your choice (routed in Aneman to a Hapi output) with its own lamp. Click either lamp to choose the channel / format / start.
 - Recorded LTC is an ordinary mono recorded track marked LTC, linked to each take like any other audio. A "LTC" triangle in the take window and the edit window shows or hides its waveform.

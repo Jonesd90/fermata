@@ -2751,6 +2751,25 @@ int main()
         if (as.size() == 2) CHECK (as[0].fadeOutLen > 0 && as[1].fadeInLen > 0);                                            // the audio itself still crossfades
     }
 
+    SECTION ("markers: numbered, renamed, saved with the window, kept out of undo");
+    {
+        std::vector<Marker> list;
+        const auto a = addMarker (list, 5.0); addMarker (list, 2.0); addMarker (list, 9.0);
+        CHECK (list.size() == 3 && list[0].name == "1" && list[1].name == "2" && list[2].name == "3");
+        findMarker (list, list[1].id)->name = "Chorus";                                   // a named one does not break the numbering
+        removeMarker (list, a);
+        const auto d = addMarker (list, -3.0);                                            // never before the start
+        CHECK (findMarker (list, d) != nullptr && findMarker (list, d)->name == "4" && findMarker (list, d)->seconds == 0.0);
+        Project mp; auto& tw = mp.addTakeWindow ("W"); auto& me = mp.addEdit ("E", tw.id);
+        tw.markers = list; me.markers = list; me.markers[0].seconds = 12.5;
+        Project mq; CHECK (mq.fromVar (mp.toVar()));
+        auto* qw = mq.findTakeWindow (tw.id);
+        auto* qe = mq.findEdit (me.id);
+        CHECK (qw != nullptr && qw->markers.size() == 3 && qw->markers[0].name == "Chorus" && qw->markers[2].name == "4");
+        CHECK (qe != nullptr && qe->markers.size() == 3 && std::abs (qe->markers[0].seconds - 12.5) < 1.0e-9 && qe->markers[0].id == list[0].id);
+        CHECK (! mp.undoState().contains ("Chorus"));                                     // markers are not undo steps
+    }
+
     eng.rebuildPlan();
     tmp.deleteRecursively();
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

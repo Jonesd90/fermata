@@ -11,6 +11,22 @@ namespace
 using juce::var; using juce::DynamicObject; using juce::String;
 
 var obj() { return var (new DynamicObject()); }
+var markersToVar (const std::vector<Marker>& list)
+{
+    juce::Array<var> a;
+    for (auto& m : list) { var o = new DynamicObject(); o.getDynamicObject()->setProperty ("id", m.id.toString()); o.getDynamicObject()->setProperty ("name", m.name); o.getDynamicObject()->setProperty ("t", m.seconds); a.add (o); }
+    return a;
+}
+void markersFromVar (const var& v, std::vector<Marker>& list)
+{
+    list.clear();
+    if (auto* a = v.getArray())
+        for (auto& o : *a)
+        {
+            Marker m; m.id = juce::Uuid (o["id"].toString()); m.name = o["name"].toString(); m.seconds = juce::jmax (0.0, (double) o["t"]);
+            list.push_back (m);
+        }
+}
 void put (var& o, const char* k, const var& v) { o.getDynamicObject()->setProperty (k, v); }
 
 var slotsToVar (const InsertSlot* slots, int count = kNumSlots)
@@ -777,6 +793,7 @@ var Project::editToVar (const EditDef& eref) const
     put (o, "overdubs", ods); put (o, "playhead", e->playheadSeconds);
     { juce::Array<var> ti; for (auto& id : e->trackIds) ti.add (id.toString()); put (o, "trackIds", ti); }
     put (o, "automationOn", e->automationOn); if (e->showLtc) put (o, "showLtc", true);
+    if (! e->markers.empty()) put (o, "markers", markersToVar (e->markers));
     {
         juce::Array<var> ls;
         for (auto& l : e->lanes)
@@ -878,6 +895,7 @@ var Project::toVar (bool editorialOnly) const
         put (o, "cursorTake", w->cursorTake.toString()); put (o, "cursorSeconds", w->cursorSeconds); put (o, "playhead", w->playheadSeconds);
         { juce::Array<var> hid; for (auto& h : w->hiddenTracks) hid.add (h.toString()); put (o, "hiddenTracks", hid); }
         if (w->showLtc) put (o, "showLtc", true);
+        if (! w->markers.empty()) put (o, "markers", markersToVar (w->markers));
         juce::Array<var> gs;
         for (auto& g : w->groups)
         {
@@ -1007,6 +1025,7 @@ bool Project::fromVar (const var& root)
             w->overdub = (bool) v["overdub"];
             if (v.hasProperty ("playhead")) w->playheadSeconds = juce::jmax (0.0, (double) v["playhead"]);
             w->showLtc = v.hasProperty ("showLtc") && (bool) v["showLtc"];
+            markersFromVar (v["markers"], w->markers);
             if (auto* hid = v["hiddenTracks"].getArray()) for (auto& h : *hid) w->hiddenTracks.push_back (juce::Uuid (h.toString()));
             if (auto* gs = v["groups"].getArray())
                 for (auto& gv : *gs)
@@ -1076,7 +1095,7 @@ bool Project::fromVar (const var& root)
             if (auto* os = v["overdubs"].getArray()) for (auto& rv : *os) e->overdubs.push_back (regionFromVar (rv));
             if (auto* ta = v["trackIds"].getArray()) for (auto& tv : *ta) { juce::Uuid u (tv.toString()); if (! u.isNull()) e->trackIds.push_back (u); }
             if (v.hasProperty ("playhead")) e->playheadSeconds = juce::jmax (0.0, (double) v["playhead"]);
-            e->automationOn = (bool) v["automationOn"]; e->showLtc = v.hasProperty ("showLtc") && (bool) v["showLtc"];
+            e->automationOn = (bool) v["automationOn"]; e->showLtc = v.hasProperty ("showLtc") && (bool) v["showLtc"]; markersFromVar (v["markers"], e->markers);
             if (auto* ls = v["autoLanes"].getArray())
                 for (auto& lv : *ls)
                 {
@@ -1117,9 +1136,9 @@ juce::String Project::undoState() const
         if (auto* d = o.getDynamicObject()) for (auto* k : keys) d->removeProperty (juce::Identifier (k));
     };
     if (auto* a = v["takeWindows"].getArray())
-        for (auto& w : *a) strip (w, { "editTake", "editIn", "editOut", "editTracks", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub" });
+        for (auto& w : *a) strip (w, { "editTake", "editIn", "editOut", "editTracks", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub", "markers" });
     if (auto* a = v["edits"].getArray())
-        for (auto& e : *a) strip (e, { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex" });
+        for (auto& e : *a) strip (e, { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex", "markers" });
     if (auto m = v["mastering"]; m.isObject()) strip (m, { "view" });
     return juce::JSON::toString (v, true);
 }
@@ -1151,7 +1170,7 @@ void restoreEditorial (Project& p, const var& snapshot, const juce::Uuid& liveTa
         if (auto* live = p.findEdit (te->id))
         {
             te->markIn = live->markIn; te->markOut = live->markOut; te->fixIn = live->fixIn; te->fixOut = live->fixOut; te->fixTracks = live->fixTracks;
-            te->playheadSeconds = live->playheadSeconds; te->insertIndex = live->insertIndex;
+            te->playheadSeconds = live->playheadSeconds; te->insertIndex = live->insertIndex; te->markers = live->markers;
             *live = std::move (*te);
         }
         else p.edits.push_back (std::move (te));
