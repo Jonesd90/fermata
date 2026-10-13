@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.18.1
+- **The 1 / 2 marks in the take window stay after "To edit" (key 3).** They used to be cleared when the take was sent, so after undoing an insertion you had to mark the part again. They now stay until you make new 1 / 2 marks (or press 5 to take them away).
+
 ## 2.18.0
 - **Edit window: shuffle.** Drag a piece by the banner at its top (the strip with its take name) and it trades places with its neighbours like cards in a deck as soon as its middle passes theirs. The pieces after them stay where they were, the joins around the swapped pieces get the default crossfade, and the whole shuffle is one undo step. No key is needed: the banner is only for shuffling (Ctrl + click is still how you slide a piece, Alt + drag how you mark one track).
 - **Edit window: the insert flag has its own strip.** A new strip under the markers holds an orange INSERT flag for "next take goes here". Drag it along; it sticks to the start or end of a piece when it gets close and settles on the nearest one when you let go. Clicking the time ruler still places it too.

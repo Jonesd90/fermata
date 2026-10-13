@@ -863,7 +863,7 @@ juce::String AppContext::copyMarkedToEdit (const juce::Uuid& windowId, bool atEd
     if (! e->trackIds.empty())
         for (auto& f : g->files)
             if (std::find (e->trackIds.begin(), e->trackIds.end(), f.trackId) == e->trackIds.end()) e->trackIds.push_back (f.trackId);
-    w->editTake = juce::Uuid::null(); w->editIn = w->editOut = -1.0;
+    // (the 1 / 2 marks stay where they are after the take is sent: they are only replaced by new ones, or taken away with 5)
     project.changed();
     if (editIdOut) *editIdOut = e->id;
     return {};
