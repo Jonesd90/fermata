@@ -1,6 +1,7 @@
 #pragma once
 #include "AppContext.h"
 #include "Uikit.h"
+#include "ValueEntry.h"
 
 namespace td
 {
@@ -87,16 +88,18 @@ private:
         Strip (const juce::String& t, const juce::String& sub, bool hasPan) : title (t), subtitle (sub), withPan (hasPan)
         {
             fader.setSliderStyle (juce::Slider::LinearVertical); fader.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
-            fader.setRange (-60.0, 10.0, 0.1); fader.setDoubleClickReturnValue (true, 0.0);
-            fader.setTooltip ("Level into the talkback speakers. Double-click for 0 dB; all the way down is off.");
+            fader.setRange (-60.0, 10.0, 0.1); fader.setDoubleClickReturnValue (true, 0.0, juce::ModifierKeys::ctrlModifier);
+            fader.onDoubleClick = [this] { valueentry::ask (fader, "Level in dB (or off)", fader.getValue() <= -59.9 ? juce::String ("off") : juce::String (fader.getValue(), 1), [this] (const juce::String& t) { double db = 0.0; if (valueentry::parseDb (t, -60.0, -60.0, 10.0, db)) fader.setValue (db, juce::sendNotificationSync); }); };
+            fader.setTooltip ("Level into the talkback speakers. Double-click to type a level (Ctrl + click for 0 dB); all the way down is off.");
             fader.onValueChange = [this] { if (onChange) onChange ((float) fader.getValue(), (float) pan.getValue()); repaint(); };
             addAndMakeVisible (fader);
             if (withPan)
             {
                 pan.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag); pan.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
-                pan.setRange (-1.0, 1.0, 0.01); pan.setDoubleClickReturnValue (true, 0.0);
+                pan.setRange (-1.0, 1.0, 0.01); pan.setDoubleClickReturnValue (true, 0.0, juce::ModifierKeys::ctrlModifier);
+                pan.onDoubleClick = [this] { valueentry::ask (pan, "Pan (L30, C, R45 ...)", std::abs (pan.getValue()) < 0.02 ? juce::String ("C") : (pan.getValue() < 0 ? "L" : "R") + juce::String ((int) std::round (std::abs (pan.getValue()) * 100.0)), [this] (const juce::String& t) { double pv = 0.0; if (valueentry::parsePan (t, pv)) pan.setValue (pv, juce::sendNotificationSync); }); };
                 pan.setRotaryParameters (juce::MathConstants<float>::pi * 1.2f, juce::MathConstants<float>::pi * 2.8f, true);
-                pan.setTooltip ("Pan in the stage speakers (left / right). Double-click for centre.");
+                pan.setTooltip ("Pan in the stage speakers (left / right). Double-click to type a position (Ctrl + click for centre).");
                 pan.onValueChange = [this] { if (onChange) onChange ((float) fader.getValue(), (float) pan.getValue()); repaint(); };
                 addAndMakeVisible (pan);
             }
@@ -135,7 +138,7 @@ private:
             }
         }
         juce::String title, subtitle; bool withPan = true, isOutput = false, peakOn = false;
-        juce::Slider fader, pan; juce::Rectangle<int> dbArea, panText;
+        valueentry::TypedSlider fader, pan; juce::Rectangle<int> dbArea, panText;
         std::function<void (float, float)> onChange;
     };
 

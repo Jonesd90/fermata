@@ -6,6 +6,11 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.16.0
+- **Mixer: double-click any value and type it.** Faders (channel and bus), pan sliders and send dials open a small box next to the control: type a level in dB (or -inf / off), a pan position (L30, C, R45, or -30 / 30) and press Enter; Escape or a click elsewhere leaves it alone. The stage (talkback) mixer's faders and pans work the same way. Ctrl + click puts a control back to its default (0 dB / centre); the click on a send dial that opens its panel now waits a moment so a double-click is not mistaken for it.
+- **Mixer fader:** after the mixer was made taller or shorter, the cap no longer followed the mouse (it moved as if the fader were still its old size). The mouse now moves the cap exactly as far as the cap travels, at any window size.
+- **Pin button:** a pinned window now stays in front of the other Fermata windows only, not of other programs on the desktop (the same as the menu bar strip).
+
 ## 2.15.1
 - Mixer: the "copy mix to another mixer" button moved left so the pin button no longer covers it.
 

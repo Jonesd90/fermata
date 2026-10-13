@@ -494,17 +494,33 @@ public:
     }
     ~ToolWindow() override { DockHub::get().remove (this); if (pinnedWindow().getComponent() == this) pinnedWindow() = nullptr; }
     static juce::Component::SafePointer<ToolWindow>& pinnedWindow() { static juce::Component::SafePointer<ToolWindow> p; return p; }
-    /** Pins this window (always in front) and unpins the one that was pinned before; false unpins it. */
+    /** Pins this window and unpins the one that was pinned before; false unpins it. A pinned window stays in front of the other FERMATA windows only -
+        it is not "always on top" of the whole desktop, so other programs can cover it like any window. */
     void setPinned (bool on)
     {
         if (on)
         {
-            if (auto* old = pinnedWindow().getComponent()) if (old != this) { old->setAlwaysOnTop (false); old->pinButton.setToggleState (false, juce::dontSendNotification); }
-            pinnedWindow() = this; setAlwaysOnTop (true); toFront (false);
+            if (auto* old = pinnedWindow().getComponent()) if (old != this) { old->pinTimer.stopTimer(); old->pinButton.setToggleState (false, juce::dontSendNotification); }
+            pinnedWindow() = this;
+            pinTimer.fn = [this] { keepInFront(); };
+            pinTimer.startTimer (250);
+            toFront (false);
         }
-        else { if (pinnedWindow().getComponent() == this) pinnedWindow() = nullptr; setAlwaysOnTop (false); }
+        else { if (pinnedWindow().getComponent() == this) pinnedWindow() = nullptr; pinTimer.stopTimer(); }
         pinButton.setToggleState (on, juce::dontSendNotification);
     }
+    /** While Fermata is the program in use and one of its own windows is active, the pinned window is brought back above it (without taking the keyboard). */
+    void keepInFront()
+    {
+        if (! isVisible() || ! juce::Process::isForegroundProcess()) return;
+        if (juce::ModalComponentManager::getInstance()->getNumModalComponents() > 0) return;
+        auto* active = juce::TopLevelWindow::getActiveTopLevelWindow();
+        if (active == nullptr || active == this) return;
+        auto* dw = dynamic_cast<juce::DocumentWindow*> (active);
+        if (dw == nullptr || ! dw->isUsingNativeTitleBar()) return;                  // an alert, a pop-up or a plug-in's own window stays in front
+        toFront (false);
+    }
+    struct PinTimer : public juce::Timer { std::function<void()> fn; void timerCallback() override { if (fn) fn(); } } pinTimer;
     void resized() override
     {
         juce::DocumentWindow::resized(); placeThemeToggle (*this, themeToggle);

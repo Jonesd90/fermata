@@ -1,5 +1,6 @@
 #include "MixerWindow.h"
 #include "ColourPicker.h"
+#include "ValueEntry.h"
 
 namespace td
 {
@@ -45,7 +46,8 @@ public:
         slider.setRange (-80.0, 12.0, 0.1);
         slider.setSkewFactorFromMidPoint (-20.0);
         slider.setSliderSnapsToMousePosition (false);          // grab the cap; clicking the slot does not make it jump
-        slider.setDoubleClickReturnValue (true, 0.0);
+        slider.setDoubleClickReturnValue (true, 0.0, juce::ModifierKeys::ctrlModifier);       // Ctrl + click = back to 0 dB; a double-click opens the box to type a level
+        slider.onDoubleClick = [this] { askValue(); };
         slider.getProperties().set ("fader", true);
         slider.setValue (initialDb <= -99.0f ? -80.0 : (double) initialDb, juce::dontSendNotification);
         slider.onValueChange = [this] { const float db = (float) slider.getValue(); updateLabel(); changed (db <= -79.5f ? -100.0f : db); };
@@ -55,7 +57,7 @@ public:
         styleField (label, 10.5f);
         styleField (peakLabel, 9.5f);
         peakLabel.setTooltip ("Highest peak so far. Held for 10 seconds, or until 'Reset peaks' if it went above -2 dBFS.");
-        label.setTooltip ("Fader level in dB. Double-click the fader to go back to 0.");
+        label.setTooltip ("Fader level in dB. Double-click the fader to type a level (Ctrl + click goes back to 0).");
         updateLabel();
     }
     /** The cap of the fader takes the channel's colour. */
@@ -120,14 +122,34 @@ public:
         const int mx = x0 + scaleW + sliderW + between;
         meterL.setBounds (mx, travelTop, meterW, travelBottom - travelTop);
         meterR.setBounds (mx + meterW + gap, travelTop, meterW, travelBottom - travelTop);
+        syncDrag();
     }
+    void lookAndFeelChanged() override { syncDrag(); }
+    void parentHierarchyChanged() override { syncDrag(); }
 private:
+    /** The mouse has to move the cap exactly as far as the cap travels: a slider that does not jump to the mouse otherwise counts a fixed 250 pixels for the whole
+        way, so on a tall fader the cap fell behind the mouse (and on a short one it ran ahead). */
+    void syncDrag()
+    {
+        const int travel = slider.getLookAndFeel().getSliderLayout (slider).sliderBounds.getHeight();
+        slider.setMouseDragSensitivity (juce::jmax (40, travel));
+    }
+    void askValue()
+    {
+        const double v = slider.getValue();
+        juce::Component::SafePointer<FaderBlock> safe (this);
+        valueentry::ask (slider, "Fader level in dB (or -inf)", v <= -79.5 ? juce::String ("-inf") : juce::String (v, 1), [safe] (const juce::String& t)
+        {
+            double db = 0.0;
+            if (safe != nullptr && valueentry::parseDb (t, -80.0, -80.0, 12.0, db)) safe->slider.setValue (db, juce::sendNotificationSync);
+        });
+    }
     void updateLabel()
     {
         const double v = slider.getValue();
         label.setText (v <= -79.5 ? juce::String ("-inf") : juce::String (v, 1), juce::dontSendNotification);
     }
-    juce::Slider slider; LevelMeter meterL, meterR; juce::Label label, peakLabel;
+    valueentry::TypedSlider slider; LevelMeter meterL, meterR; juce::Label label, peakLabel;
     std::function<void (float)> changed;
     juce::Colour accent { 0 };
     juce::Rectangle<int> scaleRect, sliderRect; int travelTop = 0, travelBottom = 0;
@@ -331,6 +353,8 @@ public:
             if (app.setSendLevel (mixer, srcId, destId, db) == SendResult::Refused) refuse();
         };
         knob.onClickWithoutDrag = [this] { openPanel(); };
+        knob.setDoubleClickReturnValue (true, 0.0, juce::ModifierKeys::ctrlModifier);
+        knob.onDoubleClick = [this] { askValue(); };
         addAndMakeVisible (knob);
         refreshFromModel();
     }
@@ -348,7 +372,7 @@ public:
             label.setText (destName + (s != nullptr && s->pre.get() ? " (pre)" : ""), juce::dontSendNotification);
             label.setColour (juce::Label::textColourId, s != nullptr && s->active() ? mixTheme().text : mixTheme().dim);
         }
-        knob.setTooltip ("Send to " + destName + ". Drag up / down to change, click once for pre / post fader, inserts and a fader. "
+        knob.setTooltip ("Send to " + destName + ". Drag up / down to change, double-click to type a level, click once for pre / post fader, inserts and a fader. "
                          + (s != nullptr && s->pre.get() ? "(Taken before the fader.)" : "(Taken after the fader.)"));
     }
     void resized() override
@@ -359,16 +383,32 @@ public:
         knob.setBounds (r.withSizeKeepingCentre (juce::jmin (r.getWidth(), r.getHeight()), r.getHeight()));
     }
 private:
-    struct Knob : public juce::Slider
+    /** One click (no drag) opens the send's panel, but only once it is clear that no second click is coming: a double-click types a level instead. */
+    struct Knob : public valueentry::TypedSlider, private juce::Timer
     {
         std::function<void()> onClickWithoutDrag;
+        void mouseDown (const juce::MouseEvent& e) override { if (e.getNumberOfClicks() > 1) { stopTimer(); secondClick = true; } valueentry::TypedSlider::mouseDown (e); }
+        void mouseDoubleClick (const juce::MouseEvent& e) override { stopTimer(); secondClick = true; valueentry::TypedSlider::mouseDoubleClick (e); }
         void mouseUp (const juce::MouseEvent& e) override
         {
             const bool dragged = e.mouseWasDraggedSinceMouseDown();
             juce::Slider::mouseUp (e);
-            if (! dragged && ! e.mods.isPopupMenu() && onClickWithoutDrag) onClickWithoutDrag();
+            if (secondClick) { secondClick = false; return; }
+            if (! dragged && ! e.mods.isPopupMenu() && onClickWithoutDrag) startTimer (juce::MouseEvent::getDoubleClickTimeout() + 60);
         }
+        void timerCallback() override { stopTimer(); if (onClickWithoutDrag) onClickWithoutDrag(); }
+        bool secondClick = false;
     };
+    void askValue()
+    {
+        const double v = knob.getValue();
+        juce::Component::SafePointer<SendDial> safe (this);
+        valueentry::ask (knob, "Send level in dB (or off)", v <= kSendOffDb + 0.05 ? juce::String ("off") : juce::String (v, 1), [safe] (const juce::String& t)
+        {
+            double db = 0.0;
+            if (safe != nullptr && valueentry::parseDb (t, (double) kSendOffDb, (double) kSendOffDb, 6.0, db)) safe->knob.setValue (db, juce::sendNotificationSync);
+        });
+    }
     void showValue()
     {
         const double v = knob.getValue();
@@ -614,19 +654,31 @@ public:
             auto* v = panValues.add (new juce::Label());
             styleField (*v, 9.5f);
             addAndMakeVisible (v);
-            auto* s = pans.add (new juce::Slider());
+            auto* s = static_cast<valueentry::TypedSlider*> (pans.add (new valueentry::TypedSlider()));
             s->setSliderStyle (juce::Slider::LinearHorizontal);
             s->setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
             s->setRange (-1.0, 1.0, 0.01);
             s->getProperties().set ("pan", true);
             const double def = numCh == 2 ? (c == 0 ? -1.0 : 1.0) : 0.0;
-            s->setDoubleClickReturnValue (true, def);
+            s->setDoubleClickReturnValue (true, def, juce::ModifierKeys::ctrlModifier);
+            {
+                juce::Component::SafePointer<juce::Slider> safeS (s);
+                s->onDoubleClick = [safeS]
+                {
+                    if (safeS == nullptr) return;
+                    valueentry::ask (*safeS, "Pan (L30, C, R45 ...)", panText ((float) safeS->getValue()), [safeS] (const juce::String& t)
+                    {
+                        double pv = 0.0;
+                        if (safeS != nullptr && valueentry::parsePan (t, pv)) safeS->setValue (pv, juce::sendNotificationSync);
+                    });
+                };
+            }
             Param& p = numCh == 2 ? (c == 0 ? strip.panL : strip.panR) : strip.pan;
             s->setValue (p.get(), juce::dontSendNotification);
             v->setText (panText (p.get()), juce::dontSendNotification);
             s->setTooltip (numCh == 2 ? juce::String (c == 0 ? "Where the LEFT channel of this track is placed (left .. right). " : "Where the RIGHT channel of this track is placed (left .. right). ")
-                                            + "Double-click to reset."
-                                      : juce::String ("Pan (left .. right). Double-click to centre."));
+                                            + "Double-click to type a position (Ctrl + click resets)."
+                                      : juce::String ("Pan (left .. right). Double-click to type a position (Ctrl + click centres)."));
             s->onValueChange = [this, s, v, &p] { p.set ((float) s->getValue()); v->setText (panText ((float) s->getValue()), juce::dontSendNotification); app.project.markDirty(); };
             addAndMakeVisible (s);
         }
