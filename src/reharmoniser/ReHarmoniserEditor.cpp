@@ -174,20 +174,65 @@ struct ReHarmoniserEditor::VoiceRowC : public juce::Component
     }
 };
 
+/** A colour wheel that picks a hue smoothly: drag round the ring (double-click puts it back to the original amber). */
+class HueWheel : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    std::function<void (double)> onHue;
+    double hue = 0.083;
+    void paint (juce::Graphics& g) override
+    {
+        const auto b = getLocalBounds().toFloat().reduced (3.0f);
+        const auto c = b.getCentre(); const float rOut = juce::jmin (b.getWidth(), b.getHeight()) * 0.5f, thick = juce::jmax (6.0f, rOut * 0.34f), rMid = rOut - thick * 0.5f;
+        for (int i = 0; i < 180; ++i)                                                       // the ring: every hue, side by side
+        {
+            const float a0 = juce::MathConstants<float>::twoPi * (float) i / 180.0f, a1 = juce::MathConstants<float>::twoPi * (float) (i + 1) / 180.0f + 0.01f;
+            juce::Path seg; seg.addCentredArc (c.x, c.y, rMid, rMid, 0.0f, a0, a1, true);
+            g.setColour (juce::Colour::fromHSV ((float) i / 180.0f, 0.95f, 1.0f, 1.0f));
+            g.strokePath (seg, juce::PathStrokeType (thick, juce::PathStrokeType::curved, juce::PathStrokeType::butt));
+        }
+        g.setColour (juce::Colour::fromHSV ((float) hue, 0.93f, 0.8f, 1.0f)); g.fillEllipse (c.x - rMid + thick * 0.6f, c.y - rMid + thick * 0.6f, (rMid - thick * 0.6f) * 2.0f, (rMid - thick * 0.6f) * 2.0f);   // the middle shows the colour chosen
+        const float ang = (float) hue * juce::MathConstants<float>::twoPi;
+        const juce::Point<float> hp (c.x + std::sin (ang) * rMid, c.y - std::cos (ang) * rMid);
+        g.setColour (juce::Colours::white); g.drawEllipse (hp.x - 5.0f, hp.y - 5.0f, 10.0f, 10.0f, 2.0f);
+        g.setColour (juce::Colours::black.withAlpha (0.6f)); g.drawEllipse (hp.x - 6.5f, hp.y - 6.5f, 13.0f, 13.0f, 1.0f);
+    }
+    void mouseDown (const juce::MouseEvent& e) override { if (e.getNumberOfClicks() >= 2) set (0.083); else setFrom (e); }
+    void mouseDrag (const juce::MouseEvent& e) override { setFrom (e); }
+private:
+    void setFrom (const juce::MouseEvent& e)
+    {
+        const auto c = getLocalBounds().toFloat().getCentre();
+        const float dx = (float) e.x - c.x, dy = (float) e.y - c.y;
+        if (dx == 0.0f && dy == 0.0f) return;
+        double h = (std::atan2 ((double) dx, (double) -dy)) / juce::MathConstants<double>::twoPi;      // 0 at the top, clockwise
+        set (h - std::floor (h));
+    }
+    void set (double h) { hue = h; repaint(); if (onHue) onHue (hue); }
+};
+
 class ReHarmoniserEditor::View : public juce::Component
 {
 public:
     static constexpr int kKeys = 58, kRuler = 22;
-    explicit View (ReHarmoniserEditor& o) : ed (o)
+    static constexpr double kDefaultHue = 0.083;                // the amber of the original (0..1 round the colour wheel)
+    explicit View (ReHarmoniserEditor& o) : ed (o) { setHue (kDefaultHue, false); }
+    /** The colour scheme of the picture, from one hue (the wheel in the View block): quiet = nearly black with a tint of the hue, loud = the hue at full
+        strength and then almost white. Any hue is possible, it moves smoothly. */
+    void setHue (double hue, bool redraw = true)
     {
+        hue = hue - std::floor (hue);
         const double sx[] = { 0.0, 0.28, 0.55, 0.8, 1.0 };
-        const juce::uint32 sc[] = { 0xff0b0907, 0xff3a1d0a, 0xffa8540c, 0xffffb030, 0xfffff4d6 };
+        const float h0 = (float) hue, h1 = (float) ((hue + 0.017) - std::floor (hue + 0.017));                 // the bright end leans a little towards the next hue, as amber does towards yellow
+        const juce::Colour sc[] = { juce::Colour::fromHSV (h0, 0.30f, 0.045f, 1.0f), juce::Colour::fromHSV (h0, 0.82f, 0.23f, 1.0f), juce::Colour::fromHSV (h0, 0.93f, 0.66f, 1.0f),
+                                    juce::Colour::fromHSV (h1, 0.81f, 1.0f, 1.0f), juce::Colour::fromHSV (h1, 0.16f, 1.0f, 1.0f) };
         for (int i = 0; i < 256; ++i)
         {
             const double u = i / 255.0; int k = 0; while (k < 3 && u > sx[k + 1]) ++k;
             const double f = juce::jlimit (0.0, 1.0, (u - sx[k]) / (sx[k + 1] - sx[k]));
-            lut[(size_t) i] = juce::Colour (sc[k]).interpolatedWith (juce::Colour (sc[k + 1]), (float) f);
+            lut[(size_t) i] = sc[k].interpolatedWith (sc[k + 1], (float) f);
         }
+        if (redraw) { dirty = true; repaint(); }
     }
     double vt0 = 0.0, vt1 = 10.0, vm0 = 43.0, vm1 = 88.0;      // what is in view: seconds, and pitch as MIDI numbers (bottom, top)
     double lineOp = 0.18, gainDb = 0.0, opacity = 0.85, contrast = 1.0;
@@ -745,6 +790,9 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     isoPreRow.s.onValueChange = [this] {}; isoPostRow.s.onValueChange = [this] {};
     row (opacityRow, "Spectrogram", 10, 100, 5, 85, " %", "How strongly the picture shows over the dark background.");
     row (contrastRow, "Colour contrast", 25, 300, 5, 100, " %", "Makes the difference between loud and quiet parts of the picture stronger or weaker.");
+    styleLabel (hueCap, cText, 12.0f); hueCap.setTooltip ("Drag round the wheel to change the colour of the spectrogram. Double-click for the original amber.");
+    { auto hw = std::make_unique<HueWheel>(); hw->onHue = [this] (double hh) { view->setHue (hh); }; hw->setTooltip (hueCap.getTooltip()); hueWheel = std::move (hw); }
+    addChildComponent (hueCap); addChildComponent (*hueWheel);
     opacityRow.s.onValueChange = [this] { view->opacity = opacityRow.s.getValue() / 100.0; view->repaint(); };
     contrastRow.s.onValueChange = [this] { view->contrast = contrastRow.s.getValue() / 100.0; view->dirty = true; view->repaint(); };
     styleLabel (pitchCap, cText, 12.0f); styleLabel (loopCap, cText, 12.0f); styleLabel (detailCap, cText, 12.0f);
@@ -1585,14 +1633,14 @@ void ReHarmoniserEditor::resized()
     ruleYs.push_back (s.getY()); s.removeFromTop (2);
     // the View block at the bottom
     {
-        const int viewH = viewOpen ? 34 + 8 * 28 + 6 : 36;
+        const int viewH = viewOpen ? 34 + 8 * 28 + 6 + 70 : 36;
         auto viewArea = s.removeFromBottom (viewH); ruleYs.push_back (viewArea.getY()); s.removeFromBottom (4);
         auto a = viewArea; a.removeFromTop (2);
         viewHeader->setBounds (a.removeFromTop (32));
         for (auto* k : { (juce::Component*) &loopCap, (juce::Component*) &loopClearBtn, (juce::Component*) &zoomCap, (juce::Component*) &zoomTIn, (juce::Component*) &zoomTOut, (juce::Component*) &pitchCap,
                          (juce::Component*) &zoomPIn, (juce::Component*) &zoomPOut, (juce::Component*) &linesRow.cap, (juce::Component*) &linesRow.s, (juce::Component*) &opacityRow.cap, (juce::Component*) &opacityRow.s,
                          (juce::Component*) &gainRow.cap, (juce::Component*) &gainRow.s, (juce::Component*) &contrastRow.cap, (juce::Component*) &contrastRow.s, (juce::Component*) &keyRow.cap, (juce::Component*) &keyRow.s,
-                         (juce::Component*) &detailCap, (juce::Component*) &detailBox }) k->setVisible (viewOpen);
+                         (juce::Component*) &detailCap, (juce::Component*) &detailBox, (juce::Component*) &hueCap, hueWheel.get() }) k->setVisible (viewOpen);
         if (viewOpen)
         {
             auto l0 = a.removeFromTop (28); loopCap.setBounds (l0.removeFromLeft (112)); loopClearBtn.setBounds (l0.reduced (0, 1));
@@ -1601,6 +1649,7 @@ void ReHarmoniserEditor::resized()
             auto rw = [&] (Row& rr) { auto q = a.removeFromTop (28); rr.cap.setBounds (q.removeFromLeft (112)); rr.s.setBounds (q); };
             rw (linesRow); rw (opacityRow); rw (gainRow); rw (contrastRow); rw (keyRow);
             auto d = a.removeFromTop (28); detailCap.setBounds (d.removeFromLeft (112)); detailBox.setBounds (d.reduced (0, 1));
+            auto w = a.removeFromTop (70); hueCap.setBounds (w.removeFromLeft (112).withHeight (28)); hueWheel->setBounds (w.removeFromLeft (70).reduced (0, 1));
         }
     }
     // the sections: headers always, the open one's body between them

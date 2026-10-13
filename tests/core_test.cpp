@@ -2770,6 +2770,49 @@ int main()
         CHECK (! mp.undoState().contains ("Chorus"));                                     // markers are not undo steps
     }
 
+    SECTION ("import: 14 mics x several takes named like 0105 L tk.03_03.wav -> 14 tracks");
+    {
+        auto src = [&] (const juce::String& name, juce::int64 len)
+        { ImportSource s; s.file = juce::File ("/x/" + name); s.channels = 1; s.length = len; s.sampleRate = 48000.0; s.modified = juce::Time (2026, 1, 1, 10, 0, 0, 0, true); return s; };
+        const char* mics[] = { "Live2TChoir", "Piano4099L", "Piano4099R", "Piano4006L", "Piano4006R", "L", "C", "R", "Spot1", "Spot2", "Spot3", "Spot4", "Spot5", "Spot6" };
+        std::vector<ImportSource> v;
+        for (int t = 1; t <= 6; ++t)
+            for (int m = 0; m < 14; ++m)
+            {
+                const auto tk = juce::String (t).paddedLeft ('0', 2);
+                v.push_back (src (juce::String (100 + m).paddedLeft ('0', 4) + " " + mics[m] + " tk." + tk + "_" + tk + ".wav", 480000 + 7000 * t));
+            }
+        std::reverse (v.begin(), v.end());
+        auto plan = buildImportPlan (v);
+        CHECK (plan.takes.size() == 6 && plan.tracks.size() == 14);
+        if (plan.takes.size() == 6 && plan.tracks.size() == 14)
+        {
+            CHECK (plan.takes[0].number == 1 && plan.takes[5].number == 6 && plan.takes[0].parts.size() == 14 && plan.takes[5].parts.size() == 14);
+            CHECK (plan.tracks[0].name == "Live2TChoir" && plan.tracks[1].name == "Piano4099L" && plan.tracks[5].name == "L" && plan.tracks[8].name == "Spot1" && plan.tracks[13].name == "Spot6");
+        }
+        CHECK (hasStereoPairs (plan));
+        CHECK (joinStereoPairs (plan).tracks.size() == 11);                                   // Piano4099 L+R, Piano4006 L+R, L+R
+        CHECK (joinStereoPairs (plan, true).tracks.size() == 10);                             // and Spot1 + Spot2 when asked
+        auto joined = joinStereoPairs (plan);
+        bool nm = false; for (auto& t : joined.tracks) nm = nm || (t.name == "Piano4099" && t.channels == 2);
+        CHECK (nm);
+        // linking: whole mono files are used where they are, nothing copied
+        auto dir = tmp.getChildFile ("linkimp"); dir.createDirectory();
+        juce::AudioFormatManager fm2; fm2.registerBasicFormats();
+        juce::Array<juce::File> fl;
+        for (int t = 1; t <= 2; ++t) for (int m = 0; m < 2; ++m)
+        {
+            const auto tk = juce::String (t).paddedLeft ('0', 2);
+            fl.add (makeConstWav (dir.getChildFile (juce::String (100 + m).paddedLeft ('0', 4) + " Mic" + juce::String (m) + " tk." + tk + "_" + tk + ".wav"), 0.1 * t, 1 + t));
+        }
+        juce::StringArray problems;
+        auto lp = buildImportPlan (inspectFiles (fm2, fl, problems));
+        CHECK (lp.takes.size() == 2 && lp.tracks.size() == 2);
+        std::vector<std::vector<juce::File>> out; std::vector<int> nums { 1, 2 };
+        CHECK (copyImportFiles (fm2, lp, tmp.getChildFile ("linkout"), "P", nums, out, nullptr, true).isEmpty());
+        CHECK (out.size() == 2 && out[0].size() == 2 && out[0][0].getParentDirectory() == dir && ! tmp.getChildFile ("linkout").findChildFiles (juce::File::findFiles, false).size());
+    }
+
     eng.rebuildPlan();
     tmp.deleteRecursively();
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

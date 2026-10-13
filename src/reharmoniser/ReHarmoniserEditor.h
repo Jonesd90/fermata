@@ -187,6 +187,7 @@ private:
     // the look of the original: Note Selection title, from / to, View block
     juce::Label noteSelTitle { {}, "Note Selection" }, fromCap { {}, "from" }, toCap { {}, "to" };
     juce::TextEditor fromBox, toBox; juce::TextButton setBtn { "Set" };
+    std::unique_ptr<juce::Component> hueWheel; juce::Label hueCap { {}, "Colour" };      // the spectrogram colour wheel (View block)
     Row contrastRow, opacityRow, isoPreRow, isoPostRow; bool isolating = false; juce::ComboBox detailBox; int detailMode = 1;
     std::unique_ptr<SectionHeader> viewHeader; bool viewOpen = true, viewAuto = false;
     std::vector<int> ruleYs; int ruleX0 = 0, ruleX1 = 0;

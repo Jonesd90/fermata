@@ -167,6 +167,7 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
 
     // ---- which word in the file names is the take number? (the same in every file of a take, different from take to take)
     int tokPos = 0; bool haveTok = false;                              // >0: from the left (1-based), <0: from the right
+    std::vector<int> takeWords;                                        // EVERY word position that is a take number (names like "tk.01_01" carry it twice)
     if (clusters.size() > 1)
     {
         double bestScore = 0.0;
@@ -189,6 +190,7 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
                 if (usable < (int) clusters.size() || agree < (int) clusters.size()) continue;
                 if ((int) values.size() < (int) clusters.size()) continue;      // must differ from take to take
                 const double score = (anyDigit ? 2.0 : 1.0) + (sign > 0 ? 0.01 : 0.0) - 0.001 * pos;
+                if (anyDigit) takeWords.push_back (sign * pos);
                 if (score > bestScore) { bestScore = score; tokPos = sign * pos; haveTok = true; }
             }
     }
@@ -222,10 +224,17 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
         const int n = it.tok.size(), idx = tokPos > 0 ? tokPos - 1 : n + tokPos;
         return (idx >= 0 && idx < n) ? it.tok[idx] : juce::String();
     };
+    if (haveTok && std::find (takeWords.begin(), takeWords.end(), tokPos) == takeWords.end()) takeWords.push_back (tokPos);
     auto keyOf = [&] (const Item& it) -> juce::String
     {
         juce::StringArray t = it.tok;
-        if (haveTok) { const int n = t.size(), idx = tokPos > 0 ? tokPos - 1 : n + tokPos; if (idx >= 0 && idx < n) t.remove (idx); }
+        if (haveTok)
+        {
+            std::set<int> drop;                                                     // all the take-number words of this name (a word position from the left or from the right)
+            const int n = t.size();
+            for (int pos : takeWords) { const int idx = pos > 0 ? pos - 1 : n + pos; if (idx >= 0 && idx < n) drop.insert (idx); }
+            for (auto i = drop.rbegin(); i != drop.rend(); ++i) t.remove (*i);
+        }
         return t.joinIntoString (" ").trim();
     };
 
@@ -270,6 +279,33 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
     });
     if (! numbersOk && plan.takes.size() > 1) plan.notes.add ("No take numbers were found in the names, so the takes are in the order the files were made.");
 
+    // ---- tidy the track names: "0105 L tk" -> "L" (a leading track number that every name has, and a last word "tk" / "take" that every name has)
+    {
+        std::vector<ImportPart*> all; for (auto& t : plan.takes) for (auto& p : t.parts) all.push_back (&p);
+        auto tryTidy = [&] (const std::function<juce::String (const juce::StringArray&)>& fn)
+        {
+            if (all.empty()) return;
+            std::map<juce::String, juce::String> keyToNew, newToKey;                  // old key -> new name; a tidy that would make two tracks the same is not done
+            for (auto* p : all)
+            {
+                const auto nn = fn (tokensOf (p->trackName));
+                if (nn.isEmpty()) return;
+                const auto ok = p->trackKey, nk = nn.toLowerCase();
+                if (keyToNew.count (ok) && keyToNew[ok] != nn) return;
+                if (newToKey.count (nk) && newToKey[nk] != ok) return;
+                keyToNew[ok] = nn; newToKey[nk] = ok;
+            }
+            for (auto* p : all) { p->trackName = keyToNew[p->trackKey]; p->trackKey = p->trackName.toLowerCase(); }
+        };
+        auto allNames = [&] (const std::function<bool (const juce::StringArray&)>& test) { for (auto* p : all) if (! test (tokensOf (p->trackName))) return false; return ! all.empty(); };
+        auto isNumberWord = [] (const juce::String& w) { return w.length() >= 2 && w.containsOnly ("0123456789"); };
+        auto isTakeWord = [] (const juce::String& w) { return w.equalsIgnoreCase ("tk") || w.equalsIgnoreCase ("take") || w.equalsIgnoreCase ("tke"); };
+        if (allNames ([&] (const juce::StringArray& t) { return t.size() >= 2 && isNumberWord (t[0]); }))
+            tryTidy ([] (const juce::StringArray& t) { juce::StringArray r = t; r.remove (0); return r.joinIntoString (" "); });
+        if (allNames ([&] (const juce::StringArray& t) { return t.size() >= 2 && isTakeWord (t[t.size() - 1]); }))
+            tryTidy ([] (const juce::StringArray& t) { juce::StringArray r = t; r.remove (r.size() - 1); return r.joinIntoString (" "); });
+    }
+
     // ---- tracks: the same key in different takes is the same track
     std::set<juce::String> seenKeys;
     for (auto& t : plan.takes)
@@ -290,23 +326,40 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
     return plan;
 }
 
-/** 'piano-L' -> base 'piano', side 'L'.  Understands a last word / letter L, R, Left, Right after '-', '_' or a space. */
-static bool splitSide (const juce::String& name, juce::String& base, int& side)
+/** 'piano-L' -> base 'piano', side L (0).  Understands: a last word L, R, Left, Right after '-', '_' or a space ("piano-L", "Piano R"); the letter stuck to the
+    name ("Piano4099L", "PianoR"); and a name that is only L or R (base empty). With 'numbers' also a last 1 / 2 ("Mic 1", "Mic2": 1 = left, 2 = right). */
+static bool splitSide (const juce::String& name, juce::String& base, int& side, bool numbers)
 {
     const auto n = name.trim();
+    auto word = [&] (const juce::String& w, int& sd)
+    {
+        const auto l = w.trim().toLowerCase();
+        if (l == "l" || l == "left") { sd = 0; return true; }
+        if (l == "r" || l == "right") { sd = 1; return true; }
+        if (numbers && l == "1") { sd = 0; return true; }
+        if (numbers && l == "2") { sd = 1; return true; }
+        return false;
+    };
     for (auto sep : { '-', '_', ' ' })
     {
         const int i = n.lastIndexOfChar ((juce::juce_wchar) sep);
         if (i <= 0) continue;
-        const auto w = n.substring (i + 1).trim().toLowerCase();
-        if (w == "l" || w == "left") side = 0; else if (w == "r" || w == "right") side = 1; else continue;
+        if (! word (n.substring (i + 1), side)) continue;
         base = n.substring (0, i).trim();
         return base.isNotEmpty();
+    }
+    if (word (n, side) && ! n.containsOnly ("12")) { base = {}; return true; }               // just "L" or "R" (a bare 1 / 2 is not a pair)
+    if (n.length() >= 2)
+    {
+        const auto c = n[n.length() - 1], prev = n[n.length() - 2];
+        const bool prevOk = juce::CharacterFunctions::isDigit (prev) || juce::CharacterFunctions::isLowerCase (prev);
+        if ((c == 'L' || c == 'R') && prevOk) { side = c == 'L' ? 0 : 1; base = n.dropLastCharacters (1).trim(); return base.isNotEmpty(); }
+        if (numbers && (c == '1' || c == '2') && juce::CharacterFunctions::isLetter (prev)) { side = c == '1' ? 0 : 1; base = n.dropLastCharacters (1).trim(); return base.isNotEmpty(); }
     }
     return false;
 }
 
-bool hasStereoPairs (const ImportPlan& plan)
+bool hasStereoPairs (const ImportPlan& plan, bool numbers)
 {
     for (auto& t : plan.takes)
     {
@@ -314,14 +367,14 @@ bool hasStereoPairs (const ImportPlan& plan)
         for (auto& p : t.parts)
         {
             juce::String base; int side = 0;
-            if (p.channel < 0 && p.trackChannels == 1 && p.source2 < 0 && plan.sources[(size_t) p.source].channels == 1 && splitSide (p.trackName, base, side))
+            if (p.channel < 0 && p.trackChannels == 1 && p.source2 < 0 && plan.sources[(size_t) p.source].channels == 1 && splitSide (p.trackName, base, side, numbers))
                 if ((seen[base.toLowerCase()] |= (1 << side)) == 3) return true;
         }
     }
     return false;
 }
 
-ImportPlan joinStereoPairs (const ImportPlan& in)
+ImportPlan joinStereoPairs (const ImportPlan& in, bool numbers)
 {
     ImportPlan plan = in;
     for (auto& t : plan.takes)
@@ -331,7 +384,7 @@ ImportPlan joinStereoPairs (const ImportPlan& in)
         {
             const auto& p = t.parts[(size_t) i];
             juce::String base; int side = 0;
-            if (p.channel < 0 && p.trackChannels == 1 && p.source2 < 0 && plan.sources[(size_t) p.source].channels == 1 && splitSide (p.trackName, base, side))
+            if (p.channel < 0 && p.trackChannels == 1 && p.source2 < 0 && plan.sources[(size_t) p.source].channels == 1 && splitSide (p.trackName, base, side, numbers))
             {
                 auto it = halves.emplace (base.toLowerCase(), std::make_pair (-1, -1)).first;
                 (side == 0 ? it->second.first : it->second.second) = i;
@@ -343,7 +396,7 @@ ImportPlan joinStereoPairs (const ImportPlan& in)
             if (used.count (i)) continue;
             const auto& p = t.parts[(size_t) i];
             juce::String base; int side = 0;
-            if (p.channel < 0 && p.trackChannels == 1 && p.source2 < 0 && plan.sources[(size_t) p.source].channels == 1 && splitSide (p.trackName, base, side))
+            if (p.channel < 0 && p.trackChannels == 1 && p.source2 < 0 && plan.sources[(size_t) p.source].channels == 1 && splitSide (p.trackName, base, side, numbers))
             {
                 auto h = halves[base.toLowerCase()];
                 if (h.first >= 0 && h.second >= 0)
@@ -352,7 +405,7 @@ ImportPlan joinStereoPairs (const ImportPlan& in)
                     used.insert (h.first); used.insert (h.second);
                     ImportPart j = t.parts[(size_t) h.first];
                     j.source2 = t.parts[(size_t) h.second].source;
-                    j.trackName = base; j.trackKey = base.toLowerCase(); j.trackChannels = 2;
+                    j.trackName = base.isEmpty() ? juce::String ("L-R") : base; j.trackKey = j.trackName.toLowerCase(); j.trackChannels = 2;
                     out.push_back (j);
                     continue;
                 }
@@ -370,12 +423,13 @@ ImportPlan joinStereoPairs (const ImportPlan& in)
 }
 
 juce::String copyImportFiles (juce::AudioFormatManager& fm, const ImportPlan& plan, const juce::File& folder, const juce::String& label,
-                              const std::vector<int>& takeNumbers, std::vector<std::vector<juce::File>>& files, AudioJob* job)
+                              const std::vector<int>& takeNumbers, std::vector<std::vector<juce::File>>& files, AudioJob* job, bool linkOriginals)
 {
     files.assign (plan.takes.size(), {});
     folder.createDirectory();
     juce::int64 totalSamples = 0, doneSamples = 0;
     for (auto& t : plan.takes) totalSamples += t.length * (juce::int64) t.parts.size();
+    totalSamples = juce::jmax ((juce::int64) 1, totalSamples);
     std::vector<juce::File> made;
     auto fail = [&] (const juce::String& m) { for (auto& f : made) f.deleteFile(); files.clear(); return m; };
     for (size_t ti = 0; ti < plan.takes.size(); ++ti)
@@ -413,7 +467,17 @@ juce::String copyImportFiles (juce::AudioFormatManager& fm, const ImportPlan& pl
         }
         // parts that come from the same polyphonic file are read once, together
         std::map<int, std::vector<size_t>> bySource;
-        for (size_t pi = 0; pi < take.parts.size(); ++pi) if (take.parts[pi].source2 < 0) bySource[take.parts[pi].source].push_back (pi);
+        for (size_t pi = 0; pi < take.parts.size(); ++pi)
+        {
+            const auto& part = take.parts[pi];
+            if (part.source2 >= 0) continue;
+            if (linkOriginals && part.channel < 0 && plan.sources[(size_t) part.source].channels == part.trackChannels)   // a whole mono / stereo file: used where it is, nothing is copied
+            {
+                files[ti][pi] = plan.sources[(size_t) part.source].file;
+                continue;
+            }
+            bySource[part.source].push_back (pi);
+        }
         for (auto& kv : bySource)
         {
             const auto& src = plan.sources[(size_t) kv.first];

@@ -1,6 +1,7 @@
 #include "WaveDraw.h"
 #include "EditWindow.h"
 #include <set>
+#include <map>
 #include "FixTools.h"
 #include "ColourPicker.h"
 #include "VolumeDialog.h"
@@ -796,10 +797,26 @@ private:
         auto mr = juce::Rectangle<float> ((float) sx + 12.0f, (float) (rowTop + rowH - 11), (float) kNameW - 24.0f, 6.0f);
         g.setColour (juce::Colour (0xff15181c)); g.fillRoundedRectangle (mr, 2.0f);
         auto lvl = [&] (float lin) { const float db = juce::Decibels::gainToDecibels (lin, -60.0f); return juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 60.0f); };
-        const float l = lvl (juce::jmax (st->rmsL.get(), st->rmsR.get() * 0.0f)), r2 = lvl (st->rmsR.get());
-        const float v = juce::jmax (l, r2);
+        const auto shown = shownLevel.find (trackId.toString());
+        const float v = lvl (shown != shownLevel.end() ? shown->second : 0.0f);                    // (the level the timer keeps: it falls back when nothing plays)
         g.setColour (v > 0.95f ? juce::Colour (0xffe03030) : v > 0.85f ? juce::Colour (0xffe0b800) : juce::Colour (0xff3fbf5f));
         g.fillRoundedRectangle (mr.withWidth (mr.getWidth() * v), 2.0f);
+    }
+    /** The meters show what the mixer strip measures while it runs; when nothing plays (stopped or paused) the strip's last value stays in it, so the bar falls back to zero smoothly instead, as a live meter does when the signal stops. Returns true while any bar is still moving. */
+    std::map<juce::String, float> shownLevel;
+    bool updateMeterFall()
+    {
+        const bool running = app.isPlaying() || app.engine.isRecording();
+        bool moving = false;
+        for (auto& t : rowTracks())
+        {
+            auto& v = shownLevel[t.id.toString()];
+            float target = 0.0f;
+            if (running) if (auto* st = stripOf (t.id)) target = juce::jmax (st->rmsL.get(), st->rmsR.get());
+            v = juce::jmax (target, v * 0.72f);
+            if (v < 1.0e-4f) v = 0.0f; else moving = true;
+        }
+        return moving;
     }
     juce::Rectangle<int> lockRect (int sx, int rowTop) const { return { sx + kNameW - 24, rowTop + rowH - 22, 18, 18 }; }
     juce::Rectangle<int> paramRect (int sx, int rowTop) const { return { sx + 12, rowTop + rowH - 22, kNameW - 44, 18 }; }
@@ -1204,8 +1221,9 @@ private:
     {
         if (auto* ed = edit())                      // the playhead moved by itself (Stop leaves it where playback got to): the cursor follows
             if (std::abs (ed->playheadSeconds - lastHead) > 1.0e-9) { lastHead = ed->playheadSeconds; cursorSeconds = ed->playheadSeconds; repaint(); }
+        const bool meterMoving = updateMeterFall();
         if (app.isPlaying()) { updateSize(); followPlayhead(); repaint(); }
-        else if (app.engine.isRecording() || ++meterTick % 3 == 0) repaint (viewport.getViewPositionX(), kRulerH + kLaneH, kNameW, getHeight());
+        else if (app.engine.isRecording() || meterMoving || ++meterTick % 3 == 0) repaint (viewport.getViewPositionX(), kRulerH + kLaneH, kNameW, getHeight());
         else followActive = false;
     }
     double lastHead = 0.0;

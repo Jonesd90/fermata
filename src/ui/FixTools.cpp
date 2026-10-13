@@ -1421,7 +1421,7 @@ class ImportDialog : public JobDialogBase
 public:
     ImportDialog (AppContext& a, const juce::Uuid& wid, const juce::Uuid& eid, ImportPlan p) : app (a), windowId (wid), editId (eid), basePlan (p), plan (std::move (p))
     {
-        setSize (640, 480);
+        setSize (640, 540);
         for (auto* x : std::initializer_list<juce::Component*> { &summary, &doIt, &cancel }) addAndMakeVisible (x);
         summary.setMultiLine (true); summary.setReadOnly (true); summary.setCaretVisible (false); summary.setScrollbarsShown (true);
         summary.setColour (juce::TextEditor::backgroundColourId, theme::field); summary.setFont (juce::FontOptions (13.0f));
@@ -1429,14 +1429,33 @@ public:
         if (hasStereoPairs (basePlan))
         {
             addAndMakeVisible (joinBox);
-            joinBox.setButtonText ("Join the -L / -R files into stereo tracks (one stereo strip and one stereo track)");
+            joinBox.setButtonText ("Join left / right pairs (-L / -R, L / R, ...L / ...R) into stereo tracks (one stereo strip and one stereo track); untick = mono tracks");
             joinBox.setToggleState (true, juce::dontSendNotification);
-            joinBox.onClick = [this] { plan = joinBox.getToggleState() ? joinStereoPairs (basePlan) : basePlan; refreshSummary(); };
-            plan = joinStereoPairs (basePlan); refreshSummary();
+            joinBox.onClick = [this] { rebuildPlan(); };
+            if (joinStereoPairs (basePlan, true).tracks.size() < joinStereoPairs (basePlan, false).tracks.size())      // there are names ending 1 and 2 as well
+            {
+                addAndMakeVisible (numBox);
+                numBox.setButtonText ("Also join names ending in 1 and 2 (Mic 1 + Mic 2) into stereo tracks");
+                numBox.setToggleState (false, juce::dontSendNotification);
+                numBox.onClick = [this] { rebuildPlan(); };
+            }
+            rebuildPlan();
         }
+        addAndMakeVisible (copyBox); addAndMakeVisible (linkBox);
+        copyBox.setButtonText ("Copy the audio into this project's folder (recommended)"); linkBox.setButtonText ("Use the audio files where they are (nothing is copied)");
+        copyBox.setRadioGroupId (4711); linkBox.setRadioGroupId (4711);
+        copyBox.setToggleState (true, juce::dontSendNotification);
+        copyBox.onClick = [this] { refreshSummary(); }; linkBox.onClick = [this] { refreshSummary(); };
         doIt.setColour (juce::TextButton::buttonColourId, theme::accent);
         doIt.onClick = [this] { start(); }; cancel.onClick = [this] { if (running) job.requestCancel(); else closeDialogOf (this); };
     }
+    void rebuildPlan()
+    {
+        plan = joinBox.getToggleState() ? joinStereoPairs (basePlan, numBox.isVisible() && numBox.getToggleState()) : basePlan;
+        numBox.setEnabled (joinBox.getToggleState());
+        refreshSummary();
+    }
+    bool linking() const { return linkBox.getToggleState(); }
     void refreshSummary()
     {
         juce::String t;
@@ -1452,7 +1471,10 @@ public:
         for (auto& tr : plan.tracks) t << "   " << tr.name << (tr.channels == 2 ? "  (stereo)" : "") << "\n";
         if (plan.notes.size() > 0) { t << "\nNotes:\n"; for (auto& n : plan.notes) t << "   " << n << "\n"; }
         if (! editId.isNull()) t << "\nEach take is placed in the edit, one after the other, with every track on its own row of the edit window (ready for mixing).\n";
-        t << "\nThe audio is copied into this project's folder as 24-bit WAV files; your original files are not touched.";
+        if (linking())
+            t << "\nThe files are used where they are, exactly as they are (nothing is copied; if you move or delete them the project cannot find the audio). Left / right pairs joined into a stereo track and the channels of multichannel files still have to be written as new files in this project's folder.";
+        else
+            t << "\nThe audio is copied into this project's folder as 24-bit WAV files; your original files are not touched.";
         summary.setText (t, false);
         doIt.setButtonText (editId.isNull() ? "Import " + juce::String ((int) plan.takes.size()) + " take(s)" : "Bring into the edit");
     }
@@ -1461,13 +1483,15 @@ public:
         auto r = getLocalBounds().reduced (12);
         auto bottom = r.removeFromBottom (30);
         cancel.setBounds (bottom.removeFromRight (100)); bottom.removeFromRight (8); doIt.setBounds (bottom.removeFromRight (180));
+        linkBox.setBounds (r.removeFromBottom (24)); copyBox.setBounds (r.removeFromBottom (24)); r.removeFromBottom (4);
+        if (numBox.isVisible()) numBox.setBounds (r.removeFromBottom (24));
         if (joinBox.isVisible()) { joinBox.setBounds (r.removeFromBottom (24)); r.removeFromBottom (4); }
         r.removeFromBottom (6); bar.setBounds (r.removeFromBottom (22)); status.setBounds (r.removeFromBottom (22));
         summary.setBounds (r);
     }
 private:
     ImportPlan basePlan;
-    juce::ToggleButton joinBox;
+    juce::ToggleButton joinBox, numBox, copyBox, linkBox;
     void start()
     {
         auto* w = app.project.findTakeWindow (windowId);
@@ -1478,7 +1502,8 @@ private:
             status.setText ("This audio is " + juce::String (plan.takes.front().sampleRate, 0) + " Hz but the edit is " + juce::String (ed->sampleRate, 0) + " Hz.", juce::dontSendNotification);
             return;
         }
-        doIt.setEnabled (false); status.setText ("Copying the audio...", juce::dontSendNotification);
+        doIt.setEnabled (false); status.setText (linking() ? "Reading the files..." : "Copying the audio...", juce::dontSendNotification);
+        const bool link = linking();
         std::vector<int> numbers; for (size_t i = 0; i < plan.takes.size(); ++i) numbers.push_back ((w != nullptr ? w->nextNumber : 1) + (int) i);
         const auto folder = w != nullptr ? app.project.takeFolder (*w) : app.project.audioFolder().getChildFile ("Imported into " + sanitiseForFile (ed->name));
         const auto label = w != nullptr ? w->labelFor (TakeGroup()) : juce::String ("Imported");
@@ -1486,7 +1511,7 @@ private:
         auto planCopy = std::make_shared<ImportPlan> (plan);
         auto* self = this; auto& appRef = app; const auto wid = windowId; const auto eid = editId;
         juce::Component::SafePointer<ImportDialog> safe (this);
-        runJob ([planCopy, folder, label, numbers, result] (AudioJob& j) { return copyImportFiles (formats(), *planCopy, folder, label, numbers, *result, &j); },
+        runJob ([planCopy, folder, label, numbers, result, link] (AudioJob& j) { return copyImportFiles (formats(), *planCopy, folder, label, numbers, *result, &j, link); },
                 [safe, planCopy, result, &appRef, wid, eid, self] (const juce::String& err)
                 {
                     juce::ignoreUnused (self);
