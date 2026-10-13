@@ -1375,7 +1375,7 @@ void MixerComponent::resized()
     auto r = getLocalBounds();
     auto top = r.removeFromTop (30);
     themeButton.setBounds (top.removeFromRight (34).withSizeKeepingCentre (28, 24));
-    top.removeFromRight (2);
+    top.removeFromRight (2 + 32);                                    // room for the pin button, which sits just left of the sun / moon in the window's own title strip
     copyButton.setBounds (top.removeFromRight (34).withSizeKeepingCentre (28, 24));
     if (altButton.isVisible()) { altButton.setBounds (top.removeFromRight (34).withSizeKeepingCentre (30, 24)); top.removeFromRight (2); }
     if (deleteButton.isVisible()) deleteButton.setBounds (top.removeFromRight (150).reduced (3));

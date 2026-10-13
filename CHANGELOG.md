@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.15.1
+- Mixer: the "copy mix to another mixer" button moved left so the pin button no longer covers it.
+
 ## 2.15.0
 - **Import: all takes on the same tracks.** File names like "0105 L tk.03_03.wav" (a track number first, the take number written twice at the end) used to leave the second take number in the track name, so every take got its own set of tracks. Every take-number word is now removed, a leading track number and a trailing "tk" are tidied away ("0100 Live2TChoir tk.01_01" becomes the track "Live2TChoir"), and 27 takes of 14 mics give 14 tracks.
 - Import: the L / R option now also recognises "Piano4099L" / "Piano4099R" and bare "L" / "R" names (a bare pair becomes the stereo track "L-R"); a second tick-box also joins names ending in 1 and 2 (off unless ticked). Untick the L / R box to keep every file a mono track.
