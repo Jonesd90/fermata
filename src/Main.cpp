@@ -359,9 +359,10 @@ private:
         if (it != windows.end())
         {
             it->second->setName (title);
-            if (stayInFront == nullptr || DockHub::get().contains (it->second.get())) DockHub::get().show (it->second.get());     // an open window stays where it is when sent to from another
+            if (stayInFront == nullptr) DockHub::get().show (it->second.get());     // when sent to from another window it is left exactly as it is: behind, minimised, wherever
             return;
         }
+        if (stayInFront != nullptr) return;                                          // not open, and the user is working elsewhere: do not open it (the work is already in the project)
         auto* content = make();
         auto w = std::make_unique<ToolWindow> (title, [this, key] (ToolWindow*)
         {

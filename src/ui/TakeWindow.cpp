@@ -1276,8 +1276,8 @@ void TakeWindowComponent::sendToEdit (bool atEditPlayhead)
     juce::Uuid editId;
     auto err = app.copyMarkedToEdit (windowId, atEditPlayhead, &editId);
     if (err.isNotEmpty()) { showError ("To edit", err); return; }
-    // You stay in this window: send all the takes you want, then go and edit. The edit's window is made sure to exist (opened behind this one the
-    // first time) but it never comes to the front and never takes the keyboard.
+    // You stay in this window: send all the takes you want, then go and edit. The edit window is never opened, restored or raised by this; it just
+    // picks the new material up from the project whenever it is open.
     if (app.showEditBehind) app.showEditBehind (editId, this);
 }
 
