@@ -61,6 +61,7 @@ void AudioEngine::prepare (double sr, int block)
     sampleRate = sr;
     maxBlock = juce::jmax (16, block);
     zeros.assign ((size_t) juce::jmax (maxBlock * 4, 8192), 0.0f);
+    ltcIn.prepare (sr); ltcGen.prepare (sr); ltcSeenRestart = -1;
     tbTap.assign (zeros.size() * 2, 0.0f);   // also the silence for the pre-roll hand-over (4096 samples at a time)
     for (auto& m : project.mixers)                // plug-ins must know the new sample rate / block size
     {
@@ -308,6 +309,12 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
         if (pk > inputPeak[c].load (std::memory_order_relaxed)) inputPeak[c].store (pk, std::memory_order_relaxed);
     }
 
+    // LTC coming in on the chosen input channel (for the lamp in the top bar)
+    {
+        const int lc = ltcInCh.load (std::memory_order_relaxed);
+        if (lc >= 0 && lc < numIn && in[lc] != nullptr) ltcIn.feed (in[lc], numSamples); else ltcIn.feedNothing (numSamples);
+    }
+
     // session mode: keep the last seconds of every patched input
     auto* pr = preRollPtr.load (std::memory_order_acquire);
     const juce::int64 wp = pr != nullptr ? pr->writePos.load (std::memory_order_relaxed) : 0;
@@ -519,6 +526,19 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
             crGain = target;
         }
         else crGain = 0.0f;
+    }
+
+    // LTC going out on the chosen output channel (replaces whatever was on that channel)
+    {
+        const int oc = ltcOutCh.load (std::memory_order_relaxed);
+        if (oc >= 0 && oc < numOut && out[oc] != nullptr)
+        {
+            const int rq = ltcOutRestart.load (std::memory_order_relaxed);
+            if (rq != ltcSeenRestart || ! ltcGen.isRunning()) { ltcSeenRestart = rq; ltcGen.start (ltcOutFormat.load (std::memory_order_relaxed), ltcOutStart.load (std::memory_order_relaxed)); }
+            ltcGen.fill (out[oc], numSamples);
+            ltcOutRunning.store (true, std::memory_order_relaxed);
+        }
+        else { if (ltcGen.isRunning()) ltcGen.stop(); ltcOutRunning.store (false, std::memory_order_relaxed); }
     }
 
     // output meters

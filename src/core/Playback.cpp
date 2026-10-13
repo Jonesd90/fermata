@@ -184,13 +184,32 @@ std::vector<PlaySegment> segmentsForTake (const Project& p, const TakeGroup& g, 
     return v;
 }
 
-static void addRegionSegments (const Project& p, const EditRegion& r, std::vector<PlaySegment>& v)
+/** LTC (timecode) is never faded or crossfaded: a piece's LTC starts hard at the first sample of the piece's fade-in and stops hard at the end of its fade-out - or, when the next
+    piece begins first (a crossfade), one sample before that piece's fade-in begins, so the pieces of LTC never overlap and the next one starts the moment its piece appears. */
+juce::int64 ltcEndOf (const EditRegion& r, const EditRegion* next) noexcept
+{
+    juce::int64 e = r.fadeOutFinish();
+    if (next != nullptr && next->fadeInBegin() > r.fadeInBegin()) e = juce::jmin (e, next->fadeInBegin());
+    return e;                                                         // (exclusive: the last LTC sample is e - 1)
+}
+
+static void addRegionSegments (const Project& p, const EditRegion& r, std::vector<PlaySegment>& v, const EditRegion* next = nullptr, bool overdub = false)
 {
     for (size_t fi = 0; fi < r.files.size(); ++fi)
     {
         auto& f = r.files[fi];
         const int ti = trackIndexOf (p, f.trackId);
         if (ti < 0) continue;
+        if (p.tracks[(size_t) ti].isLtc)
+        {
+            if (overdub) continue;                                    // overdubs carry no timecode
+            PlaySegment l;
+            l.trackIndex = ti; l.file = f.file;
+            l.srcOffset = r.srcIn - r.startSample - f.fileStart;
+            l.begin = r.fadeInBegin(); l.end = ltcEndOf (r, next);
+            if (l.end > l.begin) v.push_back (l);
+            continue;
+        }
         PlaySegment s;
         s.trackIndex = ti; s.file = f.file;
         s.srcOffset = r.srcIn - r.startSample - f.fileStart;
@@ -254,8 +273,8 @@ std::shared_ptr<AutomationPlan> automationPlanFor (Project& p, const EditDef& e,
 std::vector<PlaySegment> segmentsForEdit (const Project& p, const EditDef& e)
 {
     std::vector<PlaySegment> v;
-    for (auto& r : e.regions)  addRegionSegments (p, r, v);
-    for (auto& r : e.overdubs) addRegionSegments (p, r, v);      // overdubs are simply added: everything plays at the same time
+    for (size_t i = 0; i < e.regions.size(); ++i) addRegionSegments (p, e.regions[i], v, i + 1 < e.regions.size() ? &e.regions[i + 1] : nullptr);
+    for (auto& r : e.overdubs) addRegionSegments (p, r, v, nullptr, true);      // overdubs are simply added: everything plays at the same time
     return v;
 }
 

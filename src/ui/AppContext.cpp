@@ -105,8 +105,40 @@ void AppContext::setTbPair (int first, bool on)
     project.markDirty(); applyTalkback(); project.sendChangeMessage();
 }
 
+void AppContext::applyLtc (bool restartOutput)
+{
+    engine.setLtcInput (project.ltcInput);
+    const auto now = juce::Time::getCurrentTime();
+    const double tod = now.getHours() * 3600.0 + now.getMinutes() * 60.0 + now.getSeconds() + now.getMilliseconds() / 1000.0;
+    engine.setLtcOutput (project.ltcOutput, project.ltcOutOn, project.ltcOutFormat, project.ltcOutStartMode == 0 ? tod : project.ltcOutStartSeconds, restartOutput);
+}
+
+TrackDef* AppContext::ltcTrack()
+{
+    for (auto& t : project.tracks) if (t.isLtc) return &t;
+    return nullptr;
+}
+
+void AppContext::setLtcInput (int ch)
+{
+    project.ltcInput = ch;
+    auto* t = ltcTrack();
+    if (ch >= 0 && t == nullptr)
+    {
+        auto& nt = project.addTrack ("LTC", TrackFormat::Mono, ch);
+        nt.isLtc = true; nt.colour = 0xff8a8f98; nt.setArmed (true);
+        t = &nt;
+    }
+    if (t != nullptr && ch >= 0) { project.assignInputsFrom (*t, ch); }
+    else if (t != nullptr) t->inputs.fill (-1);
+    applyLtc();
+    project.markDirty();
+    project.structureChanged();
+}
+
 void AppContext::applyTalkback()
 {
+    applyLtc();
     engine.setTalkbackRouting (project.crMicInputs, project.tbOutputs);
     engine.setStageMix (project.stageGainDb, project.stagePan, project.stagePlaybackDb, project.stageOutputDb);
     engine.setCrMic (crMicOpen());

@@ -23,6 +23,7 @@ private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void timerCallback() override;
     TakeWindowDef* def() const { return app.project.findTakeWindow (windowId); }
+    void updateLtcButton();
 
     void markWholeSelected();
     void editMarkIn();
@@ -57,6 +58,7 @@ private:
     void fillSendBox();
     bool updatingSendBox = false;
     juce::TextButton armAllButton { "Arm all" }, armNoneButton { "Arm none" };
+    juce::TextButton ltcButton { juce::String::fromUTF8 ("\xE2\x96\xB6 LTC") };       // the triangle: shows / hides the LTC track
     juce::TextButton recordButton { "REC  [R]" }, zoomInButton { "+" }, zoomOutButton { "-" },
                      playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, playMarkedButton { "Play marked" },
                      editInButton { "Edit IN [1]" }, editOutButton { "Edit OUT [2]" },

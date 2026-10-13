@@ -187,6 +187,7 @@ struct EditDef
     bool fixUses (const juce::Uuid& track) const { return fixTracks.empty() || std::find (fixTracks.begin(), fixTracks.end(), track) != fixTracks.end(); }
 
     // ---- automation (drawn in the edit window; only plays from the edit) ----
+    bool                 showLtc = false;       // the LTC track's row is shown in this edit window (the triangle button)
     bool                 automationOn = false;
     std::vector<AutoLane> lanes;
 
@@ -409,6 +410,14 @@ struct EditDef
     }
 
     /** True if edit point k (k = the join before regions[k]) was made by an offline fix: such joins are not counted or numbered, and "next / previous fade" skips them. */
+    /** The number shown for edit point k (0 = start of the first piece, n = end of the last): joins made by an offline fix are not edits and have no number (0). */
+    int editNumberAt (int k) const noexcept
+    {
+        if (k < 0 || k > (int) regions.size() || isFixJoin (k)) return 0;
+        int n = 0;
+        for (int i = 0; i <= k; ++i) if (! isFixJoin (i)) ++n;
+        return n;
+    }
     bool isFixJoin (int k) const noexcept { return k > 0 && k < (int) regions.size() && (regions[(size_t) k].fixIn || regions[(size_t) k - 1].fixOut); }
     EditRegion* find (const juce::Uuid& rid) { for (auto& r : regions) if (r.id == rid) return &r; return nullptr; }
     /** A piece of the main track OR an overdub. */

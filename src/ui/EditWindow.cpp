@@ -187,6 +187,15 @@ public:
                 for (auto& f : r.files) if (f.trackId == tracks[ti].id) rf = &f;
                 if (rf == nullptr) continue;
                 auto rr = juce::Rectangle<int> (x0, top + (int) ti * rowH + 3, wpx, rowH - 6);
+                juce::int64 srcA = r.srcIn, srcB = r.srcOut;
+                if (tracks[ti].isLtc)                                   // LTC is cut hard: from the first sample of the piece's fade-in, to one sample before the next piece's fade-in
+                {
+                    const auto lb = r.fadeInBegin(), le = ltcEndOf (r, k + 1 < e->regions.size() ? &e->regions[k + 1] : nullptr);
+                    if (le <= lb) continue;
+                    const int lx0 = xOf ((double) lb / rate);
+                    rr = juce::Rectangle<int> (lx0, rr.getY(), juce::jmax (1, xOf ((double) le / rate) - lx0), rr.getHeight());
+                    srcA = r.srcIn + (lb - r.startSample); srcB = r.srcIn + (le - r.startSample);
+                }
                 const auto tc = chan::of (app.project, tracks[ti].id);
                 g.setColour (selected ? chan::clipFill (tc, true) : chan::clipFill (tc));
                 g.fillRect (rr);
@@ -197,8 +206,8 @@ public:
                     setWaveColour (g, chan::waveColour (tc));
                     juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (rr.reduced (1));
                     const auto wcd = app.waveColourOf (rf->file);
-                    if (! directWave.draw (g, rr.reduced (1), rf->file, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom, wcd.get()))
-                        if (auto* th = thumbnailFor (rf->file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom, wcd.get());
+                    if (! directWave.draw (g, rr.reduced (1), rf->file, (double) (srcA - rf->fileStart) / rate, (double) (srcB - rf->fileStart) / rate, app.waveZoom, wcd.get()))
+                        if (auto* th = thumbnailFor (rf->file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, (double) (srcA - rf->fileStart) / rate, (double) (srcB - rf->fileStart) / rate, app.waveZoom, wcd.get());
                 }
                 g.setColour (selected ? juce::Colour (0xffc26500) : tc.withAlpha (0.9f));         // the selected piece gets an orange frame
                 g.drawRect (rr, selected ? 2 : 1);
@@ -1302,6 +1311,17 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     bounceButton.setTooltip ("Make a master file of this edit through its own mixer (or another mixer)");
     bounceButton.setColour (juce::TextButton::buttonColourId, theme::accent);
     mixerButton.setTooltip ("Opens the mixer of this edit. The edit always plays through it (and is bounced through it), so each piece can have its own mix. It started as a copy of the processing mixer");
+    ltcButton.setTooltip ("Show or hide the LTC (timecode) track of this edit. The LTC pieces never fade or crossfade: each starts hard, and stops one sample before the next piece's fade-in begins.");
+    ltcButton.onClick = [this]
+    {
+        if (auto* e = edit())
+        {
+            e->showLtc = ! e->showLtc;
+            ltcButton.setButtonText (e->showLtc ? juce::String::fromUTF8 ("\xE2\x96\xBC LTC") : juce::String::fromUTF8 ("\xE2\x96\xB6 LTC"));
+            app.project.changed(); timeline->repaint();
+        }
+    };
+    if (auto* e0 = edit()) if (e0->showLtc) ltcButton.setButtonText (juce::String::fromUTF8 ("\xE2\x96\xBC LTC"));
     mixerButton.onClick = [this] { if (auto* m = app.project.mixerOfEdit (editId)) { if (app.showMixer) app.showMixer (m->id); } };
     zoomInButton.onClick = [this] { timeline->zoom (1.5); };
     zoomOutButton.onClick = [this] { timeline->zoom (1.0 / 1.5); };
@@ -1309,7 +1329,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     slipRightToggle.setTooltip ("When you slide a piece, every piece AFTER it slides with it (off: they stay where they are).");
     slipLeftToggle.onClick  = [this] { timeline->slipLeft = slipLeftToggle.getToggleState(); };
     slipRightToggle.onClick = [this] { timeline->slipRight = slipRightToggle.getToggleState(); };
-    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &automationButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &reharmoniserButton, &exportProcButton, &undoFixButton,
+    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &ltcButton, &automationButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &reharmoniserButton, &exportProcButton, &undoFixButton,
                                                           &slipLeftToggle, &slipRightToggle })
     {
         addAndMakeVisible (b);
@@ -1350,7 +1370,7 @@ void EditWindowComponent::resized()
         { &startButton, 40, grid::btnH, 2 }, { &backButton, 40, grid::btnH, 2 }, { &playButton }, { &fwdButton, 40, grid::btnH, 2 }, { &endTransportButton, 40, grid::btnH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
         { &trimButton }, { &deleteButton, grid::btnW, grid::btnH, 14 },
         { &leftButton }, { &rightButton }, { &endButton, grid::btnW, grid::btnH, 14 },
-        { &bounceButton }, { &mixerButton, grid::btnW, grid::btnH, 14 },
+        { &bounceButton }, { &mixerButton, grid::btnW, grid::btnH, 6 }, { &ltcButton, 74, grid::btnH, 14 },
         { &automationButton, grid::btnW, grid::btnH, 14 },
         { &pitchButton }, { &pitchCurveButton, grid::btnW + 24 }, { &repairButton, grid::btnW + 30 }, { &declickButton }, { &reharmoniserButton, grid::btnW + 24 }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, grid::btnW, grid::btnH, 14 },
         { &tracksButton }, { &importButton, grid::btnW, grid::btnH, 14 },

@@ -13,6 +13,7 @@
 #include "../src/core/CoreReservation.h"
 #include "../src/core/WavRepair.h"
 #include "../src/core/ProjectCopy.h"
+#include "../src/core/Ltc.h"
 #include <cstdio>
 
 using namespace td;
@@ -2616,6 +2617,140 @@ int main()
         a.curve = FadeCurve::EqualPower; a.setOutCurve (FadeCurve::EqualPower);
         CHECK (a.outCurveValue() == FadeCurve::EqualPower && ! a.outCurveOwn);
     }
+    SECTION ("LTC: timecode recorded as audio is decoded");
+    {
+        // an LTC generator for the test: frames of 80 bits, biphase mark, starting at frame number 'firstFrame' at sample 'at' of a file of 'total' samples
+        auto makeLtc = [] (std::vector<float>& out, double rate, double fps, bool drop, long long firstFrame, int numFrames, long long at)
+        {
+            const int nominal = (int) std::lround (fps);
+            double pos = (double) at; float level = 0.5f; double lastEdge = pos;
+            auto fill = [&] (double upTo) { const long long a = (long long) std::ceil (lastEdge), b = (long long) std::ceil (upTo); for (long long i = a; i < b && i < (long long) out.size(); ++i) out[(size_t) i] = level; lastEdge = upTo; };
+            const double bitLen = rate / (fps * 80.0);
+            for (int fi = 0; fi < numFrames; ++fi)
+            {
+                long long n = firstFrame + fi;
+                long long dn = n;                                                   // drop-frame: frame number -> displayed numbers
+                if (drop) { const long long perMin = 1798, per10 = 17982; const long long d = n / per10, m = n % per10; dn = n + 18 * d + (m > 1 ? 2 * ((m - 2) / perMin) : 0); }
+                const int f = (int) (dn % nominal); long long t = dn / nominal; const int sec = (int) (t % 60); t /= 60; const int mi = (int) (t % 60); t /= 60; const int h = (int) (t % 24);
+                int bits[80] = {};
+                auto put = [&] (int first, int count, int v) { for (int i = 0; i < count; ++i) bits[first + i] = (v >> i) & 1; };
+                put (0, 4, f % 10); put (8, 2, f / 10); bits[10] = drop ? 1 : 0; put (16, 4, sec % 10); put (24, 3, sec / 10); put (32, 4, mi % 10); put (40, 3, mi / 10); put (48, 4, h % 10); put (56, 2, h / 10);
+                const int sync[16] = { 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1 }; for (int i = 0; i < 16; ++i) bits[64 + i] = sync[i];
+                for (int b = 0; b < 80; ++b)
+                {
+                    fill (pos); level = -level;                                       // every bit starts with a change
+                    if (bits[b]) { fill (pos + bitLen * 0.5); level = -level; }
+                    pos += bitLen;
+                }
+                fill (pos);
+            }
+        };
+        const double rate = 48000.0;
+        {   // 25 fps: 10:02:15:00 is on the recording at 0.5 s
+            std::vector<float> sig (48000 * 12, 0.0f);
+            const long long first = ((10LL * 3600 + 2 * 60 + 15) * 25);
+            makeLtc (sig, rate, 25.0, false, first, 25 * 10, 24000);
+            LtcDecoder dec (rate);
+            for (size_t i = 0; i < sig.size(); i += 777) dec.feed (sig.data() + i, (int) std::min<size_t> (777, sig.size() - i));      // odd block sizes
+            auto r = analyseLtc (dec.frames(), rate);
+            CHECK (r.found && std::abs (r.fps - 25.0) < 1.0e-6 && ! r.drop && r.jumps == 0);
+            CHECK (r.found && std::abs (r.startSeconds - (10 * 3600 + 2 * 60 + 15 - 0.5)) < 0.0005);
+            CHECK (r.found && r.firstText == "10:02:14:12");
+            // upside-down signal decodes the same
+            for (auto& v : sig) v = -v;
+            LtcDecoder d2 (rate); d2.feed (sig.data(), (int) sig.size());
+            auto r2 = analyseLtc (d2.frames(), rate);
+            CHECK (r2.found && std::abs (r2.startSeconds - r.startSeconds) < 0.0005);
+        }
+        {   // 29.97 drop-frame, quiet and with a little noise
+            std::vector<float> sig (48000 * 12, 0.0f);
+            const long long first = 17982LL * 6;                                          // an hour in (frame number counted with drops)
+            makeLtc (sig, rate, 30000.0 / 1001.0, true, first, 300, 4800);
+            juce::Random rnd (7); for (auto& v : sig) v = v * 0.1f + (rnd.nextFloat() - 0.5f) * 0.002f;
+            LtcDecoder dec (rate); dec.feed (sig.data(), (int) sig.size());
+            auto r = analyseLtc (dec.frames(), rate);
+            CHECK (r.found && r.drop && std::abs (r.fps - 30000.0 / 1001.0) < 1.0e-6 && r.jumps == 0);
+            CHECK (r.found && std::abs (r.startSeconds - ((double) first * 1001.0 / 30000.0 - 0.1)) < 0.001);
+            CHECK (r.found && timecodeText (r.startSeconds + 0.1, r.fps, true) == "01:00:00;00");
+        }
+        {   // a jump in the timecode (the generator was re-jammed) is reported
+            std::vector<float> sig (48000 * 8, 0.0f);
+            makeLtc (sig, rate, 25.0, false, 25 * 3600, 100, 0);                             // 01:00:00:00 for 4 s
+            std::vector<float> second (48000 * 4, 0.0f); makeLtc (second, rate, 25.0, false, 25 * 7200, 100, 0);   // then 02:00:00:00
+            for (size_t i = 0; i < second.size(); ++i) sig[192000 + i] = second[i];
+            LtcDecoder dec (rate); dec.feed (sig.data(), (int) sig.size());
+            auto r = analyseLtc (dec.frames(), rate);
+            CHECK (r.found && r.jumps == 1);
+        }
+        {   // plain noise or music is not timecode
+            std::vector<float> sig (48000 * 6); juce::Random rnd (3); for (auto& v : sig) v = rnd.nextFloat() - 0.5f;
+            LtcDecoder dec (rate); dec.feed (sig.data(), (int) sig.size());
+            CHECK (! analyseLtc (dec.frames(), rate).found);
+        }
+        // reading it back from a file
+        {
+            std::vector<float> sig (48000 * 6, 0.0f); makeLtc (sig, rate, 24.0, false, 24 * 3600 * 2, 24 * 5, 0);
+            auto f = tmp.getChildFile ("ltc.wav"); CHECK (audioops::writeWav (f, { sig }, rate));
+            juce::AudioFormatManager fm; fm.registerBasicFormats();
+            auto r = scanFileForLtc (fm, f);
+            CHECK (r.found && std::abs (r.fps - 24.0) < 1.0e-6 && std::abs (r.startSeconds - 7200.0) < 0.001);
+        }
+    }
+
+    SECTION ("LTC: the generator, the live detector, and LTC pieces never fade or overlap");
+    {
+        const double rate = 48000.0;
+        for (int code = 0; code < 6; ++code)
+        {
+            LtcGenerator gen; gen.prepare (rate);
+            double fps; int nominal; bool drop; LtcGenerator::formatInfo (code, fps, nominal, drop);
+            const double startSec = drop ? 3600.0 * 1.0 : 3600.0 * 10 + 125.0;                // 10:02:05:00 (or 01:00:00;00 for drop-frame)
+            gen.start (code, startSec);
+            std::vector<float> sig (48000 * 8);
+            for (size_t i = 0; i < sig.size(); i += 480) gen.fill (sig.data() + i, 480);
+            LtcDecoder dec (rate); dec.feed (sig.data(), (int) sig.size());
+            auto r = analyseLtc (dec.frames(), rate);
+            CHECK (r.found && std::abs (r.fps - fps) < 1.0e-6 && r.drop == drop && r.jumps == 0);
+            CHECK (r.found && std::abs (r.startSeconds - std::round (startSec * fps) / fps) < 0.0007);
+            // the live detector says "present" with the same rate
+            LtcLive live; live.prepare (rate);
+            for (size_t i = 0; i < sig.size(); i += 512) live.feed (sig.data() + i, (int) std::min<size_t> (512, sig.size() - i));
+            auto st = live.status();
+            CHECK (st.present && std::abs (st.fps - fps) < 1.0e-6 && st.drop == drop);
+            std::vector<float> quiet (48000, 0.0f); live.feed (quiet.data(), 24000); live.feed (quiet.data(), 24000);
+            CHECK (! live.status().present);                                                  // the signal stopped: the lamp goes red
+        }
+        // pieces of an edit: the LTC of each piece starts hard and never overlaps the next one
+        auto dir = tmp.getChildFile ("ltcseg"); dir.createDirectory();
+        auto fa = makeConstWav (dir.getChildFile ("A.wav"), 0.5, 20), fl = makeConstWav (dir.getChildFile ("L.wav"), 0.25, 20);
+        Project lp; lp.tracks.clear();
+        auto audioId = lp.addTrack ("a", TrackFormat::Mono, 0).id;
+        auto& lt = lp.addTrack ("LTC", TrackFormat::Mono, 1); lt.isLtc = true; const auto ltcId = lt.id;
+        auto& ed = lp.addEdit ("E", juce::Uuid::null());
+        auto addPiece = [&] (juce::int64 srcIn, juce::int64 srcOut, juce::int64 start)
+        {
+            EditRegion r; r.srcIn = srcIn; r.srcOut = srcOut; r.startSample = start; r.sampleRate = 48000.0; r.sourceLength = 20 * 48000;
+            RegionFile a; a.trackId = audioId; a.trackName = "a"; a.file = fa; r.files.push_back (a);
+            RegionFile l; l.trackId = ltcId; l.trackName = "LTC"; l.file = fl; r.files.push_back (l);
+            r.inStart = 0.0; r.inEnd = 0.5; r.outStart = -0.5; r.outEnd = 0.0;               // half-second fades
+            ed.regions.push_back (r);
+        };
+        addPiece (48000, 5 * 48000, 0);
+        addPiece (8 * 48000, 12 * 48000, 4 * 48000 - 12000);                               // the second piece fades in while the first is still fading out
+        auto segs = segmentsForEdit (lp, ed);
+        std::vector<PlaySegment> ls, as; for (auto& s : segs) (s.trackIndex == 1 ? ls : as).push_back (s);
+        CHECK (ls.size() == 2 && as.size() == 2);
+        if (ls.size() == 2)
+        {
+            CHECK (ls[0].fadeInLen == 0 && ls[0].fadeOutLen == 0 && ls[1].fadeInLen == 0 && ls[1].fadeOutLen == 0);          // never faded
+            CHECK (ls[0].begin == ed.regions[0].fadeInBegin());                                                              // hard start at the first sample of the fade-in
+            CHECK (ls[1].begin == ed.regions[1].fadeInBegin());
+            CHECK (ls[0].end == ls[1].begin);                                                                               // the first stops one sample before the second starts to exist: [begin, end) never overlaps
+            CHECK (ls[0].end <= ls[1].begin);
+        }
+        if (as.size() == 2) CHECK (as[0].fadeOutLen > 0 && as[1].fadeInLen > 0);                                            // the audio itself still crossfades
+    }
+
     eng.rebuildPlan();
     tmp.deleteRecursively();
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

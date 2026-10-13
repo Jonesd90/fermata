@@ -2,6 +2,7 @@
 #include "Project.h"
 #include "Dither.h"
 #include "Playback.h"
+#include "Ltc.h"
 
 namespace td
 {
@@ -130,6 +131,22 @@ public:
     void setCrMic (bool open) noexcept { crOn.store (open); }
     void setTalkbackPlayback (bool on) noexcept { tbPlay.store (on); }
 
+    // --- LTC (timecode as audio): watch one input channel, and/or make LTC on one output channel ---
+    /** Which driver input carries LTC (-1 = none). The lamp in the top bar reads ltcInStatus(). Message thread. */
+    void setLtcInput (int inputChannel) noexcept { ltcInCh.store (inputChannel); }
+    LtcLive::Status ltcInStatus() const noexcept { return ltcIn.status(); }
+    /** Makes LTC on a driver output (on = false: off). formatCode: see LtcGenerator. The timecode (re)starts at startSeconds (seconds since midnight) when
+        something other than the start time changed, or when restart is true; calling it again with the same settings changes nothing. Message thread. */
+    void setLtcOutput (int outputChannel, bool on, int formatCode, double startSeconds, bool restart = false) noexcept
+    {
+        const int ch = on ? outputChannel : -1;
+        const bool changed = restart || ch != ltcOutCh.load() || formatCode != ltcOutFormat.load();
+        ltcOutStart.store (startSeconds);
+        ltcOutCh.store (ch); ltcOutFormat.store (formatCode);
+        if (changed) ltcOutRestart.fetch_add (1);
+    }
+    bool ltcOutActive() const noexcept { return ltcOutCh.load() >= 0 && ltcOutRunning.load(); }
+
     // --- metering (message thread) ---
     float takeInputPeak (int inputIndex) noexcept;   // returns peak since last call, then resets
     float takeOutputPeak (int outputIndex) noexcept; // same, for what is sent to the driver outputs
@@ -248,6 +265,12 @@ private:
     std::atomic<const void*> scopeSource { nullptr };
     std::vector<float> scopeRing = std::vector<float> ((size_t) (2 * kScopeFrames), 0.0f);
     std::atomic<juce::int64> scopeWrite { 0 };
+
+    LtcLive ltcIn; LtcGenerator ltcGen;
+    std::atomic<int> ltcInCh { -1 }, ltcOutCh { -1 }, ltcOutFormat { 1 }, ltcOutRestart { 0 };
+    std::atomic<double> ltcOutStart { 0.0 };
+    std::atomic<bool> ltcOutRunning { false };
+    int ltcSeenRestart = -1;                       // audio thread
 
     std::vector<float> zeros;
     dither::Bank outDither;                         // audio thread: one noise generator per output channel

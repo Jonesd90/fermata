@@ -133,7 +133,7 @@ public:
     {
         std::vector<const TrackDef*> v;
         auto* w = const_cast<TakeTimeline*> (this)->def();
-        for (auto& t : app.project.tracks) if (w == nullptr || ! w->isHidden (t.id)) v.push_back (&t);
+        for (auto& t : app.project.tracks) if (w == nullptr || (! w->isHidden (t.id) && (w->showLtc || ! t.isLtc))) v.push_back (&t);
         return v;
     }
 
@@ -314,10 +314,10 @@ public:
                         const int fw = 38; juce::Rectangle<int> f (isIn ? x : x - fw, kRulerH + kLaneH - 13, fw, 11);       // its own row at the bottom of the strip, clear of the Edit IN / OUT flags
                         g.setColour (c); g.fillRect (f);
                         g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (9.5f, juce::Font::bold));
-                        g.drawText ((isIn ? "In " : "Out ") + juce::String (number), f, juce::Justification::centred);
+                        g.drawText ((isIn ? "In " : "Out ") + (number > 0 ? juce::String (number) : juce::String ("fx")), f, juce::Justification::centred);
                     };
-                    used ((double) rg.srcIn / rg.sampleRate, true, (int) ri + 1);
-                    used ((double) rg.srcOut / rg.sampleRate, false, (int) ri + 2);
+                    used ((double) rg.srcIn / rg.sampleRate, true, usedEdit->editNumberAt ((int) ri));                  // the same numbers as the edit window shows
+                    used ((double) rg.srcOut / rg.sampleRate, false, usedEdit->editNumberAt ((int) ri + 1));
                 }
             // playhead
             if (playhead >= 0 && app.playInfo.kind != AppContext::PlayInfo::Kind::Edit && ! app.playInfo.windowTimeline && app.playInfo.windowId == windowId && app.playInfo.id == grp.id)
@@ -1011,6 +1011,10 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     armAllButton.onClick  = [this] { if (! app.engine.isRecording()) { for (auto& t : app.project.tracks) t.setArmed (true);  app.project.changed(); } };
     armNoneButton.onClick = [this] { if (! app.engine.isRecording()) { for (auto& t : app.project.tracks) t.setArmed (false); app.project.changed(); } };
     addAndMakeVisible (armAllButton); addAndMakeVisible (armNoneButton);
+    addAndMakeVisible (ltcButton); ltcButton.setWantsKeyboardFocus (false);
+    ltcButton.setTooltip ("Show or hide the LTC (timecode) track of this window. The LTC is recorded with every take on the track named LTC; choose its input with the LTC IN lamp in the top bar.");
+    ltcButton.onClick = [this] { if (auto* w = def()) { w->showLtc = ! w->showLtc; app.project.changed(); updateLtcButton(); } };
+    updateLtcButton();
     armAllButton.setWantsKeyboardFocus (false); armNoneButton.setWantsKeyboardFocus (false);
     zoomInButton.onClick = [this] { timeline->zoom (1.5); };
     zoomOutButton.onClick = [this] { timeline->zoom (1.0 / 1.5); };
@@ -1152,6 +1156,14 @@ void TakeWindowComponent::fillSendBox()
     updatingSendBox = false;
 }
 
+void TakeWindowComponent::updateLtcButton()
+{
+    auto* w = def();
+    const bool on = w != nullptr && w->showLtc;
+    ltcButton.setButtonText (on ? juce::String::fromUTF8 ("\xE2\x96\xBC LTC") : juce::String::fromUTF8 ("\xE2\x96\xB6 LTC"));
+    ltcButton.setToggleState (on, juce::dontSendNotification);
+}
+
 void TakeWindowComponent::resized()
 {
     auto r = getLocalBounds().reduced (6);
@@ -1164,7 +1176,7 @@ void TakeWindowComponent::resized()
         { &editInButton }, { &editOutButton }, { &toEditButton }, { &toEditAtButton }, { &overdubBox, grid::btnW - 10, grid::btnH, 14 },
         { &editWindowButton }, { &bounceButton, grid::btnW, grid::btnH, 14 },
         { &sendCaption, 120, grid::btnH, 2 }, { &sendBox, 200, grid::btnH, 14 },
-        { &armAllButton }, { &armNoneButton, grid::btnW, grid::btnH, 14 },
+        { &ltcButton, 74, grid::btnH, 14 }, { &armAllButton }, { &armNoneButton, grid::btnW, grid::btnH, 14 },
         { &importButton }, { &pitchButton }, { &pitchCurveButton, grid::btnW + 24 }, { &repairButton, grid::btnW + 30 }, { &declickButton }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, grid::btnW, grid::btnH, 14 }, { &barSearchButton, grid::btnW + 14, grid::btnH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };

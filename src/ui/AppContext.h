@@ -101,6 +101,12 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     bool tbPlaybackOn() const { return tbWanted && ! project.tbOutputs.empty(); }
     std::function<juce::Rectangle<int>()> mainWindowArea;                      // set by the application: where the main window is
     void applyTalkback();
+    /** LTC (timecode as audio): the input it arrives on / the output it is sent on, from the project's settings. */
+    void applyLtc (bool restartOutput = false);
+    /** Chooses the driver input that carries LTC (-1 = none). The LTC track (recorded with every take) is made if there is none, and gets that input. */
+    void setLtcInput (int inputChannel);
+    /** The LTC track of the project (nullptr if there is none yet). */
+    TrackDef* ltcTrack();
     TalkbackKey crKey;
     // ---- remote control (Stream Deck): the same talkback logic with a 1 second hold, and the transport / mixer actions ----
     TalkbackKey remoteCrKey;

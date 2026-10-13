@@ -135,6 +135,8 @@ private:
 std::vector<PlaySegment> segmentsForTake (const Project&, const TakeGroup&, juce::int64 timelineShift = 0);
 /** Plays the whole edit with its crossfades. */
 std::vector<PlaySegment> segmentsForEdit (const Project&, const EditDef&);
+/** Where a piece's LTC stops (exclusive): see addRegionSegments. 'next' is the following piece of the edit (or nullptr). */
+juce::int64 ltcEndOf (const EditRegion&, const EditRegion* next) noexcept;
 /** Plays one region's raw files on the timeline of the file's own samples (the trim window's 'play original'). */
 std::vector<PlaySegment> segmentsForRegionOriginal (const Project&, const EditRegion&);
 } // namespace td

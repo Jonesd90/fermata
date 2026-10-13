@@ -315,6 +315,9 @@ MainComponent::MainComponent (AppContext& a) : app (a)
     for (auto* b : menuItems()) menuStrip->addAndMakeVisible (b);
     menuStrip->addAndMakeVisible (takeBox);
     for (auto* f : { &flagPre, &flagCr, &flagPb }) menuStrip->addAndMakeVisible (f);
+    menuStrip->addAndMakeVisible (ltcInLamp); menuStrip->addAndMakeVisible (ltcOutLamp);
+    ltcInLamp.onClick = [this] { showLtcInMenu(); };
+    ltcOutLamp.onClick = [this] { showLtcOutMenu(); };
     menuBarRaise() = [this] { if (menuStrip != nullptr && menuStrip->isVisible() && juce::Process::isForegroundProcess()) menuStrip->toFront (false); };
     menuBarAvoidArea() = [this] { return menuStrip != nullptr && menuStrip->isVisible() ? menuStrip->getBounds() : juce::Rectangle<int>(); };
     editsButton.onClick = [this] { showEditsMenu(); };
@@ -421,7 +424,7 @@ MainComponent::~MainComponent()
 
 int MainComponent::menuBarWidth() const
 {
-    int w = 8 + kTakeBoxW + kFlagsW;
+    int w = 8 + kTakeBoxW + kFlagsW + kLtcW;
     for (auto* b : const_cast<MainComponent*> (this)->menuItems())
         w += MenuBarButton::widthFor (b == &sessionButton ? juce::String ("PRE-REC ON") : b->getButtonText());
     return w;
@@ -453,6 +456,8 @@ void MainComponent::resized()
             flagPre.setBounds (fx, y + 2, 72, lineH); fx += 72 + 4;
             flagCr.setBounds (fx, y + 2, 52, lineH);  fx += 52 + 4;
             flagPb.setBounds (fx, y + 2, 52, lineH);
+            const int lx = getWidth() - kFlagsW - kLtcW;
+            ltcInLamp.setBounds (lx, y + 2, 124, lineH); ltcOutLamp.setBounds (lx + 128, y + 2, 124, lineH);
         }
         x += kTakeBoxW;
         auto widthOf = [] (MenuBarButton* b) { return MenuBarButton::widthFor (b->getButtonText()); };
@@ -461,14 +466,14 @@ void MainComponent::resized()
         {
             if (b == &mediaButton || b == &masteringButton) continue;
             const int w = b == &sessionButton ? MenuBarButton::widthFor ("PRE-REC ON") : widthOf (b);
-            if (x > 4 && x + w > getWidth() - 4 - (y == 0 ? kFlagsW + rightW : 0)) { x = 4; y += lineH; menuBarH += lineH; }
+            if (x > 4 && x + w > getWidth() - 4 - (y == 0 ? kFlagsW + kLtcW + rightW : 0)) { x = 4; y += lineH; menuBarH += lineH; }
             b->setBounds (x, y + 2, w, lineH);
             x += w;
         }
         // Media, then Mastering, all the way to the right (just before the status squares)
         const int mw = widthOf (&mediaButton), gw = widthOf (&masteringButton);
-        masteringButton.setBounds (getWidth() - kFlagsW - gw, 2, gw, lineH);
-        mediaButton.setBounds (getWidth() - kFlagsW - gw - mw, 2, mw, lineH);
+        masteringButton.setBounds (getWidth() - kFlagsW - kLtcW - gw, 2, gw, lineH);
+        mediaButton.setBounds (getWidth() - kFlagsW - kLtcW - gw - mw, 2, mw, lineH);
     }
     menuStrip->setSize (getWidth(), menuBarH);
     syncMenuStrip();
@@ -558,6 +563,11 @@ void MainComponent::timerCallback()
     // The menu bar (with the Pre-Rec / C-R / P-B squares) is always there, in front of the other Fermata windows (not other programs), and goes with the main window when it is minimised.
     if (menuStrip != nullptr && getPeer() != nullptr && ! getPeer()->isMinimised() && ! menuStrip->isVisible()) menuStrip->setVisible (true);
     flagPre.set (app.sessionMode()); flagCr.set (app.crMicOpen()); flagPb.set (app.tbPlaybackOn());
+    {
+        const auto st = app.engine.ltcInStatus();
+        ltcInLamp.set (app.project.ltcInput >= 0 && st.present, fpsName (st.fps, st.drop) + " fps");
+        ltcOutLamp.set (app.project.ltcOutOn && app.engine.ltcOutActive(), LtcGenerator::formatName (app.project.ltcOutFormat));
+    }
     if (sessionButton.getToggleState() != app.sessionMode())
     {
         sessionButton.setToggleState (app.sessionMode(), juce::dontSendNotification);
@@ -855,6 +865,89 @@ void MainComponent::showMixersMenu()
         }
         else if (r >= 1 && (size_t) r <= app.project.mixers.size() && app.showMixer)
             app.showMixer (app.project.mixers[(size_t) r - 1]->id);
+    });
+}
+
+// ---------------------------------------------------------------------------------------------------------------- LTC menus
+void MainComponent::showLtcInMenu()
+{
+    juce::PopupMenu m;
+    m.addSectionHeader ("LTC input (timecode as audio)");
+    m.addItem (1, "None", true, app.project.ltcInput < 0);
+    const int n = (int) app.project.inputs.size();
+    for (int i = 0; i < n; ++i) m.addItem (100 + i, "Input " + juce::String (i + 1) + "  -  " + app.project.inputLabel (i), true, app.project.ltcInput == i);
+    m.addSeparator();
+    m.addItem (2, "It is recorded with every take, on the track named LTC (show it with the LTC triangle in the take and edit windows)", false);
+    juce::Component::SafePointer<MainComponent> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&ltcInLamp).withMinimumWidth (320), [safe] (int r)
+    {
+        if (safe == nullptr || r == 0) return;
+        if (r == 1) safe->app.setLtcInput (-1);
+        else if (r >= 100) safe->app.setLtcInput (r - 100);
+    });
+}
+
+static bool parseTimecodeText (const juce::String& text, double fps, double& seconds)
+{
+    juce::StringArray p; p.addTokens (text.trim(), ":;.", "");
+    p.removeEmptyStrings();
+    if (p.size() != 4) return false;
+    const int h = p[0].getIntValue(), mi = p[1].getIntValue(), s = p[2].getIntValue(), f = p[3].getIntValue();
+    if (h < 0 || h > 23 || mi < 0 || mi > 59 || s < 0 || s > 59 || f < 0 || f > 59) return false;
+    seconds = h * 3600.0 + mi * 60.0 + s + f / fps;
+    return true;
+}
+
+void MainComponent::showLtcOutMenu()
+{
+    juce::PopupMenu m;
+    m.addSectionHeader ("LTC output");
+    m.addItem (1, "Send LTC", app.project.ltcOutput >= 0, app.project.ltcOutOn);
+    juce::PopupMenu outs;
+    outs.addItem (50, "None", true, app.project.ltcOutput < 0);
+    for (int i = 0; i < (int) app.project.outputs.size(); ++i) outs.addItem (200 + i, "Output " + juce::String (i + 1) + "  -  " + app.project.outputLabel (i), true, app.project.ltcOutput == i);
+    m.addSubMenu ("Output channel (route it in Aneman to the Hapi TC output)", outs);
+    juce::PopupMenu fm;
+    for (int c : { 1, 0, 3, 2, 4, 5 }) fm.addItem (10 + c, LtcGenerator::formatName (c) + (c == 2 ? "  (drop-frame)" : ""), true, app.project.ltcOutFormat == c);
+    m.addSubMenu ("Frame rate", fm);
+    juce::PopupMenu sm;
+    sm.addItem (20, "The time of day on this computer", true, app.project.ltcOutStartMode == 0);
+    sm.addItem (21, "00:00:00:00", true, app.project.ltcOutStartMode == 1 && app.project.ltcOutStartSeconds < 0.5);
+    sm.addItem (22, "01:00:00:00", true, app.project.ltcOutStartMode == 1 && std::abs (app.project.ltcOutStartSeconds - 3600.0) < 0.5);
+    sm.addItem (23, "Type a start time...");
+    m.addSubMenu ("Starts at", sm);
+    m.addItem (3, "Restart now", app.project.ltcOutOn);
+    juce::Component::SafePointer<MainComponent> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&ltcOutLamp).withMinimumWidth (260), [safe] (int r)
+    {
+        if (safe == nullptr || r == 0) return;
+        auto& a = safe->app; auto& p = a.project;
+        if (r == 1) p.ltcOutOn = ! p.ltcOutOn;
+        else if (r == 50) { p.ltcOutput = -1; p.ltcOutOn = false; }
+        else if (r >= 200) { p.ltcOutput = r - 200; p.ltcOutOn = true; }
+        else if (r >= 10 && r < 20) p.ltcOutFormat = r - 10;
+        else if (r == 20) p.ltcOutStartMode = 0;
+        else if (r == 21 || r == 22) { p.ltcOutStartMode = 1; p.ltcOutStartSeconds = r == 21 ? 0.0 : 3600.0; }
+        else if (r == 23)
+        {
+            auto* aw = new juce::AlertWindow ("LTC start time", "Type the timecode the LTC starts at (hours:minutes:seconds:frames):", juce::MessageBoxIconType::NoIcon);
+            aw->addTextEditor ("tc", "01:00:00:00", "Start");
+            aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+            aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+            aw->enterModalState (true, juce::ModalCallbackFunction::create ([safe, aw] (int res)
+            {
+                if (res == 1 && safe != nullptr)
+                {
+                    double sec = 0.0; double fps = 25.0; int n = 0; bool d = false; LtcGenerator::formatInfo (safe->app.project.ltcOutFormat, fps, n, d);
+                    if (parseTimecodeText (aw->getTextEditorContents ("tc"), fps, sec))
+                    { safe->app.project.ltcOutStartMode = 1; safe->app.project.ltcOutStartSeconds = sec; safe->app.project.markDirty(); safe->app.applyLtc (true); }
+                    else safe->app.setNotice ("That is not a timecode. Type it like 01:00:00:00");
+                }
+            }), true);
+            return;
+        }
+        p.markDirty();
+        a.applyLtc (r == 3 || r == 20 || r == 21 || r == 22);
     });
 }
 } // namespace td

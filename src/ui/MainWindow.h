@@ -153,6 +153,39 @@ private:
     juce::String label; juce::Colour lit; bool isOn = false;
 };
 
+/** A lamp with a label in the menu bar: red when nothing is happening, green when LTC is arriving / being sent, with the frame rate beside it. Click for its menu. */
+class LtcLamp : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    explicit LtcLamp (juce::String name, juce::String tip) : title (std::move (name)) { setTooltip (tip); setInterceptsMouseClicks (true, false); }
+    void set (bool on, const juce::String& rateText)
+    {
+        if (on != isOn || rateText != rate) { isOn = on; rate = rateText; repaint(); }
+    }
+    std::function<void()> onClick;
+    void mouseDown (const juce::MouseEvent&) override { if (onClick) onClick(); }
+    juce::MouseCursor getMouseCursor() override { return juce::MouseCursor::PointingHandCursor; }
+    void paint (juce::Graphics& g) override
+    {
+        auto b = getLocalBounds().toFloat().reduced (1.0f, 4.0f);
+        g.setColour (theme::field); g.fillRoundedRectangle (b, 4.0f);
+        g.setColour (theme::border); g.drawRoundedRectangle (b.reduced (0.5f), 4.0f, 1.0f);
+        const auto lamp = isOn ? juce::Colour (0xff2ecc40) : juce::Colour (0xffe53935);
+        const float d = 12.0f;
+        auto c = juce::Rectangle<float> (d, d).withCentre ({ b.getX() + 14.0f, b.getCentreY() });
+        if (isOn) { g.setColour (lamp.withAlpha (0.30f)); g.fillEllipse (c.expanded (3.0f)); }
+        g.setColour (lamp); g.fillEllipse (c);
+        g.setColour (juce::Colours::black.withAlpha (0.45f)); g.drawEllipse (c, 1.0f);
+        g.setColour (theme::text); g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
+        auto t = getLocalBounds().withTrimmedLeft (26).reduced (2, 0);
+        g.drawText (title, t.removeFromLeft (50), juce::Justification::centredLeft, false);
+        g.setFont (juce::FontOptions (12.5f)); g.setColour (isOn ? theme::text : theme::dimText);
+        g.drawText (isOn ? rate : juce::String ("no signal"), t, juce::Justification::centredLeft, false);
+    }
+private:
+    juce::String title, rate; bool isOn = false;
+};
+
 class MainComponent : public juce::Component, private juce::ChangeListener, private juce::Timer, private PeakListener, private juce::ComponentListener
 {
 public:
@@ -198,6 +231,11 @@ private:
     NextTakeBox takeBox;
     // always-visible status squares at the right end of the menu bar (they replaced the coloured borders)
     static constexpr int kFlagsW = 186;
+    static constexpr int kLtcW = 2 * 124 + 4;                  // the two LTC lamps, just left of the squares
+    LtcLamp ltcInLamp { "LTC IN", "LTC in: red = no timecode arriving, green = LTC is arriving (with its frame rate). Click to choose the audio input it comes in on (a Hapi TC input routed in Aneman arrives as an ordinary input channel). It is recorded with every take on the track named LTC." },
+            ltcOutLamp { "LTC OUT", "LTC out: green = Fermata is sending LTC. Click to choose the output channel (route it in Aneman to the Hapi TC output), the frame rate and the start time." };
+    void showLtcInMenu();
+    void showLtcOutMenu();
     StatusFlag flagPre { "Pre-Rec", juce::Colour (0xffe53935), "Pre-Rec (red): session mode is ON - the inputs are kept for the last 6 seconds, so a take starts 6 seconds before you press Record. Click it to switch Pre-Rec on or off." },
                flagCr  { "C-R", juce::Colour (0xffa83cff), "C-R (purple): the control-room mic is OPEN - you are talking to the talkback speakers. Click it to open or close the mic (it stays as you leave it)." },
                flagPb  { "P-B", juce::Colour (0xffffd21f), "P-B (yellow): playback - recorded material only is being played to the talkback output. Click it to switch it on or off." };

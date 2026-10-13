@@ -6,6 +6,14 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.13.0
+- **LTC (timecode as audio).** Two labelled lamps in the always-visible top bar: "LTC in" is red when no timecode is detected and green with the frame rate (24, 25, 29.97, 29.97 DF, 30...) when it is. The source is any audio input - including the Hapi TC input routed in Aneman, which is just another driver channel. "LTC out" sends generated timecode through an output channel of your choice (routed in Aneman to a Hapi output) with its own lamp. Click either lamp to choose the channel / format / start.
+- Recorded LTC is an ordinary mono recorded track marked LTC, linked to each take like any other audio. A "LTC" triangle in the take window and the edit window shows or hides its waveform.
+- On playback and bounce the LTC of each edit piece starts hard at the first sample of that piece's fade-in, has no fades and no crossfades, and stops one sample before the next piece's LTC starts, so LTC pieces never overlap.
+
+## 2.12.1
+- Take window: the "In n" / "Out n" flags that show where a take is used in the edit now carry exactly the same numbers as the edit points in the edit window (so "In 2" can no longer appear before "Out 2" by mistake). Joins made by an offline fix (pitch, repair, de-click, export for processing) show "fx", as in the edit window, and are not counted.
+
 ## 2.12.0
 - Import: new tick-box "Join the -L / -R files into stereo tracks". A pair such as "piano-L" and "piano-R" in the same take becomes ONE stereo track (one stereo mixer strip, one stereo take track, one stereo edit track). The two mono files are written as a single new 24-bit stereo WAV in the project folder; your originals are not touched. It is on by default when pairs are found; untick it to keep them as separate mono tracks.
 

@@ -136,7 +136,7 @@ Project::Project() { createDefaultDesign(); }
 
 void Project::createDefaultDesign()
 {
-    inputs.clear(); tracks.clear(); buses.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); preampDevices.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); preampDevices.clear();
     setInputCount (8);
     setOutputCount (4);
     addMixer ("Processing mixer");
@@ -216,8 +216,8 @@ void Project::setOutputCount (int n)
 std::vector<const TrackDef*> Project::editTracks (const EditDef& e) const
 {
     std::vector<const TrackDef*> v;
-    if (e.trackIds.empty()) { for (auto& t : tracks) v.push_back (&t); return v; }
-    for (auto& id : e.trackIds) for (auto& t : tracks) if (t.id == id) { v.push_back (&t); break; }
+    if (e.trackIds.empty()) { for (auto& t : tracks) if (e.showLtc || ! t.isLtc) v.push_back (&t); return v; }
+    for (auto& id : e.trackIds) for (auto& t : tracks) if (t.id == id) { if (e.showLtc || ! t.isLtc) v.push_back (&t); break; }
     return v;
 }
 
@@ -776,7 +776,7 @@ var Project::editToVar (const EditDef& eref) const
     for (auto& r : e->overdubs) ods.add (regionToVar (r));
     put (o, "overdubs", ods); put (o, "playhead", e->playheadSeconds);
     { juce::Array<var> ti; for (auto& id : e->trackIds) ti.add (id.toString()); put (o, "trackIds", ti); }
-    put (o, "automationOn", e->automationOn);
+    put (o, "automationOn", e->automationOn); if (e->showLtc) put (o, "showLtc", true);
     {
         juce::Array<var> ls;
         for (auto& l : e->lanes)
@@ -832,7 +832,7 @@ var Project::toVar (bool editorialOnly) const
     {
         var o = obj();
         put (o, "id", t.id.toString()); put (o, "name", t.name); put (o, "format", (int) t.format);
-        put (o, "surround", t.surroundChannels); put (o, "colour", (juce::int64) t.colour); put (o, "armed", t.isArmed()); put (o, "monitor", (int) t.monitor());
+        put (o, "surround", t.surroundChannels); put (o, "colour", (juce::int64) t.colour); put (o, "armed", t.isArmed()); put (o, "monitor", (int) t.monitor()); if (t.isLtc) put (o, "ltc", true);
         juce::Array<var> ins;
         for (int c = 0; c < t.channelCount(); ++c) ins.add (t.inputOf (c));
         put (o, "inputs", ins);
@@ -857,6 +857,8 @@ var Project::toVar (bool editorialOnly) const
         put (root, "stagePlaybackDb", (double) stagePlaybackDb); put (root, "stageOutputDb", (double) stageOutputDb);
     }
     put (root, "altMixer", altMixer.toString());
+    put (root, "ltcInput", ltcInput); put (root, "ltcOutput", ltcOutput); put (root, "ltcOutOn", ltcOutOn); put (root, "ltcOutFormat", ltcOutFormat);
+    put (root, "ltcOutStartMode", ltcOutStartMode); put (root, "ltcOutStartSeconds", ltcOutStartSeconds);
     { juce::Array<var> tb; for (int o : tbOutputs) tb.add (o); put (root, "tbOutputs", juce::var (tb)); }
 
     juce::Array<var> mx;
@@ -875,6 +877,7 @@ var Project::toVar (bool editorialOnly) const
         if (! w->editTracks.empty()) { juce::Array<var> et; for (auto& t : w->editTracks) et.add (t.toString()); put (o, "editTracks", et); }       // Alt + drag: the marked tracks
         put (o, "cursorTake", w->cursorTake.toString()); put (o, "cursorSeconds", w->cursorSeconds); put (o, "playhead", w->playheadSeconds);
         { juce::Array<var> hid; for (auto& h : w->hiddenTracks) hid.add (h.toString()); put (o, "hiddenTracks", hid); }
+        if (w->showLtc) put (o, "showLtc", true);
         juce::Array<var> gs;
         for (auto& g : w->groups)
         {
@@ -916,7 +919,7 @@ bool Project::fromVar (const var& root)
     if (! root.isObject() || (root.getProperty ("format", {}).toString() != "Fermata project" && root.getProperty ("format", {}).toString() != "TakeDAW project"))
         return false;
 
-    inputs.clear(); tracks.clear(); buses.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); preampDevices.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); preampDevices.clear();
     name = root.getProperty ("name", "Untitled").toString();
     windowBounds.clear();
     if (auto* wb = root["windowBounds"].getDynamicObject())
@@ -938,7 +941,7 @@ bool Project::fromVar (const var& root)
         for (auto& v : *a)
         {
             TrackDef t; t.id = juce::Uuid (v["id"].toString()); t.name = v["name"].toString();
-            t.format = (TrackFormat) (int) v["format"]; t.surroundChannels = (int) v["surround"]; t.colour = (juce::uint32) (juce::int64) v["colour"];
+            t.format = (TrackFormat) (int) v["format"]; t.surroundChannels = (int) v["surround"]; t.colour = (juce::uint32) (juce::int64) v["colour"]; t.isLtc = v.hasProperty ("ltc") && (bool) v["ltc"];
             t.setArmed ((bool) v["armed"]); t.setMonitor ((Monitor) juce::jlimit (0, 3, (int) v["monitor"]));
             if (auto* ins = v["inputs"].getArray())
                 for (int c = 0; c < kMaxTrackChannels && c < ins->size(); ++c) t.inputs[(size_t) c] = (int) (*ins)[c];
@@ -969,6 +972,8 @@ bool Project::fromVar (const var& root)
     crMicInputs.erase (std::remove_if (crMicInputs.begin(), crMicInputs.end(), [this] (int i) { return i < 0 || i >= (int) inputs.size(); }), crMicInputs.end());
     tbOutputs.erase (std::remove_if (tbOutputs.begin(), tbOutputs.end(), [this] (int o) { return o < 0 || o >= (int) outputs.size(); }), tbOutputs.end());
     std::sort (tbOutputs.begin(), tbOutputs.end()); tbOutputs.erase (std::unique (tbOutputs.begin(), tbOutputs.end()), tbOutputs.end());
+    ltcInput = (int) root.getProperty ("ltcInput", -1); ltcOutput = (int) root.getProperty ("ltcOutput", -1); ltcOutOn = (bool) root.getProperty ("ltcOutOn", false);
+    ltcOutFormat = (int) root.getProperty ("ltcOutFormat", 1); ltcOutStartMode = (int) root.getProperty ("ltcOutStartMode", 0); ltcOutStartSeconds = (double) root.getProperty ("ltcOutStartSeconds", 0.0);
     altMixer = root["altMixer"].toString().isEmpty() ? juce::Uuid::null() : juce::Uuid (root["altMixer"].toString());
 
     if (auto* a = root["mixers"].getArray())
@@ -1001,6 +1006,7 @@ bool Project::fromVar (const var& root)
             if (auto* et = v["editTracks"].getArray()) for (auto& t : *et) w->editTracks.push_back (juce::Uuid (t.toString()));
             w->overdub = (bool) v["overdub"];
             if (v.hasProperty ("playhead")) w->playheadSeconds = juce::jmax (0.0, (double) v["playhead"]);
+            w->showLtc = v.hasProperty ("showLtc") && (bool) v["showLtc"];
             if (auto* hid = v["hiddenTracks"].getArray()) for (auto& h : *hid) w->hiddenTracks.push_back (juce::Uuid (h.toString()));
             if (auto* gs = v["groups"].getArray())
                 for (auto& gv : *gs)
@@ -1070,7 +1076,7 @@ bool Project::fromVar (const var& root)
             if (auto* os = v["overdubs"].getArray()) for (auto& rv : *os) e->overdubs.push_back (regionFromVar (rv));
             if (auto* ta = v["trackIds"].getArray()) for (auto& tv : *ta) { juce::Uuid u (tv.toString()); if (! u.isNull()) e->trackIds.push_back (u); }
             if (v.hasProperty ("playhead")) e->playheadSeconds = juce::jmax (0.0, (double) v["playhead"]);
-            e->automationOn = (bool) v["automationOn"];
+            e->automationOn = (bool) v["automationOn"]; e->showLtc = v.hasProperty ("showLtc") && (bool) v["showLtc"];
             if (auto* ls = v["autoLanes"].getArray())
                 for (auto& lv : *ls)
                 {

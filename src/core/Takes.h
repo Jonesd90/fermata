@@ -49,6 +49,7 @@ struct TakeWindowDef
     juce::String defaultLabel { "Take" };   // (old projects only; the piece title is used now: "005 - Symphony 2 - violin.wav")
     int          nextNumber = 1;
     std::vector<TakeGroup> groups;
+    bool showLtc = false;                         // the LTC track's row is shown in this window (the triangle button)
     std::vector<juce::Uuid> hiddenTracks;         // tracks removed from THIS window's view (other windows and the mixers are not touched)
 
     bool isHidden (const juce::Uuid& trackId) const

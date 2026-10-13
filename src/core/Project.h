@@ -26,6 +26,7 @@ struct TrackDef
     TrackFormat  format = TrackFormat::Mono;
     int          surroundChannels = 6;   // used when format == Surround
     juce::uint32 colour = 0;             // the channel's colour as ARGB (0 = automatic); shown on the mixer strip and on the track in the take / edit windows
+    bool         isLtc = false;          // the track that records the LTC (timecode) signal; it is shown in the take / edit windows only when LTC is switched on there
     std::array<int, kMaxTrackChannels> inputs;   // 0-based physical input of each channel of the track (-1 = none)
     std::shared_ptr<TrackLive> live = std::make_shared<TrackLive>();
 
@@ -74,6 +75,12 @@ public:
     float stageGainOf (int input) const { return input >= 0 && input < (int) stageGainDb.size() ? stageGainDb[(size_t) input] : 0.0f; }
     float stagePanOf (int input) const  { return input >= 0 && input < (int) stagePan.size() ? stagePan[(size_t) input] : 0.0f; }
     bool isCrMic (int input) const { return std::find (crMicInputs.begin(), crMicInputs.end(), input) != crMicInputs.end(); }
+    // LTC (timecode as audio): the driver input it arrives on, the driver output Fermata sends its own on, and what that one is.
+    int    ltcInput = -1, ltcOutput = -1;
+    bool   ltcOutOn = false;
+    int    ltcOutFormat = 1;                  // see LtcGenerator::formatInfo (1 = 25 fps)
+    int    ltcOutStartMode = 0;               // 0 = starts at the time of day on this computer's clock, 1 = starts at ltcOutStartSeconds
+    double ltcOutStartSeconds = 0.0;
     /** The mixer the Stream Deck's second Mixer key opens (null = the first mixer after the processing mixer). */
     juce::Uuid altMixer = juce::Uuid::null();
     /** Index in 'mixers' of the Alt Mixer, or -1 when there is only the processing mixer. */
