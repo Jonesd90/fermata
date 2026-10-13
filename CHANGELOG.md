@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.18.0
+- **Edit window: shuffle.** Drag a piece by the banner at its top (the strip with its take name) and it trades places with its neighbours like cards in a deck as soon as its middle passes theirs. The pieces after them stay where they were, the joins around the swapped pieces get the default crossfade, and the whole shuffle is one undo step. No key is needed: the banner is only for shuffling (Ctrl + click is still how you slide a piece, Alt + drag how you mark one track).
+- **Edit window: the insert flag has its own strip.** A new strip under the markers holds an orange INSERT flag for "next take goes here". Drag it along; it sticks to the start or end of a piece when it gets close and settles on the nearest one when you let go. Clicking the time ruler still places it too.
+
 ## 2.17.0
 - **Trim window: level faders for the two takes.** "Level of A (out)" and "Level of B (in)" raise or lower the take going out of the edit or the take coming into it (up to 12 dB either way, double-click for 0) so both sides match. Each fader sets the level of that whole take, which is the same volume change that "Change volume between fades" shows and edits, so you see and change it in both places.
 - **Trim window: "Normalise volume over next take".** With it ticked, a change made to the level of B at the edit glides back to 0 dB in a straight line from the end of this crossfade to the start of the next crossfade (for example +4 dB falling to 0 dB over 15 s). The glide follows the crossfades whenever either of them is moved.

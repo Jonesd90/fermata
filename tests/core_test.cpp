@@ -2921,6 +2921,29 @@ int main()
         CHECK (b.gains.empty());                                                                             // no change at the start, nothing to glide back from
     }
 
+    SECTION ("shuffle: two pieces swap places like cards, everything after them stays put");
+    {
+        EditDef ed; ed.sampleRate = 48000.0;
+        std::vector<juce::Uuid> ids;
+        juce::int64 at = 0;
+        const int lens[4] = { 10, 20, 5, 8 };
+        for (int k = 0; k < 4; ++k)
+        {
+            EditRegion r; r.sampleRate = 48000.0; r.srcIn = 0; r.srcOut = 48000 * lens[k]; r.startSample = at; r.id = juce::Uuid();
+            RegionFile f; f.trackId = juce::Uuid(); r.files.push_back (f);
+            at += r.length(); ids.push_back (r.id); ed.regions.push_back (r);
+        }
+        const auto endBefore = ed.regions.back().endSample();
+        CHECK (ed.shuffleRegion (1, 1) == 2);                                                              // the 20 s piece moves one place to the right
+        CHECK (ed.regions[1].id == ids[2] && ed.regions[2].id == ids[1] && ed.regions[0].id == ids[0] && ed.regions[3].id == ids[3]);
+        CHECK (ed.regions[1].startSample == 48000 * 10 && ed.regions[2].startSample == 48000 * 15 && ed.regions[3].startSample == 48000 * 35);
+        CHECK (ed.regions.back().endSample() == endBefore);
+        CHECK (ed.shuffleRegion (2, -1) == 1 && ed.regions[1].id == ids[1] && ed.regions[2].id == ids[2]);        // and back again
+        CHECK (ed.regions[2].startSample == 48000 * 30);
+        CHECK (ed.shuffleRegion (0, -1) == -1 && ed.shuffleRegion (3, 1) == -1);                              // no neighbour: nothing happens
+        CHECK (ed.shuffleRegion (0, 1) == 1 && ed.regions[0].inEnd > 0.0 && ed.regions[0].inStart == 0.0);   // the new first piece gets an edge fade, not a crossfade
+    }
+
     eng.rebuildPlan();
     tmp.deleteRecursively();
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

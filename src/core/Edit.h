@@ -394,6 +394,31 @@ struct EditDef
 
     void clampAll() { for (int i = 0; i < (int) regions.size(); ++i) clampFades (i); if (insertIndex > (int) regions.size()) insertIndex = -1; }
 
+    /** Shuffle (like swapping two cards in a deck): piece i trades places with its neighbour, dir = +1 (the one after it) or -1 (the one before it). The two take each
+        other's room, so everything after them stays where it was; the joins around them get the default crossfade again. Returns the new index of piece i, or -1 if it cannot be done
+        (no neighbour, or the two were cut apart by an offline fix). */
+    int shuffleRegion (int i, int dir)
+    {
+        const int n = (int) regions.size(), j = i + dir;
+        if (! juce::isPositiveAndBelow (i, n) || ! juce::isPositiveAndBelow (j, n) || (dir != 1 && dir != -1)) return -1;
+        const int lo = juce::jmin (i, j);
+        if (regions[(size_t) lo].fixOut || regions[(size_t) lo + 1].fixIn) return -1;
+        const auto gap = regions[(size_t) lo + 1].startSample - regions[(size_t) lo].endSample();
+        const auto start = regions[(size_t) lo].startSample;
+        std::swap (regions[(size_t) lo], regions[(size_t) lo + 1]);
+        regions[(size_t) lo].startSample = start;
+        regions[(size_t) lo + 1].startSample = start + regions[(size_t) lo].length() + gap;
+        regions[(size_t) lo].fixOut = false; regions[(size_t) lo + 1].fixIn = false;
+        if (lo > 0) regions[(size_t) lo - 1].fixOut = false;
+        regions[(size_t) lo].fixIn = false;
+        if (lo + 2 < n) regions[(size_t) lo + 2].fixIn = false;
+        regions[(size_t) lo + 1].fixOut = false;
+        for (int k = lo; k <= lo + 2; ++k) setDefaultJoinFades (k);
+        hardenEnds();
+        clampAll();
+        return j;
+    }
+
     /** Default 30 ms centred crossfade for the join before region i. */
     void setDefaultJoinFades (int i)
     {

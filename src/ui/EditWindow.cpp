@@ -11,7 +11,8 @@ namespace td
 {
 /** How many different takes the edit is made from (a take used in several pieces counts once). */
 static int takesInEdit (const EditDef& e) { std::set<juce::String> t; for (auto& r : e.regions) t.insert (r.takeId.toString()); return (int) t.size(); }
-static constexpr int kRulerH = 22 + markerui::kStripH, kLaneH = 38;        // (the top 14 pixels of the ruler band are the marker strip)
+static constexpr int kInsH = 14;                                           // the strip with the flag that shows where the next take goes
+static constexpr int kRulerH = 22 + markerui::kStripH + kInsH, kLaneH = 38;        // (the top 14 pixels of the ruler band are the marker strip, the next 14 the insert flag)
 static int kNameW = 210;                        // width of the track-name column (drag its right edge to change it; shared by all edit windows)
 
 class EditTimeline : public juce::Component, private juce::ChangeListener, private juce::Timer
@@ -157,7 +158,7 @@ public:
         {
             const int x = xOf (s);
             g.setColour (theme::grid); g.drawVerticalLine (x, (float) kRulerH - 8, (float) getHeight());
-            g.setColour (theme::dimText); g.drawText (formatTime (s).substring (3, 8), x + 3, 2 + markerui::kStripH, 60, 16, juce::Justification::left);
+            g.setColour (theme::dimText); g.drawText (formatTime (s).substring (3, 8), x + 3, 2 + markerui::kStripH + kInsH, 60, 16, juce::Justification::left);
         }
 
         if (e->isEmpty())
@@ -306,16 +307,35 @@ public:
             for (auto& r : e->overdubs) marks (r);
         }
 
-        // where the next take will be placed
+        // where the next take will be placed: a flag in its own strip under the markers (drag it; it snaps to the starts and ends of the pieces)
         {
             const juce::int64 at = e->insertIndex < 0 || e->insertIndex >= (int) e->regions.size()
                                        ? (e->regions.empty() ? 0 : e->regions.back().endSample()) : e->regions[(size_t) e->insertIndex].startSample;
-            const int x = xOf ((double) at / rate);
-            g.setColour (juce::Colour (0xffc26500));
-            for (int y = kRulerH; y < rowsEnd; y += 8) g.fillRect (x - 1, y, 2, 4);
+            int x = xOf ((double) at / rate);
+            bool snapped = true;
+            if (insertDrag) { x = insertShownX; snapped = insertSnapped; }
+            const int sy = markerui::kStripH;
+            g.setColour (juce::Colours::black.withAlpha (0.12f)); g.fillRect (0, sy, getWidth(), kInsH);
+            const auto orange = juce::Colour (0xffc26500);
+            g.setColour (snapped ? orange : orange.withAlpha (0.55f));
+            for (int y = sy + kInsH; y < rowsEnd; y += 8) g.fillRect (x - 1, y, 2, 4);
+            g.fillRect (x - 1, sy, 2, kInsH);
+            auto flag = juce::Rectangle<int> (x + 1, sy + 1, 52, kInsH - 3);
+            g.fillRect (flag);
+            g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (9.5f, juce::Font::bold));
+            g.drawText ("INSERT", flag, juce::Justification::centred, false);
+            g.setColour (snapped ? orange : orange.withAlpha (0.55f));
             g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
             g.drawText ("next take goes here", x + 4, rowsEnd - 16, 130, 14, juce::Justification::left);
         }
+        if (! shuffleId.isNull() && shuffleMoved)                                 // the piece being shuffled follows the mouse as a ghost
+            if (auto* sr = e->findAny (shuffleId))
+            {
+                const int gx = xOf ((double) (shuffleSample - shuffleGrab) / rate);
+                const int gw = juce::jmax (3, (int) ((double) sr->length() / rate * pixelsPerSecond));
+                g.setColour (juce::Colour (0x55c26500)); g.fillRect (gx, kRulerH + 11, gw, rowsEnd - kRulerH - 11);
+                g.setColour (juce::Colour (0xffc26500)); g.drawRect (gx, kRulerH + 11, gw, rowsEnd - kRulerH - 11, 2);
+            }
 
         const double ph = app.playheadSeconds();
         if (ph >= 0 && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId)
@@ -329,8 +349,8 @@ public:
         if (e->playheadSeconds > 0)                                  // where key 4 / an overdub in the take window will be placed
         {
             const int x = xOf (e->playheadSeconds);
-            g.setColour (juce::Colour (0xff6a4cc2)); g.fillRect (x, markerui::kStripH, 1, kRulerH - markerui::kStripH);
-            juce::Path tri; tri.addTriangle ((float) x - 5, (float) markerui::kStripH, (float) x + 6, (float) markerui::kStripH, (float) x, (float) markerui::kStripH + 9.0f); g.fillPath (tri);
+            g.setColour (juce::Colour (0xff6a4cc2)); g.fillRect (x, markerui::kStripH + kInsH, 1, kRulerH - markerui::kStripH - kInsH);
+            juce::Path tri; tri.addTriangle ((float) x - 5, (float) (markerui::kStripH + kInsH), (float) x + 6, (float) (markerui::kStripH + kInsH), (float) x, (float) (markerui::kStripH + kInsH) + 9.0f); g.fillPath (tri);
         }
         if (e->markIn >= 0 || e->markOut >= 0)                      // I / O points (used by Bounce Out)
         {
@@ -437,6 +457,11 @@ public:
         if (ed == nullptr) return;
         markers.setNameWidth (viewport.getViewPositionX() + kNameW);
         if (markers.mouseDown (e)) return;                                 // the marker strip along the top: right-click for Add Marker / Clear All; drag a marker
+        if (! e.mods.isPopupMenu() && e.x >= kNameW && e.y >= markerui::kStripH && e.y < markerui::kStripH + kInsH)       // the insert flag: drag it to where the next take should go
+        {
+            insertDrag = true; insertDragMove (e.x);
+            return;
+        }
         const double rate = juce::jmax (1.0, ed->sampleRate);
         if (! e.mods.isCommandDown() && ! e.mods.isCtrlDown() && ! e.mods.isPopupMenu() && ! (e.x > kNameW && e.y >= kRulerH + kLaneH))   // a click anywhere but on the audio lets go of the selected pieces
         { selectedRegion = juce::Uuid::null(); selectedRegions.clear(); moveRegion = juce::Uuid::null(); repaint(); }
@@ -528,6 +553,19 @@ public:
             ed->insertIndex = bestIdx >= (int) ed->regions.size() ? -1 : bestIdx;
             app.project.changed();
             repaint(); return;
+        }
+
+        // the banner at the top of a piece: drag it along to shuffle it past its neighbours, like swapping cards in a deck
+        if (! e.mods.isPopupMenu() && e.getNumberOfClicks() < 2 && e.x > kNameW && e.y >= kRulerH + 14 && e.y < kRulerH + kLaneH - 2 && ed->regions.size() > 1 && overdubAt (*ed, e.getPosition(), rate) == nullptr)
+        {
+            const juce::int64 sm = (juce::int64) (juce::jmax (0.0, t) * rate);
+            for (auto& r : ed->regions)
+                if (sm >= r.startSample && sm < r.endSample())
+                {
+                    shuffleId = r.id; shuffleGrab = sm - r.startSample; shuffleSample = sm; shuffleMoved = false; shuffleStartX = e.x;
+                    selectedRegion = r.id; selectedRegions = { r.id }; selectedJoin = -1;
+                    repaint(); return;
+                }
         }
 
         // Shift + drag on a clip of one track: move that clip to another track (it keeps its place on the timeline)
@@ -633,6 +671,27 @@ public:
         auto* ed = edit();
         if (ed == nullptr) return;
         if (markers.mouseDrag (e)) return;
+        if (insertDrag) { insertDragMove (e.x); return; }
+        if (! shuffleId.isNull())
+        {
+            if (! shuffleMoved && std::abs (e.x - shuffleStartX) < 5) return;
+            if (! shuffleMoved) { shuffleMoved = true; if (app.isPlaying()) app.stopPlayback(); setMouseCursor (juce::MouseCursor::DraggingHandCursor); }
+            const double rt = juce::jmax (1.0, ed->sampleRate);
+            shuffleSample = (juce::int64) (juce::jmax (0.0, (e.x - kNameW) / pixelsPerSecond) * rt);
+            for (int guard = 0; guard < 64; ++guard)                      // the piece trades places with a neighbour once its middle has passed the neighbour's middle
+            {
+                const int i = ed->indexOf (shuffleId);
+                if (i < 0) break;
+                const auto& me = ed->regions[(size_t) i];
+                const juce::int64 mid = shuffleSample - shuffleGrab + me.length() / 2;
+                int dir = 0;
+                if (i + 1 < (int) ed->regions.size() && mid > ed->regions[(size_t) i + 1].startSample + ed->regions[(size_t) i + 1].length() / 2) dir = 1;
+                else if (i > 0 && mid < ed->regions[(size_t) i - 1].startSample + ed->regions[(size_t) i - 1].length() / 2) dir = -1;
+                if (dir == 0 || ed->shuffleRegion (i, dir) < 0) break;
+            }
+            app.project.markDirty(); updateSize(); repaint();
+            return;
+        }
         if (widthDrag) { kNameW = juce::jlimit (110, 700, e.x - viewport.getViewPositionX()); updateSize(); repaint(); return; }
         if (autoDragIndex >= 0) { automationDrag (e, *ed); return; }
         if (! clipMoveRegion.isNull())
@@ -709,6 +768,20 @@ public:
     void mouseUp (const juce::MouseEvent& e) override
     {
         if (markers.mouseUp (e)) return;
+        if (insertDrag)
+        {
+            insertDrag = false;
+            if (auto* ed = edit()) { ed->insertIndex = insertDragIndex >= (int) ed->regions.size() ? -1 : insertDragIndex; app.project.changed(); }
+            repaint(); return;
+        }
+        if (! shuffleId.isNull())
+        {
+            const bool moved = shuffleMoved;
+            shuffleId = juce::Uuid::null(); shuffleMoved = false;
+            setMouseCursor (juce::MouseCursor::NormalCursor);
+            if (moved) app.project.changed();
+            repaint(); return;
+        }
         if (widthDrag) { widthDrag = false; setMouseCursor (juce::MouseCursor::NormalCursor); repaint(); return; }
         if (! clipMoveRegion.isNull())
         {
@@ -739,6 +812,27 @@ public:
         if (dragOverdub) { dragOverdub = false; app.project.changed(); }
         if (dragging) { dragging = false; baseRegions.clear(); app.project.changed(); }
         setMouseCursor (juce::MouseCursor::NormalCursor);
+    }
+
+    /** Dragging the insert flag: it follows the mouse, sticking to the start / end of a piece when it comes close; let go and it settles on the nearest one. */
+    void insertDragMove (int x)
+    {
+        auto* ed = edit();
+        if (ed == nullptr) return;
+        const double rate = juce::jmax (1.0, ed->sampleRate);
+        const int n = (int) ed->regions.size();
+        int best = n; double bd = 1.0e9;
+        for (int k = 0; k <= n; ++k)
+        {
+            const juce::int64 at = k >= n ? (n == 0 ? 0 : ed->regions.back().endSample()) : ed->regions[(size_t) k].startSample;
+            const double d = std::abs (xOf ((double) at / rate) - x);
+            if (d < bd) { bd = d; best = k; }
+        }
+        insertDragIndex = best;
+        insertSnapped = bd <= 18.0;
+        const juce::int64 at = best >= n ? (n == 0 ? 0 : ed->regions.back().endSample()) : ed->regions[(size_t) best].startSample;
+        insertShownX = insertSnapped ? xOf ((double) at / rate) : juce::jmax (kNameW, x);
+        repaint();
     }
 
     /** Shift + drag released: the clip goes to the track under the mouse (if that track already has a clip in the same piece, the two swap tracks). */
@@ -1251,6 +1345,8 @@ private:
     bool dragging = false; int dragIndex = -1; std::vector<EditRegion> baseRegions;
     bool markDrag = false, markActive = false, markAlt = false; double markAnchor = 0.0; int markStartX = 0, markRow0 = 0;     // dragging over audio that is not selected sets marks 1 and 2
     bool dragOverdub = false; juce::int64 overdubBase = 0;
+    bool insertDrag = false, insertSnapped = true; int insertShownX = 0, insertDragIndex = 0;                 // the insert flag being dragged
+    juce::Uuid shuffleId; juce::int64 shuffleGrab = 0, shuffleSample = 0; bool shuffleMoved = false; int shuffleStartX = 0;     // a piece being shuffled by its banner
     int fadeDrag = 0; juce::Uuid fadeId; double fadeBase = 0.0;      // dragging a piece's fade-in (1) or fade-out (2) from its corner
 };
 
