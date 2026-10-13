@@ -290,6 +290,85 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
     return plan;
 }
 
+/** 'piano-L' -> base 'piano', side 'L'.  Understands a last word / letter L, R, Left, Right after '-', '_' or a space. */
+static bool splitSide (const juce::String& name, juce::String& base, int& side)
+{
+    const auto n = name.trim();
+    for (auto sep : { '-', '_', ' ' })
+    {
+        const int i = n.lastIndexOfChar ((juce::juce_wchar) sep);
+        if (i <= 0) continue;
+        const auto w = n.substring (i + 1).trim().toLowerCase();
+        if (w == "l" || w == "left") side = 0; else if (w == "r" || w == "right") side = 1; else continue;
+        base = n.substring (0, i).trim();
+        return base.isNotEmpty();
+    }
+    return false;
+}
+
+bool hasStereoPairs (const ImportPlan& plan)
+{
+    for (auto& t : plan.takes)
+    {
+        std::map<juce::String, int> seen;
+        for (auto& p : t.parts)
+        {
+            juce::String base; int side = 0;
+            if (p.channel < 0 && p.trackChannels == 1 && p.source2 < 0 && plan.sources[(size_t) p.source].channels == 1 && splitSide (p.trackName, base, side))
+                if ((seen[base.toLowerCase()] |= (1 << side)) == 3) return true;
+        }
+    }
+    return false;
+}
+
+ImportPlan joinStereoPairs (const ImportPlan& in)
+{
+    ImportPlan plan = in;
+    for (auto& t : plan.takes)
+    {
+        std::map<juce::String, std::pair<int, int>> halves;                   // base -> (left part index, right part index)
+        for (int i = 0; i < (int) t.parts.size(); ++i)
+        {
+            const auto& p = t.parts[(size_t) i];
+            juce::String base; int side = 0;
+            if (p.channel < 0 && p.trackChannels == 1 && p.source2 < 0 && plan.sources[(size_t) p.source].channels == 1 && splitSide (p.trackName, base, side))
+            {
+                auto it = halves.emplace (base.toLowerCase(), std::make_pair (-1, -1)).first;
+                (side == 0 ? it->second.first : it->second.second) = i;
+            }
+        }
+        std::vector<ImportPart> out; std::set<int> used;
+        for (int i = 0; i < (int) t.parts.size(); ++i)
+        {
+            if (used.count (i)) continue;
+            const auto& p = t.parts[(size_t) i];
+            juce::String base; int side = 0;
+            if (p.channel < 0 && p.trackChannels == 1 && p.source2 < 0 && plan.sources[(size_t) p.source].channels == 1 && splitSide (p.trackName, base, side))
+            {
+                auto h = halves[base.toLowerCase()];
+                if (h.first >= 0 && h.second >= 0)
+                {
+                    if (used.count (h.first) || used.count (h.second)) continue;
+                    used.insert (h.first); used.insert (h.second);
+                    ImportPart j = t.parts[(size_t) h.first];
+                    j.source2 = t.parts[(size_t) h.second].source;
+                    j.trackName = base; j.trackKey = base.toLowerCase(); j.trackChannels = 2;
+                    out.push_back (j);
+                    continue;
+                }
+            }
+            out.push_back (p);
+        }
+        t.parts = std::move (out);
+    }
+    plan.tracks.clear(); std::set<juce::String> seenKeys;
+    for (auto& t : plan.takes)
+        for (auto& p : t.parts)
+            if (! seenKeys.count (p.trackKey)) { seenKeys.insert (p.trackKey); plan.tracks.push_back ({ p.trackKey, p.trackName, p.trackChannels }); }
+    plan.notes.add ("Left / right pairs were joined into stereo tracks.");
+    return plan;
+}
+
 juce::String copyImportFiles (juce::AudioFormatManager& fm, const ImportPlan& plan, const juce::File& folder, const juce::String& label,
                               const std::vector<int>& takeNumbers, std::vector<std::vector<juce::File>>& files, AudioJob* job)
 {
@@ -303,9 +382,38 @@ juce::String copyImportFiles (juce::AudioFormatManager& fm, const ImportPlan& pl
     {
         const auto& take = plan.takes[ti];
         files[ti].assign (take.parts.size(), juce::File());
+        // a stereo track made from a left and a right mono file: one new stereo file
+        for (size_t pi = 0; pi < take.parts.size(); ++pi)
+        {
+            const auto& part = take.parts[pi];
+            if (part.source2 < 0) continue;
+            const auto& sl = plan.sources[(size_t) part.source]; const auto& sr = plan.sources[(size_t) part.source2];
+            std::unique_ptr<juce::AudioFormatReader> rl (fm.createReaderFor (sl.file)), rr (fm.createReaderFor (sr.file));
+            if (rl == nullptr || rr == nullptr) return fail ("Cannot read " + (rl == nullptr ? sl : sr).file.getFileName());
+            const auto dest = audioops::uniqueFile (folder.getChildFile (TakeWindowDef::fileNameFor (takeNumbers[ti], label, part.trackName)));
+            auto w = audioops::makeWavWriter (dest, sl.sampleRate, 2, sl.floatData || sr.floatData);
+            if (w == nullptr) return fail ("Cannot create " + dest.getFileName());
+            const bool reduces = (! sl.floatData && rl->bitsPerSample > 24) || (! sr.floatData && rr->bitsPerSample > 24);
+            DitherOut dout (*w, reduces);
+            made.push_back (dest); files[ti][pi] = dest;
+            std::vector<std::vector<float>> bl, br;
+            const juce::int64 total = juce::jmax (sl.length, sr.length);
+            constexpr juce::int64 block = 1 << 16;
+            for (juce::int64 pos = 0; pos < total; pos += block)
+            {
+                if (job != nullptr) { if (job->cancelled()) return fail ("Cancelled."); job->setProgress ((float) ((double) doneSamples / (double) juce::jmax ((juce::int64) 1, totalSamples))); }
+                const auto cnt = (int) juce::jmin (block, total - pos);
+                std::vector<float> zero ((size_t) cnt, 0.0f), left = zero, right = zero;
+                if (pos < sl.length) { const auto c = juce::jmin ((juce::int64) cnt, sl.length - pos); if (! audioops::readRange (*rl, pos, c, bl)) return fail ("Cannot read " + sl.file.getFileName()); std::copy (bl[0].begin(), bl[0].begin() + c, left.begin()); }
+                if (pos < sr.length) { const auto c = juce::jmin ((juce::int64) cnt, sr.length - pos); if (! audioops::readRange (*rr, pos, c, br)) return fail ("Cannot read " + sr.file.getFileName()); std::copy (br[0].begin(), br[0].begin() + c, right.begin()); }
+                const float* ptrs[2] = { left.data(), right.data() };
+                if (! dout.write (ptrs, 2, cnt)) return fail ("Disk full or write error.");
+                doneSamples += (juce::int64) cnt * 2;
+            }
+        }
         // parts that come from the same polyphonic file are read once, together
         std::map<int, std::vector<size_t>> bySource;
-        for (size_t pi = 0; pi < take.parts.size(); ++pi) bySource[take.parts[pi].source].push_back (pi);
+        for (size_t pi = 0; pi < take.parts.size(); ++pi) if (take.parts[pi].source2 < 0) bySource[take.parts[pi].source].push_back (pi);
         for (auto& kv : bySource)
         {
             const auto& src = plan.sources[(size_t) kv.first];

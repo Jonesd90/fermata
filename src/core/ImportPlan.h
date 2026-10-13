@@ -23,6 +23,7 @@ struct ImportPart
     juce::String trackKey;                   // what ties the same track together in different takes
     juce::String trackName;
     int          trackChannels = 1;          // 1 = mono track, 2 = stereo track
+    int          source2 = -1;               // >= 0: a stereo track made from two mono files: 'source' is the left one, this is the right one
 };
 
 struct ImportTake
@@ -47,6 +48,12 @@ struct ImportPlan
 
 /** Looks at the files (header information only) and groups them. Pure logic: no files are read beyond what 'sources' already holds. */
 ImportPlan buildImportPlan (std::vector<ImportSource> sources);
+
+/** True when some mono files are the left / right halves of a pair ('Piano-L' and 'Piano-R', 'Piano L' and 'Piano R' ...) in the same take. */
+bool hasStereoPairs (const ImportPlan&);
+
+/** A copy of the plan in which every such pair is one stereo track (the copy step writes one stereo file from the two mono files). */
+ImportPlan joinStereoPairs (const ImportPlan&);
 
 /** Reads the header information of the files. Files that cannot be read are listed in 'problems'. */
 std::vector<ImportSource> inspectFiles (juce::AudioFormatManager&, const juce::Array<juce::File>&, juce::StringArray& problems);

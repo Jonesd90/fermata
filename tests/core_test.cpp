@@ -1744,6 +1744,18 @@ int main()
                 bool v = false; for (auto& t : p5.tracks) v = v || t.name == "violin";
                 CHECK (v && p5.takes[0].number == 15 && p5.takes[2].number == 17);
             }
+            // -L / -R pairs can be joined into stereo tracks (one stereo file is written from the two mono files)
+            {
+                std::vector<ImportSource> m;
+                for (auto t : { 1, 2 }) for (auto n : { "piano-L", "piano-R", "violin-C" }) m.push_back (src ("A Piece " + juce::String (t).paddedLeft ('0', 3) + "_" + n + ".wav", 1, 300000 + 500 * t));
+                auto base = buildImportPlan (m);
+                CHECK (hasStereoPairs (base) && base.tracks.size() == 3);
+                auto j = joinStereoPairs (base);
+                CHECK (j.tracks.size() == 2 && j.takes[0].parts.size() == 2);
+                bool st = false; for (auto& t : j.tracks) st = st || (t.name == "piano" && t.channels == 2);
+                CHECK (st);
+                CHECK (! hasStereoPairs (j));
+            }
             // a polyphonic file is one take, one track per channel
             std::vector<ImportSource> poly; auto ps = src ("Session 003.wav", 6, 1000000); ps.channelNames.add ("Violin"); ps.channelNames.add ({}); poly.push_back (ps);
             poly.push_back (src ("Session 004.wav", 6, 900000));
@@ -1778,6 +1790,27 @@ int main()
         }
     }
 
+
+    // (stereo join: copying)
+    {
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        std::vector<std::vector<float>> l (1, std::vector<float> (20000, 0.25f)), r (1, std::vector<float> (19000, -0.5f));
+        const auto lf = tmp.getChildFile ("Song 001_gtr-L.wav"), rf = tmp.getChildFile ("Song 001_gtr-R.wav");
+        CHECK (audioops::writeWav (lf, l, 48000.0)); CHECK (audioops::writeWav (rf, r, 48000.0));
+        juce::StringArray problems;
+        auto plan = joinStereoPairs (buildImportPlan (inspectFiles (fm, { lf, rf }, problems)));
+        CHECK (plan.takes.size() == 1 && plan.takes[0].parts.size() == 1 && plan.takes[0].parts[0].trackChannels == 2);
+        std::vector<std::vector<juce::File>> out; std::vector<int> nums { 1 };
+        const auto err = copyImportFiles (fm, plan, tmp.getChildFile ("impst"), "Song", nums, out, nullptr);
+        CHECK (err.isEmpty() && out.size() == 1 && out[0].size() == 1);
+        if (err.isEmpty() && out.size() == 1 && out[0].size() == 1)
+        {
+            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (out[0][0]));
+            std::vector<std::vector<float>> got; if (rd) audioops::readRange (*rd, 0, rd->lengthInSamples, got);
+            CHECK (rd != nullptr && rd->numChannels == 2 && rd->lengthInSamples == 20000 && got.size() == 2
+                   && std::abs (got[0][100] - 0.25f) < 1.0e-4f && std::abs (got[1][100] + 0.5f) < 1.0e-4f && std::abs (got[1][19500]) < 1.0e-6f);
+        }
+    }
 
     SECTION ("mastering: PQ, DDP, exports");
     {

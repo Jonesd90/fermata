@@ -1419,12 +1419,26 @@ private:
 class ImportDialog : public JobDialogBase
 {
 public:
-    ImportDialog (AppContext& a, const juce::Uuid& wid, const juce::Uuid& eid, ImportPlan p) : app (a), windowId (wid), editId (eid), plan (std::move (p))
+    ImportDialog (AppContext& a, const juce::Uuid& wid, const juce::Uuid& eid, ImportPlan p) : app (a), windowId (wid), editId (eid), basePlan (p), plan (std::move (p))
     {
         setSize (640, 480);
         for (auto* x : std::initializer_list<juce::Component*> { &summary, &doIt, &cancel }) addAndMakeVisible (x);
         summary.setMultiLine (true); summary.setReadOnly (true); summary.setCaretVisible (false); summary.setScrollbarsShown (true);
         summary.setColour (juce::TextEditor::backgroundColourId, theme::field); summary.setFont (juce::FontOptions (13.0f));
+        refreshSummary();
+        if (hasStereoPairs (basePlan))
+        {
+            addAndMakeVisible (joinBox);
+            joinBox.setButtonText ("Join the -L / -R files into stereo tracks (one stereo strip and one stereo track)");
+            joinBox.setToggleState (true, juce::dontSendNotification);
+            joinBox.onClick = [this] { plan = joinBox.getToggleState() ? joinStereoPairs (basePlan) : basePlan; refreshSummary(); };
+            plan = joinStereoPairs (basePlan); refreshSummary();
+        }
+        doIt.setColour (juce::TextButton::buttonColourId, theme::accent);
+        doIt.onClick = [this] { start(); }; cancel.onClick = [this] { if (running) job.requestCancel(); else closeDialogOf (this); };
+    }
+    void refreshSummary()
+    {
         juce::String t;
         t << juce::String ((int) plan.takes.size()) << " take(s), " << juce::String ((int) plan.tracks.size()) << " track(s).\n\n";
         for (size_t i = 0; i < plan.takes.size(); ++i)
@@ -1441,18 +1455,19 @@ public:
         t << "\nThe audio is copied into this project's folder as 24-bit WAV files; your original files are not touched.";
         summary.setText (t, false);
         doIt.setButtonText (editId.isNull() ? "Import " + juce::String ((int) plan.takes.size()) + " take(s)" : "Bring into the edit");
-        doIt.setColour (juce::TextButton::buttonColourId, theme::accent);
-        doIt.onClick = [this] { start(); }; cancel.onClick = [this] { if (running) job.requestCancel(); else closeDialogOf (this); };
     }
     void resized() override
     {
         auto r = getLocalBounds().reduced (12);
         auto bottom = r.removeFromBottom (30);
         cancel.setBounds (bottom.removeFromRight (100)); bottom.removeFromRight (8); doIt.setBounds (bottom.removeFromRight (180));
+        if (joinBox.isVisible()) { joinBox.setBounds (r.removeFromBottom (24)); r.removeFromBottom (4); }
         r.removeFromBottom (6); bar.setBounds (r.removeFromBottom (22)); status.setBounds (r.removeFromBottom (22));
         summary.setBounds (r);
     }
 private:
+    ImportPlan basePlan;
+    juce::ToggleButton joinBox;
     void start()
     {
         auto* w = app.project.findTakeWindow (windowId);

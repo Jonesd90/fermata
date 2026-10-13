@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.12.0
+- Import: new tick-box "Join the -L / -R files into stereo tracks". A pair such as "piano-L" and "piano-R" in the same take becomes ONE stereo track (one stereo mixer strip, one stereo take track, one stereo edit track). The two mono files are written as a single new 24-bit stereo WAV in the project folder; your originals are not touched. It is on by default when pairs are found; untick it to keep them as separate mono tracks.
+
 ## 2.11.0
 - ReHarmoniSer: a separate movable playhead (click the picture or ruler to place it; playback starts there), a progress bar while it reads, corrects and writes back, ONE Audition button beside the transport, drawn symbols on the transport buttons, each piano key plays its own note, and the explanation box is tall enough for its text.
 - Edit window: track names wrap onto two lines, the right edge of the name column can be dragged wider, and each track has a small level meter plus Mute and Solo buttons that are the same switches as on the edit's mixer.
