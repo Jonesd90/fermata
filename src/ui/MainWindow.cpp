@@ -633,10 +633,12 @@ void MainComponent::showProjectMenu()
     m.addItem (5, "Rename project...");
     m.addSeparator();
     const auto workKey = app.lastWorkWindowKey ? app.lastWorkWindowKey() : juce::String();
+    m.addItem (9, "Import AAF as edit windows...");
     m.addItem (8, "Re-draw all waveforms in current window", workKey.isNotEmpty());
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&projectButton), [this, workKey] (int r)
     {
         if (r == 8) { app.redrawWaveforms (app.audioFilesOfWindow (workKey)); return; }
+        if (r == 9) { fixtools::importAaf (app, this); return; }
         if (r == 1) newProjectDialog();
         else if (r == 2) openProjectDialog();
         else if (r == 3) app.saveNow();

@@ -12,6 +12,7 @@ struct TakeFile
     juce::String trackName;
     juce::File   file;
     int          numChannels = 1;
+    juce::String sourceName;           // the file name it had when it was imported ("LV01 - Gravity 003_Omni-L.wav"); lets an imported AAF find it again. Empty = recorded here
 };
 
 /** All the files created by one press of Record. They start/stop together and move together. */

@@ -34,5 +34,8 @@ void undoLastFix (AppContext&);
 /** Project menu: 'Save as...' (a new folder; then the project continues there) or 'Create copy of entire project...' (a perfect, checked copy of every file, to take elsewhere; the project stays where it is). */
 void copyProject (AppContext&, juce::Component* parent, bool saveAs);
 
+/** Project menu: reads an AAF (from Pyramix etc.), splits its timeline into pieces and makes one edit window per piece from the audio already imported. */
+void importAaf (AppContext&, juce::Component* parent);
+
 bool isAudioFile (const juce::File&);
 }} // namespace td::fixtools

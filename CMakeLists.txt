@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-set(FERMATA_VERSION 2.30.2)        # the ONE place the version number is changed (see CHANGELOG.md)
+set(FERMATA_VERSION 2.31.0)        # the ONE place the version number is changed (see CHANGELOG.md)
 project(Fermata VERSION ${FERMATA_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -35,6 +35,7 @@ target_sources(Fermata PRIVATE
     src/core/Bounce.cpp
     src/core/AudioOps.cpp
     src/core/ImportPlan.cpp
+    src/core/Aaf.cpp
     src/core/Ltc.cpp
     src/core/MasterDef.cpp
     src/core/Ddp.cpp

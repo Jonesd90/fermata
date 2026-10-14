@@ -2,9 +2,11 @@
 #include "../reharmoniser/ReHarmoniserEditor.h"
 #include "../core/ImportPlan.h"
 #include "../core/ProjectCopy.h"
+#include "../core/Aaf.h"
 #include <array>
 #include <map>
 #include <set>
+#include <limits>
 
 namespace td { namespace fixtools
 {
@@ -1595,6 +1597,7 @@ private:
             {
                 TakeFile f; f.trackId = trackFor[tk.parts[pi].trackKey]; f.trackName = tk.parts[pi].trackName;
                 f.file = files[ti][pi]; f.numChannels = tk.parts[pi].trackChannels;
+                if (tk.parts[pi].source >= 0 && tk.parts[pi].source < (int) plan.sources.size()) f.sourceName = plan.sources[(size_t) tk.parts[pi].source].file.getFileName();
                 if (auto* tr = p.findTrack (f.trackId)) f.trackName = tr->name;
                 g.files.push_back (f);
             }
@@ -2285,7 +2288,7 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
                 if (first == last) { f.setOutCurve (ob.outCurveValue()); }
             }
         // the edit must come out exactly as long as it went in, to the sample, with every region where it was
-        auto span = [] (const std::vector<EditRegion>& v) { juce::int64 sum = 0, lo = std::numeric_limits<juce::int64>::max(), hi = 0; for (auto& r : v) { sum += r.length(); lo = juce::jmin (lo, r.startSample); hi = juce::jmax (hi, r.endSample()); } return std::array<juce::int64, 3> { sum, lo, hi }; };
+        auto span = [] (const std::vector<EditRegion>& v) { juce::int64 sum = 0, lo = (std::numeric_limits<juce::int64>::max)(), hi = 0; for (auto& r : v) { sum += r.length(); lo = juce::jmin (lo, r.startSample); hi = juce::jmax (hi, r.endSample()); } return std::array<juce::int64, 3> { sum, lo, hi }; };
         if (ok && span (e2->regions) != span (st->base)) { ok = false; gApplyWhy = "the edit would have changed length"; juce::Logger::writeToLog ("ReHarmoniSer: refused, the edit would not be the same length"); }
         if (! ok) { e2->regions = st->base; app.project.changed(); return false; }
         st->applied = true; app.project.changed();
@@ -3059,5 +3062,234 @@ void relinkTake (AppContext& app, const juce::Uuid& wid, const juce::Uuid& gid, 
         app.project.changed();
     };
     launchDialog (std::make_unique<SimpleJobDialog> ("Putting the corrected audio into the take...", work, onSuccess, nullptr), title, parent);
+}
+
+// ======================================================================================================== Project > Import AAF as edit windows
+struct AafFound { juce::File file; int channels = 1; juce::int64 length = 0; double rate = 0.0; };
+
+class AafImportDialog : public JobDialogBase
+{
+public:
+    AafImportDialog (AppContext& a, const juce::File& f, AafResult first) : app (a), aafFile (f), res (std::move (first))
+    {
+        setSize (700, 560);
+        for (auto* l : { &fileLabel, &gapCap, &folderLabel }) { addAndMakeVisible (l); l->setColour (juce::Label::textColourId, theme::text); }
+        fileLabel.setText ("AAF:  " + f.getFullPathName(), juce::dontSendNotification);
+        gapCap.setText ("A new piece starts after this many seconds of silence:", juce::dontSendNotification);
+        gap.setText ("10", juce::dontSendNotification); gap.setInputRestrictions (6, "0123456789.");
+        gap.setTooltip ("Nothing playing on any track for longer than this = the next piece (its own edit window). Press Enter to apply.");
+        gap.onReturnKey = [this] { reread(); }; gap.onFocusLost = [this] { reread(); };
+        addAndMakeVisible (gap);
+        folderLabel.setText ("Audio is found in the takes you imported into Fermata. Not there?  Also look in a folder:  (none)", juce::dontSendNotification);
+        folderButton.onClick = [this]
+        {
+            auto chooser = std::make_shared<juce::FileChooser> ("Choose the folder with the session's audio files (e.g. the Pyramix audio folder)");
+            juce::Component::SafePointer<AafImportDialog> self (this);
+            chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories, [chooser, self] (const juce::FileChooser& fc)
+            {
+                if (self == nullptr || fc.getResult() == juce::File()) return;
+                self->extraFolder = fc.getResult();
+                self->folderLabel.setText ("Audio is found in the takes you imported into Fermata, and in the folder:  " + self->extraFolder.getFullPathName() + "  (used where it is, not copied)", juce::dontSendNotification);
+            });
+        };
+        addAndMakeVisible (folderButton);
+        addAndMakeVisible (summary); addAndMakeVisible (doIt); addAndMakeVisible (cancel);
+        summary.setMultiLine (true); summary.setReadOnly (true); summary.setCaretVisible (false); summary.setScrollbarsShown (true);
+        summary.setColour (juce::TextEditor::backgroundColourId, theme::field); summary.setFont (juce::FontOptions (13.0f));
+        doIt.setColour (juce::TextButton::buttonColourId, theme::accent);
+        doIt.onClick = [this] { start(); }; cancel.onClick = [this] { if (running) job.requestCancel(); else closeDialogOf (this); };
+        refreshSummary();
+    }
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (12);
+        fileLabel.setBounds (r.removeFromTop (22)); r.removeFromTop (4);
+        { auto x = r.removeFromTop (26); gapCap.setBounds (x.removeFromLeft (360)); gap.setBounds (x.removeFromLeft (60)); } r.removeFromTop (6);
+        { auto x = r.removeFromTop (26); folderButton.setBounds (x.removeFromLeft (150)); } folderLabel.setBounds (r.removeFromTop (40)); r.removeFromTop (4);
+        auto bottom = r.removeFromBottom (30);
+        cancel.setBounds (bottom.removeFromRight (100)); bottom.removeFromRight (8); doIt.setBounds (bottom.removeFromRight (230));
+        r.removeFromBottom (6); bar.setBounds (r.removeFromBottom (22)); status.setBounds (r.removeFromBottom (22));
+        summary.setBounds (r);
+    }
+private:
+    void reread()
+    {
+        if (running) return;
+        const double g = juce::jlimit (0.5, 3600.0, gap.getText().getDoubleValue() > 0.0 ? gap.getText().getDoubleValue() : 10.0);
+        if (std::abs (g - lastGap) < 1.0e-9) return;
+        lastGap = g;
+        auto r = readAaf (aafFile, g);
+        if (r.error.isNotEmpty()) { status.setText (r.error, juce::dontSendNotification); return; }
+        res = std::move (r); status.setText ({}, juce::dontSendNotification); refreshSummary();
+    }
+    void refreshSummary()
+    {
+        juce::String t;
+        t << juce::String ((int) res.pieces.size()) << " piece(s) found on the AAF's timeline, " << juce::String ((int) res.trackNames.size()) << " track(s), "
+          << juce::String (res.clips) << " clips, " << juce::String (res.sampleRate, 0) << " Hz.\n\n";
+        for (size_t i = 0; i < res.pieces.size(); ++i)
+        {
+            const auto& pc = res.pieces[i];
+            t << juce::String ((int) i + 1) << ".  " << pc.name << "   -   " << juce::String (pc.regions.size()) << " pieces of takes, " << juce::String (pc.lengthSeconds / 60.0, 1) << " min, at "
+              << formatTime (pc.startSeconds).substring (3, 11) << " in the AAF\n";
+        }
+        t << "\nTracks:  " << res.trackNames.size() << (res.trackNames.empty() ? juce::String() : juce::String ("  (") + res.trackNames.front() + " ... " + res.trackNames.back() + ")") << "\n";
+        if (res.notes.size() > 0) { t << "\nNotes:\n"; for (auto& n : res.notes) t << "   " << n << "\n"; }
+        t << "\nEach piece becomes its own edit window, with the takes laid out where they sat in the AAF, the track names kept and the cross-fades kept. "
+             "The audio files are NOT copied: the edits use the files you already imported (matched by their original names), or the ones in the extra folder.";
+        summary.setText (t, false);
+        doIt.setButtonText ("Make " + juce::String ((int) res.pieces.size()) + " edit window(s)");
+        doIt.setEnabled (! res.pieces.empty());
+    }
+    void start()
+    {
+        reread();
+        if (res.pieces.empty()) return;
+        doIt.setEnabled (false); status.setText ("Finding the audio files...", juce::dontSendNotification);
+        std::vector<std::pair<juce::String, juce::File>> cands;
+        for (auto& w : app.project.takeWindows)
+            for (auto& g : w->groups)
+                for (auto& f : g.files)
+                {
+                    if (f.sourceName.isNotEmpty()) cands.push_back ({ f.sourceName.toLowerCase(), f.file });
+                    cands.push_back ({ f.file.getFileName().toLowerCase(), f.file });
+                }
+        auto resCopy = std::make_shared<AafResult> (res);
+        auto found = std::make_shared<std::map<juce::String, AafFound>>();
+        auto missing = std::make_shared<juce::StringArray>();
+        const auto extra = extraFolder;
+        juce::Component::SafePointer<AafImportDialog> safe (this);
+        auto& appRef = app;
+        runJob ([cands, resCopy, found, missing, extra] (AudioJob& j) -> juce::String
+                {
+                    std::map<juce::String, juce::File> index;
+                    for (auto& c : cands) index.emplace (c.first, c.second);                  // Fermata's own files first
+                    if (extra.isDirectory())
+                        for (auto& f : extra.findChildFiles (juce::File::findFiles, true, "*"))
+                        {
+                            if (j.cancelled()) return "Cancelled.";
+                            if (isAudioFile (f)) index.emplace (f.getFileName().toLowerCase(), f);
+                        }
+                    std::set<juce::String> needed; std::map<juce::String, juce::String> shown;
+                    for (auto& pc : resCopy->pieces) for (auto& r : pc.regions) for (auto& f : r.files) { needed.insert (f.fileName.toLowerCase()); shown[f.fileName.toLowerCase()] = f.fileName; }
+                    size_t n = 0;
+                    for (auto& name : needed)
+                    {
+                        if (j.cancelled()) return "Cancelled.";
+                        j.setProgress ((float) ++n / (float) needed.size());
+                        auto it = index.find (name);
+                        if (it == index.end() || ! it->second.existsAsFile()) { missing->add (shown[name]); continue; }
+                        std::unique_ptr<juce::AudioFormatReader> rd (formats().createReaderFor (it->second));
+                        if (rd == nullptr) { missing->add (shown[name] + " (cannot be read)"); continue; }
+                        (*found)[name] = { it->second, (int) rd->numChannels, rd->lengthInSamples, rd->sampleRate };
+                    }
+                    return {};
+                },
+                [safe, resCopy, found, missing, &appRef] (const juce::String& err)
+                {
+                    if (safe == nullptr) return;
+                    if (err.isNotEmpty()) { safe->status.setText (err, juce::dontSendNotification); safe->doIt.setEnabled (true); return; }
+                    const auto msg = build (appRef, *resCopy, *found, *missing);
+                    closeDialogOf (safe.getComponent());
+                    say ("Import AAF", msg);
+                });
+    }
+
+    /** Message thread: makes the project tracks and one edit per piece. Returns the text to tell the person. */
+    static juce::String build (AppContext& app, const AafResult& res, const std::map<juce::String, AafFound>& found, const juce::StringArray& missing)
+    {
+        auto& p = app.project;
+        std::map<juce::String, int> chOf;
+        for (auto& pc : res.pieces) for (auto& r : pc.regions) for (auto& f : r.files) { auto it = found.find (f.fileName.toLowerCase()); if (it != found.end() && chOf.count (f.trackName) == 0) chOf[f.trackName] = it->second.channels; }
+        std::set<int> usedInputs; for (auto& t : p.tracks) for (int c = 0; c < t.channelCount(); ++c) if (t.inputOf (c) >= 0) usedInputs.insert (t.inputOf (c));
+        std::map<juce::String, juce::Uuid> trackId; int newTracks = 0;
+        for (auto& name : res.trackNames)
+        {
+            auto ci = chOf.find (name);
+            if (ci == chOf.end()) continue;
+            const int ch = juce::jlimit (1, 2, ci->second);
+            const TrackDef* tf = nullptr;
+            for (auto& t : p.tracks) if (t.name.equalsIgnoreCase (name) && t.channelCount() == ch) { tf = &t; break; }
+            if (tf == nullptr)
+            {
+                int first = -1;
+                for (int i = 0; i + ch <= (int) p.inputs.size() && first < 0; ++i)
+                {
+                    bool freeSlot = true; for (int c = 0; c < ch; ++c) freeSlot = freeSlot && ! usedInputs.count (i + c);
+                    if (freeSlot) first = i;
+                }
+                auto& nt = p.addTrack (name, ch == 2 ? TrackFormat::Stereo : TrackFormat::Mono, first);
+                if (first < 0) nt.inputs.fill (-1); else for (int c = 0; c < ch; ++c) usedInputs.insert (first + c);
+                tf = &nt; ++newTracks;
+            }
+            trackId[name] = tf->id;
+        }
+        int edits = 0, regionsMade = 0, regionsLost = 0, rateSkipped = 0, shortened = 0; juce::Uuid firstEdit;
+        for (auto& pc : res.pieces)
+        {
+            std::vector<EditRegion> regs;
+            for (auto& ar : pc.regions)
+            {
+                EditRegion r; r.id = juce::Uuid(); r.takeName = ar.takeName; r.sampleRate = res.sampleRate;
+                r.srcIn = ar.srcIn; r.srcOut = ar.srcOut; r.startSample = ar.startSample;
+                r.inStart = ar.inStart; r.inEnd = ar.inEnd; r.outStart = ar.outStart; r.outEnd = ar.outEnd;
+                juce::int64 minLen = (std::numeric_limits<juce::int64>::max)();
+                for (auto& af : ar.files)
+                {
+                    auto it = found.find (af.fileName.toLowerCase());
+                    if (it == found.end() || trackId.count (af.trackName) == 0) continue;
+                    if (std::abs (it->second.rate - res.sampleRate) > 0.5) { ++rateSkipped; continue; }
+                    RegionFile rf; rf.trackId = trackId[af.trackName]; rf.trackName = af.trackName; rf.file = it->second.file; rf.numChannels = juce::jlimit (1, 2, it->second.channels);
+                    r.files.push_back (rf); minLen = juce::jmin (minLen, it->second.length);
+                }
+                if (r.files.empty()) { ++regionsLost; continue; }
+                r.sourceLength = minLen;
+                if (r.srcOut > minLen) { r.srcOut = minLen; ++shortened; }
+                if (r.srcIn < 0 || r.srcIn >= r.srcOut) { ++regionsLost; continue; }
+                regs.push_back (std::move (r));
+            }
+            if (regs.empty()) continue;
+            auto& e = p.addEdit (pc.name, juce::Uuid());
+            e.sampleRate = res.sampleRate;
+            for (auto& tn : pc.trackNames) if (trackId.count (tn) != 0) e.trackIds.push_back (trackId[tn]);
+            e.regions = std::move (regs); regionsMade += (int) e.regions.size();
+            e.insertIndex = -1; e.hardenEnds(); e.clampAll();
+            if (edits++ == 0) firstEdit = e.id;
+        }
+        p.structureChanged(); p.changed();
+        if (! firstEdit.isNull() && app.showEdit) app.showEdit (firstEdit);
+        juce::String t;
+        if (edits == 0) t << "No edit windows were made: none of the audio files named in the AAF could be found.\n\n";
+        else t << juce::String (edits) << " edit window(s) made, with " << juce::String (regionsMade) << " pieces of takes in all" << (newTracks > 0 ? ", and " + juce::String (newTracks) + " new track(s)" : juce::String())
+               << ". The first is open; the others are in the Edits menu.\n\n";
+        if (! missing.isEmpty())
+        {
+            t << juce::String (missing.size()) << " audio file(s) named in the AAF were not found (import those takes first, or choose the folder they are in):\n";
+            for (int i = 0; i < juce::jmin (8, missing.size()); ++i) t << "   " << missing[i] << "\n";
+            if (missing.size() > 8) t << "   ...\n";
+            t << "\n";
+        }
+        if (regionsLost > 0) t << juce::String (regionsLost) << " piece(s) were left out because none of their files were found.\n";
+        if (rateSkipped > 0) t << juce::String (rateSkipped) << " file(s) were left out because their sample rate is not the AAF's (" << juce::String (res.sampleRate, 0) << " Hz).\n";
+        if (shortened > 0) t << juce::String (shortened) << " piece(s) were shortened to the length of their file.\n";
+        return t.trimEnd();
+    }
+
+    AppContext& app; juce::File aafFile; AafResult res; juce::File extraFolder; double lastGap = 10.0;
+    juce::Label fileLabel, gapCap, folderLabel; juce::TextEditor gap, summary;
+    juce::TextButton folderButton { "Also look in a folder..." }, doIt { "Make edit windows" }, cancel { "Cancel" };
+};
+
+void importAaf (AppContext& app, juce::Component* parent)
+{
+    auto chooser = std::make_shared<juce::FileChooser> ("Choose the AAF file", juce::File(), "*.aaf");
+    juce::Component::SafePointer<juce::Component> safeParent (parent);
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [chooser, &app, safeParent] (const juce::FileChooser& fc)
+    {
+        if (fc.getResult() == juce::File()) return;
+        auto r = readAaf (fc.getResult(), 10.0);
+        if (r.error.isNotEmpty()) { say ("Import AAF", r.error); return; }
+        launchDialog (std::make_unique<AafImportDialog> (app, fc.getResult(), std::move (r)), "Import AAF as edit windows", safeParent.getComponent(), true);
+    });
 }
 }} // namespace td::fixtools

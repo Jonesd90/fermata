@@ -14,6 +14,7 @@
 #include "../src/core/WavRepair.h"
 #include "../src/core/ProjectCopy.h"
 #include "../src/core/Ltc.h"
+#include "../src/core/Aaf.h"
 #include <cstdio>
 
 using namespace td;
@@ -3016,6 +3017,23 @@ int main()
         CHECK (sb.begin < ed.regions[1].startSample);                                          // the fade-in starts before the join
         CHECK (std::abs (sb.gainAt (sb.begin) - want) < 1e-4f && std::abs (sb.gainAt (ed.regions[1].startSample + 1000) - want) < 1e-4f);
         CHECK (std::abs (sb.gainAt (ed.regions[1].startSample - 100) - want) < 1e-4f);        // no 0 dB swell before the start
+    }
+
+    {   // AAF import (only when the Pyramix sample file is around)
+        const juce::File aafFile ("/mnt/user-data/uploads/AAF_Living_Voices.aaf");
+        if (aafFile.existsAsFile())
+        {
+            const auto r = readAaf (aafFile, 10.0);
+            CHECK (r.error.isEmpty());
+            CHECK (r.pieces.size() == 10 && r.trackNames.size() == 19 && r.clips == 4427);
+            if (! r.pieces.empty())
+            {
+                CHECK (r.pieces[0].name == "LV01 - Gravity" && r.pieces[0].startSeconds == 0.0);
+                CHECK (r.pieces[0].regions.size() > 1 && r.pieces[0].regions[1].inStart < 0.0 && r.pieces[0].regions[1].inEnd > 0.0);     // a cross-fade
+            }
+            CHECK (readAaf (aafFile, 3000.0).pieces.size() == 1);
+        }
+        CHECK (aafFileNameOf ("file:///C:/Audio/LV01%20-%20Gravity.wav") == "LV01 - Gravity.wav");
     }
 
     eng.rebuildPlan();
