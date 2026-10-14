@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.33.0
+- **Import takes: one take window per piece.** When the file names name several pieces ("LV01 - Gravity", "LV02 - I Wake" ...), a tick (on by default) puts each piece in its own take window, named after the piece, with its takes numbered from 1. A window of that name that already exists is used. All the pieces share the same tracks, so the tracks are made once and your stereo / mono choices apply to every window. The tracks are no longer given the piece name as a prefix.
+- **Import takes: choose the track order.** The new **Track order...** button lists the tracks (alphabetical to begin with); Move up / Move down puts them in the order you want, and the new tracks are made in that order. Fermata remembers the order for the next import (any track not in the list goes after the others).
+
 ## 2.32.0
 - **Import takes: choose stereo or mono for each left / right pair.** The single "join pairs" tick box is now a list with one tick per pair (Omni, ORTF, Room, Solo ...). Tick = one stereo track, untick = keep the two as mono tracks. Keep the piano's three mics mono by unticking "Pn". Fermata remembers what you left mono for the next import.
 - **Import takes: slightly different spellings of a piece name are one piece.** "LV1 - Gravity" and "LV01 - Gravity" no longer create a second set of tracks, and the first take of a Pyramix session (whose file names have no number, "LV1 - Gravity_Omni-L") now joins the others as take 0 instead of being handled separately.

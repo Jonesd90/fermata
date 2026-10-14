@@ -142,13 +142,13 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
             for (auto& h : hits) spellings[pieceKey (h.piece)][h.piece]++;
             std::map<juce::String, juce::String> pieceName;
             for (auto& kv : spellings) { int best = -1; for (auto& sp : kv.second) if (sp.second > best) { best = sp.second; pieceName[kv.first] = sp.first; } }
-            const bool manyPieces = pieceName.size() > 1;
             std::map<std::pair<juce::String, int>, std::vector<Hit>> groups;
             for (auto& h : hits) groups[{ pieceKey (h.piece), h.num }].push_back (h);
             for (auto& kv : groups)
             {
                 ImportTake t; const auto& first = S[(size_t) flat[(size_t) kv.second.front().idx].src];
                 t.length = first.length; t.sampleRate = first.sampleRate; t.modified = first.modified; t.number = kv.first.second;
+                t.piece = pieceName[kv.first.first];
                 std::set<juce::String> used;
                 for (auto& h : kv.second)
                 {
@@ -157,7 +157,7 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
                     juce::String inst = h.inst;
                     if (inst.endsWithIgnoreCase ("-C") || inst.endsWithIgnoreCase ("_C")) inst = inst.dropLastCharacters (2).trim();   // "C" = a mono track
                     if (inst.isEmpty()) inst = h.inst;
-                    p.trackName = manyPieces ? pieceName[kv.first.first] + " " + inst : inst;
+                    p.trackName = inst;                                    // every piece shares the same tracks (the same instrument / mic names)
                     p.trackKey = p.trackName.toLowerCase();
                     if (used.count (p.trackKey)) continue;
                     used.insert (p.trackKey);
@@ -300,10 +300,10 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
 
     // ---- order: by the take numbers if every take has its own, else by the time the files were made, else by name
     bool numbersOk = ! plan.takes.empty();
-    { std::set<int> nums; for (auto& t : plan.takes) { if (t.number < 0 || nums.count (t.number)) numbersOk = false; nums.insert (t.number); } }
+    { std::set<std::pair<juce::String, int>> nums; for (auto& t : plan.takes) { if (t.number < 0 || nums.count ({ t.piece.toLowerCase(), t.number })) numbersOk = false; nums.insert ({ t.piece.toLowerCase(), t.number }); } }
     std::stable_sort (plan.takes.begin(), plan.takes.end(), [&] (const ImportTake& a, const ImportTake& b)
     {
-        if (numbersOk) return a.number < b.number;
+        if (numbersOk) { const int c = a.piece.compareNatural (b.piece); return c != 0 ? c < 0 : a.number < b.number; }
         if (a.modified != b.modified) return a.modified < b.modified;
         return S[(size_t) a.parts.front().source].file.getFileName().compareNatural (S[(size_t) b.parts.front().source].file.getFileName()) < 0;
     });

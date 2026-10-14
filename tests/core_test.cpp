@@ -3035,6 +3035,19 @@ int main()
         CHECK (j.tracks.size() == 5);                                                        // Omni stereo; PnL, PnC, PnR, Sop1 mono
         CHECK (joinStereoPairs (plan, false).tracks.size() == 4);
     }
+    {   // two pieces in one pile of files: every take knows its piece, the tracks are shared, the order is by piece then take number
+        std::vector<ImportSource> src;
+        auto add = [&] (const juce::String& n, juce::int64 len)
+        { ImportSource x; x.file = juce::File ("/x/" + n + ".wav"); x.channels = 1; x.length = len; x.sampleRate = 96000.0; src.push_back (x); };
+        for (auto* m : { "Omni-L", "Omni-R", "Sop1-C" })
+        {
+            add ("LV02 - I Wake 002_" + juce::String (m), 5000); add ("LV01 - Gravity 003_" + juce::String (m), 3000); add ("LV01 - Gravity 002_" + juce::String (m), 2000);
+            add ("LV02 - I Wake 003_" + juce::String (m), 6000);
+        }
+        const auto plan = buildImportPlan (src);
+        CHECK (plan.takes.size() == 4 && plan.tracks.size() == 3);
+        CHECK (plan.takes[0].piece == "LV01 - Gravity" && plan.takes[0].number == 2 && plan.takes[1].number == 3 && plan.takes[2].piece == "LV02 - I Wake" && plan.takes[2].number == 2);
+    }
     {   // AAF import (only when the Pyramix sample file is around)
         const juce::File aafFile ("/mnt/user-data/uploads/AAF_Living_Voices.aaf");
         if (aafFile.existsAsFile())

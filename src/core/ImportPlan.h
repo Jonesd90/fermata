@@ -31,6 +31,7 @@ struct ImportPart
 struct ImportTake
 {
     int          number = 0;                 // the take number found in the file names (0 = none)
+    juce::String piece;                      // the piece named in the file names ("LV01 - Gravity"); empty when the names do not say
     juce::int64  length = 0;
     double       sampleRate = 0.0;
     juce::Time   modified;
