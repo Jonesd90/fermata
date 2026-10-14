@@ -3,7 +3,10 @@
 #include "../core/ImportPlan.h"
 #include "../core/ProjectCopy.h"
 #include "../core/Aaf.h"
+#include "../core/SpectralPicture.h"
 #include <array>
+#include <atomic>
+#include <thread>
 #include <map>
 #include <set>
 #include <limits>
@@ -594,10 +597,38 @@ struct RepairContext
     std::function<double()> position;                                                   // message thread: seconds from the start of the area, or < 0 when this is not playing
 };
 
+/** How the spectrogram is drawn (the same ideas as the Spectrogram Settings of iZotope RX). Remembered between sessions. */
+struct SpectroSettings
+{
+    bool   sharp = true;            // the picture is made for what is in view, with reassignment (sharp lines); off = the quick, softer picture
+    bool   reassign = true;
+    int    palette = 0;             // 0 cyan to orange, 1 standard (heat), 2 grey, 3 ice, 4 rainbow
+    double lo = -134.3, hi = -5.3;  // the levels (dB) at the two ends of the colours
+    double detail = 0.5;            // 0 = finer pitch detail, 1 = finer time detail
+    double reduceAbove = 240.0;     // seconds in view above which fewer analysis points are used
+    void load (juce::PropertiesFile* f)
+    {
+        if (f == nullptr) return;
+        sharp = f->getBoolValue ("specSharp", true); reassign = f->getBoolValue ("specReassign", true); palette = juce::jlimit (0, 4, f->getIntValue ("specPalette", 0));
+        lo = f->getDoubleValue ("specLo", -134.3); hi = f->getDoubleValue ("specHi", -5.3); detail = juce::jlimit (0.0, 1.0, f->getDoubleValue ("specDetail", 0.5)); reduceAbove = f->getDoubleValue ("specReduce", 240.0);
+        if (hi - lo < 6.0) { lo = -134.3; hi = -5.3; }
+    }
+    void save (juce::PropertiesFile* f) const
+    {
+        if (f == nullptr) return;
+        f->setValue ("specSharp", sharp); f->setValue ("specReassign", reassign); f->setValue ("specPalette", palette); f->setValue ("specLo", lo); f->setValue ("specHi", hi);
+        f->setValue ("specDetail", detail); f->setValue ("specReduce", reduceAbove);
+    }
+};
+static juce::PropertiesFile* gSpecPrefs = nullptr;                      // the program's settings file (set when a repair window is opened)
+
+struct PictureRequest { juce::int64 id = 0; double t0 = 0.0, t1 = 1.0; int w = 0, h = 0; PictureAxis axis; PictureOptions opt; };
+
 class SpectrogramView : public juce::Component
 {
 public:
     std::function<void()> onSelection;
+    std::function<void (const PictureRequest&)> onNeedDetail;     // asks for the sharp picture of what is in view (made on another thread, then given back with setDetail)
     std::function<void (const juce::String&)> onNote;         // a line for the status line (colour roll, scale, view)
 
     void setData (MergedSpectrogram s, double seconds, bool keepSelection = false)
@@ -606,8 +637,18 @@ public:
         spec = std::move (s); duration = juce::jmax (0.001, seconds);
         if (! keepSelection) hasSel = false;
         if (! same) resetView();
+        detailStale = true; scheduleDetail();
         dirty = true; repaint();
     }
+    /** The sharp picture asked for with onNeedDetail (ignored if the view has moved on and asked again since). */
+    void setDetail (DetailPicture p)
+    {
+        if (p.id != detailSeq || ! p.valid()) return;
+        detail = std::move (p); detailStale = false; detailOpt = lastOpt; dirty = true; repaint();
+    }
+    const SpectroSettings& settings() const { return ss; }
+    void setSettings (const SpectroSettings& n) { ss = n; buildLut(); detailStale = ss.sharp ? true : detailStale; dirty = true; repaint(); scheduleDetail(); }
+    void resized() override { scheduleDetail(); }
     bool hasSelection() const { return hasSel; }
     /** Shows the sound around the box that the repair learns from (dotted): 'pct' is a % of the box, 'direction' 0 = left and right, 1 = up and down, 2 = both. */
     void setSurround (bool show, double pct, int direction, double afterWeight = 0.5) { showSurround = show; surroundPct = pct; surroundDir = direction; surroundAfter = juce::jlimit (0.0, 1.0, afterWeight); repaint(); }
@@ -624,7 +665,7 @@ public:
     // ---- the view: which part of the time is shown (this is what Play plays), which pitches, and how the pitches are spread up the picture
     double visT0() const { return vt0; }
     double visT1() const { return vt1; }
-    void resetView() { vt0 = 0.0; vt1 = duration; fLo = kMinHz; fHi = maxHz(); dirty = true; repaint(); }
+    void resetView() { vt0 = 0.0; vt1 = duration; fLo = kMinHz; fHi = maxHz(); dirty = true; repaint(); scheduleDetail(); }
     /** factor < 1 zooms in, > 1 zooms out, around the middle of what is shown. */
     void zoomTime (double factor)
     {
@@ -643,7 +684,9 @@ public:
     }
     void panFreq (double logShift) { setFreqWindow (std::log (fLo) + logShift, std::log (fHi / fLo)); }
     /** 0 = pitch spread evenly (linear), 1 = every octave the same height (musical); in between is a blend. */
-    void setScale (double w) { warp = juce::jlimit (0.0, 1.0, w); dirty = true; repaint(); }
+    void setScale (double w) { warp = juce::jlimit (0.0, 1.0, w); mel = false; dirty = true; repaint(); scheduleDetail(); }
+    /** The Mel scale (the pitch scale of iZotope RX). */
+    void setMel() { mel = true; dirty = true; repaint(); scheduleDetail(); }
     /** Left / right = zoom out / in in time (right in), up / down = zoom out / in vertically (down in). */
     bool zoomKey (const juce::KeyPress& k)
     {
@@ -663,7 +706,7 @@ public:
         if (onNote) onNote ("Colour: " + juce::String (presetAt (preset).name) + ".  Roll the round control smoothly (drag up / down, or the mouse wheel) to blend between the looks and show quieter sounds; click to jump to the next one; double-click for the standard colours.");
     }
 
-    SpectrogramView() { buildLut(); setMouseCursor (juce::MouseCursor::CrosshairCursor); }
+    SpectrogramView() { ss.load (gSpecPrefs); debounce.owner = this; buildLut(); setMouseCursor (juce::MouseCursor::CrosshairCursor); }
 
     void paint (juce::Graphics& g) override
     {
@@ -874,8 +917,9 @@ private:
         static const Stop heat[] = { { 0.0f, 0, 0, 0.05f }, { 0.25f, 0.2f, 0.0f, 0.4f }, { 0.5f, 0.75f, 0.1f, 0.35f }, { 0.75f, 1.0f, 0.55f, 0.1f }, { 1.0f, 1.0f, 1.0f, 0.8f } };
         static const Stop grey[] = { { 0.0f, 0, 0, 0 }, { 1.0f, 1, 1, 1 } };
         static const Stop ice[]  = { { 0.0f, 0, 0, 0.05f }, { 0.35f, 0, 0.15f, 0.6f }, { 0.7f, 0, 0.75f, 0.95f }, { 1.0f, 1, 1, 1 } };
+        static const Stop cyanOrange[] = { { 0.0f, 0.0f, 0.0f, 0.04f }, { 0.18f, 0.02f, 0.10f, 0.32f }, { 0.36f, 0.0f, 0.38f, 0.62f }, { 0.52f, 0.0f, 0.80f, 0.85f }, { 0.64f, 0.55f, 0.92f, 0.70f }, { 0.78f, 1.0f, 0.82f, 0.25f }, { 0.90f, 1.0f, 0.52f, 0.05f }, { 1.0f, 1.0f, 0.95f, 0.85f } };
         static const Stop rain[] = { { 0.0f, 0, 0, 0.15f }, { 0.2f, 0.15f, 0, 0.7f }, { 0.4f, 0, 0.6f, 1.0f }, { 0.6f, 0.1f, 0.9f, 0.3f }, { 0.8f, 1.0f, 0.9f, 0.0f }, { 1.0f, 1.0f, 0.15f, 0.1f } };
-        return pal == 0 ? ramp (heat, 5, t) : pal == 1 ? ramp (grey, 2, t) : pal == 2 ? ramp (ice, 4, t) : ramp (rain, 6, t);
+        return pal == 0 ? ramp (heat, 5, t) : pal == 1 ? ramp (grey, 2, t) : pal == 2 ? ramp (ice, 4, t) : pal == 4 ? ramp (cyanOrange, 8, t) : ramp (rain, 6, t);
     }
     void buildLut()
     {
@@ -885,8 +929,32 @@ private:
             const float u = (float) i / 255.0f;
             const auto ca = paletteAt (pa->palette, std::pow (u, pa->gamma)), cb = paletteAt (pb->palette, std::pow (u, pb->gamma));
             lut[(size_t) i] = ca.interpolatedWith (cb, f);
+            static const int paletteIds[] = { 4, 0, 1, 2, 3 };                          // the sharp picture uses the palette chosen in the spectrogram settings, with the roll's gamma
+            lutD[(size_t) i] = paletteAt (paletteIds[juce::jlimit (0, 4, ss.palette)], std::pow (u, pa->gamma + f * (pb->gamma - pa->gamma)));
         }
     }
+    /** The two ends of the colours (dB) for the sharp picture: the settings, shifted by the colour roll's look. */
+    void detailRange (float& lo, float& hi) const
+    {
+        const Preset *pa, *pb; float f; const Preset P = blended (pa, pb, f);
+        lo = (float) ss.lo + (P.lo + 100.0f); hi = (float) ss.hi + (P.hi + 15.0f);
+        if (hi - lo < 6.0f) hi = lo + 6.0f;
+    }
+    PictureAxis axisNow() const { PictureAxis a; a.fLo = fLo; a.fHi = fHi; a.warp = warp; a.mel = mel; return a; }
+    void scheduleDetail() { if (ss.sharp && spec.frames > 0) debounce.startTimer (260); }
+    void requestDetailNow()
+    {
+        if (! ss.sharp || spec.frames <= 0 || ! onNeedDetail) return;
+        const auto pl = plotArea();
+        if (pl.getWidth() < 50 || pl.getHeight() < 50) return;
+        PictureRequest rq; rq.t0 = vt0; rq.t1 = vt1; rq.w = pl.getWidth(); rq.h = pl.getHeight(); rq.axis = axisNow();
+        rq.opt.reassign = ss.reassign; rq.opt.detail = ss.detail; rq.opt.reduceAboveSec = ss.reduceAbove;
+        const bool optSame = detailOpt.reassign == rq.opt.reassign && std::abs (detailOpt.detail - rq.opt.detail) < 1.0e-9 && std::abs (detailOpt.reduceAboveSec - rq.opt.reduceAboveSec) < 1.0e-9;
+        if (detail.valid() && ! detailStale && optSame && detail.w == rq.w && detail.h == rq.h && std::abs (detail.t0 - rq.t0) < 1.0e-9 && std::abs (detail.t1 - rq.t1) < 1.0e-9 && detail.axis.same (rq.axis)) return;
+        rq.id = ++detailSeq; lastOpt = rq.opt;
+        onNeedDetail (rq);
+    }
+    struct Debounce : juce::Timer { SpectrogramView* owner = nullptr; void timerCallback() override { stopTimer(); if (owner != nullptr) owner->requestDetailNow(); } } debounce;
     double maxHz() const { return juce::jmin (22000.0, spec.sampleRate * 0.5); }
     juce::Rectangle<int> plotArea() const { return getLocalBounds().withTrimmedLeft (46).withTrimmedTop (22).withTrimmedBottom (30); }
     juce::Rectangle<int> rulerArea() const { auto pl = plotArea(); return { pl.getX(), 0, pl.getWidth(), pl.getY() }; }
@@ -896,31 +964,18 @@ private:
     {
         span = juce::jlimit (juce::jmin (0.05, duration), duration, span);
         t0 = juce::jlimit (0.0, juce::jmax (0.0, duration - span), t0);
-        vt0 = t0; vt1 = t0 + span; dirty = true; repaint();
+        vt0 = t0; vt1 = t0 + span; dirty = true; repaint(); scheduleDetail();
     }
     void setFreqWindow (double logLo, double logSpan)
     {
         const double lo = std::log (kMinHz), hi = std::log (maxHz());
         logSpan = juce::jlimit (std::log (1.6), hi - lo, logSpan);
         logLo = juce::jlimit (lo, hi - logSpan, logLo);
-        fLo = std::exp (logLo); fHi = std::exp (logLo + logSpan); dirty = true; repaint();
+        fLo = std::exp (logLo); fHi = std::exp (logLo + logSpan); dirty = true; repaint(); scheduleDetail();
     }
-    // pitch <-> height: a blend of the straight line (even Hz) and the logarithm (even octaves)
-    double posOf (double hz) const
-    {
-        hz = juce::jlimit (fLo, fHi, hz);
-        const double lin = (hz - fLo) / (fHi - fLo), lg = std::log (hz / fLo) / std::log (fHi / fLo);
-        return (1.0 - warp) * lin + warp * lg;
-    }
-    double hzOf (double pos) const
-    {
-        pos = juce::jlimit (0.0, 1.0, pos);
-        if (warp > 0.999) return fLo * std::pow (fHi / fLo, pos);
-        if (warp < 0.001) return fLo + pos * (fHi - fLo);
-        double lo = fLo, hi = fHi;
-        for (int i = 0; i < 40; ++i) { const double m = 0.5 * (lo + hi); if (posOf (m) < pos) lo = m; else hi = m; }
-        return 0.5 * (lo + hi);
-    }
+    // pitch <-> height: the Mel scale, or a blend of the straight line (even Hz) and the logarithm (even octaves)
+    double posOf (double hz) const { return axisNow().posOf (hz); }
+    double hzOf (double pos) const { return axisNow().hzOf (pos); }
     int tToX (double t, juce::Rectangle<int> pl) const { return pl.getX() + (int) std::lround ((t - vt0) / juce::jmax (1.0e-9, vt1 - vt0) * pl.getWidth()); }
     int hzToY (double hz, juce::Rectangle<int> pl) const { return pl.getY() + (int) std::lround ((1.0 - posOf (hz)) * (pl.getHeight() - 1)); }
     juce::Point<double> toTF (juce::Point<int> p) const
@@ -977,11 +1032,37 @@ private:
                 bd.setPixelColour (x, y, lut[(size_t) idx]);
             }
         }
+        // the sharp picture, where it covers the view (it replaces the quick one; the quick one shows while the sharp one is being made)
+        if (ss.sharp && detail.valid() && ! detailStale && std::abs (detail.t0 - vt0) < 1.0e-6 && std::abs (detail.t1 - vt1) < 1.0e-6 && detail.axis.same (axisNow()))
+        {
+            float dlo, dhi; detailRange (dlo, dhi); const float dinv = 255.0f / (dhi - dlo);
+            const double dSpan = juce::jmax (1.0e-9, detail.t1 - detail.t0);
+            std::vector<int> drow ((size_t) H, -1);
+            for (int y = 0; y < H; ++y)
+            {
+                const double hz = rf[(size_t) y];
+                if (hz >= detail.axis.fLo && hz <= detail.axis.fHi) drow[(size_t) y] = juce::jlimit (0, detail.h - 1, (int) std::lround ((1.0 - detail.axis.posOf (hz)) * (double) (detail.h - 1)));
+            }
+            for (int x = 0; x < W; ++x)
+            {
+                const double t = vt0 + ((double) x + 0.5) / (double) W * (vt1 - vt0);
+                const int col = (int) std::floor ((t - detail.t0) / dSpan * (double) detail.w);
+                if (col < 0 || col >= detail.w) continue;
+                for (int y = 0; y < H; ++y)
+                {
+                    const int row = drow[(size_t) y];
+                    if (row < 0) continue;
+                    const float db = detail.db[(size_t) row * (size_t) detail.w + (size_t) col];
+                    bd.setPixelColour (x, y, lutD[(size_t) juce::jlimit (0, 255, (int) ((db - dlo) * dinv))]);
+                }
+            }
+        }
     }
     MergedSpectrogram spec; double duration = 1.0; juce::Image image; bool dirty = true;
     double vt0 = 0.0, vt1 = 1.0, fLo = kMinHz, fHi = 20000.0, warp = 1.0;
     int preset = 0; double rollPos = 0.0, rollStart = 0.0; Mode mode = Mode::none; double panT0 = 0.0, panF = kMinHz;
-    std::array<juce::Colour, 256> lut;
+    std::array<juce::Colour, 256> lut, lutD;
+    SpectroSettings ss; bool mel = true; DetailPicture detail; bool detailStale = true; juce::int64 detailSeq = 0; PictureOptions detailOpt, lastOpt;
     bool hasSel = false; juce::Point<double> a, b; double playT = -1.0, cueT = -1.0;
     bool showSurround = false; double surroundPct = 100.0; int surroundDir = 0; double surroundAfter = 0.5;
 };
@@ -997,7 +1078,7 @@ public:
         info.setColour (juce::Label::textColourId, theme::text);
         modeBox.addItem ("Spectral repair of the selected box", 1); modeBox.addItem ("Declick: find and mend clicks in the selected time span", 2);
         modeBox.setSelectedId (declickOnly ? 2 : 1, juce::dontSendNotification);          // this window does one thing only; the box stays hidden
-        dirBox.addItem ("Left and right (uses the sound before / after)", 1); dirBox.addItem ("Up and down (uses the pitches above / below)", 2); dirBox.addItem ("Both", 3);
+        dirBox.addItem ("Horizontal (the sound before / after)", 1); dirBox.addItem ("Vertical (the pitches above / below)", 2); dirBox.addItem ("2D (both)", 3);
         dirBox.setSelectedId (1, juce::dontSendNotification); dirBox.onChange = [this] { refreshControls(); invalidate(); };
         dirBox.setTooltip ("Where the repair finds its material. Left and right suits steady sounds (hum, a held note). Up and down suits short bursts (a click, a cough) with music above and below. Both blends the two.");
         auto cap = [this] (juce::Label& l, const juce::String& t) { l.setText (t, juce::dontSendNotification); l.setColour (juce::Label::textColourId, theme::text); addAndMakeVisible (l); };
@@ -1009,20 +1090,34 @@ public:
             sl.onValueChange = [this] { updateSurround(); invalidate(); };
             addAndMakeVisible (sl);
         };
-        slider (sens, 1, 10, 1, 6, ""); slider (strength, 0, 100, 1, 100, " %"); slider (surround, 10, 400, 5, 100, " %"); slider (weight, 0, 100, 1, 50, " %");
+        slider (sens, 1, 10, 1, 6, ""); slider (strength, 0, 100, 1, 80, " %"); slider (surround, 10, 400, 5, 100, " %"); slider (weight, 0, 100, 1, 50, " %");
         strength.setTooltip ("How much of the repair replaces the original sound inside the box. 100 % is a full repair; less keeps some of the original.");
         surround.setTooltip ("How much of the sound around the box is used, as a percentage of the box: its length in time (left and right) and its height in pitch (up and down).");
         weight.setTooltip ("0 uses only the sound before the box, 100 only the sound after it, 50 uses both equally (a cross-fade). Applies to left and right.");
-        for (auto* x : std::initializer_list<juce::Component*> { &dirBox, &previewBtn, &compareBtn, &revertBtn, &finishBtn, &close, &playBtn, &stopBtn, &loopBtn, &hearCap, &hearBox, &scaleBox, &detailBox }) addAndMakeVisible (x);
-        scaleBox.addItem ("Pitch scale: linear (even Hz)", 1); scaleBox.addItem ("Pitch scale: mostly linear", 2); scaleBox.addItem ("Pitch scale: halfway", 3);
+        methodBox.addItem ("Attenuate (turns the noise down to match its surroundings)", 1); methodBox.addItem ("Replace (rebuilds the box from the surroundings)", 2);
+        methodBox.setSelectedId (1, juce::dontSendNotification);
+        methodBox.setTooltip ("Attenuate keeps the music that is under the noise and only turns down what sticks out above the surrounding sound: the best for a click, a pencil drop or a stray consonant over a held note. Replace throws the box away and builds new sound from the surroundings: for gaps and loud, wide damage.");
+        for (int b : { 128, 256, 512, 1024, 2048, 4096 }) bandsBox.addItem ("Bands: " + juce::String (b), b);
+        bandsBox.setSelectedId (1024, juce::dontSendNotification);
+        bandsBox.setTooltip ("How finely the sound is split into pitches for Attenuate. More bands follow steady notes more exactly; fewer bands are sharper in time (clicks). 1024 suits most things.");
+        multiBtn.setToggleState (true, juce::dontSendNotification);
+        multiBtn.setTooltip ("Attenuate works with a long window for the bass and a short one for the top and joins them smoothly, so both low notes and clicks are matched well.");
+        specBtn.setTooltip ("How the picture is drawn: sharpness, colours, and the levels shown.");
+        specBtn.onClick = [this] { openSpectroSettings(); };
+        methodBox.onChange = [this] { refreshControls(); invalidate(); };
+        bandsBox.onChange = [this] { invalidate(); };
+        multiBtn.onClick = [this] { invalidate(); };
+        view.onNeedDetail = [this] (const PictureRequest& rq) { startDetail (rq); };
+        for (auto* x : std::initializer_list<juce::Component*> { &methodBox, &bandsBox, &multiBtn, &specBtn, &dirBox, &previewBtn, &compareBtn, &revertBtn, &finishBtn, &close, &playBtn, &stopBtn, &loopBtn, &hearCap, &hearBox, &scaleBox, &detailBox }) addAndMakeVisible (x);
+        scaleBox.addItem ("Pitch scale: Mel (as iZotope RX)", 6); scaleBox.addItem ("Pitch scale: linear (even Hz)", 1); scaleBox.addItem ("Pitch scale: mostly linear", 2); scaleBox.addItem ("Pitch scale: halfway", 3);
         scaleBox.addItem ("Pitch scale: mostly musical", 4); scaleBox.addItem ("Pitch scale: musical (every octave the same height)", 5);
-        scaleBox.setSelectedId (5, juce::dontSendNotification);
+        scaleBox.setSelectedId (6, juce::dontSendNotification); view.setMel();
         scaleBox.setTooltip ("How the pitches are spread up the picture. Linear: every 1000 Hz takes the same height (the high end gets room, the low end is squashed). Musical: every octave takes the same height (like a piano). The steps in between blend the two.");
         detailBox.addItem ("Bass detail: blended (sharp top, fine bass)", 1); detailBox.addItem ("Bass detail: off (sharpest in time)", 2); detailBox.addItem ("Bass detail: extra fine", 3);
         detailBox.setSelectedId (1, juce::dontSendNotification);
         detailBox.setTooltip ("The picture is worked out twice: with a short window (sharp in time, good for clicks) and with a long one (sharp in pitch, good for bass notes). Blended: the long one is used at the bottom, the short one at the top, and they fade into each other in between (250 Hz to 1.5 kHz). Off: the short one only. Extra fine: an even longer window for the bass (below about 800 Hz).");
         detailBox.onChange = [this] { rescan(); };
-        scaleBox.onChange = [this] { static const double w[] = { 0.0, 0.25, 0.5, 0.75, 1.0 }; view.setScale (w[juce::jlimit (0, 4, scaleBox.getSelectedId() - 1)]); };
+        scaleBox.onChange = [this] { static const double w[] = { 0.0, 0.25, 0.5, 0.75, 1.0 }; const int id = scaleBox.getSelectedId(); if (id == 6) view.setMel(); else view.setScale (w[juce::jlimit (0, 4, id - 1)]); };
         view.onNote = [this] (const juce::String& t) { status.setText (t, juce::dontSendNotification); };
         hearCap.setText ("Listen to", juce::dontSendNotification); hearCap.setColour (juce::Label::textColourId, theme::text);
         hearBox.addItem ("Original", 1); hearBox.addItem ("Fixed (after Fix)", 2); hearBox.setSelectedId (1, juce::dontSendNotification);
@@ -1086,6 +1181,7 @@ public:
     ~RepairDialog() override
     {
         ticker.stopTimer(); ticker.owner = nullptr;
+        if (detailCancel != nullptr) detailCancel->store (true);
         if (ctx.stop) ctx.stop();
         if (! accepted)                                                    // closing without Commit puts everything back as it was
         {
@@ -1115,14 +1211,16 @@ public:
         loopBtn.setBounds (rowT.removeFromLeft (70)); rowT.removeFromLeft (14);
         hearCap.setBounds (rowT.removeFromLeft (70)); hearBox.setBounds (rowT.removeFromLeft (210)); rowT.removeFromLeft (14);
         bar.setBounds (rowT.reduced (0, 4));
-        dirCap.setBounds (rowA.removeFromLeft (64)); dirBox.setBounds (rowA.removeFromLeft (330)); rowA.removeFromLeft (14);
+        methodBox.setBounds (rowA.removeFromLeft (390)); rowA.removeFromLeft (8);
+        dirCap.setBounds (rowA.removeFromLeft (58)); dirBox.setBounds (rowA.removeFromLeft (230)); rowA.removeFromLeft (10);
         strengthCap.setBounds (rowA.removeFromLeft (56)); strength.setBounds (rowA);
         // second row: patch: surrounding length and before / after;  declick: the sensitivity
-        surroundCap.setBounds (rowB.removeFromLeft (130)); surround.setBounds (rowB.removeFromLeft (330)); rowB.removeFromLeft (14);
-        weightCap.setBounds (rowB.removeFromLeft (100)); weight.setBounds (rowB);
+        bandsBox.setBounds (rowB.removeFromLeft (110)); rowB.removeFromLeft (6); multiBtn.setBounds (rowB.removeFromLeft (150)); rowB.removeFromLeft (10);
+        surroundCap.setBounds (rowB.removeFromLeft (112)); surround.setBounds (rowB.removeFromLeft (230)); rowB.removeFromLeft (10);
+        weightCap.setBounds (rowB.removeFromLeft (92)); weight.setBounds (rowB);
         sensCapRow = rowB; sensCap.setBounds (10, rowB.getY(), 130, rowB.getHeight()); sens.setBounds (150, rowB.getY(), 330, rowB.getHeight());
         status.setBounds (r.removeFromBottom (22).reduced (2, 0));
-        { auto ir = r.removeFromBottom (22); scaleBox.setBounds (ir.removeFromRight (300)); ir.removeFromRight (6); detailBox.setBounds (ir.removeFromRight (210)); info.setBounds (ir.reduced (2, 0)); }
+        { auto ir = r.removeFromBottom (22); specBtn.setBounds (ir.removeFromRight (150)); ir.removeFromRight (6); scaleBox.setBounds (ir.removeFromRight (300)); ir.removeFromRight (6); detailBox.setBounds (ir.removeFromRight (210)); info.setBounds (ir.reduced (2, 0)); }
         view.setBounds (r);
     }
 protected:
@@ -1238,7 +1336,9 @@ private:
     {
         const bool p = patchMode();
         updateSurround();
-        for (auto* c : std::initializer_list<juce::Component*> { &dirBox, &dirCap, &strength, &strengthCap, &surround, &surroundCap }) c->setVisible (p);
+        const bool att = p && methodBox.getSelectedId() == 1;
+        for (auto* c : std::initializer_list<juce::Component*> { &dirBox, &dirCap, &strength, &strengthCap, &surround, &surroundCap, &methodBox }) c->setVisible (p);
+        bandsBox.setVisible (att); multiBtn.setVisible (att);
         weight.setVisible (p && lookingAcross()); weightCap.setVisible (p && lookingAcross());
         sens.setVisible (! p); sensCap.setVisible (! p);
         if (view.hasSelection())
@@ -1263,6 +1363,8 @@ private:
         if (patchMode())
         {
             spec.kind = FixSpec::Kind::Patch; spec.f0 = view.selF0(); spec.f1 = view.selF1();
+            spec.repair.mode = methodBox.getSelectedId() == 1 ? RepairMode::Attenuate : RepairMode::Replace;
+            spec.repair.bands = bandsBox.getSelectedId(); spec.repair.multiRes = multiBtn.getToggleState();
             spec.repair.strength = strength.getValue() / 100.0;
             spec.repair.direction = (RepairDirection) (dirBox.getSelectedId() - 1);
             spec.repair.contextPct = surround.getValue();
@@ -1341,6 +1443,28 @@ private:
                     self->refreshControls();
                 });
     }
+    /** The audio the picture shows now (the fixed sound, or the sound before the last fix). */
+    std::shared_ptr<std::vector<std::vector<float>>> shownTracks() const
+    {
+        if (! showingAfter && ! history.empty() && history.back().tracks != nullptr) return history.back().tracks;
+        return origTracks;
+    }
+    /** Makes the sharp picture of what is in view on its own thread (the previous request, if still running, is dropped). */
+    void startDetail (const PictureRequest& rq)
+    {
+        auto tr = shownTracks(); if (tr == nullptr || tr->empty()) return;
+        if (detailCancel != nullptr) detailCancel->store (true);
+        auto cancel = std::make_shared<std::atomic<bool>> (false); detailCancel = cancel;
+        const double rate = ctx.rate; juce::Component::SafePointer<RepairDialog> self (this);
+        std::thread ([tr, rq, rate, cancel, self]
+        {
+            auto pic = picture::render (*tr, rate, rq.t0, rq.t1, rq.w, rq.h, rq.axis, rq.opt, [cancel] { return cancel->load(); });
+            pic.id = rq.id;
+            if (cancel->load()) return;
+            juce::MessageManager::callAsync ([self, p = std::make_shared<DetailPicture> (std::move (pic))] { if (self != nullptr) self->view.setDetail (std::move (*p)); });
+        }).detach();
+    }
+    void openSpectroSettings();
     void toggleCompare()
     {
         if (history.empty() || origSpec == nullptr || history.back().spec == nullptr) return;
@@ -1399,7 +1523,8 @@ private:
     RepairContext ctx;
     bool declickOnly = false;                                 // true: the De-Click window (finds and mends clicks); false: Spectral Repair (rebuilds a box of the picture)
     InfoNote intro; juce::Label info, sensCap, strengthCap, dirCap, surroundCap, weightCap;
-    SpectrogramView view; juce::ComboBox modeBox, dirBox, scaleBox, detailBox; juce::Slider sens, strength, surround, weight;
+    SpectrogramView view; juce::ComboBox modeBox, dirBox, scaleBox, detailBox, methodBox, bandsBox; juce::ToggleButton multiBtn { "Multi-resolution" }; juce::TextButton specBtn { "Spectrogram settings..." };
+    std::shared_ptr<std::atomic<bool>> detailCancel; juce::Slider sens, strength, surround, weight;
     juce::TextButton playBtn { "Play" }, stopBtn { "Stop" };
     juce::ToggleButton loopBtn { "Loop" };
     juce::Label hearCap; juce::ComboBox hearBox;
@@ -1416,6 +1541,63 @@ private:
     std::shared_ptr<MergedSpectrogram> origSpec, repSpec;
     FixSpec pvSpec; juce::int64 pvT0 = 0, pvT1 = 0;
 };
+
+/** The spectrogram settings (the ones iZotope RX has, as far as they apply here). Changes show at once and are remembered. */
+class SpectroSettingsDialog : public juce::Component
+{
+public:
+    SpectroSettingsDialog (const SpectroSettings& s, std::function<void (const SpectroSettings&)> apply) : cur (s), onApply (std::move (apply))
+    {
+        setSize (440, 330);
+        auto cap = [this] (juce::Label& l, const juce::String& t) { l.setText (t, juce::dontSendNotification); l.setColour (juce::Label::textColourId, theme::text); addAndMakeVisible (l); };
+        cap (cPal, "Colour map"); cap (cLo, "Lowest level (dB)"); cap (cHi, "Highest level (dB)"); cap (cDet, "Detail"); cap (cRed, "Fewer points above (s)");
+        sharpBtn.setButtonText ("Sharp picture for what is in view (high-quality rendering)"); sharpBtn.setToggleState (cur.sharp, juce::dontSendNotification);
+        reBtn.setButtonText ("Enable reassignment (crisp lines)"); reBtn.setToggleState (cur.reassign, juce::dontSendNotification);
+        pal.addItem ("Cyan to orange", 1); pal.addItem ("Heat (standard)", 2); pal.addItem ("Grey", 3); pal.addItem ("Ice", 4); pal.addItem ("Rainbow", 5);
+        pal.setSelectedId (cur.palette + 1, juce::dontSendNotification);
+        auto sl = [this] (juce::Slider& x, double a, double b, double st, double v) { x.setRange (a, b, st); x.setValue (v, juce::dontSendNotification); x.setSliderStyle (juce::Slider::LinearHorizontal); x.setTextBoxStyle (juce::Slider::TextBoxRight, false, 64, 22); addAndMakeVisible (x); x.onValueChange = [this] { push(); }; };
+        sl (lo, -160.0, -40.0, 0.1, cur.lo); sl (hi, -60.0, 0.0, 0.1, cur.hi); sl (det, 0.0, 1.0, 0.05, cur.detail); sl (red, 20.0, 1200.0, 10.0, cur.reduceAbove);
+        det.setTooltip ("Left: finer pitch (long analysis window). Right: finer time (short window).");
+        reset.setButtonText ("Back to the RX-style defaults");
+        reset.onClick = [this] { SpectroSettings d; cur = d; pal.setSelectedId (1, juce::dontSendNotification); lo.setValue (d.lo, juce::dontSendNotification); hi.setValue (d.hi, juce::dontSendNotification); det.setValue (d.detail, juce::dontSendNotification); red.setValue (d.reduceAbove, juce::dontSendNotification); sharpBtn.setToggleState (true, juce::dontSendNotification); reBtn.setToggleState (true, juce::dontSendNotification); onApply (cur); };
+        for (auto* c : std::initializer_list<juce::Component*> { &sharpBtn, &reBtn, &pal, &reset }) addAndMakeVisible (c);
+        sharpBtn.onClick = [this] { push(); }; reBtn.onClick = [this] { push(); }; pal.onChange = [this] { push(); };
+    }
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (14);
+        auto row = [&r] { auto x = r.removeFromTop (30); r.removeFromTop (6); return x; };
+        sharpBtn.setBounds (row()); reBtn.setBounds (row());
+        auto a = row(); cPal.setBounds (a.removeFromLeft (150)); pal.setBounds (a);
+        a = row(); cLo.setBounds (a.removeFromLeft (150)); lo.setBounds (a);
+        a = row(); cHi.setBounds (a.removeFromLeft (150)); hi.setBounds (a);
+        a = row(); cDet.setBounds (a.removeFromLeft (150)); det.setBounds (a);
+        a = row(); cRed.setBounds (a.removeFromLeft (150)); red.setBounds (a);
+        reset.setBounds (r.removeFromTop (30).removeFromLeft (230));
+    }
+private:
+    void push()
+    {
+        cur.sharp = sharpBtn.getToggleState(); cur.reassign = reBtn.getToggleState(); cur.palette = juce::jmax (0, pal.getSelectedId() - 1);
+        cur.lo = lo.getValue(); cur.hi = hi.getValue(); if (cur.hi - cur.lo < 6.0) cur.hi = cur.lo + 6.0;
+        cur.detail = det.getValue(); cur.reduceAbove = red.getValue();
+        onApply (cur);
+    }
+    SpectroSettings cur; std::function<void (const SpectroSettings&)> onApply;
+    juce::Label cPal, cLo, cHi, cDet, cRed; juce::ComboBox pal; juce::Slider lo, hi, det, red;
+    juce::ToggleButton sharpBtn, reBtn; juce::TextButton reset;
+};
+
+void RepairDialog::openSpectroSettings()
+{
+    juce::Component::SafePointer<RepairDialog> self (this);
+    launchDialog (std::make_unique<SpectroSettingsDialog> (view.settings(), [self] (const SpectroSettings& n)
+    {
+        if (self == nullptr) return;
+        self->view.setSettings (n); n.save (gSpecPrefs);
+        if (gSpecPrefs != nullptr) gSpecPrefs->saveIfNeeded();
+    }), "Spectrogram settings", this);
+}
 
 // ======================================================================================================== the order of the imported tracks
 class TrackOrderDialog : public juce::Component, private juce::ListBoxModel
@@ -2098,6 +2280,7 @@ void repairTake (AppContext& app, const juce::Uuid& wid, juce::Component* parent
     };
     c.stop = [&app] { app.stopPlayback(); };
     c.hold = [&app] (bool on) { app.undoHold += on ? 1 : -1; };
+    gSpecPrefs = app.props.getUserSettings();
     launchDialog (std::make_unique<RepairDialog> (std::move (c), declick), nm, parent, true);
 }
 
@@ -2372,6 +2555,7 @@ void repairEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent
     };
     c.stop = [&app] { app.stopPlayback(); };
     c.hold = [&app] (bool on) { app.undoHold += on ? 1 : -1; };
+    gSpecPrefs = app.props.getUserSettings();
     launchDialog (std::make_unique<RepairDialog> (std::move (c), declick), nm, parent, true);
 }
 

@@ -15,6 +15,7 @@
 #include "../src/core/ProjectCopy.h"
 #include "../src/core/Ltc.h"
 #include "../src/core/Aaf.h"
+#include "../src/core/SpectralPicture.h"
 #include <cstdio>
 
 using namespace td;
@@ -1635,6 +1636,38 @@ int main()
             CHECK (snr (x) > before + 10.0);
             for (long n = 0; n < t0 - 10; ++n) if (x[(size_t) n] != ref[(size_t) n]) { CHECK (false); break; }
         }
+        // Attenuate: a burst of noise over a held chord is turned down to the level of the sound around it, the music underneath stays
+        {
+            const long t0 = (long) (2 * sr), t1 = t0 + (long) (0.2 * sr);
+            auto rmsOf = [&] (const std::vector<float>& v, long a, long b) { double e = 0; for (long n = a; n < b; ++n) e += (double) v[(size_t) n] * v[(size_t) n]; return 10.0 * std::log10 (e / (double) (b - a) + 1e-30); };
+            auto noisy = tone; juce::Random rnd (21);
+            for (long n = t0; n < t1; ++n) noisy[(size_t) n] += 1.0f * (rnd.nextFloat() * 2.0f - 1.0f);
+            RepairParams p; p.mode = RepairMode::Attenuate; p.strength = 1.0; p.direction = RepairDirection::LeftRight;
+            auto y = noisy; SpectralRepair::repair (y, sr, t0, t1, 0.0, 24000.0, p);
+            const double around = 0.5 * (rmsOf (tone, t0 - (long) (0.3 * sr), t0 - 100) + rmsOf (tone, t1 + 100, t1 + (long) (0.3 * sr)));
+            CHECK (y.size() == noisy.size());
+            CHECK (rmsOf (noisy, t0, t1) > around + 3.0);                                  // the burst really stuck out
+            CHECK (std::abs (rmsOf (y, t0, t1) - around) < 3.0);                           // and now sits at the level of the surroundings
+            auto z = noisy; p.strength = 0.0; SpectralRepair::repair (z, sr, t0, t1, 0.0, 24000.0, p);
+            CHECK (z == noisy);
+            for (long n = 0; n < t0 - 9000; ++n) if (y[(size_t) n] != noisy[(size_t) n]) { CHECK (false); break; }
+        }
+        // the sharp picture: a steady tone is a thin line, a click a thin column
+        {
+            std::vector<float> t ((size_t) (2 * sr)); for (size_t n = 0; n < t.size(); ++n) t[n] = 0.3f * (float) std::sin (2 * dsp::kPi * 1000.0 * (double) n / sr);
+            PictureAxis ax; ax.fLo = 50.0; ax.fHi = 8000.0; ax.mel = true;
+            const auto pic = picture::render ({ t }, sr, 0.5, 1.5, 400, 200, ax, PictureOptions());
+            CHECK (pic.valid());
+            if (pic.valid())
+            {
+                const int col = 200; float best = -1000; int row = 0; int wide = 0;
+                for (int r = 0; r < pic.h; ++r) { const float v = pic.db[(size_t) r * (size_t) pic.w + (size_t) col]; if (v > best) { best = v; row = r; } }
+                for (int r = 0; r < pic.h; ++r) if (pic.db[(size_t) r * (size_t) pic.w + (size_t) col] > best - 30.0f) ++wide;
+                const double expectRow = (1.0 - ax.posOf (1000.0)) * (pic.h - 1);
+                CHECK (std::abs (row - expectRow) < 4.0);
+                CHECK (wide <= 6);
+            }
+        }
         // spectral repair with the RX-style controls
         {
             const long t0 = (long) (2 * sr), t1 = t0 + (long) (0.2 * sr);
@@ -1642,7 +1675,7 @@ int main()
             auto noisy = tone; auto ref = tone; juce::Random rnd (11);
             for (long n = t0; n < t1; ++n) noisy[(size_t) n] += 0.5f * (rnd.nextFloat() * 2.0f - 1.0f);
             auto err = [&] (const std::vector<float>& v) { double e = 0; for (long n = t0; n < t1; ++n) e += std::pow (v[(size_t) n] - ref[(size_t) n], 2.0); return e; };
-            RepairParams p; p.direction = RepairDirection::LeftRight;
+            RepairParams p; p.mode = RepairMode::Replace; p.direction = RepairDirection::LeftRight;
             auto a = noisy; p.strength = 1.0; SpectralRepair::repair (a, sr, t0, t1, 0.0, 24000.0, p);
             auto b = noisy; p.strength = 0.5; SpectralRepair::repair (b, sr, t0, t1, 0.0, 24000.0, p);
             auto z = noisy; p.strength = 0.0; SpectralRepair::repair (z, sr, t0, t1, 0.0, 24000.0, p);
@@ -1656,7 +1689,7 @@ int main()
             const double w0 = goertzel (whistle, 4000.0);
             for (auto dir : { RepairDirection::UpDown, RepairDirection::Both })
             {
-                auto y = whistle; RepairParams q; q.direction = dir; q.strength = 1.0; q.contextPct = 100.0;
+                auto y = whistle; RepairParams q; q.mode = RepairMode::Replace; q.direction = dir; q.strength = 1.0; q.contextPct = 100.0;
                 SpectralRepair::repair (y, sr, t0, t1, 3500.0, 4500.0, q);
                 CHECK (y.size() == whistle.size() && goertzel (y, 4000.0) < 0.35 * w0);
                 CHECK (std::abs (goertzel (y, 440.0) - goertzel (whistle, 440.0)) < 0.2 * goertzel (whistle, 440.0));
