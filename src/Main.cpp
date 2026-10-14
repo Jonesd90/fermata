@@ -112,6 +112,7 @@ public:
         ctx->showEditBehind = [this] (const juce::Uuid& id, juce::Component* front) { openEdit (id, front); };
         ctx->focusRecent = [this] (const juce::String& kind) { focusRecent (kind); };
         ctx->activeKind = [this] { return activeKind(); };
+        ctx->lastWorkWindowKey = [this] { return lastWorkWindowKey(); };
         ctx->showTrim = [this] (const juce::Uuid& e, const juce::Uuid& r, bool atEnd) { openTrim (e, r, atEnd); };
         ctx->closeWindowByKey = [this] (const juce::String& key) { closeWindowLater (key); };
         ctx->closeTrim = [this] (const juce::Uuid& e) { closeWindowLater ("trim:" + e.toString()); };
@@ -427,6 +428,18 @@ private:
         if (id.isNull()) return;
         if (kind == "take") openTakeWindow (id); else if (kind == "edit") openEdit (id); else openMixer (id);
         if (auto it = windows.find (prefix + id.toString()); it != windows.end() && it->second != nullptr) { DockHub::get().show (it->second.get()); it->second->toFront (true); it->second->grabContentFocus(); }
+    }
+    /** The edit or take window that was last in front ("edit:<id>" / "take:<id>"), whether or not Fermata is the program in use right now. */
+    juce::String lastWorkWindowKey() const
+    {
+        ToolWindow* best = nullptr; juce::String bestKey;
+        for (auto& kv : windows)
+        {
+            auto* w = kv.second.get();
+            if (w == nullptr || ! (kv.first.startsWith ("edit:") || kv.first.startsWith ("take:"))) continue;
+            if (best == nullptr || w->lastActive > best->lastActive) { best = w; bestKey = kv.first; }
+        }
+        return bestKey;
     }
     /** Which kind of window the person is working in right now: the Fermata window that was last in front, while Fermata is the program in use. "" = none of the three. */
     juce::String activeKind() const

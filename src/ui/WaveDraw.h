@@ -108,6 +108,7 @@ class DirectWaveCache
 public:
     static constexpr double kThumbSamplesPerPixelLimit = 128.0;     // thumbnails hold one value per 128 samples
     explicit DirectWaveCache (juce::AudioFormatManager& fm) : formats (fm) {}
+    void forget (const juce::String& path) { cache.erase (path); }
 
     /** True if it drew the audio itself (the caller then does not draw the thumbnail). */
     bool draw (juce::Graphics& g, juce::Rectangle<int> area, const juce::File& file, double t0, double t1, float vzoom, const WaveColorData* wc = nullptr)

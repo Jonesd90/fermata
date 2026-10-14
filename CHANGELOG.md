@@ -6,6 +6,11 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.28.0
+- **Edits made from a take window are now named "take name - EDIT"** (capital EDIT).
+- **Re-draw waveform:** right-click the audio in an edit window (new menu item) or a take window (the right-click on the audio now opens a small menu; the bars option is still there, and right-clicking the banner still opens it directly) to throw away the saved waveform shape and colours of that file and work them out again from the audio.
+- **Project menu > Re-draw all waveforms in current window** does the same for every file in the edit or take window you were last working in.
+
 ## 2.27.2
 - **Trim window:** the Level of A / Level of B faders now hold through the whole fade. Before, the level only began where the piece starts, so the fade rose to 0 dB and then dropped to the new level (a swell at the end of the fade); now the fade only reaches the level you set.
 

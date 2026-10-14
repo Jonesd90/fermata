@@ -73,6 +73,14 @@ public:
         return nullptr;
     }
 
+    /** Forgets what was worked out for this file (the next draw works it out again from the audio). */
+    void forget (const juce::File& f)
+    {
+        const auto key = f.getFullPathName() + "|" + juce::String (f.getSize());
+        std::lock_guard<std::mutex> lock (m);
+        done.erase (key);
+    }
+
     static juce::Colour colourOf (double centroidHz, double tonality)
     {
         // hue: 100 Hz red, 1 kHz green, 8 kHz and above blue (even steps of pitch between)

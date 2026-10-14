@@ -1273,6 +1273,16 @@ private:
         m.addSeparator();
         m.addItem (3, "Remove all volume changes in this piece", hasGains);
         if (isOver) { m.addSeparator(); m.addItem (4, "Delete this overdub"); }
+        std::vector<juce::File> redrawFiles;                                          // the file of the track that was clicked (else every file of the piece)
+        {
+            const int row = e.y >= kRulerH + kLaneH ? (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH) : -1;
+            const auto& rt = rowTracks();
+            const juce::Uuid tid = juce::isPositiveAndBelow (row, (int) rt.size()) ? rt[(size_t) row].id : juce::Uuid::null();
+            for (auto& f : piece->files) if (f.trackId == tid) redrawFiles.push_back (f.file);
+            if (redrawFiles.empty()) for (auto& f : piece->files) redrawFiles.push_back (f.file);
+        }
+        m.addSeparator();
+        m.addItem (8, "Re-draw waveform");
         if (piece->waiting.active())
         {
             m.addSeparator();
@@ -1281,8 +1291,9 @@ private:
         }
         auto* appPtr = &app;
         juce::Component::SafePointer<juce::Component> self (this);
-        m.showMenuAsync (juce::PopupMenu::Options(), [appPtr, eid, rid, rel, self, rangeFrom, rangeTo] (int r)
+        m.showMenuAsync (juce::PopupMenu::Options(), [appPtr, eid, rid, rel, self, rangeFrom, rangeTo, redrawFiles] (int r)
         {
+            if (r == 8) { appPtr->redrawWaveforms (redrawFiles); return; }
             auto* ed2 = appPtr->project.findEdit (eid);
             auto* p2 = ed2 ? ed2->findAny (rid) : nullptr;
             if (p2 == nullptr) return;
@@ -1298,6 +1309,7 @@ private:
 
     juce::AudioThumbnail* thumbnailFor (const juce::File& f)
     {
+        syncRedraw();
         const auto key = f.getFullPathName();
         auto it = thumbs.find (key);
         if (it == thumbs.end())
@@ -1312,6 +1324,15 @@ private:
     }
     juce::File wavesFolder() const { return app.project.projectFolder().getChildFile ("Waveforms"); }
     wavestore::ThumbSaver saver;
+    int redrawSeen = 0;
+    /** 'Re-draw waveform' was used somewhere: forget the thumbnails and audio held for those files, so they are read again. */
+    void syncRedraw()
+    {
+        if (app.redrawStamp == redrawSeen) return;
+        for (auto& e : app.redrawLog) if (e.first > redrawSeen) { thumbs.erase (e.second); saver.done.erase (e.second); directWave.forget (e.second); }
+        thumbCache.clear();
+        redrawSeen = app.redrawStamp;
+    }
 
     void changeListenerCallback (juce::ChangeBroadcaster*) override { saver.saveFinished (thumbs, wavesFolder()); updateSize(); repaint(); }
     void timerCallback() override

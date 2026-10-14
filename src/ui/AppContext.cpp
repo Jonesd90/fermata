@@ -794,6 +794,44 @@ juce::String AppContext::playRegionOriginal (const juce::Uuid& editId, const juc
     return err;
 }
 
+void AppContext::redrawWaveforms (const std::vector<juce::File>& files)
+{
+    const auto dir = project.projectFolder().getChildFile ("Waveforms");
+    int n = 0;
+    for (auto& f : files)
+    {
+        wavestore::fileFor (dir, f, ".fwave").deleteFile();
+        wavestore::fileFor (dir, f, ".fwcol").deleteFile();
+        waveColors.forget (f);
+        redrawLog.push_back ({ ++redrawStamp, f.getFullPathName() });
+        ++n;
+    }
+    if (redrawLog.size() > 4000) redrawLog.erase (redrawLog.begin(), redrawLog.begin() + 2000);
+    setNotice (n == 0 ? juce::String ("There are no waveforms to re-draw here") : "Re-drawing " + juce::String (n) + (n == 1 ? " waveform..." : " waveforms..."));
+    project.sendChangeMessage();
+}
+
+std::vector<juce::File> AppContext::audioFilesOfWindow (const juce::String& key) const
+{
+    std::vector<juce::File> v;
+    auto add = [&v] (const juce::File& f) { if (f != juce::File() && std::find (v.begin(), v.end(), f) == v.end()) v.push_back (f); };
+    const auto id = juce::Uuid (key.fromFirstOccurrenceOf (":", false, false));
+    if (key.startsWith ("edit:"))
+    {
+        if (auto* e = const_cast<Project&> (project).findEdit (id))
+        {
+            for (auto& r : e->regions) for (auto& f : r.files) add (f.file);
+            for (auto& r : e->overdubs) for (auto& f : r.files) add (f.file);
+        }
+    }
+    else if (key.startsWith ("take:"))
+    {
+        if (auto* w = const_cast<Project&> (project).findTakeWindow (id))
+            for (auto& g : w->groups) for (auto& f : g.files) add (f.file);
+    }
+    return v;
+}
+
 void AppContext::setShowInsertFlag (bool on)
 {
     showInsertFlag = on;
@@ -864,7 +902,7 @@ juce::String AppContext::copyMarkedToEdit (const juce::Uuid& windowId, bool atEd
     if (r.srcOut - r.srcIn < (juce::int64) (0.001 * rate)) return "The marked part is too short.";
 
     EditDef* e = project.findEdit (w->targetEdit);
-    if (e == nullptr) { e = &project.addEdit (w->name + " - edit", windowId); w->targetEdit = e->id; }
+    if (e == nullptr) { e = &project.addEdit (w->name + " - EDIT", windowId); w->targetEdit = e->id; }
     if (! e->isEmpty() && std::abs (e->sampleRate - rate) > 0.5)
         return "This take is " + juce::String (rate, 0) + " Hz but the edit is " + juce::String (e->sampleRate, 0) + " Hz.";
 

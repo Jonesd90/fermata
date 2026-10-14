@@ -434,7 +434,28 @@ public:
                         }
                 }
         if (e.mods.isPopupMenu() && e.x >= kNameW)                         // right-click on a take, even one still being recorded: its bars
-            if (auto* bg = groupAt (e.getPosition(), true)) { showBars (bg->id, e.getPosition()); return; }
+            if (auto* bg = groupAt (e.getPosition(), true))
+            {
+                if (e.y < kRulerH + kLaneH) { showBars (bg->id, e.getPosition()); return; }          // the banner: the bars it starts and ends in
+                const auto shown = shownTracks();                                                       // the audio: a menu with that and Re-draw waveform
+                const int row = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
+                const juce::Uuid tid = juce::isPositiveAndBelow (row, (int) shown.size()) ? shown[(size_t) row]->id : juce::Uuid::null();
+                std::vector<juce::File> files;
+                for (auto& f : bg->files) if (f.trackId == tid) files.push_back (f.file);
+                if (files.empty()) for (auto& f : bg->files) files.push_back (f.file);
+                juce::PopupMenu pm;
+                pm.addItem (1, "Re-draw waveform");
+                pm.addItem (2, "Bars it starts and ends in...");
+                const auto gid = bg->id; const auto pos = e.getPosition();
+                juce::Component::SafePointer<juce::Component> self (this);
+                pm.showMenuAsync (juce::PopupMenu::Options(), [this, self, files, gid, pos] (int r)
+                {
+                    if (self == nullptr) return;
+                    if (r == 1) app.redrawWaveforms (files);
+                    else if (r == 2) showBars (gid, pos);
+                });
+                return;
+            }
         const bool inLane = e.y >= kRulerH && e.y < kRulerH + kLaneH;
         const int sx = viewport.getViewPositionX();
         if (! e.mods.isPopupMenu() && e.x >= sx && e.x < sx + kNameW && e.y >= kRulerH + kLaneH)    // click on a track's ARM switch
@@ -870,6 +891,7 @@ private:
 
     juce::AudioThumbnail* thumbnailFor (const juce::File& f)
     {
+        syncRedraw();
         const auto key = f.getFullPathName();
         auto it = thumbs.find (key);
         if (it == thumbs.end())
@@ -884,6 +906,15 @@ private:
     }
     juce::File wavesFolder() const { return app.project.projectFolder().getChildFile ("Waveforms"); }
     wavestore::ThumbSaver saver;
+    int redrawSeen = 0;
+    /** 'Re-draw waveform' was used somewhere: forget the thumbnails and audio held for those files, so they are read again. */
+    void syncRedraw()
+    {
+        if (app.redrawStamp == redrawSeen) return;
+        for (auto& e : app.redrawLog) if (e.first > redrawSeen) { thumbs.erase (e.second); saver.done.erase (e.second); directWave.forget (e.second); }
+        thumbCache.clear();
+        redrawSeen = app.redrawStamp;
+    }
 
     void changeListenerCallback (juce::ChangeBroadcaster*) override
     {
@@ -1251,7 +1282,7 @@ void TakeWindowComponent::toEdit (bool atEditPlayhead)
     if (marksOk && app.project.findEdit (w->targetEdit) == nullptr)        // the first piece sent from this window: the edit does not exist yet, so it gets its name now
     {
         auto* aw = new juce::AlertWindow ("Name the edit", "This is the first piece you send from \"" + w->name + "\".\nWhat should the edit be called?", juce::MessageBoxIconType::QuestionIcon);
-        aw->addTextEditor ("name", w->name + " - edit", "Edit name");
+        aw->addTextEditor ("name", w->name + " - EDIT", "Edit name");
         aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
         aw->addButton ("Close", 0, juce::KeyPress (juce::KeyPress::escapeKey));
         auto safe = juce::Component::SafePointer<TakeWindowComponent> (this);
@@ -1262,7 +1293,7 @@ void TakeWindowComponent::toEdit (bool atEditPlayhead)
                     if (safe->app.project.findEdit (w2->targetEdit) == nullptr)
                     {
                         auto nm = aw->getTextEditorContents ("name").trim();
-                        if (nm.isEmpty()) nm = w2->name + " - edit";
+                        if (nm.isEmpty()) nm = w2->name + " - EDIT";
                         auto& e = safe->app.project.addEdit (nm, safe->windowId);
                         w2->targetEdit = e.id;
                         safe->app.project.changed();
@@ -1356,7 +1387,7 @@ void TakeWindowComponent::openEditWindow()
     EditDef* e = w != nullptr ? app.project.findEdit (w->targetEdit) : nullptr;
     if (e == nullptr)
     {
-        e = &app.project.addEdit ((w ? w->name : juce::String ("Piece")) + " - edit", windowId);
+        e = &app.project.addEdit ((w ? w->name : juce::String ("Piece")) + " - EDIT", windowId);
         if (w) w->targetEdit = e->id;
         app.project.changed();
     }
