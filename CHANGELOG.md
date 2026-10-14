@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.34.1
+- **Attenuate tuned against real examples** (a double consonant and a click in a held chord, each with the iZotope RX result): the patch now settles to the same level as RX's within about 1 dB, and sound outside the noise is moved by less than half a dB. Draw the box tight round the noise for the best match.
+
 ## 2.34.0
 - **Spectral Repair: new Attenuate method (now the default), set up like iZotope RX.** Draw a box round the noise (a pencil drop, a stray consonant, a click over a held chord) and Attenuate turns down only what sticks out above the sound around the box, keeping the music underneath, so the patch matches its surroundings. Controls: Bands (128 - 4096, default 1024), Multi-resolution (long window for the bass, short for the top), Surrounding length (default 100 %), Strength (default 80 %), Before / After weighting, and the direction Horizontal / Vertical / 2D. The old rebuild-from-the-surroundings method stays as **Replace**.
 - **A sharper spectrogram.** The picture of what is in view is now drawn with a Gaussian window and reassignment (the energy is moved to where the sound really is), so a held note is a thin line and a click a thin column. It is made again after you zoom or move (a moment after you stop), on every track at once. New default pitch scale **Mel**, and the **cyan-to-orange** colours with the RX levels (-134.3 to -5.3 dB). **Spectrogram settings...** changes the colours, levels, detail and reassignment, and is remembered.

@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdlib>
 #include "Dsp.h"
 #include <functional>
 #include <numeric>
@@ -252,15 +253,22 @@ private:
         if (hit.empty() || (! haveL && ! haveR)) return;
         const bool horizontal = p.direction != RepairDirection::UpDown, vertical = p.direction != RepairDirection::LeftRight;
         const double strength = juce::jlimit (0.0, 1.0, p.strength);
-        // per bin, the magnitudes of the clean frames before and after, sorted (the target is drawn from the upper half: the normal level, with its natural variation)
-        std::vector<std::vector<float>> sortL, sortR;
+        // per bin, the magnitudes of the clean frames before and after (pooled with the neighbouring bins, so the statistics are steady), sorted:
+        // 'sortX' gives the normal level (a quantile drawn per cell), 'topX' the level that counts as clearly too loud (only what is above it is touched)
+        std::vector<std::vector<float>> sortL, sortR; std::vector<float> topL, topR;
         if (horizontal)
         {
-            sortL.assign ((size_t) bins, {}); sortR.assign ((size_t) bins, {});
+            sortL.assign ((size_t) bins, {}); sortR.assign ((size_t) bins, {}); topL.assign ((size_t) bins, -1.0f); topR.assign ((size_t) bins, -1.0f);
             for (int b = b0; b <= b1; ++b)
             {
-                if (haveL) { auto& v = sortL[(size_t) b]; for (auto f : left)  v.push_back ((float) std::abs (X[(size_t) f][(size_t) b])); std::sort (v.begin(), v.end()); }
-                if (haveR) { auto& v = sortR[(size_t) b]; for (auto f : right) v.push_back ((float) std::abs (X[(size_t) f][(size_t) b])); std::sort (v.begin(), v.end()); }
+                for (int side = 0; side < 2; ++side)
+                {
+                    const auto& fr = side == 0 ? left : right; if ((side == 0 ? ! haveL : ! haveR)) continue;
+                    auto& v = (side == 0 ? sortL : sortR)[(size_t) b];
+                    for (auto f : fr) for (int k = juce::jmax (0, b - 2); k <= juce::jmin (bins - 1, b + 2); ++k) v.push_back ((float) std::abs (X[(size_t) f][(size_t) k]));
+                    std::sort (v.begin(), v.end());
+                    (side == 0 ? topL : topR)[(size_t) b] = v[(size_t) juce::jmin ((int) v.size() - 1, (int) (0.80 * (double) v.size()))];
+                }
             }
         }
         const double wgt = juce::jlimit (0.02, 0.98, p.weighting >= 0.0 ? p.weighting : 0.5);
@@ -291,14 +299,17 @@ private:
             {
                 const double mag = std::abs (X[(size_t) f][(size_t) b]);
                 if (mag < 1.0e-12) continue;
-                double th = -1.0, tv = -1.0;
+                double th = -1.0, tv = -1.0, thr = -1.0;
                 if (horizontal)
                 {
-                    const double u = 0.5 + 0.45 * hash01 ((unsigned) f, (unsigned) b);
+                    const double u = 0.20 + 0.40 * hash01 ((unsigned) f, (unsigned) b);
                     auto draw = [&] (const std::vector<float>& v) { return v.empty() ? -1.0 : (double) v[(size_t) juce::jmin ((int) v.size() - 1, (int) (u * (double) v.size()))]; };
                     const double a = draw (sortL[(size_t) b]), c = draw (sortR[(size_t) b]);
                     if (a > 0.0 && c > 0.0) th = std::exp ((1.0 - alpha) * std::log (a) + alpha * std::log (c));
                     else th = a > 0.0 ? a : c;
+                    const double ta = haveL ? (double) topL[(size_t) b] : -1.0, tc = haveR ? (double) topR[(size_t) b] : -1.0;
+                    if (ta > 0.0 && tc > 0.0) thr = std::exp ((1.0 - alpha) * std::log (ta) + alpha * std::log (tc));
+                    else thr = ta > 0.0 ? ta : tc;
                 }
                 if (vertical)
                 {
@@ -308,6 +319,7 @@ private:
                 }
                 double target = th > 0.0 && tv > 0.0 ? std::sqrt (th * tv) : (th > 0.0 ? th : tv);
                 if (target <= 0.0 || mag <= target) continue;
+                if (thr > 0.0 && tv <= 0.0 && mag <= thr) continue;                      // within the normal variation of the sound around: left alone
                 double wb = 1.0;                                                       // the edges of the box in pitch, and of this analysis size's part of the pitch range
                 const double hz = (double) b * hzPerBin;
                 if (b - b0 < 3) wb = juce::jmin (wb, (double) (b - b0 + 1) / 4.0);
