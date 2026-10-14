@@ -10,7 +10,7 @@ class TrimWaves : public juce::Component, private juce::Timer
 public:
     explicit TrimWaves (TrimComponent& o) : owner (o) { startTimerHz (30); }
 
-    void timerCallback() override { if (owner.isAuditioning() || wasPlaying) { wasPlaying = owner.isAuditioning(); repaint(); } }
+    void timerCallback() override { const bool on = owner.isAuditioning() || owner.originalPlaying(); if (on || wasPlaying) { wasPlaying = on; repaint(); } }
 
     void paint (juce::Graphics& g) override
     {
@@ -114,6 +114,21 @@ public:
         g.fillRect (jx - 0.5f, (float) kRulerH, 1.0f, (float) (h - kRulerH));
         g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
         g.drawText (hasA && hasB ? "join" : hasB ? "start" : "end", (int) jx + 4, h - 16, 40, 14, juce::Justification::left);
+
+        // ---- 'play original A / B': a playhead moves through that take's own stream, over the edit point
+        if (const auto& app = owner.getApp(); app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Other)
+            for (int side = 0; side < 2; ++side)
+            {
+                const bool isA = side == 0;
+                if ((isA && ! hasA) || (! isA && ! hasB)) continue;
+                const EditRegion& R = isA ? A : B;
+                if (app.playInfo.id != R.id) continue;
+                const double src = (app.playInfo.startSeconds + app.playedSeconds()) * R.sampleRate;       // where in the take's own file
+                const float x = xAt ((double) R.startSample + src - (double) R.srcIn);
+                const auto lane = isA ? lanes.a : lanes.b;
+                g.setColour (theme::playhead); g.fillRect (x - 1.0f, (float) lane.getY(), 2.0f, (float) lane.getHeight());
+                wasPlaying = true;
+            }
 
         // ---- playhead while auditioning
         if (owner.isAuditioning())

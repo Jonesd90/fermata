@@ -6,6 +6,14 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.25.0
+- **Mixer inserts:** clicking the name of an insert slot now opens the plug-in straight away (an empty slot opens the plug-in list). A little dot on the right of the slot opens the menu (load, bypass, remove, replace). Right-click also opens the menu.
+- **Mixer inserts:** drag a plug-in by its name onto another insert slot, in the same mixer or another one, to move it there with all its settings (if the slot is occupied the two swap places). Hold **Shift** while dropping to put a copy there instead, with the current values of all its parameters. The slot you are dropping on lights up (yellow = move, green = copy).
+
+## 2.24.0
+- **Edit window:** a new **Insert flag** tick box shows or hides the INSERT flag (the strip, the dotted line and the "next take goes here" note). Hidden, it also cannot be dragged by accident. Remembered between runs.
+- **Trim window:** "Play original A" and "Play original B" now show a playhead moving through that take's own stream, across the edit point, while they play.
+
 ## 2.23.2
 - **Edit window:** Slip Left and Slip Right are the same setting as in the trim window: on by default, remembered between runs, and a change in one window shows in the other.
 

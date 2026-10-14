@@ -308,6 +308,7 @@ public:
         }
 
         // where the next take will be placed: a flag in its own strip under the markers (drag it; it snaps to the starts and ends of the pieces)
+        if (app.showInsertFlag)
         {
             const juce::int64 at = e->insertIndex < 0 || e->insertIndex >= (int) e->regions.size()
                                        ? (e->regions.empty() ? 0 : e->regions.back().endSample()) : e->regions[(size_t) e->insertIndex].startSample;
@@ -448,7 +449,7 @@ public:
         if (ed == nullptr) return;
         markers.setNameWidth (viewport.getViewPositionX() + kNameW);
         if (markers.mouseDown (e)) return;                                 // the marker strip along the top: right-click for Add Marker / Clear All; drag a marker
-        if (! e.mods.isPopupMenu() && e.x >= kNameW && e.y >= markerui::kStripH && e.y < markerui::kStripH + kInsH)       // the insert flag: drag it to where the next take should go
+        if (app.showInsertFlag && ! e.mods.isPopupMenu() && e.x >= kNameW && e.y >= markerui::kStripH && e.y < markerui::kStripH + kInsH)       // the insert flag: drag it to where the next take should go
         {
             insertDrag = true; insertDragMove (e.x);
             return;
@@ -1453,6 +1454,9 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     slipLeftToggle.setTooltip ("When you slide a piece, every piece BEFORE it slides with it (off: they stay where they are).");
     slipRightToggle.setTooltip ("When you slide a piece, every piece AFTER it slides with it (off: they stay where they are).");
     shuffleToggle.setTooltip ("Shuffle on: dragging a piece by its top banner past a neighbour swaps the two, like cards in a deck. Off: a piece goes wherever you drop it, leaving silence if you want.");
+    insertFlagToggle.setToggleState (app.showInsertFlag, juce::dontSendNotification);
+    insertFlagToggle.setTooltip ("Show or hide the INSERT flag (where the next take will be placed). Hide it while you are only working on fades.");
+    insertFlagToggle.onClick = [this] { app.setShowInsertFlag (insertFlagToggle.getToggleState()); };
     shuffleToggle.onClick = [this] { timeline->shuffleMode = shuffleToggle.getToggleState(); };
     slipLeftToggle.setToggleState (app.trimSlipLeft, juce::dontSendNotification);          // the same Slip Left / Slip Right setting as the trim window: on by default, remembered
     slipRightToggle.setToggleState (app.trimSlipRight, juce::dontSendNotification);
@@ -1460,7 +1464,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     slipLeftToggle.onClick  = [this] { timeline->slipLeft = slipLeftToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
     slipRightToggle.onClick = [this] { timeline->slipRight = slipRightToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
     for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &ltcButton, &automationButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &reharmoniserButton, &exportProcButton, &undoFixButton,
-                                                          &slipLeftToggle, &slipRightToggle, &shuffleToggle })
+                                                          &slipLeftToggle, &slipRightToggle, &shuffleToggle, &insertFlagToggle })
     {
         addAndMakeVisible (b);
         b->setWantsKeyboardFocus (false);
@@ -1504,7 +1508,7 @@ void EditWindowComponent::resized()
         { &automationButton, grid::btnW, grid::btnH, 14 },
         { &pitchButton }, { &pitchCurveButton, grid::btnW + 24 }, { &repairButton, grid::btnW + 30 }, { &declickButton }, { &reharmoniserButton, grid::btnW + 24 }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, grid::btnW, grid::btnH, 14 },
         { &tracksButton }, { &importButton, grid::btnW, grid::btnH, 14 },
-        { &slipLeftToggle, 95 }, { &slipRightToggle, 105 }, { &shuffleToggle, 90, grid::btnH, 14 },
+        { &slipLeftToggle, 95 }, { &slipRightToggle, 105 }, { &shuffleToggle, 90 }, { &insertFlagToggle, 100, grid::btnH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
     r.removeFromTop (grid::flow (r, items));
@@ -1868,6 +1872,7 @@ void EditWindowComponent::changeListenerCallback (juce::ChangeBroadcaster*) { re
 void EditWindowComponent::timerCallback()
 {
     if (auto* fc = juce::Component::getCurrentlyFocusedComponent(); fc != nullptr && isParentOf (fc)) app.setTransportHandler (this, [this] { togglePlay(); });
+    if (insertFlagToggle.getToggleState() != app.showInsertFlag) insertFlagToggle.setToggleState (app.showInsertFlag, juce::dontSendNotification);
     if (slipLeftToggle.getToggleState() != app.trimSlipLeft)   { slipLeftToggle.setToggleState (app.trimSlipLeft, juce::dontSendNotification);   timeline->slipLeft = app.trimSlipLeft; }
     if (slipRightToggle.getToggleState() != app.trimSlipRight) { slipRightToggle.setToggleState (app.trimSlipRight, juce::dontSendNotification); timeline->slipRight = app.trimSlipRight; }
     playButton.setButtonText (app.isPlaying() ? "Stop [Space]" : "Play [Space]");

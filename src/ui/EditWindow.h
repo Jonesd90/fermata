@@ -55,7 +55,7 @@ private:
                      leftButton { "Move earlier" }, rightButton { "Move later" }, endButton { "Next goes at end" },
                      zoomInButton { "+" }, zoomOutButton { "-" }, bounceButton { "Bounce Out..." }, mixerButton { "Edit Mixer" }, ltcButton { juce::String::fromUTF8 ("\xE2\x96\xB6 LTC") }, automationButton { "Automation" },
                      pitchButton { "Pitch..." }, pitchCurveButton { "Pitch curve..." }, repairButton { "Spectral Repair..." }, declickButton { "De-Click..." }, reharmoniserButton { "ReHarmoniSer..." }, exportProcButton { "Export for Processing..." }, undoFixButton { "Undo fix" }, tracksButton { "Tracks..." }, importButton { "Import..." };
-    juce::ToggleButton slipLeftToggle { "Slip Left" }, slipRightToggle { "Slip Right" }, shuffleToggle { "Shuffle" };
+    juce::ToggleButton slipLeftToggle { "Slip Left" }, slipRightToggle { "Slip Right" }, shuffleToggle { "Shuffle" }, insertFlagToggle { "Insert flag" };
     LoopButton loopToggle;
     PlayheadModeButton playheadMode;
     RainbowButton waveColourBtn;

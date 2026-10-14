@@ -190,6 +190,9 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     bool playheadFollows = true;
     /** The trim window's Slip Left / Slip Right boxes: on by default, and they stay as the user last set them (all trim windows, remembered between runs). */
     bool trimSlipLeft = true, trimSlipRight = true;
+    /** The INSERT flag in the edit window can be hidden (while only fades are being worked on). Remembered between runs. */
+    bool showInsertFlag = true;
+    void setShowInsertFlag (bool on);
     void setTrimSlip (bool left, bool right);
     void setPlayheadFollows (bool on);
     void stopPlayback();

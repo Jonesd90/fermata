@@ -155,6 +155,28 @@ private:
     juce::Rectangle<int> scaleRect, sliderRect; int travelTop = 0, travelBottom = 0;
 };
 
+class SlotButtons;
+
+/** One insert slot as drawn: the name (click it to open the plug-in straight away) and a little dot on the right (click it for the menu).
+    Drag the name onto another slot, in this mixer or another one, to MOVE the plug-in with all its settings (two plug-ins swap places);
+    hold Shift while dropping to put a COPY there instead, with all its current settings. */
+class SlotCell : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    SlotCell (SlotButtons& o, int i) : owner (o), index (i) { setRepaintsOnMouseActivity (true); }
+    void setLook (const juce::String& n, juce::Colour c, bool loadedNow) { name = n; fill = c; loaded = loadedNow; repaint(); }
+    void paint (juce::Graphics& g) override;
+    void mouseDown (const juce::MouseEvent& e) override { dragging = false; downOnDot = dotArea().contains (e.getPosition()); }
+    void mouseDrag (const juce::MouseEvent& e) override;
+    void mouseUp (const juce::MouseEvent& e) override;
+    juce::Rectangle<int> dotArea() const { return getLocalBounds().removeFromRight (16); }
+    SlotButtons& owner; int index;
+    bool dropHighlight = false, dropCopy = false;
+private:
+    juce::String name; juce::Colour fill; bool loaded = false, dragging = false, downOnDot = false;
+    SlotCell* hovered = nullptr;
+};
+
 /** A column of VST3 insert slots (four on a channel, two on a send). */
 class SlotButtons : public juce::Component
 {
@@ -163,10 +185,9 @@ public:
     {
         for (int i = 0; i < count; ++i)
         {
-            auto* b = buttons.add (new juce::TextButton());
-            b->setClickingTogglesState (false);
-            b->setTooltip ("Insert slot: click to load a VST3 plug-in, open it, bypass it or remove it");
-            b->onClick = [this, i] { clicked (i); };
+            auto* b = cells.add (new SlotCell (*this, i));
+            b->setTooltip ("Insert slot. Click the name to open the plug-in (an empty slot opens the list), click the dot for the menu (load, bypass, remove). "
+                           "Drag the name onto another slot, in any mixer, to move the plug-in with its settings; hold Shift to drop a copy instead.");
             addAndMakeVisible (b);
         }
         refresh();
@@ -179,17 +200,62 @@ public:
             auto name = slots[i].getName();
             const bool loaded = name.isNotEmpty();
             const bool byp = slots[i].bypass.get();
-            buttons[i]->setButtonText (name);
-            buttons[i]->setColour (juce::TextButton::buttonColourId, loaded ? (byp ? t.insertByp : t.insertOn) : t.field);
-            buttons[i]->setColour (juce::TextButton::textColourOffId, t.text);
+            cells[i]->setLook (name, loaded ? (byp ? t.insertByp : t.insertOn) : t.field, loaded);
         }
     }
     void resized() override
     {
         auto r = getLocalBounds();
         const int h = r.getHeight() / count;
-        for (auto* b : buttons) b->setBounds (r.removeFromTop (h).reduced (1, 1));
+        for (auto* b : cells) b->setBounds (r.removeFromTop (h).reduced (1, 1));
     }
+    bool slotLoaded (int i) const { return slots[i].isLoaded(); }
+    /** The name was clicked: open the plug-in, or (empty slot) offer the list. */
+    void openOrMenu (int i)
+    {
+        if (slots[i].isLoaded()) app.plugins.showEditor (slots[i].getProcessorUnsafe());
+        else clicked (i);
+    }
+    void menu (int i) { clicked (i); }
+
+    /** Move (or, with copy, duplicate) the plug-in in this column's slot 'from' to slot 'to' of 'target'. */
+    void dropTo (int from, SlotButtons& target, int to, bool copy)
+    {
+        if (&target == this && from == to) return;
+        auto& src = slots[from]; auto& dst = target.slots[to];
+        auto* sp = src.getProcessorUnsafe();
+        if (sp == nullptr) return;
+        const double sr = app.engine.getSampleRate(); const int blk = app.engine.getMaxBlock();
+        if (copy)
+        {
+            const auto desc = sp->getDescription(); const auto state = sp->getStateBase64();
+            auto factory = app.plugins.makeFactory ([sr] { return sr; }, [blk] { return blk; });
+            auto p = factory ? factory (desc, state) : nullptr;
+            if (p == nullptr) { showError ("Plug-in", "Could not make a copy of " + sp->getName()); return; }
+            app.plugins.closeEditorsFor (dst.getProcessorUnsafe());
+            dst.set (std::move (p), sr, blk, 2);
+            dst.bypass.set (src.bypass.get());
+        }
+        else
+        {
+            app.plugins.closeEditorsFor (sp); app.plugins.closeEditorsFor (dst.getProcessorUnsafe());
+            const bool bs = src.bypass.get(), bd = dst.bypass.get();
+            auto pa = src.take(); auto pb = dst.take();                        // the one that was there (if any) swaps places with it
+            dst.set (std::move (pa), sr, blk, 2); dst.bypass.set (bs);
+            if (pb != nullptr) { src.set (std::move (pb), sr, blk, 2); src.bypass.set (bd); }
+            else src.bypass.set (false);
+        }
+        app.project.markDirty(); app.engine.checkLatency();
+        refresh(); target.refresh();
+    }
+    /** The slot cell under a screen position (any mixer window), or null. */
+    static SlotCell* cellAt (juce::Point<int> screenPos)
+    {
+        for (auto* c = juce::Desktop::getInstance().findComponentAt (screenPos); c != nullptr; c = c->getParentComponent())
+            if (auto* sc = dynamic_cast<SlotCell*> (c)) return sc;
+        return nullptr;
+    }
+    AppContext& app;
 private:
     void clicked (int i)
     {
@@ -214,7 +280,7 @@ private:
         m.addItem (9, app.plugins.isScanning() ? "Scanning..." : "Scan for VST3 plug-ins", ! app.plugins.isScanning());
 
         auto safe = juce::Component::SafePointer<SlotButtons> (this);
-        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (buttons[i]), [safe, i, descs] (int r)
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (cells[i]), [safe, i, descs] (int r)
         {
             if (safe == nullptr || r == 0) return;
             safe->handle (i, r, *descs);
@@ -248,11 +314,53 @@ private:
             app.plugins.showEditor (slot.getProcessorUnsafe());
         }
     }
-    AppContext& app;
     InsertSlot* slots;
     int count;
-    juce::OwnedArray<juce::TextButton> buttons;
+    juce::OwnedArray<SlotCell> cells;
 };
+
+void SlotCell::paint (juce::Graphics& g)
+{
+    const auto& t = mixTheme();
+    auto r = getLocalBounds().toFloat();
+    g.setColour (isMouseOver() && ! dragging ? fill.brighter (0.12f) : fill); g.fillRoundedRectangle (r, 3.0f);
+    g.setColour (dropHighlight ? juce::Colour (dropCopy ? 0xff3fbf6a : 0xfff2c200) : t.line); g.drawRoundedRectangle (r.reduced (0.5f), 3.0f, dropHighlight ? 2.0f : 1.0f);
+    auto text = getLocalBounds().withTrimmedRight (16).reduced (4, 0);
+    g.setColour (t.text); g.setFont (juce::FontOptions (11.0f));
+    g.drawText (name, text, juce::Justification::centredLeft, true);
+    const auto dot = dotArea().toFloat();
+    const bool overDot = isMouseOver() && dotArea().contains (getMouseXYRelative());
+    g.setColour (t.text.withAlpha (overDot ? 1.0f : loaded ? 0.6f : 0.35f));
+    g.fillEllipse (dot.getCentreX() - 3.0f, dot.getCentreY() - 3.0f, 6.0f, 6.0f);
+}
+
+void SlotCell::mouseDrag (const juce::MouseEvent& e)
+{
+    if (downOnDot || ! loaded) return;
+    if (! dragging && e.getDistanceFromDragStart() < 6) return;
+    dragging = true;
+    setMouseCursor (juce::MouseCursor::DraggingHandCursor);
+    auto* now = SlotButtons::cellAt (e.getScreenPosition());
+    if (now == this) now = nullptr;
+    if (hovered != now) { if (hovered != nullptr) hovered->dropHighlight = false, hovered->repaint(); hovered = now; }
+    if (hovered != nullptr) { hovered->dropHighlight = true; hovered->dropCopy = e.mods.isShiftDown(); hovered->repaint(); }
+}
+
+void SlotCell::mouseUp (const juce::MouseEvent& e)
+{
+    const bool wasDragging = dragging;
+    dragging = false; setMouseCursor (juce::MouseCursor::NormalCursor);
+    if (hovered != nullptr) { hovered->dropHighlight = false; hovered->repaint(); }
+    auto* target = wasDragging ? SlotButtons::cellAt (e.getScreenPosition()) : nullptr;
+    hovered = nullptr;
+    if (wasDragging)
+    {
+        if (target != nullptr && target != this) owner.dropTo (index, target->owner, target->index, e.mods.isShiftDown());
+        return;
+    }
+    if (e.mods.isPopupMenu() || (downOnDot && dotArea().contains (e.getPosition()))) { owner.menu (index); return; }
+    if (getLocalBounds().contains (e.getPosition())) owner.openOrMenu (index);
+}
 
 juce::TextButton* makeToggle (juce::Component& parent, juce::OwnedArray<juce::TextButton>& list, const juce::String& text, juce::Colour on)
 {

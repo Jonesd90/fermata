@@ -66,6 +66,7 @@ AppContext::AppContext()
         playheadFollows = st->getBoolValue ("playheadFollows", true);
         trimSlipLeft = st->getBoolValue ("trimSlipLeft", true);
         trimSlipRight = st->getBoolValue ("trimSlipRight", true);
+        showInsertFlag = st->getBoolValue ("showInsertFlag", true);
         takeDisplay.line = st->getValue ("tdLine");
         takeDisplay.logoMode = st->getIntValue ("tdLogoMode", 0);
         takeDisplay.logoPath = st->getValue ("tdLogoPath");
@@ -790,6 +791,13 @@ juce::String AppContext::playRegionOriginal (const juce::Uuid& editId, const juc
     auto err = beginSession (*this, segmentsForRegionOriginal (project, *r), a, b, r->sampleRate, nullptr, false, false, editId);
     if (err.isEmpty()) playInfo = { PlayInfo::Kind::Other, juce::Uuid::null(), regionId, (double) a / r->sampleRate };
     return err;
+}
+
+void AppContext::setShowInsertFlag (bool on)
+{
+    showInsertFlag = on;
+    if (auto* st = props.getUserSettings()) { st->setValue ("showInsertFlag", on); props.saveIfNeeded(); }
+    project.sendChangeMessage();
 }
 
 void AppContext::setTrimSlip (bool left, bool right)

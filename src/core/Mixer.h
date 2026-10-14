@@ -78,6 +78,21 @@ public:
 
     void clear (double sr, int maxBlock, int numCh) { set (nullptr, sr, maxBlock, numCh); }
 
+    /** Message thread: takes the plug-in out of the slot (keeping all its settings) so it can be put in another slot. The slot is left empty. */
+    std::unique_ptr<InsertProcessor> take()
+    {
+        std::unique_ptr<InsertProcessor> p;
+        {
+            const juce::SpinLock::ScopedLockType sl (lock);
+            p = std::move (proc);
+            proc = nullptr;
+            loadedHint.store (false, std::memory_order_relaxed);
+            savedDescription.clear(); savedState.clear();
+        }
+        latency.store (0, std::memory_order_relaxed);
+        return p;
+    }
+
     /** The audio device (sample rate / buffer size) changed. Audio simply bypasses this slot meanwhile. */
     void reprepare (double sr, int maxBlock, int numCh)
     {
