@@ -227,6 +227,12 @@ static void addRegionSegments (const Project& p, const EditRegion& r, std::vecto
             st.ramp = (juce::int64) std::llround (g.ramp * r.sampleRate);
             st.from = r.levelAfter (fi, k, g.at);
             st.to = fi < g.db.size() ? dbToLinear (g.db[fi]) : 1.0f;
+            if (k == 0 && ! g.autoNorm && g.at <= (juce::int64) (0.001 * r.sampleRate))
+            {
+                // the level given to the piece as a whole (the trim window's Level faders): it holds from the very first sound of the piece, the fade-in included,
+                // so the fade only reaches that level, instead of rising to 0 dB and then dropping to it
+                st.at = juce::jmin (st.at, s.begin); st.ramp = 0; st.from = st.to;
+            }
             s.gainSteps.push_back (st);
         }
         if (s.end > s.begin) v.push_back (s);

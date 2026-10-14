@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.27.2
+- **Trim window:** the Level of A / Level of B faders now hold through the whole fade. Before, the level only began where the piece starts, so the fade rose to 0 dB and then dropped to the new level (a swell at the end of the fade); now the fade only reaches the level you set.
+
 ## 2.27.1
 - **Mastering window:** "Render from", the source and the Tail moved down into the row under the tabs, so the pin and moon buttons no longer cover the Tail box.
 - **Waveforms:** the colour-by-frequency waveforms (WaveColour) are back exactly as they were; the Pyramix-style pale look made them lose their colours, so it is switched off.

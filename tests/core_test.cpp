@@ -2984,6 +2984,26 @@ int main()
         CHECK (ed.joinGapSeconds (1) == 0.0 && ed.closeGap (1) == 0);
     }
 
+    SECTION ("piece level: holds through the fade-in, so the fade does not swell");
+    {
+        Project xp; TrackDef tdef; tdef.id = juce::Uuid(); xp.tracks.push_back (tdef);
+        auto& ed = xp.addEdit ("Edit", juce::Uuid::null());
+        for (int k = 0; k < 2; ++k)
+        {
+            EditRegion r; r.sampleRate = 48000.0; r.srcIn = 48000; r.srcOut = 48000 * 6; r.sourceLength = 48000 * 20; r.startSample = 48000 * 5 * k; r.id = juce::Uuid();
+            RegionFile f; f.trackId = tdef.id; f.file = juce::File ("x.wav"); r.files.push_back (f);
+            ed.regions.push_back (r);
+        }
+        ed.setDefaultJoinFades (1);
+        ed.regions[1].setPieceLevelDb (-2.0f);
+        const auto segs = segmentsForEdit (xp, ed);
+        const auto& sb = segs[1];
+        const float want = std::pow (10.0f, -2.0f / 20.0f);
+        CHECK (sb.begin < ed.regions[1].startSample);                                          // the fade-in starts before the join
+        CHECK (std::abs (sb.gainAt (sb.begin) - want) < 1e-4f && std::abs (sb.gainAt (ed.regions[1].startSample + 1000) - want) < 1e-4f);
+        CHECK (std::abs (sb.gainAt (ed.regions[1].startSample - 100) - want) < 1e-4f);        // no 0 dB swell before the start
+    }
+
     eng.rebuildPlan();
     tmp.deleteRecursively();
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
