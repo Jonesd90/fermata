@@ -762,6 +762,20 @@ int main()
         CHECK (mixB.busFor (outBus)->outFirst.load() == 2 && mixA.busFor (outBus)->outFirst.load() == 0);                                // output pairs are not copied
         p.applyMix (mixB, backup, 48000.0, Rig::block);
         CHECK (mixB.stripFor (violaId)->mute.get() == false && mixB.stripFor (violinId)->mute.get() && std::abs (mixB.stripFor (violaId)->gainDb.get()) < 1e-6f);
+        // copy only some parts: faders only, then sends only, then pan only
+        {
+            auto* sa = mixA.stripFor (violaId); auto* sb = mixB.stripFor (violaId);
+            sa->gainDb.set (-7.0f); sa->pan.set (0.4f); p.setSendLevel (mixA, violaId, p.buses[0].id, -10.0f);
+            sb->gainDb.set (0.0f); sb->pan.set (0.0f); p.setSendLevel (mixB, violaId, p.buses[0].id, -100.0f);
+            auto snap = p.mixSnapshot (mixA, true);
+            p.applyMix (mixB, snap, 48000.0, Rig::block, MixParts { true, false, false, false });
+            CHECK (std::abs (sb->gainDb.get() + 7.0f) < 1e-6f && std::abs (sb->pan.get()) < 1e-6f && sb->sends.find (p.buses[0].id)->gainDb.get() < -90.0f);
+            p.applyMix (mixB, snap, 48000.0, Rig::block, MixParts { false, true, false, false });
+            CHECK (std::abs (sb->sends.find (p.buses[0].id)->gainDb.get() + 10.0f) < 1e-6f && std::abs (sb->pan.get()) < 1e-6f);
+            p.applyMix (mixB, snap, 48000.0, Rig::block, MixParts { false, false, true, false });
+            CHECK (std::abs (sb->pan.get() - 0.4f) < 1e-6f);
+            sa->gainDb.set (0.0f); sb->gainDb.set (0.0f);
+        }
         for (auto& t : p.tracks) { mixA.stripFor (t.id)->mute.set (false); mixB.stripFor (t.id)->mute.set (false); mixA.stripFor (t.id)->gainDb.set (0.0f); mixB.stripFor (t.id)->gainDb.set (0.0f); }
         mixA.stripFor (violaId)->pan.set (0.0f); p.setSendLevel (mixA, violaId, p.buses[0].id, -100.0f); p.setSendLevel (mixB, violaId, p.buses[0].id, -100.0f); mixB.stripFor (violaId)->pan.set (0.0f);
         mixA.busFor (p.buses[0].id)->gainDb.set (0.0f); mixB.busFor (p.buses[0].id)->gainDb.set (0.0f);

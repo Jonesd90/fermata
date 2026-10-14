@@ -366,7 +366,8 @@ private:
             return;
         }
         if (stayInFront != nullptr) return;                                          // not open, and the user is working elsewhere: do not open it (the work is already in the project)
-        auto* content = make();
+        juce::Component* content = make();
+        if (key == "organiser" || key == "takedisplay" || key == "bridge") content = new CornerStripHost (content);     // (their pin and sun / moon buttons get a strip of their own)
         auto w = std::make_unique<ToolWindow> (title, [this, key] (ToolWindow*)
         {
             juce::MessageManager::callAsync ([this, key] { windows.erase (key); });
@@ -623,7 +624,7 @@ private:
         {
             juce::MessageManager::callAsync ([this] { audioSettings.reset(); });
         });
-        dw->setContentOwned (new AudioSettingsPanel (*ctx, [this] { juce::MessageManager::callAsync ([this] { audioSettings.reset(); }); }), true);
+        dw->setContentOwned (new CornerStripHost (new AudioSettingsPanel (*ctx, [this] { juce::MessageManager::callAsync ([this] { audioSettings.reset(); }); })), true);
         dw->setResizable (false, false);
         dw->centreWithSize (dw->getWidth(), dw->getHeight());
         if (mainWindow != nullptr) makeOwnedBy (*dw, *mainWindow);

@@ -415,6 +415,23 @@ inline void placeThemeToggle (juce::DocumentWindow& w, ThemeToggleButton& b)
     b.toFront (false);
 }
 
+/** Puts a clear strip along the top of a window's content for the pin and sun / moon buttons that sit in its top-right corner, so they never cover anything. */
+class CornerStripHost : public juce::Component
+{
+public:
+    static constexpr int kStripH = 30;
+    explicit CornerStripHost (juce::Component* inner) : content (inner)
+    {
+        addAndMakeVisible (*content);
+        setWantsKeyboardFocus (content->getWantsKeyboardFocus());
+        setSize (content->getWidth(), content->getHeight() + kStripH);
+    }
+    void resized() override { content->setBounds (getLocalBounds().withTrimmedTop (kStripH)); }
+    void paint (juce::Graphics& g) override { g.fillAll (theme::window); }
+    void focusGained (FocusChangeType) override { content->grabKeyboardFocus(); }
+    std::unique_ptr<juce::Component> content;
+};
+
 /** A floating window that removes itself when closed. */
 /** Keys that work in every window (M = processing mixer, B = meter bridge). Set by the application. */
 inline std::function<bool (const juce::KeyPress&)>& globalKeyHook() { static std::function<bool (const juce::KeyPress&)> f; return f; }

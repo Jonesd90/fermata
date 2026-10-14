@@ -227,7 +227,15 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     /** Listen to another mixer on the engineer's outputs until switched off (pass a null id, or the same id again, to stop). */
     void setAudition (const juce::Uuid& mixerId);
     /** Copies the balance of one mixer onto another (toId null = onto every other mixer). Returns a sentence for the status line. */
-    juce::String copyMix (const juce::Uuid& fromId, const juce::Uuid& toId, bool withInserts);
+    /** Copy the chosen parts of a mixer onto another mixer (toId), or every other one (null id). It is also kept, to paste in other mixers later. */
+    juce::String copyMix (const juce::Uuid& fromId, const juce::Uuid& toId, const Project::MixParts& parts);
+    /** Paste the last copied mixer (those parts) onto a mixer. */
+    juce::String pasteMix (const juce::Uuid& toId);
+    /** Keep the chosen parts of a mixer to paste into other mixers later (nothing changes yet). */
+    juce::String copyMixToClipboard (const juce::Uuid& fromId, const Project::MixParts& parts);
+    bool canPasteMix() const { return mixClipName.isNotEmpty(); }
+    juce::String mixClipLabel() const { return mixClipName; }
+    Project::MixParts mixClipParts;
     bool canUndoCopyMix() const { return ! mixUndo.empty(); }
     juce::String undoCopyMix();
     MixerState* findMixer (const juce::Uuid&) const;
@@ -254,6 +262,7 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
 
 private:
     std::vector<std::pair<juce::Uuid, juce::var>> mixUndo;
+    juce::var mixClipboard; juce::String mixClipName; juce::Uuid mixClipFrom;
     struct PeakPoller : juce::Timer { std::function<void()> fn; void timerCallback() override { if (fn) fn(); } } peakPoller;
     struct UndoTicker : juce::Timer { std::function<void()> fn; void timerCallback() override { if (fn) fn(); } } undoTicker;
 public:

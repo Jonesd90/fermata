@@ -1302,7 +1302,10 @@ MixerComponent::MixerComponent (AppContext& a, const juce::Uuid& id) : app (a), 
     altButton.setTooltip ("Make this the Alt Mixer: the one the second Mixer key of the Stream Deck opens and closes. Lit = it is. (With none chosen, the first cue mixer is used.)");
     altButton.onClick = [this] { if (auto* m = mixer()) { app.project.altMixer = app.project.altMixer == m->id ? juce::Uuid::null() : m->id; app.project.markDirty(); app.project.sendChangeMessage(); } };
     addChildComponent (altButton);
-    copyButton.setTooltip ("Copy mixes between mixers (levels, pans, mutes, solos, sends, plug-ins)");
+    copyButton.setTooltip ("Copy this mixer: tick faders, sends, pan and inserts, then copy it (to Paste in another mixer) or send it straight to any mixer");
+    pasteButton.setButtonText ("Paste");
+    pasteButton.onClick = [this] { pasteHere(); };
+    addChildComponent (pasteButton);
     copyButton.onClick = [this] { showCopyMenu(); };
     addAndMakeVisible (copyButton);
     deleteButton.setTooltip ("Delete this cue mixer (the processing mixer cannot be deleted)");
@@ -1529,44 +1532,123 @@ void MixerComponent::updateAuditionButton()
     auditionButton.setColour (juce::TextButton::buttonColourId, theme::button);
     auditionButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffd9822b));
     auditionButton.setTooltip ("Listen to this mixer on your own outputs, and edit it, until you press this again");
+    {
+        const bool showPaste = app.canPasteMix();
+        pasteButton.setTooltip (showPaste ? "Paste \"" + app.mixClipLabel() + "\" here (the parts you ticked when you copied it)" : juce::String());
+        if (pasteButton.isVisible() != showPaste) { pasteButton.setVisible (showPaste); resized(); }
+    }
     themeButton.setDarkLook (mixTheme().dark);
     themeButton.setTooltip (mixTheme().dark ? "Dark look is on. Click for the light look." : "Light look is on. Click for the dark look.");
+}
+
+namespace
+{
+/** The panel that opens from a mixer's copy button: tick what to take, then copy it (to paste into another mixer) or send it straight to a mixer. */
+struct CopyMixPanel : public juce::Component
+{
+    // choice: -1 = copy only (paste it elsewhere), -2 = all other mixers, -3 = undo, 0.. = the mixer at that place in the list
+    std::function<void (const Project::MixParts&, int)> onChoose;
+    CopyMixPanel (const juce::String& from, const Project::MixParts& start, const std::vector<juce::String>& others, bool canUndo)
+    {
+        title.setText ("Copy mixer \"" + from + "\"", juce::dontSendNotification);
+        title.setFont (juce::FontOptions (15.0f, juce::Font::bold)); title.setColour (juce::Label::textColourId, juce::Colours::white);
+        addAndMakeVisible (title);
+        const char* names[4] = { "Faders (levels, mutes, solos, output buttons)", "Sends", "Pan", "Inserts (plug-ins with their settings)" };
+        const bool on[4] = { start.faders, start.sends, start.pan, start.inserts };
+        for (int k = 0; k < 4; ++k)
+        {
+            ticks[k].setButtonText (names[k]); ticks[k].setToggleState (on[k], juce::dontSendNotification);
+            ticks[k].setColour (juce::ToggleButton::textColourId, juce::Colours::white);
+            addAndMakeVisible (ticks[k]);
+        }
+        copyBtn.setButtonText ("Copy (then press Paste in another mixer)");
+        copyBtn.onClick = [this] { choose (-1); };
+        addAndMakeVisible (copyBtn);
+        sendLbl.setText ("Or send it straight to:", juce::dontSendNotification);
+        sendLbl.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.8f));
+        addAndMakeVisible (sendLbl);
+        for (size_t k = 0; k < others.size(); ++k)
+        {
+            auto b = std::make_unique<juce::TextButton> (others[k]);
+            b->onClick = [this, k] { choose ((int) k); };
+            addAndMakeVisible (*b); sendBtns.push_back (std::move (b));
+        }
+        if (others.size() > 1)
+        {
+            allBtn.setButtonText ("All other mixers"); allBtn.onClick = [this] { choose (-2); };
+            addAndMakeVisible (allBtn);
+        }
+        undoBtn.setButtonText ("Undo last copy / paste"); undoBtn.setEnabled (canUndo);
+        undoBtn.onClick = [this] { choose (-3); };
+        addAndMakeVisible (undoBtn);
+        setSize (330, 12 + 24 + 4 * 24 + 8 + 30 + 8 + 20 + (int) sendBtns.size() * 28 + (others.size() > 1 ? 28 : 0) + 8 + 28 + 12);
+    }
+    Project::MixParts parts() const { return { ticks[0].getToggleState(), ticks[1].getToggleState(), ticks[2].getToggleState(), ticks[3].getToggleState() }; }
+    void choose (int c)
+    {
+        if (c != -3 && ! (ticks[0].getToggleState() || ticks[1].getToggleState() || ticks[2].getToggleState() || ticks[3].getToggleState())) return;   // nothing ticked
+        auto cb = onChoose; const auto p = parts();
+        if (auto* box = findParentComponentOfClass<juce::CallOutBox>()) box->dismiss();
+        if (cb) cb (p, c);
+    }
+    void paint (juce::Graphics& g) override { g.fillAll (juce::Colour (0xff2a2d33)); }
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (12, 12);
+        title.setBounds (r.removeFromTop (24));
+        for (auto& t : ticks) t.setBounds (r.removeFromTop (24));
+        r.removeFromTop (8);
+        copyBtn.setBounds (r.removeFromTop (30)); r.removeFromTop (8);
+        sendLbl.setBounds (r.removeFromTop (20));
+        for (auto& b : sendBtns) { b->setBounds (r.removeFromTop (26)); r.removeFromTop (2); }
+        if (allBtn.getButtonText().isNotEmpty()) { allBtn.setBounds (r.removeFromTop (26)); r.removeFromTop (2); }
+        r.removeFromTop (6);
+        undoBtn.setBounds (r.removeFromTop (26));
+    }
+    juce::Label title, sendLbl;
+    juce::ToggleButton ticks[4];
+    juce::TextButton copyBtn, allBtn, undoBtn;
+    std::vector<std::unique_ptr<juce::TextButton>> sendBtns;
+};
 }
 
 void MixerComponent::showCopyMenu()
 {
     auto* me = mixer();
     if (me == nullptr || app.project.mixers.empty()) return;
-    const auto engId = app.project.mixers.front()->id;
     const auto myId = me->id;
-    juce::PopupMenu menu;
-    const bool isEng = app.isEngineerMixer (myId);
-    if (isEng)
+    std::vector<juce::Uuid> ids; std::vector<juce::String> names;
+    for (auto& m : app.project.mixers) if (m->id != myId) { ids.push_back (m->id); names.push_back (m->name); }
+    auto panel = std::make_unique<CopyMixPanel> (me->name, app.mixClipParts, names, app.canUndoCopyMix());
+    juce::Component::SafePointer<MixerComponent> self (this);
+    panel->onChoose = [self, myId, ids] (const Project::MixParts& p, int c)
     {
-        int i = 1;
-        for (auto& m : app.project.mixers) { if (m->id != myId) menu.addItem (i, "Copy this mix to: " + m->name); ++i; }
-        menu.addItem (900, "Copy this mix to ALL other mixers");
-    }
-    else
-    {
-        menu.addItem (1, "Copy \"" + app.project.mixers.front()->name + "\" (levels, pans, mutes, solos, sends) here");
-        menu.addItem (2, "... and its plug-in inserts too");
-    }
-    menu.addSeparator();
-    menu.addItem (950, "Also copy plug-in inserts", true, withInsertsToggle);
-    menu.addItem (999, "Undo last copy", app.canUndoCopyMix());
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&copyButton), [this, isEng, myId, engId] (int r)
-    {
+        if (self == nullptr) return;
+        auto& app = self->app;
+        app.mixClipParts = p;
         juce::String msg;
-        if (r == 950) { withInsertsToggle = ! withInsertsToggle; return; }
-        if (r == 999) msg = app.undoCopyMix();
-        else if (isEng && r == 900) msg = app.copyMix (myId, {}, withInsertsToggle);
-        else if (isEng && r >= 1 && (size_t) r <= app.project.mixers.size()) msg = app.copyMix (myId, app.project.mixers[(size_t) r - 1]->id, withInsertsToggle);
-        else if (! isEng && (r == 1 || r == 2)) msg = app.copyMix (engId, myId, r == 2 || withInsertsToggle);
+        if (c == -3) msg = app.undoCopyMix();
+        else if (c == -1)
+        {
+            msg = app.copyMixToClipboard (myId, p);
+        }
+        else if (c == -2) msg = app.copyMix (myId, {}, p);
+        else if (juce::isPositiveAndBelow (c, (int) ids.size())) msg = app.copyMix (myId, ids[(size_t) c], p);
         else return;
-        statusLabel.setText (msg, juce::dontSendNotification);
-        statusFlash = 120;
-    });
+        self->statusLabel.setText (msg, juce::dontSendNotification);
+        self->statusFlash = 120;
+        self->updateAuditionButton();
+    };
+    juce::CallOutBox::launchAsynchronously (std::move (panel), copyButton.getScreenBounds(), nullptr);
+}
+
+void MixerComponent::pasteHere()
+{
+    auto* me = mixer();
+    if (me == nullptr) return;
+    statusLabel.setText (app.pasteMix (me->id), juce::dontSendNotification);
+    statusFlash = 120;
+    updateAuditionButton();
 }
 
 void MixerComponent::resized()
@@ -1576,6 +1658,7 @@ void MixerComponent::resized()
     themeButton.setBounds (top.removeFromRight (34).withSizeKeepingCentre (28, 24));
     top.removeFromRight (2 + 32);                                    // room for the pin button, which sits just left of the sun / moon in the window's own title strip
     copyButton.setBounds (top.removeFromRight (34).withSizeKeepingCentre (28, 24));
+    if (pasteButton.isVisible()) { pasteButton.setBounds (top.removeFromRight (64).reduced (2, 3)); }
     if (altButton.isVisible()) { altButton.setBounds (top.removeFromRight (34).withSizeKeepingCentre (30, 24)); top.removeFromRight (2); }
     if (deleteButton.isVisible()) deleteButton.setBounds (top.removeFromRight (150).reduced (3));
     if (auditionButton.isVisible()) auditionButton.setBounds (top.removeFromRight (260).reduced (3));

@@ -6,6 +6,18 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.30.0
+- **Mastering: nothing renders by itself any more.** The DDP builder only *looks* at the preview renders (it never starts one). A light shows how they stand: **red** "Preview not rendered", **orange** "Preview renders are out of date" (after an edit or mixer change; it names which pieces), **green** "Preview renders up to date". The new **Render previews** button makes the missing / out-of-date ones, once. This ends the endless re-rendering and waveform redrawing.
+- Play in the DDP builder no longer renders: if the previews are not up to date it tells you to press Render previews first. Export still makes any renders it needs.
+
+## 2.29.1
+- **Virtual Master settings:** "File format" and its drop-down are now on one line, like Sample rate, Bit depth and Dither.
+- **Tab key:** it now goes down the left column (format ... folder) and then down the right column (Album, Album artist, Artist ... the selected file's tags), instead of jumping back to the left.
+
+## 2.29.0
+- **Mixer copy button, new take:** it opens a panel with tick boxes for Faders (levels, mutes, solos, output buttons), Sends, Pan and Inserts. Press "Copy" to keep it and then press the new **Paste** button that appears in any other mixer, or send it straight to any one mixer (or all the others) from the same panel. "Undo last copy / paste" is still there.
+- **Pin and sun / moon buttons:** the Display Organiser, Audio settings, Take Display and Meter bridge windows now have a clear strip along the top for them, so they no longer cover other controls.
+
 ## 2.28.0
 - **Edits made from a take window are now named "take name - EDIT"** (capital EDIT).
 - **Re-draw waveform:** right-click the audio in an edit window (new menu item) or a take window (the right-click on the audio now opens a small menu; the bars option is still there, and right-clicking the banner still opens it directly) to throw away the saved waveform shape and colours of that file and work them out again from the audio.

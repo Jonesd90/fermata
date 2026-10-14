@@ -58,6 +58,9 @@ using InsertFactory = std::function<std::unique_ptr<InsertProcessor> (const juce
                                                                       const juce::String& stateBase64)>;
 
 /** The whole session: design (inputs / tracks / effects channels / outputs), mixers and take windows. */
+/** Which parts of a mixer a copy takes: faders (levels, mutes, solos, output buttons), sends, pans, plug-in inserts. */
+struct MixParts { bool faders = true, sends = true, pan = true, inserts = true; };
+
 class Project : public juce::ChangeBroadcaster
 {
 public:
@@ -175,10 +178,12 @@ public:
     TakeWindowDef* findTakeWindow (const juce::Uuid&);
     juce::Array<int> inputsOfTrack (const TrackDef&) const;
 
+    /** Which parts of a mixer a copy takes: faders (levels, mutes, solos, output buttons), sends, pans, plug-in inserts. */
+    using MixParts = td::MixParts;
     /** The balance of a mixer (levels, pans, mutes, solos, sends, effects returns - and optionally the plug-in inserts) as data. */
     juce::var mixSnapshot (const MixerState&, bool withInserts) const;
     /** Puts such a balance onto a mixer (its master level and output pair are left alone). */
-    void applyMix (MixerState& to, const juce::var& snapshot, double sampleRate, int maxBlock);
+    void applyMix (MixerState& to, const juce::var& snapshot, double sampleRate, int maxBlock, const MixParts& parts = {});
 
     /** Makes sure every mixer has a strip per track and a return per effects channel. */
     void syncMixers();

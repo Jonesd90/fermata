@@ -84,17 +84,19 @@ var sendsToVar (const SendList& l, bool inserts)
     return arr;
 }
 
-void sendsFromVar (SendList& l, const var& v, const InsertFactory& factory, double sr, int block, bool inserts)
+void sendsFromVar (SendList& l, const var& v, const InsertFactory& factory, double sr, int block, bool inserts, bool levels = true)
 {
+    if (! levels && ! inserts) return;
     std::vector<SendState*> seen;
     if (auto* a = v.getArray())
         for (auto& sv : *a)
         {
             auto* s = l.get (juce::Uuid (sv["dest"].toString()));
-            s->gainDb.set ((float) (double) sv["gainDb"]); s->pre.set ((bool) sv["pre"]);
+            if (levels) { s->gainDb.set ((float) (double) sv["gainDb"]); s->pre.set ((bool) sv["pre"]); }
             if (inserts) slotsFromVar (s->slots, sv["slots"], factory, sr, block, kSendSlots);
             seen.push_back (s);
         }
+    if (levels)
     for (auto& s : l.pool)                                         // sends the other side did not have are switched off
         if (std::find (seen.begin(), seen.end(), s.get()) == seen.end()) s->gainDb.set (-100.0f);
 }
@@ -111,16 +113,20 @@ var stripToVar (const StripState& s, const juce::Uuid& trackId, bool inserts)
     return so;
 }
 
-void stripFromVar (StripState& s, const var& sv, const InsertFactory& factory, double sr, int block, bool inserts, const std::vector<juce::Uuid>& legacyFx)
+void stripFromVar (StripState& s, const var& sv, const InsertFactory& factory, double sr, int block, bool inserts, const std::vector<juce::Uuid>& legacyFx, bool faders = true, bool pan = true, bool sendLevels = true)
 {
-    s.gainDb.set ((float) (double) sv["gainDb"]); s.pan.set ((float) (double) sv["pan"]);
-    s.inGainDb.set (sv.hasProperty ("inGainDb") ? (float) (double) sv["inGainDb"] : 0.0f);
-    if (sv.hasProperty ("panL")) { s.panL.set ((float) (double) sv["panL"]); s.panR.set ((float) (double) sv["panR"]); }
-    s.mute.set ((bool) sv["mute"]); s.solo.set ((bool) sv["solo"]);
-    s.outOn.set (sv.hasProperty ("outOn") ? (bool) sv["outOn"] : false);          // older projects had no output button: nothing was routed that way
-    s.outDest = juce::Uuid (sv["outDest"].toString());
-    if (sv.hasProperty ("sendList")) sendsFromVar (s.sends, sv["sendList"], factory, sr, block, inserts);
-    else if (auto* old = sv["sends"].getArray())                   // projects from before buses: one send level per effects channel
+    if (pan) { s.pan.set ((float) (double) sv["pan"]); if (sv.hasProperty ("panL")) { s.panL.set ((float) (double) sv["panL"]); s.panR.set ((float) (double) sv["panR"]); } }
+    if (faders)
+    {
+        s.gainDb.set ((float) (double) sv["gainDb"]);
+        s.inGainDb.set (sv.hasProperty ("inGainDb") ? (float) (double) sv["inGainDb"] : 0.0f);
+        s.mute.set ((bool) sv["mute"]); s.solo.set ((bool) sv["solo"]);
+        s.outOn.set (sv.hasProperty ("outOn") ? (bool) sv["outOn"] : false);          // older projects had no output button: nothing was routed that way
+        s.outDest = juce::Uuid (sv["outDest"].toString());
+    }
+    if (sv.hasProperty ("sendList")) sendsFromVar (s.sends, sv["sendList"], factory, sr, block, inserts, sendLevels);
+    else if (sendLevels)
+        if (auto* old = sv["sends"].getArray())                   // projects from before buses: one send level per effects channel
         for (int k = 0; k < old->size() && k < (int) legacyFx.size(); ++k)
             if ((double) (*old)[k] > kSendOffDb) s.sends.get (legacyFx[(size_t) k])->gainDb.set ((float) (double) (*old)[k]);
     if (inserts) slotsFromVar (s.slots, sv["slots"], factory, sr, block);
@@ -137,13 +143,16 @@ var busToVar (const BusState& s, const juce::Uuid& busId, bool inserts, bool wit
     return o;
 }
 
-void busFromVar (BusState& s, const var& v, const InsertFactory& factory, double sr, int block, bool inserts, bool withOutput)
+void busFromVar (BusState& s, const var& v, const InsertFactory& factory, double sr, int block, bool inserts, bool withOutput, bool faders = true, bool sendLevels = true)
 {
-    s.gainDb.set ((float) (double) v["gainDb"]); s.mute.set ((bool) v["mute"]); s.solo.set ((bool) v["solo"]);
-    if (withOutput && v.hasProperty ("outFirst")) s.outFirst.store ((int) v["outFirst"]);
-    s.outOn.set (v.hasProperty ("outOn") ? (bool) v["outOn"] : false);
-    s.outDest = juce::Uuid (v["outDest"].toString());
-    if (v.hasProperty ("sendList")) sendsFromVar (s.sends, v["sendList"], factory, sr, block, inserts);
+    if (faders)
+    {
+        s.gainDb.set ((float) (double) v["gainDb"]); s.mute.set ((bool) v["mute"]); s.solo.set ((bool) v["solo"]);
+        if (withOutput && v.hasProperty ("outFirst")) s.outFirst.store ((int) v["outFirst"]);
+        s.outOn.set (v.hasProperty ("outOn") ? (bool) v["outOn"] : false);
+        s.outDest = juce::Uuid (v["outDest"].toString());
+    }
+    if (v.hasProperty ("sendList")) sendsFromVar (s.sends, v["sendList"], factory, sr, block, inserts, sendLevels);
     if (inserts) slotsFromVar (s.slots, v["slots"], factory, sr, block);
 }
 } // namespace
@@ -635,10 +644,10 @@ var Project::mixSnapshot (const MixerState& m, bool withInserts) const
     return root;
 }
 
-void Project::applyMix (MixerState& to, const var& snap, double sampleRate, int maxBlock)
+void Project::applyMix (MixerState& to, const var& snap, double sampleRate, int maxBlock, const MixParts& parts)
 {
     syncMixers();
-    const bool withInserts = (bool) snap.getProperty ("inserts", false);
+    const bool withInserts = (bool) snap.getProperty ("inserts", false) && parts.inserts;
     const std::vector<juce::Uuid> noLegacy;
     if (auto* ss = snap["strips"].getArray())
         for (auto& sv : *ss)
@@ -646,7 +655,7 @@ void Project::applyMix (MixerState& to, const var& snap, double sampleRate, int 
             const juce::Uuid id (sv["track"].toString());
             StripState* s = nullptr;
             for (auto& p : to.stripPool) if (p->trackId == id) s = p.get();
-            if (s != nullptr) stripFromVar (*s, sv, insertFactory, sampleRate, maxBlock, withInserts, noLegacy);   // (a track that no longer exists is skipped)
+            if (s != nullptr) stripFromVar (*s, sv, insertFactory, sampleRate, maxBlock, withInserts, noLegacy, parts.faders, parts.pan, parts.sends);   // (a track that no longer exists is skipped)
         }
     if (auto* fs = snap["buses"].getArray())
         for (auto& fv : *fs)
@@ -654,7 +663,7 @@ void Project::applyMix (MixerState& to, const var& snap, double sampleRate, int 
             const juce::Uuid id (fv["bus"].toString());
             BusState* f = nullptr;
             for (auto& p : to.busPool) if (p->busId == id) f = p.get();
-            if (f != nullptr) busFromVar (*f, fv, insertFactory, sampleRate, maxBlock, withInserts, false);
+            if (f != nullptr) busFromVar (*f, fv, insertFactory, sampleRate, maxBlock, withInserts, false, parts.faders, parts.sends);
         }
     markDirty();
 }

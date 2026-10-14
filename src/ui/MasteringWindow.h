@@ -15,6 +15,20 @@ struct MasterField;
 /** The outline of an edit's audio (the loudest level in each small slice), drawn inside its box on the DDP timeline. */
 struct MasterEnvelope { std::vector<float> bins; double fraction = 1.0; };      // fraction: how much of the box the audio fills (the rest is the tail)
 
+/** A small round light: red / orange / green. */
+struct RenderLight : public juce::Component
+{
+    juce::Colour colour { 0xff777777 };
+    void set (juce::Colour c) { if (c != colour) { colour = c; repaint(); } }
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat().reduced (2.0f);
+        g.setColour (colour.withAlpha (0.35f)); g.fillEllipse (r.expanded (1.5f));
+        g.setColour (colour); g.fillEllipse (r);
+        g.setColour (juce::Colours::white.withAlpha (0.35f)); g.fillEllipse (r.reduced (r.getWidth() * 0.28f).translated (-r.getWidth() * 0.08f, -r.getHeight() * 0.1f));
+    }
+};
+
 /** The Mastering window. Two views: the Virtual Master (the edits as audio files in any format, with levels and tags) and the DDP builder (the edits laid out as a CD
     with automatic PQ points, CD-Text, and a DDP fileset / WAV + CUE as the result). */
 class MasteringComponent : public juce::Component, private juce::ChangeListener, private juce::Timer
@@ -140,7 +154,11 @@ private:
     double renderProgressValue = 0.0;
     juce::ProgressBar renderProgress;
     juce::Label renderStatus;
-    juce::TextButton prevRenderBtn { "Use previous render" }, renderAgainBtn { "Render again" };
+    RenderLight renderLight;
+    juce::String lookKey;                            // what the last look at the renders found (nothing is redrawn when it has not changed)
+    bool renderNowNeeded = false;                    // some ticked piece has no up-to-date render
+    void lookAtRenders();                            // looks at the renders (never makes any): sets the light and the line
+    juce::TextButton prevRenderBtn { "Use previous render" }, renderAgainBtn { "Render again" }, renderNowBtn { "Render previews" };
     bool wasActive = false;
     juce::uint32 recheckDue = 0;
     bool projectDirty = false;                       // the project changed since the renders were last looked at

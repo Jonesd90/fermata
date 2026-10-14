@@ -555,10 +555,12 @@ MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (pr
         if (id.isNull() || it == renders.end()) return;
         MasterRenders store (MasterRenders::folderFor (app.project));
         store.setUsePrevious (id, ! it->second.previous);
-        checkRenders();
+        lookKey.clear(); lookAtRenders();
     };
     renderAgainBtn.onClick = [this] { checkRenders (true); };
-    addAndMakeVisible (prevRenderBtn); addAndMakeVisible (renderAgainBtn);
+    renderNowBtn.setTooltip ("Makes the preview renders that are missing or out of date, once. Nothing is rendered unless you press this (or Export).");
+    renderNowBtn.onClick = [this] { checkRenders(); };
+    addAndMakeVisible (prevRenderBtn); addAndMakeVisible (renderAgainBtn); addAndMakeVisible (renderNowBtn); addAndMakeVisible (renderLight);
     prevRenderBtn.setEnabled (false);
 
     // ---------------- Virtual Master
@@ -573,7 +575,7 @@ MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (pr
     vmNone.onClick = [this] { for (auto& it : def().items) it.include = false; touched(); refreshVm(); };
     vmUp.onClick   = [this] { for (int i = 0; i < (int) def().items.size(); ++i) if (def().items[(size_t) i].editId == def().selectedItem && i > 0) { moveItem (i, i - 1, false); break; } };
     vmDown.onClick = [this] { for (int i = 0; i < (int) def().items.size(); ++i) if (def().items[(size_t) i].editId == def().selectedItem && i + 1 < (int) def().items.size()) { moveItem (i, i + 1, false); break; } };
-    cap (fmtCaption, "File format", true); cap (rateCaption, "Sample rate"); cap (bitsCaption, "Bit depth"); cap (ditherCaption, "Dither"); cap (qualityCaption, "Quality");
+    cap (fmtCaption, "File format"); cap (rateCaption, "Sample rate"); cap (bitsCaption, "Bit depth"); cap (ditherCaption, "Dither"); cap (qualityCaption, "Quality");
     cap (levelCaption, "Peak level", true); cap (albumCaption, "Details for every file", true); cap (fileCaption, "Details of the selected file", true);
     cap (nameCaption, "Files", true); cap (folderCaption, "Folder");
     for (auto* c : { &formatBox, &rateBox, &bitsBox, &ditherBox, &qualityBox }) vmHolder.addChildComponent (*c);
@@ -898,7 +900,7 @@ void MasteringComponent::timerCallback()
         if (recheckDue != 0 && juce::Time::getMillisecondCounter() >= recheckDue && isShowing())
         {
             if (job != nullptr || renderJob != nullptr) recheckDue = juce::Time::getMillisecondCounter() + 500;       // busy: look again afterwards
-            else { recheckDue = 0; checkRenders(); }
+            else { recheckDue = 0; lookAtRenders(); }
         }
     }
     if (renderJob != nullptr) renderProgressValue = renderJob->getProgress();
@@ -1299,7 +1301,7 @@ void MasteringComponent::setView (int v)
     ddpShow.setVisible (dd && ddpShow.isVisible());
     for (auto* f : discFields) { f->caption.setVisible (dd); f->editor.setVisible (dd); }
     for (auto* f : clipFields) { f->caption.setVisible (dd); f->editor.setVisible (dd); }
-    for (juce::Component* c : std::initializer_list<juce::Component*> { &renderStatus, &renderProgress, &prevRenderBtn, &renderAgainBtn }) c->setVisible (dd);      // the renders belong to the DDP builder
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &renderStatus, &renderProgress, &prevRenderBtn, &renderAgainBtn, &renderNowBtn, &renderLight }) c->setVisible (dd);      // the renders belong to the DDP builder
     if (! dd && renderJob != nullptr) renderJob->cancel();                       // (leaving the DDP builder stops any rendering for it)
     if (dd) { projectDirty = false; scheduleRecheck (300); }                     // (opening it: look at the renders now)
     refreshFormatControls();
@@ -1330,9 +1332,11 @@ void MasteringComponent::resized()
         sourceBox.setBounds (strip.removeFromLeft (210).withSizeKeepingCentre (210, grid::btnH)); strip.removeFromLeft (8);
         tailCaption.setBounds (strip.removeFromLeft (42));
         tailBox.setBounds (strip.removeFromLeft (70).withSizeKeepingCentre (70, grid::btnH)); strip.removeFromLeft (14);
-        renderAgainBtn.setBounds (strip.removeFromRight (120)); strip.removeFromRight (6);
+        renderAgainBtn.setBounds (strip.removeFromRight (110)); strip.removeFromRight (6);
+        renderNowBtn.setBounds (strip.removeFromRight (130)); strip.removeFromRight (6);
         prevRenderBtn.setBounds (strip.removeFromRight (170)); strip.removeFromRight (10);
         { const int pw = juce::jmin (220, strip.getWidth() / 3); renderProgress.setBounds (strip.removeFromRight (pw).withSizeKeepingCentre (pw, 16)); strip.removeFromRight (10); }
+        renderLight.setBounds (strip.removeFromLeft (22).withSizeKeepingCentre (20, 20)); strip.removeFromLeft (4);
         renderStatus.setBounds (strip);
     }
     all.reduce (10, 10);
@@ -1384,8 +1388,7 @@ void MasteringComponent::layoutVm (juce::Rectangle<int> area)
         auto r = row (grid::btnH + 2);
         l.setBounds (r.removeFromLeft (110)); c.setBounds (r.removeFromLeft (juce::jmin (r.getWidth(), 280)));
     };
-    fmtCaption.setBounds (x0 + 6, y, colW - 12, 20); y += 24;
-    { auto r1 = row (grid::btnH + 2); formatBox.setBounds (r1.removeFromLeft (juce::jmin (r1.getWidth(), 280))); }
+    labelled (fmtCaption, formatBox);
     labelled (rateCaption, rateBox);
     labelled (bitsCaption, bitsBox);
     labelled (ditherCaption, ditherBox);
@@ -1407,6 +1410,14 @@ void MasteringComponent::layoutVm (juce::Rectangle<int> area)
     { int used = 0; layoutFieldGrid (albumFields, juce::Rectangle<int> (x0 + 6, y, colW - 12, 400), 1, 110, used); y += used + 6; }
     fileCaption.setBounds (row (20));
     { int used = 0; layoutFieldGrid (fileFields, juce::Rectangle<int> (x0 + 6, y, colW - 12, 400), 1, 110, used); y += used + 6; }
+    {   // Tab goes down the left column, then down the right one (the tags)
+        int order = 1;
+        for (juce::Component* c : std::initializer_list<juce::Component*> { &formatBox, &rateBox, &bitsBox, &ditherBox, &qualityBox, &normToggle, &peakEditor, &overallToggle, &individualToggle,
+                                                                             &numberToggle, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4], &folderEditor, &chooseButton })
+            c->setExplicitFocusOrder (order++);
+        for (auto* list : { &albumFields, &fileFields })
+            for (auto* f : *list) f->editor.setExplicitFocusOrder (order++);
+    }
     vmHolder.setSize (w, juce::jmax (yLeft, y) + 6);
 }
 
@@ -1535,10 +1546,16 @@ void MasteringComponent::startPlay (double fromSec, double toSec)
     if (job != nullptr) { ddpStatus.setColour (juce::Label::textColourId, theme::warn); ddpStatus.setText ("Wait for the export to finish before playing.", juce::dontSendNotification); return; }
     // the disc is played from the renders (what you hear is what the export contains): look at them first, and wait if some have to be made
     pendingPlay.on = false;
-    if (renderJob != nullptr || (! continuing && ! checkRenders()))
+    if (renderJob != nullptr)
     {
-        if (renderJob == nullptr) { ddpStatus.setColour (juce::Label::textColourId, theme::warn); ddpStatus.setText (renderStatus.getText(), juce::dontSendNotification); }
-        if (renderJob != nullptr) { pendingPlay = { true, fromSec, toSec }; ddpStatus.setColour (juce::Label::textColourId, theme::text); ddpStatus.setText ("Rendering... playback starts when the renders are ready.", juce::dontSendNotification); }
+        pendingPlay = { true, fromSec, toSec }; ddpStatus.setColour (juce::Label::textColourId, theme::text); ddpStatus.setText ("Rendering... playback starts when the renders are ready.", juce::dontSendNotification);
+        return;
+    }
+    if (! continuing) lookAtRenders();                                          // (nothing is rendered by playing: the light says if the previews have to be rendered first)
+    if (renderNowNeeded || renders.empty())
+    {
+        ddpStatus.setColour (juce::Label::textColourId, theme::warn);
+        ddpStatus.setText (renders.empty() ? renderStatus.getText() : "The previews are not up to date: press Render previews (top right) first.", juce::dontSendNotification);
         return;
     }
     std::vector<AppContext::RenderPlayItem> items;
@@ -1719,6 +1736,70 @@ std::map<juce::String, juce::String> MasteringComponent::currentFps() const
     return m;
 }
 
+void MasteringComponent::lookAtRenders()
+{
+    if (job != nullptr || renderJob != nullptr) return;
+    RenderParams rp;
+    const auto perr = makeRenderParams (app.project, def(), rp);
+    const auto ids = includedEdits();
+    lastFps = currentFps(); projectDirty = false;
+    juce::StringArray missing, outOfDate;
+    std::map<juce::String, RenderView> found;
+    if (perr.isEmpty() && ! ids.empty())
+    {
+        MasterRenders store (MasterRenders::folderFor (app.project));
+        for (auto& id : ids)
+        {
+            auto* e = editOf (id);
+            if (e == nullptr) continue;
+            const auto info = store.check (id, masterRenderFingerprint (app.project, *e, rp));
+            RenderView v;
+            if (info.state == MasterRenders::State::Ready || info.state == MasterRenders::State::Previous)
+            {
+                v.file = info.file; v.rate = info.rate > 0.0 ? info.rate : e->sampleRate; v.frames = info.frames; v.backup = info.hasBackup;
+                v.previous = info.state == MasterRenders::State::Previous; v.text = v.previous ? "previous version" : "rendered";
+            }
+            else
+            {
+                v.bad = true; v.text = info.state == MasterRenders::State::None ? "not rendered" : "out of date";
+                (info.state == MasterRenders::State::None ? missing : outOfDate).add (e->name);
+            }
+            found[id.toString()] = v;
+        }
+    }
+    auto names = [] (const juce::StringArray& a) { return a.size() <= 3 ? a.joinIntoString (", ") : a.joinIntoString (", ", 0, 3) + " + " + juce::String (a.size() - 3) + " more"; };
+    juce::String text, tip; juce::Colour col = theme::dimText; bool warn = false;
+    renderNowNeeded = false;
+    if (perr.isNotEmpty()) { text = perr; warn = true; col = juce::Colour (0xffd9822b); }
+    else if (ids.empty()) text = "Tick the pieces to preview.";
+    else if (! missing.isEmpty())
+    {
+        renderNowNeeded = true; col = juce::Colour (0xffd23b3b);
+        text = "Preview not rendered: " + names (missing) + (outOfDate.isEmpty() ? juce::String() : "  (out of date: " + names (outOfDate) + ")") + ". Press Render previews.";
+        tip = "Not rendered: " + missing.joinIntoString (", ") + (outOfDate.isEmpty() ? juce::String() : "\nOut of date: " + outOfDate.joinIntoString (", "));
+    }
+    else if (! outOfDate.isEmpty())
+    {
+        renderNowNeeded = true; col = juce::Colour (0xffe8962e);
+        text = "Preview renders are out of date: " + names (outOfDate) + ". Press Render previews.";
+        tip = "Out of date: " + outOfDate.joinIntoString (", ");
+    }
+    else { col = juce::Colour (0xff3fbf6a); text = "Preview renders up to date (" + juce::String ((int) found.size()) + (found.size() == 1 ? " piece)" : " pieces)"); }
+    renderLight.set (col);
+    renderNowBtn.setEnabled (renderNowNeeded);
+    renderNowBtn.setColour (juce::TextButton::buttonColourId, renderNowNeeded ? col.darker (0.4f) : theme::button);
+    renderStatus.setTooltip (tip);
+    renderStatus.setColour (juce::Label::textColourId, warn ? theme::warn : theme::text);
+    renderStatus.setText (text, juce::dontSendNotification);
+    renders = std::move (found);
+    juce::String key = text;
+    for (auto& kv : renders) key << kv.first << kv.second.text << kv.second.file.getFullPathName();
+    updateRenderButtons();
+    if (key == lookKey) return;                                      // nothing has changed since the last look: nothing is redrawn
+    lookKey = key;
+    refreshVm(); refreshDdp (false);
+}
+
 bool MasteringComponent::checkRenders (bool force)
 {
     if (job != nullptr || renderJob != nullptr) { scheduleRecheck (500); return false; }
@@ -1758,14 +1839,14 @@ bool MasteringComponent::checkRenders (bool force)
     if (batch->toRender() == 0)
     {
         renderProgressValue = 0.0;
-        renderStatus.setColour (juce::Label::textColourId, theme::text);
-        renderStatus.setText ("Renders are up to date (" + juce::String (batch->total()) + (batch->total() == 1 ? " piece)." : " pieces)."), juce::dontSendNotification);
-        updateRenderButtons(); refreshVm(); refreshDdp (false);
+        lookKey.clear(); lookAtRenders();
+        updateRenderButtons();
         return true;
     }
     renderProgressValue = 0.0;
     renderStatus.setColour (juce::Label::textColourId, theme::text);
     renderStatus.setText ("Rendering " + juce::String (batch->toRender()) + " of " + juce::String (batch->total()) + " pieces through their mixers...", juce::dontSendNotification);
+    renderLight.set (juce::Colour (0xff3b8fe0)); renderNowNeeded = false;
     updateRenderButtons(); refreshVm(); refreshDdp (false);
     juce::Component::SafePointer<MasteringComponent> safe (this);
     renderJob = std::make_unique<MasterRenderJob> (std::move (batch), [safe] (juce::String err) { if (safe != nullptr) safe->renderFinished (err); });
@@ -1789,8 +1870,8 @@ void MasteringComponent::renderFinished (const juce::String& error)
     renderJob.reset();
     renderProgressValue = error.isEmpty() ? 1.0 : 0.0;
     const bool ok = error.isEmpty();
-    renderStatus.setColour (juce::Label::textColourId, ok ? theme::text : theme::warn);
-    renderStatus.setText (ok ? juce::String ("Renders are up to date.") : (error == "Cancelled." ? juce::String ("Rendering was cancelled.") : "Rendering stopped: " + error), juce::dontSendNotification);
+    lookKey.clear(); lookAtRenders();
+    if (! ok) { renderStatus.setColour (juce::Label::textColourId, theme::warn); renderStatus.setText (error == "Cancelled." ? juce::String ("Rendering was cancelled. ") + renderStatus.getText() : "Rendering stopped: " + error, juce::dontSendNotification); }
     updateRenderButtons(); refreshVm(); refreshDdp (false);
     if (pendingPlay.on) { const auto pp = pendingPlay; pendingPlay.on = false; if (ok) startPlay (pp.from, pp.to); }
 }

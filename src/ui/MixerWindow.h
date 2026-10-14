@@ -110,7 +110,8 @@ private:
     int slotsNeeded();
     int topBarMinWidth() const;
     void showCopyMenu();
-    bool withInsertsToggle = false;
+    juce::TextButton pasteButton;
+    void pasteHere();
     int statusFlash = 0;
     void updateAuditionButton();
     MixerLookAndFeel mixLook;             // declared before the viewport: it must outlive it

@@ -202,26 +202,50 @@ bool AppContext::deleteMixer (const juce::Uuid& id)
     return false;
 }
 
-juce::String AppContext::copyMix (const juce::Uuid& fromId, const juce::Uuid& toId, bool withInserts)
+juce::String AppContext::copyMix (const juce::Uuid& fromId, const juce::Uuid& toId, const Project::MixParts& parts)
 {
     auto* from = findMixer (fromId);
     if (from == nullptr) return "No such mixer.";
+    if (! (parts.faders || parts.sends || parts.pan || parts.inserts)) return "Tick at least one box to copy.";
+    mixClipboard = project.mixSnapshot (*from, true); mixClipParts = parts; mixClipName = from->name; mixClipFrom = fromId;
+    return pasteMix (toId);
+}
+
+juce::String AppContext::copyMixToClipboard (const juce::Uuid& fromId, const Project::MixParts& parts)
+{
+    auto* from = findMixer (fromId);
+    if (from == nullptr) return "No such mixer.";
+    mixClipboard = project.mixSnapshot (*from, true); mixClipParts = parts; mixClipName = from->name; mixClipFrom = fromId;
+    project.structure.sendChangeMessage();                                          // the Paste buttons appear
+    return "Copied \"" + from->name + "\". Press Paste in another mixer.";
+}
+
+juce::String AppContext::pasteMix (const juce::Uuid& toId)
+{
+    if (mixClipName.isEmpty()) return "Nothing has been copied yet.";
+    const auto parts = mixClipParts; const bool withInserts = true;
+    auto* from = findMixer (mixClipFrom);
     double sr = 48000.0; int block = 512;
     if (auto* d = devices.getCurrentAudioDevice()) { sr = d->getCurrentSampleRate(); block = juce::jmax (64, d->getCurrentBufferSizeSamples()); }
-    const auto snap = project.mixSnapshot (*from, withInserts);
+    const auto snap = mixClipboard;
     std::vector<std::pair<juce::Uuid, juce::var>> undo;
     juce::StringArray names;
     for (auto& m : project.mixers)
     {
         if (m.get() == from || (! toId.isNull() && m->id != toId)) continue;
         undo.push_back ({ m->id, project.mixSnapshot (*m, withInserts) });
-        project.applyMix (*m, snap, sr, block);
+        project.applyMix (*m, snap, sr, block, parts);
         names.add (m->name);
     }
     if (undo.empty()) return "Nothing to copy to.";
     mixUndo = std::move (undo);
     project.structure.sendChangeMessage();                                          // strips redraw with the new values
-    return "Copied the mix of \"" + from->name + "\" onto " + names.joinIntoString (", ") + ".";
+    juce::StringArray what;
+    if (parts.faders) what.add ("faders");
+    if (parts.sends) what.add ("sends");
+    if (parts.pan) what.add ("pans");
+    if (parts.inserts) what.add ("inserts");
+    return "Copied the " + what.joinIntoString (", ") + " of \"" + mixClipName + "\" onto " + names.joinIntoString (", ") + ".";
 }
 
 juce::String AppContext::undoCopyMix()
