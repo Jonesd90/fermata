@@ -52,6 +52,9 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
 
     // windows (set by the application)
     std::function<void (const juce::Uuid&)> showTakeWindow, showMixer, showEdit;
+    /** The T / E / M squares of the menu bar: bring the take / edit / mixer window used last ("take", "edit", "mixer") to the front (opening it if need be); and which kind the person is working in now ("" = none). */
+    std::function<void (const juce::String& kind)> focusRecent;
+    std::function<juce::String()> activeKind;
     /** Makes sure the edit's window exists WITHOUT taking the focus: a new one opens behind 'stayInFront' (a window of the caller); an open one is left alone. */
     std::function<void (const juce::Uuid& editId, juce::Component* stayInFront)> showEditBehind;
     std::function<void (const juce::Uuid& editId, const juce::Uuid& regionId, bool atEnd)> showTrim;   // trim the join BEFORE this region (atEnd: the END of the edit; the region is then the last one)

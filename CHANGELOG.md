@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.19.0
+- **T, E and M squares in the menu bar**, just to the right of Take Window, Edit Window and Mixer. A click on a square does not open the drop-down: it brings the take / edit / mixer window you used last to the front (restoring it if it was minimised, opening it if it was closed). A square lights up while the window you are working in is of that kind.
+- **Faster meters in the edit and take windows.** The edit window's track meters showed a 300 ms average, so they trailed the mixer's; they now show the peak (read 30 times a second, falling away smoothly) just like the mixer's meters. The take window's meters are also read 30 times a second now.
+
 ## 2.18.1
 - **The 1 / 2 marks in the take window stay after "To edit" (key 3).** They used to be cleared when the take was sent, so after undoing an insertion you had to mark the part again. They now stay until you make new 1 / 2 marks (or press 5 to take them away).
 

@@ -110,6 +110,8 @@ public:
         ctx->showMixer = [this] (const juce::Uuid& id) { openMixer (id); };
         ctx->showEdit = [this] (const juce::Uuid& id) { openEdit (id); };
         ctx->showEditBehind = [this] (const juce::Uuid& id, juce::Component* front) { openEdit (id, front); };
+        ctx->focusRecent = [this] (const juce::String& kind) { focusRecent (kind); };
+        ctx->activeKind = [this] { return activeKind(); };
         ctx->showTrim = [this] (const juce::Uuid& e, const juce::Uuid& r, bool atEnd) { openTrim (e, r, atEnd); };
         ctx->closeWindowByKey = [this] (const juce::String& key) { closeWindowLater (key); };
         ctx->closeTrim = [this] (const juce::Uuid& e) { closeWindowLater ("trim:" + e.toString()); };
@@ -405,10 +407,50 @@ private:
         raw->grabContentFocus();
     }
 
+    // ---- the T / E / M squares of the menu bar
+    juce::Uuid recentTake, recentEdit, recentMixer;                                    // what was opened last (for when no such window is open any more)
+    /** The window of this kind ("take", "edit", "mixer") that was last in front: brought back to the front (restored if minimised, opened if it was closed). */
+    void focusRecent (const juce::String& kind)
+    {
+        const juce::String prefix = kind + ":";
+        ToolWindow* best = nullptr; juce::String bestKey;
+        for (auto& kv : windows)
+            if (kv.second != nullptr && kv.first.startsWith (prefix) && (best == nullptr || kv.second->lastActive > best->lastActive)) { best = kv.second.get(); bestKey = kv.first; }
+        juce::Uuid id = best != nullptr ? juce::Uuid (bestKey.fromFirstOccurrenceOf (":", false, false)) : juce::Uuid::null();
+        auto& P = ctx->project;
+        if (id.isNull())
+        {
+            if (kind == "take")       { id = recentTake;  if (P.findTakeWindow (id) == nullptr) id = P.takeWindows.empty() ? juce::Uuid::null() : P.takeWindows.front()->id; }
+            else if (kind == "edit")  { id = recentEdit;  if (P.findEdit (id) == nullptr)       id = P.edits.empty()       ? juce::Uuid::null() : P.edits.front()->id; }
+            else                      { id = recentMixer; bool ok = false; for (auto& m : P.mixers) ok = ok || m->id == id; if (! ok) id = P.mixers.empty() ? juce::Uuid::null() : P.mixers.front()->id; }
+        }
+        if (id.isNull()) return;
+        if (kind == "take") openTakeWindow (id); else if (kind == "edit") openEdit (id); else openMixer (id);
+        if (auto it = windows.find (prefix + id.toString()); it != windows.end() && it->second != nullptr) { DockHub::get().show (it->second.get()); it->second->toFront (true); it->second->grabContentFocus(); }
+    }
+    /** Which kind of window the person is working in right now: the Fermata window that was last in front, while Fermata is the program in use. "" = none of the three. */
+    juce::String activeKind() const
+    {
+        if (! juce::Process::isForegroundProcess()) return {};
+        ToolWindow* best = nullptr; juce::String bestKey;
+        for (auto& kv : windows)
+        {
+            auto* w = kv.second.get();
+            if (w == nullptr || ! w->isVisible() || DockHub::get().contains (w)) continue;
+            if (best == nullptr || w->lastActive > best->lastActive) { best = w; bestKey = kv.first; }
+        }
+        if (best == nullptr || best->lastActive == 0 || ! best->isActiveWindow()) return {};
+        if (bestKey.startsWith ("take:")) return "take";
+        if (bestKey.startsWith ("edit:")) return "edit";
+        if (bestKey.startsWith ("mixer:")) return "mixer";
+        return {};
+    }
+
     void openTakeWindow (const juce::Uuid& id)
     {
         auto* d = ctx->project.findTakeWindow (id);
         if (d == nullptr) return;
+        recentTake = id;
         showWindow ("take:" + id.toString(), "Takes - " + d->name, [this, id] { return new TakeWindowComponent (*ctx, id); });
     }
     void openMixer (const juce::Uuid& id)
@@ -416,6 +458,7 @@ private:
         for (auto& m : ctx->project.mixers)
             if (m->id == id)
             {
+                recentMixer = id;
                 showWindow ("mixer:" + id.toString(), "Mixer - " + m->name, [this, id] { return new MixerComponent (*ctx, id); });
                 return;
             }
@@ -489,6 +532,7 @@ private:
     void openEdit (const juce::Uuid& id, juce::Component* stayInFront = nullptr)
     {
         if (ctx->project.findEdit (id) == nullptr) return;
+        if (stayInFront == nullptr) recentEdit = id;
         showWindow ("edit:" + id.toString(), "Edit", [this, id] { return new EditWindowComponent (*ctx, id); }, stayInFront);
     }
     void openTrim (const juce::Uuid& editId, const juce::Uuid& regionId, bool atEnd)

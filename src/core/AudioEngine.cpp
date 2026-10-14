@@ -773,6 +773,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             const float pk = juce::jmax (std::abs (mm.getStart()), std::abs (mm.getEnd()));
             auto* meter = c == 0 ? meterL : meterR;
             if (pk > meter->get()) meter->set (pk);
+            if (nd.kind == NodeKind::Track) { auto& lp = c == 0 ? nd.strip->livePkL : nd.strip->livePkR; if (pk > lp.get()) lp.set (pk); }
         }
         {   // RMS (about 300 ms), for the meter settings
             float& ms0 = nd.kind == NodeKind::Track ? nd.strip->msL : nd.bus->msL;

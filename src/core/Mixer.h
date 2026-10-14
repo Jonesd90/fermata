@@ -174,6 +174,7 @@ struct StripState
     InsertSlot slots[kNumSlots];
     Param meterL, meterR;             // peak since last read (UI resets)
     Param rmsL, rmsR;                 // RMS level (linear, about 300 ms window), updated every block
+    Param livePkL, livePkR;           // peak since the edit window last looked (the edit window's own meters: quick, like the mixer's, and independent of them)
     float lastGain = 0.0f, lastPre = 0.0f, msL = 0.0f, msR = 0.0f;   // audio thread only
     float lastIn = 1.0f;              // audio thread only: the input gain of the previous block (for a smooth change)
     StripState() { outSend.gainDb.set (0.0f); }

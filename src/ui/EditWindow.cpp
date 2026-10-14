@@ -23,7 +23,7 @@ public:
     {
         formatManager.registerBasicFormats();
         setWantsKeyboardFocus (true);
-        startTimerHz (15);
+        startTimerHz (30);
         app.project.addChangeListener (this);
     }
     ~EditTimeline() override { app.project.removeChangeListener (this); }
@@ -906,8 +906,8 @@ private:
         {
             auto& v = shownLevel[t.id.toString()];
             float target = 0.0f;
-            if (running) if (auto* st = stripOf (t.id)) target = juce::jmax (st->rmsL.get(), st->rmsR.get());
-            v = juce::jmax (target, v * 0.72f);
+            if (auto* st = stripOf (t.id)) { const float pk = juce::jmax (st->livePkL.take(), st->livePkR.take()); if (running) target = pk; }     // the peak since the last look: as quick as the mixer's meters
+            v = juce::jmax (target, v * 0.86f);
             if (v < 1.0e-4f) v = 0.0f; else moving = true;
         }
         return moving;

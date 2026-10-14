@@ -314,7 +314,10 @@ MainComponent::MainComponent (AppContext& a) : app (a)
     menuStrip = std::make_unique<MenuBarStrip>();                  // the menu bar floats above every window (see MenuBarStrip)
     for (auto* b : menuItems()) menuStrip->addAndMakeVisible (b);
     menuStrip->addAndMakeVisible (takeBox);
-    for (auto* f : { &flagPre, &flagCr, &flagPb }) menuStrip->addAndMakeVisible (f);
+    for (auto* f : { &flagPre, &flagCr, &flagPb, &flagT, &flagE, &flagM }) menuStrip->addAndMakeVisible (f);
+    flagT.onClick = [this] { if (app.focusRecent) app.focusRecent ("take"); };
+    flagE.onClick = [this] { if (app.focusRecent) app.focusRecent ("edit"); };
+    flagM.onClick = [this] { if (app.focusRecent) app.focusRecent ("mixer"); };
     menuStrip->addAndMakeVisible (ltcInLamp); menuStrip->addAndMakeVisible (ltcOutLamp);
     ltcInLamp.onClick = [this] { showLtcInMenu(); };
     ltcOutLamp.onClick = [this] { showLtcOutMenu(); };
@@ -424,7 +427,7 @@ MainComponent::~MainComponent()
 
 int MainComponent::menuBarWidth() const
 {
-    int w = 8 + kTakeBoxW + kFlagsW + kLtcW;
+    int w = 8 + kTakeBoxW + kFlagsW + kLtcW + 3 * 32;
     for (auto* b : const_cast<MainComponent*> (this)->menuItems())
         w += MenuBarButton::widthFor (b == &sessionButton ? juce::String ("PRE-REC ON") : b->getButtonText());
     return w;
@@ -465,10 +468,13 @@ void MainComponent::resized()
         for (auto* b : menuItems())
         {
             if (b == &mediaButton || b == &masteringButton) continue;
+            auto* square = flagFor (b);                                  // T / E / M: a small square just to the right of its button
             const int w = b == &sessionButton ? MenuBarButton::widthFor ("PRE-REC ON") : widthOf (b);
-            if (x > 4 && x + w > getWidth() - 4 - (y == 0 ? kFlagsW + kLtcW + rightW : 0)) { x = 4; y += lineH; menuBarH += lineH; }
+            const int wAll = w + (square != nullptr ? lineH + 2 : 0);
+            if (x > 4 && x + wAll > getWidth() - 4 - (y == 0 ? kFlagsW + kLtcW + rightW : 0)) { x = 4; y += lineH; menuBarH += lineH; }
             b->setBounds (x, y + 2, w, lineH);
             x += w;
+            if (square != nullptr) { square->setBounds (x, y + 2, lineH, lineH); x += lineH + 2; }
         }
         // Media, then Mastering, all the way to the right (just before the status squares)
         const int mw = widthOf (&mediaButton), gw = widthOf (&masteringButton);
@@ -563,6 +569,10 @@ void MainComponent::timerCallback()
     // The menu bar (with the Pre-Rec / C-R / P-B squares) is always there, in front of the other Fermata windows (not other programs), and goes with the main window when it is minimised.
     if (menuStrip != nullptr && getPeer() != nullptr && ! getPeer()->isMinimised() && ! menuStrip->isVisible()) menuStrip->setVisible (true);
     flagPre.set (app.sessionMode()); flagCr.set (app.crMicOpen()); flagPb.set (app.tbPlaybackOn());
+    {
+        const auto kind = app.activeKind ? app.activeKind() : juce::String();
+        flagT.set (kind == "take"); flagE.set (kind == "edit"); flagM.set (kind == "mixer");
+    }
     {
         const auto st = app.engine.ltcInStatus();
         ltcInLamp.set (app.project.ltcInput >= 0 && st.present, fpsName (st.fps, st.drop) + " fps");

@@ -66,7 +66,7 @@ public:
     {
         formatManager.registerBasicFormats();
         setWantsKeyboardFocus (true);
-        startTimerHz (20);
+        startTimerHz (30);
         app.project.addChangeListener (this);
     }
     ~TakeTimeline() override { app.project.removeChangeListener (this); }
@@ -907,7 +907,7 @@ private:
                 const int in = t->inputOf (c);
                 if (juce::isPositiveAndBelow (in, (int) app.inPeaks.size())) pk = app.inPeaks[(size_t) in];
                 auto& lv = m.level[(size_t) c]; auto& hv = m.hold[(size_t) c]; auto& ha = m.holdAt[(size_t) c];
-                lv = juce::jmax (pk, lv * 0.8f);
+                lv = juce::jmax (pk, lv * 0.86f);
                 if (pk >= hv || now - ha > 1500) { hv = pk >= hv ? pk : lv; ha = now; }
             }
         }

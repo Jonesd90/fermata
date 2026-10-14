@@ -239,6 +239,11 @@ private:
     StatusFlag flagPre { "Pre-Rec", juce::Colour (0xffe53935), "Pre-Rec (red): session mode is ON - the inputs are kept for the last 6 seconds, so a take starts 6 seconds before you press Record. Click it to switch Pre-Rec on or off." },
                flagCr  { "C-R", juce::Colour (0xffa83cff), "C-R (purple): the control-room mic is OPEN - you are talking to the talkback speakers. Click it to open or close the mic (it stays as you leave it)." },
                flagPb  { "P-B", juce::Colour (0xffffd21f), "P-B (yellow): playback - recorded material only is being played to the talkback output. Click it to switch it on or off." };
+    // little squares to the right of Take Window / Edit Window / Mixer: bring back the one you used last (lit while that kind of window is the one you are working in)
+    StatusFlag flagT { "T", juce::Colour (0xff1fb5a8), "T: brings the take window you used last to the front (opens it if it was closed). Lit while you are working in a take window." },
+               flagE { "E", juce::Colour (0xffe8892b), "E: brings the edit window you used last to the front (opens it if it was closed). Lit while you are working in an edit window." },
+               flagM { "M", juce::Colour (0xff4f8cff), "M: brings the mixer you used last to the front (opens it if it was closed). Lit while you are working in a mixer." };
+    StatusFlag* flagFor (const juce::Component* b) { return b == &takesButton ? &flagT : b == &editsButton ? &flagE : b == &mixersButton ? &flagM : nullptr; }
     DockBar dock;
     juce::Label projectName, timeLabel, recStatus, statusLabel, inputsCaption, outputsCaption;
     // Driver inputs (left) and outputs (right) are always shown; the divider between them can be dragged
