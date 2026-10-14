@@ -53,10 +53,11 @@ public:
         {
             juce::Path moon;
             moon.addEllipse (c.x - 6.0f, c.y - 6.0f, 12.0f, 12.0f);
-            juce::Path bite; bite.addEllipse (c.x - 2.0f, c.y - 8.0f, 11.0f, 11.0f);
-            moon.setUsingNonZeroWinding (false);
-            moon.addPath (bite);
-            g.fillPath (moon);
+            juce::Path bite; bite.addEllipse (c.x - 1.0f, c.y - 6.5f, 11.0f, 11.0f);
+            juce::Path both (moon); both.setUsingNonZeroWinding (false); both.addPath (bite);
+            g.saveState(); g.reduceClipRegion (moon);                // inside the moon only: the moon minus the bite is a crescent
+            g.fillPath (both);
+            g.restoreState();
         }
         else                                                         // the light look is on: a sun
         {

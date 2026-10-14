@@ -353,8 +353,13 @@ public:
             if (app.setSendLevel (mixer, srcId, destId, db) == SendResult::Refused) refuse();
         };
         knob.onClickWithoutDrag = [this] { openPanel(); };
-        knob.setDoubleClickReturnValue (true, 0.0, juce::ModifierKeys::ctrlModifier);
-        knob.onDoubleClick = [this] { askValue(); };
+        juce::Component::SafePointer<SendDial> safe (this);
+        knob.onDoubleClick = [safe]
+        {
+            if (safe == nullptr) return;
+            if (juce::ModifierKeys::currentModifiers.isCtrlDown()) safe->askValue();       // Ctrl + double-click types a level
+            else safe->knob.setValue (0.0, juce::sendNotificationSync);                    // double-click: straight to 0 dB
+        };
         addAndMakeVisible (knob);
         refreshFromModel();
     }
@@ -372,7 +377,7 @@ public:
             label.setText (destName + (s != nullptr && s->pre.get() ? " (pre)" : ""), juce::dontSendNotification);
             label.setColour (juce::Label::textColourId, s != nullptr && s->active() ? mixTheme().text : mixTheme().dim);
         }
-        knob.setTooltip ("Send to " + destName + ". Drag up / down to change, double-click to type a level, click once for pre / post fader, inserts and a fader. "
+        knob.setTooltip ("Send to " + destName + ". Drag up / down to change, double-click for 0 dB (Ctrl + double-click to type a level), click once for pre / post fader, inserts and a fader. "
                          + (s != nullptr && s->pre.get() ? "(Taken before the fader.)" : "(Taken after the fader.)"));
     }
     void resized() override
@@ -906,6 +911,14 @@ public:
         mute->setToggleState (st.mute.get(), juce::dontSendNotification);
         mute->setTooltip ("Mute (this mixer only)");
         mute->onClick = [this] { st.mute.set (mute->getToggleState()); app.project.markDirty(); };
+        if (! external)
+        {
+            solo = makeToggle (*this, toggles, "S", juce::Colour (0xfff2c200));
+            solo->setColour (juce::TextButton::textColourOnId, juce::Colours::black);
+            solo->setToggleState (st.solo.get(), juce::dontSendNotification);
+            solo->setTooltip ("Solo this bus (this mixer only): everything that feeds it stays open, the rest is silenced");
+            solo->onClick = [this] { st.solo.set (solo->getToggleState()); app.project.markDirty(); };
+        }
         if (external)
         {
             outBox.addItem ("(nowhere)", 1);
@@ -944,6 +957,7 @@ public:
         outRow.fill();
         fader.setAccent (colour());
         mute->setToggleState (st.mute.get(), juce::dontSendNotification);
+        if (solo != nullptr) solo->setToggleState (st.solo.get(), juce::dontSendNotification);
         if (external)
         {
             updating = true;
@@ -972,6 +986,7 @@ public:
         auto ms = r.removeFromBottom (kMSH);
         r.removeFromBottom (4 + 2 * kPanRowH);
         mute->setBounds (ms.removeFromLeft (ms.getWidth() / 2).reduced (1, 0));
+        if (solo != nullptr) solo->setBounds (ms.reduced (1, 0));
         fader.setBounds (faderArea);
 
         auto top = r.removeFromTop (2 * kInputRowH);                         // where audio track strips have their input selectors
@@ -1017,7 +1032,7 @@ private:
     bool updating = false; int sendRows = 1, nSlots = kNumSlots;
     InfoNote note; juce::ComboBox outBox;
     juce::OwnedArray<SendDial> dials; juce::TextButton toTrackButton;
-    juce::OwnedArray<juce::TextButton> toggles; juce::TextButton *mute = nullptr;
+    juce::OwnedArray<juce::TextButton> toggles; juce::TextButton *mute = nullptr, *solo = nullptr;
 };
 
 /** The last strip: what the level meters show and how they move (shared by all mixers and remembered), plus the phase scope. */

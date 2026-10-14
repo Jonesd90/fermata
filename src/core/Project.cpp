@@ -129,7 +129,7 @@ void stripFromVar (StripState& s, const var& sv, const InsertFactory& factory, d
 var busToVar (const BusState& s, const juce::Uuid& busId, bool inserts, bool withOutput)
 {
     var o = obj();
-    put (o, "bus", busId.toString()); put (o, "gainDb", s.gainDb.get()); put (o, "mute", s.mute.get());
+    put (o, "bus", busId.toString()); put (o, "gainDb", s.gainDb.get()); put (o, "mute", s.mute.get()); put (o, "solo", s.solo.get());
     if (withOutput) put (o, "outFirst", s.outFirst.load());
     put (o, "outOn", s.outOn.get()); put (o, "outDest", s.outDest.toString());
     put (o, "sendList", sendsToVar (s.sends, inserts));
@@ -139,7 +139,7 @@ var busToVar (const BusState& s, const juce::Uuid& busId, bool inserts, bool wit
 
 void busFromVar (BusState& s, const var& v, const InsertFactory& factory, double sr, int block, bool inserts, bool withOutput)
 {
-    s.gainDb.set ((float) (double) v["gainDb"]); s.mute.set ((bool) v["mute"]);
+    s.gainDb.set ((float) (double) v["gainDb"]); s.mute.set ((bool) v["mute"]); s.solo.set ((bool) v["solo"]);
     if (withOutput && v.hasProperty ("outFirst")) s.outFirst.store ((int) v["outFirst"]);
     s.outOn.set (v.hasProperty ("outOn") ? (bool) v["outOn"] : false);
     s.outDest = juce::Uuid (v["outDest"].toString());

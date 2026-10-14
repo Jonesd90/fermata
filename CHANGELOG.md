@@ -6,6 +6,11 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.21.0
+- **Mixer:** double-clicking a send knob now sets it to 0 dB (Ctrl + double-click types a level instead).
+- **Mixer:** Int Buses now have a Solo button. Soloing a bus keeps open everything that feeds it (tracks and other buses, through their faders or sends) and silences the rest; soloing a track still keeps the buses it goes to open. The solo is saved with the project.
+- **Look button:** the dark-look symbol is now a proper crescent moon (it had a stray blob beside it).
+
 ## 2.20.0
 - **Edit window:** a piece can now be dragged by its top banner to wherever you like and it stays there, leaving a stretch of silence if you want one (the last piece too). Dragging past a neighbour's middle still swaps them like cards. With Slip Left / Slip Right on, the pieces on that side move with it. Where silence is left, the pieces get short edge fades instead of a crossfade into the gap.
 

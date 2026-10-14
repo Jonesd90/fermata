@@ -176,6 +176,7 @@ private:
         BusState* bus = nullptr;
         int trackIndex = -1;
         std::vector<SendPlan> sends;
+        bool soloHeard = false;                 // audio thread: feeds something that is soloed (so it stays open while others are muted by solo)
         bool receives = false;                  // other channels send here
         bool isMainOut = false;                 // the mixer's main Ext Bus (what 'talkback playback' takes from the processing mixer)
         int tapIdx = -1;                        // offline render: which capture output its post-fader signal goes to (-1 = none)

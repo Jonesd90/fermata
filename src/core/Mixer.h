@@ -185,7 +185,7 @@ struct BusState
 {
     juce::Uuid busId;
     Param gainDb { 0.0f };
-    Flag  mute;
+    Flag  mute, solo;                 // solo: Int Bus only (soloing a bus keeps everything that feeds it open)
     std::atomic<int> outFirst { -1 }; // Ext Bus only: first driver output of its stereo pair (-1 = goes nowhere)
     Flag  outOn { false };             // Int Bus only: its output (after the fader) is connected to outDest
     juce::Uuid outDest = juce::Uuid::null();               // Int Bus only: an Int Bus or Ext Bus of this mixer; null = the mixer's main Ext Bus

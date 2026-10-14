@@ -384,9 +384,11 @@ public:
         if (theme::isDark())                                         // dark look on: a moon (click for light)
         {
             juce::Path moon; moon.addEllipse (c.x - 5.5f, c.y - 5.5f, 11.0f, 11.0f);
-            juce::Path bite; bite.addEllipse (c.x - 2.0f, c.y - 7.5f, 10.0f, 10.0f);
-            moon.setUsingNonZeroWinding (false); moon.addPath (bite);
-            g.fillPath (moon);
+            juce::Path bite; bite.addEllipse (c.x - 1.0f, c.y - 6.5f, 10.0f, 10.0f);
+            juce::Path both (moon); both.setUsingNonZeroWinding (false); both.addPath (bite);
+            g.saveState(); g.reduceClipRegion (moon);                // inside the moon only: the moon minus the bite is a crescent
+            g.fillPath (both);
+            g.restoreState();
         }
         else                                                         // light look on: a sun (click for dark)
         {

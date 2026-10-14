@@ -635,7 +635,18 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                                 bool playbackOnly, float* tapL, float* tapR)
 {
     bool anySolo = false;
-    for (auto& nd : mp.order) anySolo = anySolo || (nd->kind == NodeKind::Track && nd->strip->solo.get());
+    for (auto& nd : mp.order)
+    {
+        const bool me = (nd->kind == NodeKind::Track && nd->strip->solo.get()) || (nd->kind == NodeKind::IntBus && nd->bus->solo.get());
+        nd->soloHeard = me;
+        anySolo = anySolo || me;
+    }
+    if (anySolo)                                           // whatever feeds a soloed channel (tracks, buses, through faders or sends) stays open too
+        for (size_t k = mp.order.size(); k-- > 0;)
+        {
+            auto& nd = *mp.order[k];
+            for (auto& sp : nd.sends) if (sp.dest->soloHeard) { nd.soloHeard = true; break; }
+        }
 
     for (auto& nd : mp.order) if (nd->receives) nd->incoming.clear (0, n);
     if (playing != mp.wasPlaying)                          // playing starts or stops (or jumps): old audio must not come out of the delay lines
@@ -744,7 +755,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                 for (int c = 0; c < nc; ++c)
                     juce::FloatVectorOperations::addWithMultiply ((c & 1) ? R : L, view.getReadPointer (c), k, n);
             }
-            audible = ! st->mute.get() && (! anySolo || st->solo.get());
+            audible = ! st->mute.get() && (! anySolo || st->solo.get() || nd.soloHeard);
             faderGain = dbToGain (st->gainDb.get());
             lastGain = &st->lastGain; lastPre = &st->lastPre; meterL = &st->meterL; meterR = &st->meterR;
         }
