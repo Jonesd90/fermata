@@ -678,7 +678,8 @@ struct EditDef
     {
         if (k < 1 || k >= (int) regions.size()) return;
         auto& a = regions[(size_t) k - 1]; auto& b = regions[(size_t) k];
-        b.inStart = a.outStart; b.inEnd = a.outEnd; b.setInCurve (a.outCurveValue());
+        const double gap = joinGapSeconds (k);                      // the fade is copied to the same place IN TIME, not to the same distance from the piece's own edge
+        b.inStart = a.outStart - gap; b.inEnd = a.outEnd - gap; b.setInCurve (a.outCurveValue());
         clampFades (k);
     }
     /** 'Z' key: the other way round. */
@@ -686,8 +687,29 @@ struct EditDef
     {
         if (k < 1 || k >= (int) regions.size()) return;
         auto& a = regions[(size_t) k - 1]; auto& b = regions[(size_t) k];
-        a.outStart = b.inStart; a.outEnd = b.inEnd; a.setOutCurve (b.curve);
+        const double gap = joinGapSeconds (k);
+        a.outStart = b.inStart + gap; a.outEnd = b.inEnd + gap; a.setOutCurve (b.curve);
         clampFades (k - 1);
+    }
+
+    /** How far the start of piece k is after the end of the piece before it, in seconds: 0 when they butt together, positive for silence between them, negative when they overlap. */
+    double joinGapSeconds (int k) const
+    {
+        if (k < 1 || k >= (int) regions.size()) return 0.0;
+        const auto& a = regions[(size_t) k - 1]; const auto& b = regions[(size_t) k];
+        return (double) (b.startSample - a.endSample()) / juce::jmax (1.0, b.sampleRate);
+    }
+
+    /** Make piece k start exactly where the piece before it ends: it, and every piece after it, move by the same amount (so the rest of the edit keeps its shape).
+        The join gets the default crossfade again. Returns how many samples they moved (negative = earlier). */
+    juce::int64 closeGap (int k)
+    {
+        if (k < 1 || k >= (int) regions.size()) return 0;
+        const juce::int64 d = regions[(size_t) k - 1].endSample() - regions[(size_t) k].startSample;
+        if (d == 0) return 0;
+        for (size_t j = (size_t) k; j < regions.size(); ++j) regions[j].startSample += d;
+        setDefaultJoinFades (k);
+        return d;
     }
 };
 

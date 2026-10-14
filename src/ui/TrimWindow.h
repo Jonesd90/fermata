@@ -60,6 +60,7 @@ private:
     void step (int delta);
     void resetFades();
     void copyFade (bool outToIn);
+    void closeGap();
     void takeSnapshot();
     double preRoll() const  { return preSlider.getValue(); }
     double postRoll() const { return postSlider.getValue(); }
@@ -84,7 +85,8 @@ private:
                      acceptButton { "Accept  [Enter]" }, revertButton { "Revert this join" },
                      prevButton { "<< Accept, previous fade  [" }, nextButton { "Accept, next fade  ] >>" },
                      auditionButton { "Audition  [F2]" }, origA { "Play original A" }, origB { "Play original B" }, stopButton { "Stop" },
-                     copyOutIn { "Copy out-fade to in  [A]" }, copyInOut { "Copy in-fade to out  [Z]" };
+                     copyOutIn { "Copy out-fade to in  [A]" }, copyInOut { "Copy in-fade to out  [Z]" }, closeGapButton { "Close gap" };
+    juce::Label gapLabel;
     juce::ToggleButton loopToggle { "Loop" }, slipLeftToggle { "Slip Left" }, slipRightToggle { "Slip Right" };
     struct Group { juce::Label label; juce::OwnedArray<juce::TextButton> buttons; };
     Group gA, gB, gJ;

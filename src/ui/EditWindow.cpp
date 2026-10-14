@@ -44,7 +44,7 @@ public:
     std::vector<juce::Uuid> selectedRegions;   // the pieces selected for Bounce Out (Ctrl + click adds more)
     bool isSelected (const juce::Uuid& id) const { return std::find (selectedRegions.begin(), selectedRegions.end(), id) != selectedRegions.end() || id == selectedRegion; }
     int selectedJoin = -1;                 // the selected edit point: 0 = the start of the edit, k = the join before regions[k], n = the end of the edit; -1 = none
-    bool slipLeft = false, slipRight = false;
+    bool slipLeft = false, slipRight = false, shuffleMode = false;
     double cursorSeconds = -1.0;
 
     EditDef* edit() const { return app.project.findEdit (editId); }
@@ -669,7 +669,7 @@ public:
             if (! shuffleMoved) { shuffleMoved = true; if (app.isPlaying()) app.stopPlayback(); setMouseCursor (juce::MouseCursor::DraggingHandCursor); }
             const double rt = juce::jmax (1.0, ed->sampleRate);
             shuffleSample = (juce::int64) (juce::jmax (0.0, (e.x - kNameW) / pixelsPerSecond) * rt);
-            for (int guard = 0; guard < 64; ++guard)                      // the piece trades places with a neighbour once its middle has passed the neighbour's middle
+            for (int guard = 0; shuffleMode && guard < 64; ++guard)       // (shuffle on) the piece trades places with a neighbour once its middle has passed the neighbour's middle
             {
                 const int i = ed->indexOf (shuffleId);
                 if (i < 0) break;
@@ -1452,10 +1452,12 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     zoomOutButton.onClick = [this] { timeline->zoom (1.0 / 1.5); };
     slipLeftToggle.setTooltip ("When you slide a piece, every piece BEFORE it slides with it (off: they stay where they are).");
     slipRightToggle.setTooltip ("When you slide a piece, every piece AFTER it slides with it (off: they stay where they are).");
+    shuffleToggle.setTooltip ("Shuffle on: dragging a piece by its top banner past a neighbour swaps the two, like cards in a deck. Off: a piece goes wherever you drop it, leaving silence if you want.");
+    shuffleToggle.onClick = [this] { timeline->shuffleMode = shuffleToggle.getToggleState(); };
     slipLeftToggle.onClick  = [this] { timeline->slipLeft = slipLeftToggle.getToggleState(); };
     slipRightToggle.onClick = [this] { timeline->slipRight = slipRightToggle.getToggleState(); };
     for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &ltcButton, &automationButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &reharmoniserButton, &exportProcButton, &undoFixButton,
-                                                          &slipLeftToggle, &slipRightToggle })
+                                                          &slipLeftToggle, &slipRightToggle, &shuffleToggle })
     {
         addAndMakeVisible (b);
         b->setWantsKeyboardFocus (false);
@@ -1499,7 +1501,7 @@ void EditWindowComponent::resized()
         { &automationButton, grid::btnW, grid::btnH, 14 },
         { &pitchButton }, { &pitchCurveButton, grid::btnW + 24 }, { &repairButton, grid::btnW + 30 }, { &declickButton }, { &reharmoniserButton, grid::btnW + 24 }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, grid::btnW, grid::btnH, 14 },
         { &tracksButton }, { &importButton, grid::btnW, grid::btnH, 14 },
-        { &slipLeftToggle, 95 }, { &slipRightToggle, 105, grid::btnH, 14 },
+        { &slipLeftToggle, 95 }, { &slipRightToggle, 105 }, { &shuffleToggle, 90, grid::btnH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
     r.removeFromTop (grid::flow (r, items));

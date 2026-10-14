@@ -2962,6 +2962,28 @@ int main()
         CHECK (ed.slideRegion (1, 48000 * 2, false, true) == 48000 * 2 && ed.regions[2].startSample == 48000 * 27);   // slip right carries the pieces after it
     }
 
+    SECTION ("trim: copying a fade keeps its place in time; closing a gap");
+    {
+        EditDef ed; ed.sampleRate = 48000.0;
+        for (int k = 0; k < 3; ++k)
+        {
+            EditRegion r; r.sampleRate = 48000.0; r.srcIn = 48000 * 5; r.srcOut = 48000 * 15; r.sourceLength = 48000 * 60; r.startSample = 48000 * 10 * k + (k == 1 ? 48000 / 2 : 0); r.id = juce::Uuid();
+            RegionFile f; f.trackId = juce::Uuid(); r.files.push_back (f);
+            ed.regions.push_back (r);
+        }
+        ed.setDefaultJoinFades (1); ed.setDefaultJoinFades (2);
+        CHECK (std::abs (ed.joinGapSeconds (1) - 0.5) < 1e-9);
+        ed.regions[0].outStart = -0.2; ed.regions[0].outEnd = -0.1;
+        ed.copyOutToIn (1);
+        CHECK (ed.regions[1].fadeInBegin() == ed.regions[0].fadeOutBegin() && ed.regions[1].fadeInFinish() == ed.regions[0].fadeOutFinish());
+        ed.regions[1].inStart = 0.0; ed.regions[1].inEnd = 0.3;
+        ed.copyInToOut (1);
+        CHECK (ed.regions[0].fadeOutBegin() == ed.regions[1].fadeInBegin() && ed.regions[0].fadeOutFinish() == ed.regions[1].fadeInFinish());
+        const auto c2 = ed.regions[2].startSample;
+        CHECK (ed.closeGap (1) == -48000 / 2 && ed.regions[1].startSample == ed.regions[0].endSample() && ed.regions[2].startSample == c2 - 48000 / 2);
+        CHECK (ed.joinGapSeconds (1) == 0.0 && ed.closeGap (1) == 0);
+    }
+
     eng.rebuildPlan();
     tmp.deleteRecursively();
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

@@ -464,10 +464,14 @@ TrimComponent::TrimComponent (AppContext& a, const juce::Uuid& eid, const juce::
     nextButton.setTooltip ("Keep what you did on this fade and go to the fade on the RIGHT (the next join), so you can work through the whole piece. Key: ]");
     copyOutIn.onClick = [this] { copyFade (true); };
     copyInOut.onClick = [this] { copyFade (false); };
+    closeGapButton.onClick = [this] { closeGap(); };
+    closeGapButton.setTooltip ("A and B do not meet: there is silence (or an overlap) between where A ends and where B starts, so the two takes are out of line. This moves B, and everything after it, so B starts exactly where A ends.");
+    gapLabel.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+    addAndMakeVisible (gapLabel); addAndMakeVisible (closeGapButton);
     acceptButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1f7a46));
     auditionButton.setColour (juce::TextButton::buttonColourId, theme::accent);
     for (auto* b : std::initializer_list<juce::Button*> { &zoomIn, &zoomOut, &centreButton, &resetFade, &acceptButton, &revertButton, &prevButton, &nextButton,
-                                                          &auditionButton, &origA, &origB, &stopButton, &copyOutIn, &copyInOut, &loopToggle, &slipLeftToggle, &slipRightToggle })
+                                                          &auditionButton, &origA, &origB, &stopButton, &copyOutIn, &copyInOut, &closeGapButton, &loopToggle, &slipLeftToggle, &slipRightToggle })
     {
         addAndMakeVisible (b);
         b->setWantsKeyboardFocus (false);
@@ -648,6 +652,14 @@ void TrimComponent::refreshControls()
         for (auto* b : std::initializer_list<juce::Component*> { &copyOutIn, &copyInOut, &origA, &origB, &slipLeftToggle, &slipRightToggle })
             b->setEnabled (both || b == &origA || b == &origB);
         origA.setEnabled (hasA); origB.setEnabled (hasB);
+        {
+            const double gapMs = both ? rf.e->joinGapSeconds (rf.k) * 1000.0 : 0.0;
+            const bool apart = both && std::abs (gapMs) >= 0.05;
+            closeGapButton.setEnabled (apart);
+            gapLabel.setText (! both ? juce::String() : ! apart ? juce::String ("A ends exactly where B starts")
+                              : juce::String (std::abs (gapMs), 1) + " ms " + (gapMs > 0 ? "of silence between A and B" : "of overlap between A and B"), juce::dontSendNotification);
+            gapLabel.setColour (juce::Label::textColourId, apart ? theme::warn : theme::dimText);
+        }
         for (auto* g : { &gA, &gB, &gJ })
             for (auto* b : g->buttons) b->setEnabled (both);
     }
@@ -754,6 +766,16 @@ void TrimComponent::copyFade (bool outToIn)
     if (! rf.ok() || rf.A == nullptr || rf.B == nullptr) return;
     auto* e = rf.e; const int k = rf.k;
     if (outToIn) e->copyOutToIn (k); else e->copyInToOut (k);
+    app.project.changed();
+}
+
+void TrimComponent::closeGap()
+{
+    const auto rf = refs();
+    if (! rf.ok() || rf.A == nullptr || rf.B == nullptr) return;
+    const auto d = rf.e->closeGap (rf.k);
+    if (d != 0) app.setNotice ("B (and everything after it) moved " + juce::String (std::abs (d) / juce::jmax (1.0, rf.e->sampleRate) * 1000.0, 1) + " ms " + (d < 0 ? "earlier" : "later") + " so it meets A");
+    recentre();
     app.project.changed();
 }
 
@@ -891,6 +913,9 @@ void TrimComponent::resized()
     auto r3 = row (30);
     copyOutIn.setBounds (r3.removeFromLeft (190).reduced (2));
     copyInOut.setBounds (r3.removeFromLeft (190).reduced (2));
+    r3.removeFromLeft (14);
+    closeGapButton.setBounds (r3.removeFromLeft (110).reduced (2));
+    gapLabel.setBounds (r3.removeFromLeft (420));
 
     auto rL = row (28);                                                       // the levels of the two takes
     levelACap.setBounds (rL.removeFromLeft (125)); levelA.setBounds (rL.removeFromLeft (270));
