@@ -1849,6 +1849,8 @@ bool MasteringComponent::checkRenders (bool force)
     renderLight.set (juce::Colour (0xff3b8fe0)); renderNowNeeded = false;
     updateRenderButtons(); refreshVm(); refreshDdp (false);
     juce::Component::SafePointer<MasteringComponent> safe (this);
+    renderingIds.clear();
+    for (int i = 0; i < batch->total(); ++i) if (batch->needsRender (i)) renderingIds.push_back (batch->editAt (i));
     renderJob = std::make_unique<MasterRenderJob> (std::move (batch), [safe] (juce::String err) { if (safe != nullptr) safe->renderFinished (err); });
     return false;
 }
@@ -1868,6 +1870,22 @@ void MasteringComponent::renderFinished (const juce::String& error)
         }
     }
     renderJob.reset();
+    if (error.isEmpty())                                      // the new renders take the project's description of those pieces as it is now (so they show as up to date)
+    {
+        RenderParams rp;
+        if (makeRenderParams (app.project, def(), rp).isEmpty())
+        {
+            MasterRenders store (MasterRenders::folderFor (app.project));
+            for (auto& id : renderingIds)
+                if (auto* e = editOf (id))
+                {
+                    const auto fp = masterRenderFingerprint (app.project, *e, rp);
+                    const auto before = store.check (id, fp);
+                    if (before.state == MasterRenders::State::Stale) { juce::Logger::writeToLog ("Mastering: the description of \"" + e->name + "\" changed while it was rendered; the new render takes it"); store.restamp (id, fp); }
+                }
+        }
+    }
+    renderingIds.clear();
     renderProgressValue = error.isEmpty() ? 1.0 : 0.0;
     const bool ok = error.isEmpty();
     lookKey.clear(); lookAtRenders();

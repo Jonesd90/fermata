@@ -39,6 +39,9 @@ public:
     juce::File tempFile (const juce::Uuid& editId) const { return dir.getChildFile ("mrtmp-" + editId.toString() + ".wav"); }
     /** A finished render: it takes the place of the older of the two, and becomes the current one. */
     void commit (const juce::Uuid& editId, const juce::String& fingerprint, double rate, juce::int64 frames, const juce::File& produced);
+    /** A render just finished for this Edit: its sound is described by 'fingerprint' as the project stands now (the project can describe itself slightly differently
+        after a render, e.g. normalised gains settle), so the newest render takes that description. */
+    void restamp (const juce::Uuid& editId, const juce::String& fingerprint);
     /** Previous on: the earlier render is used instead of the newest. Off: back to the newest. False if there is no earlier one. */
     bool setUsePrevious (const juce::Uuid& editId, bool on);
     /** The next check says Stale, so the Edit is rendered again (into the older slot, as always). */

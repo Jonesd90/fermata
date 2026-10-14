@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.30.1
+- **Mastering previews stay "up to date" after Render previews:** after a render the project can describe a piece slightly differently from when the render started, so two of the four pieces still showed orange. The new render now takes the project's description as it stands when it finishes. (If it still happens, `fermata-log.txt` says which piece's description changed while it rendered.)
+
 ## 2.30.0
 - **Mastering: nothing renders by itself any more.** The DDP builder only *looks* at the preview renders (it never starts one). A light shows how they stand: **red** "Preview not rendered", **orange** "Preview renders are out of date" (after an edit or mixer change; it names which pieces), **green** "Preview renders up to date". The new **Render previews** button makes the missing / out-of-date ones, once. This ends the endless re-rendering and waveform redrawing.
 - Play in the DDP builder no longer renders: if the previews are not up to date it tells you to press Render previews first. Export still makes any renders it needs.

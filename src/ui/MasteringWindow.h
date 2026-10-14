@@ -155,6 +155,7 @@ private:
     juce::ProgressBar renderProgress;
     juce::Label renderStatus;
     RenderLight renderLight;
+    std::vector<juce::Uuid> renderingIds;            // the pieces being rendered right now
     juce::String lookKey;                            // what the last look at the renders found (nothing is redrawn when it has not changed)
     bool renderNowNeeded = false;                    // some ticked piece has no up-to-date render
     void lookAtRenders();                            // looks at the renders (never makes any): sets the light and the line

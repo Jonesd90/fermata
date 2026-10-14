@@ -172,6 +172,16 @@ void MasterRenders::commit (const juce::Uuid& id, const juce::String& fp, double
     save (m);
 }
 
+void MasterRenders::restamp (const juce::Uuid& id, const juce::String& fp)
+{
+    const juce::ScopedLock sl (storeLock());
+    auto m = load();
+    auto& e = m[id.toString()];
+    if (e.active < 0 || ! valid (id, e, e.active) || e.pinned) return;
+    e.s[e.active].fp = fp; e.stale = false;
+    save (m);
+}
+
 bool MasterRenders::setUsePrevious (const juce::Uuid& id, bool on)
 {
     const juce::ScopedLock sl (storeLock());
