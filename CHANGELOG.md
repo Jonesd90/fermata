@@ -6,6 +6,11 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.19.1
+- **Trim window:** the bottom row of buttons was squeezed out of sight by the new level faders; the control area is taller again (and the window opens a little taller).
+- **Trim window:** the slide buttons (Slide A, Slide B, Move the join) now also have -100 ms and +100 ms, for sliding a take by a third of a second or more in a few clicks.
+- **Trim window:** when a slide (a button or dragging the waveform) cannot go any further because the take runs out of audio, or the piece would become too short, a notice now says so and how far it can go, instead of nothing happening.
+
 ## 2.19.0
 - **T, E and M squares in the menu bar**, just to the right of Take Window, Edit Window and Mixer. A click on a square does not open the drop-down: it brings the take / edit / mixer window you used last to the front (restoring it if it was minimised, opening it if it was closed). A square lights up while the window you are working in is of that kind.
 - **Faster meters in the edit and take windows.** The edit window's track meters showed a 300 ms average, so they trailed the mixer's; they now show the peak (read 30 times a second, falling away smoothly) just like the mixer's meters. The take window's meters are also read 30 times a second now.

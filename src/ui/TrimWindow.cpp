@@ -169,8 +169,9 @@ public:
         if (mode == Mode::SlipA || mode == Mode::SlipB)
         {
             EditDef tmp; tmp.sampleRate = ed->sampleRate; tmp.regions = regions0;
-            if (mode == Mode::SlipA) tmp.slipOut (k, (juce::int64) std::llround (dSamples), owner.slipLeft());
-            else                     tmp.slipIn  (k, (juce::int64) std::llround (dSamples), owner.slipRight());
+            const auto want = (juce::int64) std::llround (dSamples);
+            const auto did = mode == Mode::SlipA ? tmp.slipOut (k, want, owner.slipLeft()) : tmp.slipIn (k, want, owner.slipRight());
+            if (did != want) owner.getApp().setNotice (juce::String (mode == Mode::SlipA ? "A" : "B") + " cannot slide any further that way: the take runs out of audio there (" + juce::String (std::abs (did) / rate * 1000.0, 0) + " ms is the most)");
             ed->regions = tmp.regions;
         }
         else
@@ -432,7 +433,7 @@ TrimComponent::TrimComponent (AppContext& a, const juce::Uuid& eid, const juce::
     {
         g.label.setText (title, juce::dontSendNotification);
         addAndMakeVisible (g.label);
-        for (double ms : { -10.0, -1.0, 1.0, 10.0 })
+        for (double ms : { -100.0, -10.0, -1.0, 1.0, 10.0, 100.0 })
         {
             auto* b = g.buttons.add (new juce::TextButton ((ms > 0 ? "+" : "") + juce::String ((int) ms) + " ms"));
             b->onClick = [fn, ms] { fn (ms); };
@@ -524,7 +525,7 @@ TrimComponent::TrimComponent (AppContext& a, const juce::Uuid& eid, const juce::
     refreshReaders();
     app.project.addChangeListener (this);
     startTimerHz (15);
-    setSize (1100, 735);
+    setSize (1100, 770);
 }
 
 TrimComponent::~TrimComponent()
@@ -708,7 +709,9 @@ void TrimComponent::slideA (double ms)
     const auto rf = refs();
     if (! rf.ok() || rf.A == nullptr || rf.B == nullptr) return;
     auto* e = rf.e; const int k = rf.k;
-    e->slipOut (k, (juce::int64) std::llround (ms * 0.001 * e->regions[(size_t) k].sampleRate), slipLeft());
+    const auto want = (juce::int64) std::llround (ms * 0.001 * e->regions[(size_t) k].sampleRate);
+    const auto did = e->slipOut (k, want, slipLeft());
+    if (did != want) app.setNotice ("A cannot slide any further that way: " + juce::String (std::abs (did) / e->regions[(size_t) k].sampleRate * 1000.0, 0) + " ms is all the take allows (it runs out of audio, or the piece would become too short)");
     app.project.changed();
 }
 
@@ -717,7 +720,9 @@ void TrimComponent::slideB (double ms)
     const auto rf = refs();
     if (! rf.ok() || rf.A == nullptr || rf.B == nullptr) return;
     auto* e = rf.e; const int k = rf.k;
-    e->slipIn (k, (juce::int64) std::llround (ms * 0.001 * e->regions[(size_t) k].sampleRate), slipRight());
+    const auto want = (juce::int64) std::llround (ms * 0.001 * e->regions[(size_t) k].sampleRate);
+    const auto did = e->slipIn (k, want, slipRight());
+    if (did != want) app.setNotice ("B cannot slide any further that way: " + juce::String (std::abs (did) / e->regions[(size_t) k].sampleRate * 1000.0, 0) + " ms is all the take allows (it runs out of audio at its start, or the piece would become too short)");
     app.project.changed();
 }
 
@@ -859,7 +864,7 @@ void TrimComponent::resized()
     auto head = r.removeFromTop (24);
     infoLabel.setBounds (head);
     fadeLabel.setBounds (r.removeFromTop (20));
-    auto controls = r.removeFromBottom (232);
+    auto controls = r.removeFromBottom (264);
     waves->setBounds (r);
 
     auto row = [&controls] (int h) { auto x = controls.removeFromTop (h); controls.removeFromTop (3); return x; };
