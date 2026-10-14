@@ -1686,6 +1686,19 @@ void EditWindowComponent::loopChanged()
     else app.engine.setPlaybackLooping (false);                                                                             // switched off: finishes this pass and stops
 }
 
+/** R: the selected piece is moved so it starts exactly where the piece before it ends (everything after it moves with it), ready to be trimmed. */
+void EditWindowComponent::buttSelected()
+{
+    auto* e = edit();
+    if (e == nullptr) return;
+    const int ri = e->indexOf (timeline->selectedRegion);
+    if (ri < 0) { app.setNotice ("Click a piece first, then press R to butt it up against the piece before it"); return; }
+    if (ri == 0) { app.setNotice ("This is the first piece: there is nothing before it to butt up against"); return; }
+    const auto d = e->closeGap (ri);
+    app.setNotice (d == 0 ? "It already meets the piece before it" : "Moved up against the piece before it (" + juce::String (std::abs (d) / juce::jmax (1.0, e->sampleRate) * 1000.0, 0) + " ms " + (d < 0 ? "earlier" : "later") + ")");
+    if (d != 0) { app.project.changed(); timeline->repaint(); }
+}
+
 void EditWindowComponent::trimSelected()
 {
     auto* e = edit();
@@ -1841,6 +1854,7 @@ bool EditWindowComponent::keyPressed (const juce::KeyPress& k)
     if (c == 'c' && ! k.getModifiers().isAnyModifierKeyDown()) { timeline->centreOnPlayhead(); return true; }
     if (c == 'l' && ! k.getModifiers().isAnyModifierKeyDown()) { loopToggle.setToggleState (! loopToggle.getToggleState(), juce::dontSendNotification); loopChanged(); return true; }
     if (c == 't') { trimSelected(); return true; }
+    if (c == 'r' && ! k.getModifiers().isAnyModifierKeyDown()) { buttSelected(); return true; }
     if (c == '4' && ! k.getModifiers().isAnyModifierKeyDown()) { placeFromTakeWindow(); return true; }     // same as key 4 in a take window
     if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) { deleteSelected(); return true; }
     return false;

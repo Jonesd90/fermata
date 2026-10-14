@@ -28,6 +28,7 @@ private:
     void loopChanged();                  // the Loop button / key L: loop the area between marks 1 and 2
     bool loopRange (double& from, double& to) const;
     void trimSelected();
+    void buttSelected();
     void placeFromTakeWindow();
     void deleteSelected();
     void moveSelected (int delta);

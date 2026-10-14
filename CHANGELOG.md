@@ -6,10 +6,11 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
-## 2.22.0
+## 2.23.0
 - **Trim window:** A / Z (copy the fade across) now copy the fade to the same place IN TIME. Before, they copied its distance from the piece's own edge, which landed somewhere else whenever A's end and B's start were not at the same spot (after pieces had been moved in the edit window).
 - **Trim window:** a line beside the copy buttons says how much silence (or overlap) there is between where A ends and where B starts, and a new **Close gap** button moves B (and everything after it) so it starts exactly where A ends, with the normal crossfade. This is the fix for A and B sitting out of line.
 - **Edit window:** a new **Shuffle** tick box beside Slip Left / Slip Right. Ticked, dragging a piece by its banner past a neighbour swaps them like cards; unticked (the default), the piece simply goes where you drop it.
+- **Edit window:** key **R** moves the selected piece so it butts up against the piece before it (the pieces after it move with it), with the normal crossfade, ready to be trimmed.
 
 ## 2.21.0
 - **Mixer:** double-clicking a send knob now sets it to 0 dB (Ctrl + double-click types a level instead).
