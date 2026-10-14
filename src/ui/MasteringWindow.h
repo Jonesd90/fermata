@@ -143,6 +143,10 @@ private:
     juce::TextButton prevRenderBtn { "Use previous render" }, renderAgainBtn { "Render again" };
     bool wasActive = false;
     juce::uint32 recheckDue = 0;
+    bool projectDirty = false;                       // the project changed since the renders were last looked at
+    juce::uint32 lastGateCheck = 0;
+    std::map<juce::String, juce::String> lastFps;    // what each ticked piece's sound depended on at the last look: the renders are only looked at again when this changes
+    std::map<juce::String, juce::String> currentFps() const;
     struct PendingPlay { bool on = false; double from = 0.0, to = -1.0; } pendingPlay;
     std::vector<juce::Uuid> includedEdits() const;
     bool checkRenders (bool force = false);          // true = every ticked piece has an up-to-date render (nothing was started)

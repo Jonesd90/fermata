@@ -3,6 +3,7 @@
 #include <juce_graphics/juce_graphics.h>
 #include <juce_events/juce_events.h>
 #include "../core/Dsp.h"
+#include "WaveStore.h"
 #include <map>
 #include <memory>
 #include <mutex>
@@ -11,6 +12,12 @@
 
 namespace td
 {
+namespace chan
+{
+/** Waveform look: true (the default) = a bright, solid clip colour with a pale waveform and a thin dark outline (like Pyramix); false = the older dark clip with a light waveform. */
+inline bool& solidLook() { static bool b = true; return b; }
+}
+
 /** WaveColour: what colour the waveform of a file is at every moment. The hue says how high the sound is (red low, green middle, blue high),
     the saturation says how tonal it is (vivid = a note, pale = noise), and a thump below 100 Hz (a kicked mic stand, a door) is BLACK.
     One value per block of 4096 samples, worked out once in the background. */
@@ -41,6 +48,7 @@ public:
     ~WaveColorCache() { *alive = false; pool.removeAllJobs (true, 20000); }
 
     std::function<void()> onReady;
+    std::function<juce::File()> folder;              // the Waveforms folder: worked-out colours are kept there between runs
 
     std::shared_ptr<const WaveColorData> get (const juce::File& f)
     {
@@ -51,7 +59,13 @@ public:
         if (pending.insert (key).second)
             pool.addJob ([this, f, key, alive = alive]
                          {
-                             auto d = analyse (f);
+                             const auto dir = folder ? folder() : juce::File();
+                             auto d = dir != juce::File() ? loadSaved (dir, f) : nullptr;
+                             if (d == nullptr)
+                             {
+                                 d = analyse (f);
+                                 if (*alive && dir != juce::File()) save (dir, f, *d);
+                             }
                              if (! *alive) return;
                              { std::lock_guard<std::mutex> l (m); done[key] = d; pending.erase (key); }
                              juce::MessageManager::callAsync ([this, alive] { if (*alive && onReady) onReady(); });
@@ -69,6 +83,34 @@ public:
     }
 
 private:
+    static std::shared_ptr<WaveColorData> loadSaved (const juce::File& dir, const juce::File& audio)
+    {
+        const auto f = wavestore::fileFor (dir, audio, ".fwcol");
+        if (! f.existsAsFile()) return nullptr;
+        juce::FileInputStream in (f);
+        if (! in.openedOk() || ! wavestore::readHeader (in, wavestore::kMagicColour, audio)) return nullptr;
+        auto d = std::make_shared<WaveColorData>();
+        d->blockSeconds = in.readDouble();
+        const auto n = in.readInt64();
+        if (n < 0 || n > 50000000 || d->blockSeconds <= 0.0) return nullptr;
+        d->argb.resize ((size_t) n); d->level.resize ((size_t) n);
+        if (in.read (d->argb.data(), (int) (n * 4)) != (int) (n * 4) || in.read (d->level.data(), (int) (n * 4)) != (int) (n * 4)) return nullptr;
+        return d;
+    }
+    static void save (const juce::File& dir, const juce::File& audio, const WaveColorData& d)
+    {
+        if (d.argb.empty() || ! audio.existsAsFile() || ! dir.createDirectory().wasOk()) return;
+        const auto f = wavestore::fileFor (dir, audio, ".fwcol");
+        juce::TemporaryFile tmp (f);
+        {
+            juce::FileOutputStream out (tmp.getFile());
+            if (! out.openedOk()) return;
+            wavestore::writeHeader (out, wavestore::kMagicColour, audio);
+            out.writeDouble (d.blockSeconds); out.writeInt64 ((juce::int64) d.argb.size());
+            out.write (d.argb.data(), d.argb.size() * 4); out.write (d.level.data(), d.level.size() * 4);
+        }
+        tmp.overwriteTargetFileWithTemporary();
+    }
     std::shared_ptr<WaveColorData> analyse (const juce::File& f)
     {
         auto d = std::make_shared<WaveColorData>();

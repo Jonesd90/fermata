@@ -2,6 +2,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "../core/AudioEngine.h"
+#include "WaveColor.h"
 #include <map>
 #include <array>
 #include <algorithm>
@@ -138,6 +139,8 @@ inline juce::Colour waveColour (juce::Colour c) { return c.interpolatedWith (juc
 /** The dark fill of a clip on a track: the track's colour, deepened so the light waveform shows clearly on it. */
 inline juce::Colour clipFill (juce::Colour c, bool selected = false)
 {
+    // the Pyramix look: a solid, saturated clip colour with a pale waveform (and a thin dark outline) standing on it
+    if (solidLook()) return c.withMultipliedSaturation (0.85f).withBrightness (selected ? 0.60f : 0.82f);
     return c.withMultipliedSaturation (0.9f).withMultipliedBrightness (selected ? 0.34f : 0.52f);
 }
 } // namespace chan

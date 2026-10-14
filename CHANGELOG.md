@@ -6,6 +6,13 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.27.0
+- **Waveforms:** a new look, closer to Pyramix: a solid, bright clip colour with a pale waveform and a thin dark outline round it (a thump below 100 Hz stays black). It applies in the Edit, Take and Trim windows, with WaveColour on or off.
+- **Mastering window:** the pieces are now only rendered while the **DDP builder** tab is open (the Virtual master tab does not need them, so its render line is hidden and leaving the DDP tab cancels any rendering). The edits are no longer rendered over and over: the renders are now only looked at when the window opens, when you change which pieces are ticked or the render settings, and when something that a ticked piece's sound depends on has really changed (an edit, an audio file, its mixer) while the Mastering window is open. Bringing the window to the front, or a render finishing, no longer starts another look.
+
+## 2.26.0
+- **Waveforms folder:** the waveform outlines and the multicoloured waveform colours are now saved in a `Waveforms` folder next to the project file, so opening a project no longer reads every audio file through again to redraw them. The first time a file is seen it is worked out as before; after that it is loaded from the folder. A saved waveform is used only while the audio file keeps the same name, size and modified date, so edited or replaced audio is simply redone. The folder can be deleted at any time and is rebuilt as needed.
+
 ## 2.25.0
 - **Mixer inserts:** clicking the name of an insert slot now opens the plug-in straight away (an empty slot opens the plug-in list). A little dot on the right of the slot opens the menu (load, bypass, remove, replace). Right-click also opens the menu.
 - **Mixer inserts:** drag a plug-in by its name onto another insert slot, in the same mixer or another one, to move it there with all its settings (if the slot is occupied the two swap places). Hold **Shift** while dropping to put a copy there instead, with the current values of all its parameters. The slot you are dropping on lights up (yellow = move, green = copy).

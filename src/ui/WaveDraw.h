@@ -30,20 +30,30 @@ inline void fillEnvelope (juce::Graphics& g, float xFirst, const std::vector<flo
     const bool coloured = cols != nullptr && cols->size() == n;
     auto gradient = [&] (bool outline)                                                // WaveColour: a colour for every column
     {
-        auto tint = [outline] (juce::Colour c) { return outline ? (c.getBrightness() < 0.1f ? juce::Colour (0xff6a6a6a) : c.brighter (0.7f)) : c.darker (0.15f); };
+        const bool solid = chan::solidLook();
+        auto tint = [outline, solid] (juce::Colour c)
+        {
+            if (solid)                                                                    // pale body, thin dark outline; a thump below 100 Hz stays black
+            {
+                if (c.getBrightness() < 0.1f) return outline ? juce::Colour (0xff000000) : juce::Colour (0xff26262c);
+                return outline ? c.withBrightness (c.getBrightness() * 0.2f) : c.interpolatedWith (juce::Colours::white, 0.74f);
+            }
+            return outline ? (c.getBrightness() < 0.1f ? juce::Colour (0xff6a6a6a) : c.brighter (0.7f)) : c.darker (0.15f);
+        };
         const float w = juce::jmax (1.0f, (float) n);
         juce::ColourGradient gr (tint ((*cols)[0]), xFirst, 0.0f, tint ((*cols)[n - 1]), xFirst + w, 0.0f, false);
         const size_t step = juce::jmax ((size_t) 1, n / 400);
         for (size_t i = step; i + 1 < n; i += step) gr.addColour ((double) i / (double) w, tint ((*cols)[i]));
         return gr;
     };
-    if (coloured) g.setGradientFill (gradient (false)); else g.setColour (base.darker (0.25f));
+    const bool solid = chan::solidLook();
+    if (coloured) g.setGradientFill (gradient (false)); else g.setColour (solid ? base.interpolatedWith (juce::Colours::white, 0.74f) : base.darker (0.25f));
     g.fillPath (p);                          // a calm body ...
     // ... and a thin bright line round the outer limit of the waveform (as in SADiE and Pyramix) so the peaks stand out
     juce::Path top, bottom;
     top.startNewSubPath (xFirst, tops[0]); bottom.startNewSubPath (xFirst, juce::jmax (tops[0] + 1.0f, bottoms[0]));
     for (size_t i = 0; i < n; ++i) { top.lineTo (xFirst + (float) i + 0.5f, tops[i]); bottom.lineTo (xFirst + (float) i + 0.5f, juce::jmax (tops[i] + 1.0f, bottoms[i])); }
-    if (coloured) g.setGradientFill (gradient (true)); else g.setColour (base.brighter (0.7f));
+    if (coloured) g.setGradientFill (gradient (true)); else g.setColour (solid ? base.withBrightness (base.getBrightness() * 0.2f) : base.brighter (0.7f));
     g.strokePath (top, juce::PathStrokeType (1.0f)); g.strokePath (bottom, juce::PathStrokeType (1.0f));
     g.setColour (base);
 }

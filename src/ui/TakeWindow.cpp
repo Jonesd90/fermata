@@ -876,14 +876,18 @@ private:
         {
             auto t = std::make_unique<juce::AudioThumbnail> (128, formatManager, thumbCache);
             t->addChangeListener (this);
-            t->setSource (new juce::FileInputSource (f));
+            if (wavestore::loadThumbnail (*t, wavesFolder(), f)) saver.markDone (key);      // saved in the Waveforms folder: no need to read the audio again
+            else t->setSource (new juce::FileInputSource (f));
             it = thumbs.emplace (key, std::move (t)).first;
         }
         return it->second.get();
     }
+    juce::File wavesFolder() const { return app.project.projectFolder().getChildFile ("Waveforms"); }
+    wavestore::ThumbSaver saver;
 
     void changeListenerCallback (juce::ChangeBroadcaster*) override
     {
+        saver.saveFinished (thumbs, wavesFolder());
         for (auto it = thumbs.begin(); it != thumbs.end();)
             if (! juce::File (it->first).existsAsFile()) it = thumbs.erase (it); else ++it;
         updateSize();

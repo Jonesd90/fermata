@@ -760,7 +760,7 @@ MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (pr
     def().sync (app.project.edits);
     refreshAll (true);
     setView (view);
-    scheduleRecheck (300);                                                  // the first look at the renders, just after the window has opened
+    if (view == 1) scheduleRecheck (300);                                   // (DDP tab only) the first look at the renders, just after the window has opened
     startTimerHz (30);
     setWantsKeyboardFocus (true);
     for (auto* c : getChildren()) if (dynamic_cast<juce::Button*> (c) != nullptr) c->setWantsKeyboardFocus (false);     // a click on a button must not take the arrow keys away
@@ -881,16 +881,20 @@ juce::String MasteringComponent::signature() const
     return s;
 }
 
-void MasteringComponent::changeListenerCallback (juce::ChangeBroadcaster*) { refreshAll (false); }
+void MasteringComponent::changeListenerCallback (juce::ChangeBroadcaster*) { projectDirty = true; refreshAll (false); }
 void MasteringComponent::timerCallback()
 {
     pollPlayback();
-    // the renders are looked at when the window opens, when it comes to the front again (you may have changed an edit or its mixer meanwhile), and shortly after the choice of pieces changes
+    // The renders are looked at when the window opens, shortly after the choice of pieces changes, and when something that the sound of a ticked piece depends on has
+    // really changed (an edit, a file, its mixer) while this window is open. Coming to the front, or a render finishing, does not start another look.
     {
-        bool active = false;
-        if (auto* tl = dynamic_cast<juce::TopLevelWindow*> (getTopLevelComponent())) active = tl == juce::TopLevelWindow::getActiveTopLevelWindow();
-        if (active && ! wasActive) scheduleRecheck (150);
-        wasActive = active;
+        const auto now = juce::Time::getMillisecondCounter();
+        if (view != 1) recheckDue = 0;                       // the renders are only needed (and only made) while the DDP builder is the open tab
+        if (view == 1 && projectDirty && recheckDue == 0 && isShowing() && job == nullptr && renderJob == nullptr && ! app.engine.isRecording() && now - lastGateCheck > 700)
+        {
+            projectDirty = false; lastGateCheck = now;
+            if (currentFps() != lastFps) scheduleRecheck (500);
+        }
         if (recheckDue != 0 && juce::Time::getMillisecondCounter() >= recheckDue && isShowing())
         {
             if (job != nullptr || renderJob != nullptr) recheckDue = juce::Time::getMillisecondCounter() + 500;       // busy: look again afterwards
@@ -1295,6 +1299,9 @@ void MasteringComponent::setView (int v)
     ddpShow.setVisible (dd && ddpShow.isVisible());
     for (auto* f : discFields) { f->caption.setVisible (dd); f->editor.setVisible (dd); }
     for (auto* f : clipFields) { f->caption.setVisible (dd); f->editor.setVisible (dd); }
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &renderStatus, &renderProgress, &prevRenderBtn, &renderAgainBtn }) c->setVisible (dd);      // the renders belong to the DDP builder
+    if (! dd && renderJob != nullptr) renderJob->cancel();                       // (leaving the DDP builder stops any rendering for it)
+    if (dd) { projectDirty = false; scheduleRecheck (300); }                     // (opening it: look at the renders now)
     refreshFormatControls();
     updateRenderButtons();
     resized();
@@ -1705,6 +1712,15 @@ std::vector<juce::Uuid> MasteringComponent::includedEdits() const
     return ids;
 }
 
+std::map<juce::String, juce::String> MasteringComponent::currentFps() const
+{
+    std::map<juce::String, juce::String> m;
+    RenderParams rp;
+    if (makeRenderParams (app.project, def(), rp).isNotEmpty()) return m;
+    for (auto& id : includedEdits()) if (auto* e = editOf (id)) m[id.toString()] = masterRenderFingerprint (app.project, *e, rp);
+    return m;
+}
+
 bool MasteringComponent::checkRenders (bool force)
 {
     if (job != nullptr || renderJob != nullptr) { scheduleRecheck (500); return false; }
@@ -1712,6 +1728,7 @@ bool MasteringComponent::checkRenders (bool force)
     RenderParams rp;
     const auto perr = makeRenderParams (app.project, def(), rp);
     const auto ids = includedEdits();
+    lastFps = currentFps(); projectDirty = false;
     renders.clear();
     if (perr.isNotEmpty() || ids.empty())
     {
@@ -1778,7 +1795,6 @@ void MasteringComponent::renderFinished (const juce::String& error)
     renderStatus.setText (ok ? juce::String ("Renders are up to date.") : (error == "Cancelled." ? juce::String ("Rendering was cancelled.") : "Rendering stopped: " + error), juce::dontSendNotification);
     updateRenderButtons(); refreshVm(); refreshDdp (false);
     if (pendingPlay.on) { const auto pp = pendingPlay; pendingPlay.on = false; if (ok) startPlay (pp.from, pp.to); }
-    else if (ok) scheduleRecheck (400);                                  // (something may have changed while it was rendering)
 }
 
 void MasteringComponent::updateRenderButtons()
