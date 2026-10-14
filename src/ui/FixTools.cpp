@@ -1423,24 +1423,26 @@ class ImportDialog : public JobDialogBase
 public:
     ImportDialog (AppContext& a, const juce::Uuid& wid, const juce::Uuid& eid, ImportPlan p) : app (a), windowId (wid), editId (eid), basePlan (p), plan (std::move (p))
     {
-        setSize (640, 540);
+        setSize (680, 640);
         for (auto* x : std::initializer_list<juce::Component*> { &summary, &doIt, &cancel }) addAndMakeVisible (x);
         summary.setMultiLine (true); summary.setReadOnly (true); summary.setCaretVisible (false); summary.setScrollbarsShown (true);
         summary.setColour (juce::TextEditor::backgroundColourId, theme::field); summary.setFont (juce::FontOptions (13.0f));
         refreshSummary();
         if (hasStereoPairs (basePlan))
         {
-            addAndMakeVisible (joinBox);
-            joinBox.setButtonText ("Join left / right pairs (-L / -R, L / R, ...L / ...R) into stereo tracks (one stereo strip and one stereo track); untick = mono tracks");
+            addAndMakeVisible (joinBox); addAndMakeVisible (pairView);
+            joinBox.setButtonText ("Join left / right pairs into stereo tracks (one stereo strip and one stereo track each). Tick the ones you want stereo, untick the ones to keep as mono tracks:");
             joinBox.setToggleState (true, juce::dontSendNotification);
-            joinBox.onClick = [this] { rebuildPlan(); };
+            joinBox.onClick = [this] { for (auto* b : pairBoxes) b->setToggleState (joinBox.getToggleState(), juce::dontSendNotification); rebuildPlan(); };
+            pairView.setViewedComponent (&pairHolder, false); pairView.setScrollBarsShown (true, false);
             if (joinStereoPairs (basePlan, true).tracks.size() < joinStereoPairs (basePlan, false).tracks.size())      // there are names ending 1 and 2 as well
             {
                 addAndMakeVisible (numBox);
                 numBox.setButtonText ("Also join names ending in 1 and 2 (Mic 1 + Mic 2) into stereo tracks");
                 numBox.setToggleState (false, juce::dontSendNotification);
-                numBox.onClick = [this] { rebuildPlan(); };
+                numBox.onClick = [this] { buildPairList(); rebuildPlan(); };
             }
+            buildPairList();
             rebuildPlan();
         }
         addAndMakeVisible (copyBox); addAndMakeVisible (linkBox);
@@ -1451,10 +1453,40 @@ public:
         doIt.setColour (juce::TextButton::buttonColourId, theme::accent);
         doIt.onClick = [this] { start(); }; cancel.onClick = [this] { if (running) job.requestCancel(); else closeDialogOf (this); };
     }
+    bool numbersOn() const { return numBox.isVisible() && numBox.getToggleState(); }
+    /** One tick box per left / right pair that could be a stereo track. What was kept mono last time stays unticked. */
+    void buildPairList()
+    {
+        std::set<juce::String> keepMono;
+        if (pairBoxes.isEmpty())
+        {
+            if (auto* st = app.props.getUserSettings())
+            {
+                juce::StringArray ks; ks.addTokens (st->getValue ("importMonoPairs", {}), "|", "");
+                for (auto& k : ks) if (k.isNotEmpty()) keepMono.insert (k);
+            }
+        }
+        else for (int i = 0; i < pairBoxes.size(); ++i) if (! pairBoxes[i]->getToggleState()) keepMono.insert (pairCands[(size_t) i].key);
+        pairBoxes.clear(); pairCands = stereoPairCandidates (basePlan, numbersOn());
+        for (auto& c : pairCands)
+        {
+            auto* b = pairBoxes.add (new juce::ToggleButton());
+            b->setButtonText (c.name + "     (" + c.leftName + " + " + c.rightName + ")  =  one stereo track");
+            b->setToggleState (keepMono.count (c.key) == 0, juce::dontSendNotification);
+            b->onClick = [this] { rebuildPlan(); };
+            pairHolder.addAndMakeVisible (b);
+        }
+        pairHolder.setSize (juce::jmax (100, pairView.getWidth() - 20), juce::jmax (1, pairBoxes.size()) * 22);
+        for (int i = 0; i < pairBoxes.size(); ++i) pairBoxes[i]->setBounds (0, i * 22, pairHolder.getWidth(), 22);
+        resized();
+    }
     void rebuildPlan()
     {
-        plan = joinBox.getToggleState() ? joinStereoPairs (basePlan, numBox.isVisible() && numBox.getToggleState()) : basePlan;
-        numBox.setEnabled (joinBox.getToggleState());
+        if (pairBoxes.isEmpty() && pairCands.empty() && ! joinBox.isVisible()) { plan = basePlan; refreshSummary(); return; }
+        std::set<juce::String> only; int ticked = 0;
+        for (int i = 0; i < pairBoxes.size(); ++i) if (pairBoxes[i]->getToggleState()) { only.insert (pairCands[(size_t) i].key); ++ticked; }
+        plan = ticked > 0 ? joinStereoPairs (basePlan, numbersOn(), &only) : basePlan;
+        joinBox.setToggleState (ticked == pairBoxes.size() && ticked > 0, juce::dontSendNotification);
         refreshSummary();
     }
     bool linking() const { return linkBox.getToggleState(); }
@@ -1487,13 +1519,20 @@ public:
         cancel.setBounds (bottom.removeFromRight (100)); bottom.removeFromRight (8); doIt.setBounds (bottom.removeFromRight (180));
         linkBox.setBounds (r.removeFromBottom (24)); copyBox.setBounds (r.removeFromBottom (24)); r.removeFromBottom (4);
         if (numBox.isVisible()) numBox.setBounds (r.removeFromBottom (24));
-        if (joinBox.isVisible()) { joinBox.setBounds (r.removeFromBottom (24)); r.removeFromBottom (4); }
+        if (joinBox.isVisible())
+        {
+            pairView.setBounds (r.removeFromBottom (juce::jmin (130, juce::jmax (24, pairBoxes.size() * 22 + 4))));
+            pairHolder.setSize (juce::jmax (100, pairView.getWidth() - 20), juce::jmax (1, pairBoxes.size()) * 22);
+            for (int i = 0; i < pairBoxes.size(); ++i) pairBoxes[i]->setBounds (0, i * 22, pairHolder.getWidth(), 22);
+            joinBox.setBounds (r.removeFromBottom (24)); r.removeFromBottom (4);
+        }
         r.removeFromBottom (6); bar.setBounds (r.removeFromBottom (22)); status.setBounds (r.removeFromBottom (22));
         summary.setBounds (r);
     }
 private:
     ImportPlan basePlan;
     juce::ToggleButton joinBox, numBox, copyBox, linkBox;
+    std::vector<StereoPairCandidate> pairCands; juce::OwnedArray<juce::ToggleButton> pairBoxes; juce::Component pairHolder; juce::Viewport pairView;
     void start()
     {
         auto* w = app.project.findTakeWindow (windowId);
@@ -1504,6 +1543,12 @@ private:
             status.setText ("This audio is " + juce::String (plan.takes.front().sampleRate, 0) + " Hz but the edit is " + juce::String (ed->sampleRate, 0) + " Hz.", juce::dontSendNotification);
             return;
         }
+        if (! pairBoxes.isEmpty())
+            if (auto* st = app.props.getUserSettings())
+            {
+                juce::StringArray keep; for (int i = 0; i < pairBoxes.size(); ++i) if (! pairBoxes[i]->getToggleState()) keep.add (pairCands[(size_t) i].key);
+                st->setValue ("importMonoPairs", keep.joinIntoString ("|"));
+            }
         doIt.setEnabled (false); status.setText (linking() ? "Reading the files..." : "Copying the audio...", juce::dontSendNotification);
         const bool link = linking();
         std::vector<int> numbers; for (size_t i = 0; i < plan.takes.size(); ++i) numbers.push_back ((w != nullptr ? w->nextNumber : 1) + (int) i);
@@ -1598,6 +1643,7 @@ private:
                 TakeFile f; f.trackId = trackFor[tk.parts[pi].trackKey]; f.trackName = tk.parts[pi].trackName;
                 f.file = files[ti][pi]; f.numChannels = tk.parts[pi].trackChannels;
                 if (tk.parts[pi].source >= 0 && tk.parts[pi].source < (int) plan.sources.size()) f.sourceName = plan.sources[(size_t) tk.parts[pi].source].file.getFileName();
+                if (tk.parts[pi].source2 >= 0 && tk.parts[pi].source2 < (int) plan.sources.size()) f.sourceName2 = plan.sources[(size_t) tk.parts[pi].source2].file.getFileName();
                 if (auto* tr = p.findTrack (f.trackId)) f.trackName = tr->name;
                 g.files.push_back (f);
             }
@@ -3065,7 +3111,8 @@ void relinkTake (AppContext& app, const juce::Uuid& wid, const juce::Uuid& gid, 
 }
 
 // ======================================================================================================== Project > Import AAF as edit windows
-struct AafFound { juce::File file; int channels = 1; juce::int64 length = 0; double rate = 0.0; };
+struct AafFound { juce::File file; int channels = 1; juce::int64 length = 0; double rate = 0.0; bool hasTrack = false; juce::Uuid trackId; juce::String trackName; };
+struct AafCand { juce::String name; juce::File file; bool hasTrack = false; juce::Uuid trackId; juce::String trackName; };
 
 class AafImportDialog : public JobDialogBase
 {
@@ -3146,13 +3193,13 @@ private:
         reread();
         if (res.pieces.empty()) return;
         doIt.setEnabled (false); status.setText ("Finding the audio files...", juce::dontSendNotification);
-        std::vector<std::pair<juce::String, juce::File>> cands;
+        std::vector<AafCand> cands;
         for (auto& w : app.project.takeWindows)
             for (auto& g : w->groups)
                 for (auto& f : g.files)
                 {
-                    if (f.sourceName.isNotEmpty()) cands.push_back ({ f.sourceName.toLowerCase(), f.file });
-                    cands.push_back ({ f.file.getFileName().toLowerCase(), f.file });
+                    for (auto& nm : { f.sourceName, f.sourceName2, f.file.getFileName() })
+                        if (nm.isNotEmpty()) cands.push_back ({ nm.toLowerCase(), f.file, true, f.trackId, f.trackName });      // (a joined stereo file answers to both of its mono names)
                 }
         auto resCopy = std::make_shared<AafResult> (res);
         auto found = std::make_shared<std::map<juce::String, AafFound>>();
@@ -3162,13 +3209,13 @@ private:
         auto& appRef = app;
         runJob ([cands, resCopy, found, missing, extra] (AudioJob& j) -> juce::String
                 {
-                    std::map<juce::String, juce::File> index;
-                    for (auto& c : cands) index.emplace (c.first, c.second);                  // Fermata's own files first
+                    std::map<juce::String, AafCand> index;
+                    for (auto& c : cands) index.emplace (c.name, c);                          // Fermata's own files first
                     if (extra.isDirectory())
                         for (auto& f : extra.findChildFiles (juce::File::findFiles, true, "*"))
                         {
                             if (j.cancelled()) return "Cancelled.";
-                            if (isAudioFile (f)) index.emplace (f.getFileName().toLowerCase(), f);
+                            if (isAudioFile (f)) index.emplace (f.getFileName().toLowerCase(), AafCand { f.getFileName().toLowerCase(), f, false, {}, {} });
                         }
                     std::set<juce::String> needed; std::map<juce::String, juce::String> shown;
                     for (auto& pc : resCopy->pieces) for (auto& r : pc.regions) for (auto& f : r.files) { needed.insert (f.fileName.toLowerCase()); shown[f.fileName.toLowerCase()] = f.fileName; }
@@ -3178,10 +3225,12 @@ private:
                         if (j.cancelled()) return "Cancelled.";
                         j.setProgress ((float) ++n / (float) needed.size());
                         auto it = index.find (name);
-                        if (it == index.end() || ! it->second.existsAsFile()) { missing->add (shown[name]); continue; }
-                        std::unique_ptr<juce::AudioFormatReader> rd (formats().createReaderFor (it->second));
+                        if (it == index.end() || ! it->second.file.existsAsFile()) { missing->add (shown[name]); continue; }
+                        std::unique_ptr<juce::AudioFormatReader> rd (formats().createReaderFor (it->second.file));
                         if (rd == nullptr) { missing->add (shown[name] + " (cannot be read)"); continue; }
-                        (*found)[name] = { it->second, (int) rd->numChannels, rd->lengthInSamples, rd->sampleRate };
+                        AafFound af; af.file = it->second.file; af.channels = (int) rd->numChannels; af.length = rd->lengthInSamples; af.rate = rd->sampleRate;
+                        af.hasTrack = it->second.hasTrack; af.trackId = it->second.trackId; af.trackName = it->second.trackName;
+                        (*found)[name] = af;
                     }
                     return {};
                 },
@@ -3199,17 +3248,17 @@ private:
     static juce::String build (AppContext& app, const AafResult& res, const std::map<juce::String, AafFound>& found, const juce::StringArray& missing)
     {
         auto& p = app.project;
-        std::map<juce::String, int> chOf;
-        for (auto& pc : res.pieces) for (auto& r : pc.regions) for (auto& f : r.files) { auto it = found.find (f.fileName.toLowerCase()); if (it != found.end() && chOf.count (f.trackName) == 0) chOf[f.trackName] = it->second.channels; }
         std::set<int> usedInputs; for (auto& t : p.tracks) for (int c = 0; c < t.channelCount(); ++c) if (t.inputOf (c) >= 0) usedInputs.insert (t.inputOf (c));
-        std::map<juce::String, juce::Uuid> trackId; int newTracks = 0;
-        for (auto& name : res.trackNames)
+        int newTracks = 0;
+        std::map<juce::String, juce::Uuid> madeTrack;                                       // tracks made here for files that are not in a take window (by AAF track name)
+        // a file that is already in a take window keeps that window's track (a stereo track made from Omni-L and Omni-R is one track); any other file gets a track of its own name
+        auto trackFor = [&] (const AafRegionFile& af, const AafFound& fd, juce::Uuid& id, juce::String& name) -> bool
         {
-            auto ci = chOf.find (name);
-            if (ci == chOf.end()) continue;
-            const int ch = juce::jlimit (1, 2, ci->second);
+            if (fd.hasTrack && p.findTrack (fd.trackId) != nullptr) { id = fd.trackId; name = p.findTrack (fd.trackId)->name; return true; }
+            if (madeTrack.count (af.trackName)) { id = madeTrack[af.trackName]; name = af.trackName; return true; }
+            const int ch = juce::jlimit (1, 2, fd.channels);
             const TrackDef* tf = nullptr;
-            for (auto& t : p.tracks) if (t.name.equalsIgnoreCase (name) && t.channelCount() == ch) { tf = &t; break; }
+            for (auto& t : p.tracks) if (t.name.equalsIgnoreCase (af.trackName) && t.channelCount() == ch) { tf = &t; break; }
             if (tf == nullptr)
             {
                 int first = -1;
@@ -3218,12 +3267,14 @@ private:
                     bool freeSlot = true; for (int c = 0; c < ch; ++c) freeSlot = freeSlot && ! usedInputs.count (i + c);
                     if (freeSlot) first = i;
                 }
-                auto& nt = p.addTrack (name, ch == 2 ? TrackFormat::Stereo : TrackFormat::Mono, first);
+                auto& nt = p.addTrack (af.trackName, ch == 2 ? TrackFormat::Stereo : TrackFormat::Mono, first);
                 if (first < 0) nt.inputs.fill (-1); else for (int c = 0; c < ch; ++c) usedInputs.insert (first + c);
                 tf = &nt; ++newTracks;
             }
-            trackId[name] = tf->id;
-        }
+            madeTrack[af.trackName] = tf->id; id = tf->id; name = tf->name;
+            return true;
+        };
+        std::map<juce::String, juce::Uuid> aafTrackId;
         int edits = 0, regionsMade = 0, regionsLost = 0, rateSkipped = 0, shortened = 0; juce::Uuid firstEdit;
         for (auto& pc : res.pieces)
         {
@@ -3234,12 +3285,17 @@ private:
                 r.srcIn = ar.srcIn; r.srcOut = ar.srcOut; r.startSample = ar.startSample;
                 r.inStart = ar.inStart; r.inEnd = ar.inEnd; r.outStart = ar.outStart; r.outEnd = ar.outEnd;
                 juce::int64 minLen = (std::numeric_limits<juce::int64>::max)();
+                std::set<juce::String> seenFiles;
                 for (auto& af : ar.files)
                 {
                     auto it = found.find (af.fileName.toLowerCase());
-                    if (it == found.end() || trackId.count (af.trackName) == 0) continue;
+                    if (it == found.end()) continue;
                     if (std::abs (it->second.rate - res.sampleRate) > 0.5) { ++rateSkipped; continue; }
-                    RegionFile rf; rf.trackId = trackId[af.trackName]; rf.trackName = af.trackName; rf.file = it->second.file; rf.numChannels = juce::jlimit (1, 2, it->second.channels);
+                    juce::Uuid tid; juce::String tname;
+                    trackFor (af, it->second, tid, tname);
+                    aafTrackId[af.trackName] = tid;
+                    if (! seenFiles.insert (it->second.file.getFullPathName()).second) continue;          // the left and right halves of one stereo file: one entry
+                    RegionFile rf; rf.trackId = tid; rf.trackName = tname; rf.file = it->second.file; rf.numChannels = juce::jlimit (1, 2, it->second.channels);
                     r.files.push_back (rf); minLen = juce::jmin (minLen, it->second.length);
                 }
                 if (r.files.empty()) { ++regionsLost; continue; }
@@ -3251,7 +3307,11 @@ private:
             if (regs.empty()) continue;
             auto& e = p.addEdit (pc.name, juce::Uuid());
             e.sampleRate = res.sampleRate;
-            for (auto& tn : pc.trackNames) if (trackId.count (tn) != 0) e.trackIds.push_back (trackId[tn]);
+            for (auto& tn : pc.trackNames)
+            {
+                auto ti = aafTrackId.find (tn);
+                if (ti != aafTrackId.end() && std::find (e.trackIds.begin(), e.trackIds.end(), ti->second) == e.trackIds.end()) e.trackIds.push_back (ti->second);
+            }
             e.regions = std::move (regs); regionsMade += (int) e.regions.size();
             e.insertIndex = -1; e.hardenEnds(); e.clampAll();
             if (edits++ == 0) firstEdit = e.id;

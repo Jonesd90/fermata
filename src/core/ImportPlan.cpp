@@ -102,19 +102,49 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
     //      is placed by what its name says: all takes of one piece share the same tracks (one per instrument / mic name).
     {
         static const std::regex pat (R"(^(.*?)[ ]+(\d{2,4})_(.+)$)");
+        static const std::regex patNoNumber (R"(^(.*?)_(.+)$)");          // "LV1 - Gravity_Omni-L": Pyramix leaves the number off the first take
         struct Hit { int idx; juce::String piece, inst; int num; };
+        // the same piece may be spelt a little differently ("LV01 - Gravity" / "LV1 - Gravity"): numbers are compared without their leading zeros
+        auto pieceKey = [] (const juce::String& piece)
+        {
+            juce::String k; bool inNum = false, lead = false;
+            for (auto c : piece.toLowerCase().trim())
+            {
+                if (juce::CharacterFunctions::isDigit (c)) { if (! inNum) { inNum = true; lead = true; } if (lead && c == '0') continue; lead = false; k << c; }
+                else { if (inNum && lead) k << '0'; inNum = false; lead = false; k << c; }
+            }
+            if (inNum && lead) k << '0';
+            return k;
+        };
         std::vector<Hit> hits;
+        std::set<juce::String> numberedPieces;
         for (int k = 0; k < (int) flat.size(); ++k)
         {
             std::smatch m; const std::string stem = flat[(size_t) k].stem.toStdString();
             if (std::regex_match (stem, m, pat) && m[1].length() > 0)
+            {
                 hits.push_back ({ k, juce::String (m[1].str()).trim(), juce::String (m[3].str()).trim(), juce::String (m[2].str()).getIntValue() });
+                numberedPieces.insert (pieceKey (hits.back().piece));
+            }
         }
+        if (! hits.empty())
+            for (int k = 0; k < (int) flat.size(); ++k)
+            {
+                bool already = false; for (auto& h : hits) if (h.idx == k) { already = true; break; }
+                if (already) continue;
+                std::smatch m; const std::string stem = flat[(size_t) k].stem.toStdString();
+                if (std::regex_match (stem, m, patNoNumber) && m[1].length() > 0 && numberedPieces.count (pieceKey (juce::String (m[1].str()).trim())) != 0)
+                    hits.push_back ({ k, juce::String (m[1].str()).trim(), juce::String (m[2].str()).trim(), 0 });       // the take without a number comes first
+            }
         if (hits.size() >= 2 && hits.size() * 5 >= flat.size() * 4)       // at least 80 % of the files follow the pattern
         {
-            std::set<juce::String> pieces; for (auto& h : hits) pieces.insert (h.piece.toLowerCase());
+            std::map<juce::String, std::map<juce::String, int>> spellings;      // piece key -> spelling -> how often
+            for (auto& h : hits) spellings[pieceKey (h.piece)][h.piece]++;
+            std::map<juce::String, juce::String> pieceName;
+            for (auto& kv : spellings) { int best = -1; for (auto& sp : kv.second) if (sp.second > best) { best = sp.second; pieceName[kv.first] = sp.first; } }
+            const bool manyPieces = pieceName.size() > 1;
             std::map<std::pair<juce::String, int>, std::vector<Hit>> groups;
-            for (auto& h : hits) groups[{ h.piece.toLowerCase(), h.num }].push_back (h);
+            for (auto& h : hits) groups[{ pieceKey (h.piece), h.num }].push_back (h);
             for (auto& kv : groups)
             {
                 ImportTake t; const auto& first = S[(size_t) flat[(size_t) kv.second.front().idx].src];
@@ -127,7 +157,7 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
                     juce::String inst = h.inst;
                     if (inst.endsWithIgnoreCase ("-C") || inst.endsWithIgnoreCase ("_C")) inst = inst.dropLastCharacters (2).trim();   // "C" = a mono track
                     if (inst.isEmpty()) inst = h.inst;
-                    p.trackName = pieces.size() > 1 ? h.piece + " " + inst : inst;
+                    p.trackName = manyPieces ? pieceName[kv.first.first] + " " + inst : inst;
                     p.trackKey = p.trackName.toLowerCase();
                     if (used.count (p.trackKey)) continue;
                     used.insert (p.trackKey);
@@ -270,7 +300,7 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
 
     // ---- order: by the take numbers if every take has its own, else by the time the files were made, else by name
     bool numbersOk = ! plan.takes.empty();
-    { std::set<int> nums; for (auto& t : plan.takes) { if (t.number <= 0 || nums.count (t.number)) numbersOk = false; nums.insert (t.number); } }
+    { std::set<int> nums; for (auto& t : plan.takes) { if (t.number < 0 || nums.count (t.number)) numbersOk = false; nums.insert (t.number); } }
     std::stable_sort (plan.takes.begin(), plan.takes.end(), [&] (const ImportTake& a, const ImportTake& b)
     {
         if (numbersOk) return a.number < b.number;
@@ -374,7 +404,30 @@ bool hasStereoPairs (const ImportPlan& plan, bool numbers)
     return false;
 }
 
-ImportPlan joinStereoPairs (const ImportPlan& in, bool numbers)
+std::vector<StereoPairCandidate> stereoPairCandidates (const ImportPlan& plan, bool numbers)
+{
+    std::vector<StereoPairCandidate> out; std::set<juce::String> done;
+    for (auto& t : plan.takes)
+    {
+        struct Seen { int mask = 0; juce::String base, l, r; };
+        std::map<juce::String, Seen> seen; std::vector<juce::String> order;
+        for (auto& p : t.parts)
+        {
+            juce::String base; int side = 0;
+            if (p.channel < 0 && p.trackChannels == 1 && p.source2 < 0 && plan.sources[(size_t) p.source].channels == 1 && splitSide (p.trackName, base, side, numbers))
+            {
+                const auto k = base.toLowerCase();
+                if (seen.find (k) == seen.end()) { order.push_back (k); seen[k].base = base; }
+                auto& sn = seen[k]; sn.mask |= 1 << side; (side == 0 ? sn.l : sn.r) = p.trackName;
+            }
+        }
+        for (auto& k : order)
+            if (seen[k].mask == 3 && ! done.count (k)) { done.insert (k); out.push_back ({ k, seen[k].base.isEmpty() ? juce::String ("L-R") : seen[k].base, seen[k].l, seen[k].r }); }
+    }
+    return out;
+}
+
+ImportPlan joinStereoPairs (const ImportPlan& in, bool numbers, const std::set<juce::String>* joinOnly)
 {
     ImportPlan plan = in;
     for (auto& t : plan.takes)
@@ -399,7 +452,7 @@ ImportPlan joinStereoPairs (const ImportPlan& in, bool numbers)
             if (p.channel < 0 && p.trackChannels == 1 && p.source2 < 0 && plan.sources[(size_t) p.source].channels == 1 && splitSide (p.trackName, base, side, numbers))
             {
                 auto h = halves[base.toLowerCase()];
-                if (h.first >= 0 && h.second >= 0)
+                if (h.first >= 0 && h.second >= 0 && (joinOnly == nullptr || joinOnly->count (base.toLowerCase()) != 0))
                 {
                     if (used.count (h.first) || used.count (h.second)) continue;
                     used.insert (h.first); used.insert (h.second);
@@ -418,7 +471,7 @@ ImportPlan joinStereoPairs (const ImportPlan& in, bool numbers)
     for (auto& t : plan.takes)
         for (auto& p : t.parts)
             if (! seenKeys.count (p.trackKey)) { seenKeys.insert (p.trackKey); plan.tracks.push_back ({ p.trackKey, p.trackName, p.trackChannels }); }
-    plan.notes.add ("Left / right pairs were joined into stereo tracks.");
+    if (joinOnly == nullptr || ! joinOnly->empty()) plan.notes.add ("Left / right pairs were joined into stereo tracks.");
     return plan;
 }
 

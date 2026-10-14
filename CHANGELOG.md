@@ -6,6 +6,11 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.32.0
+- **Import takes: choose stereo or mono for each left / right pair.** The single "join pairs" tick box is now a list with one tick per pair (Omni, ORTF, Room, Solo ...). Tick = one stereo track, untick = keep the two as mono tracks. Keep the piano's three mics mono by unticking "Pn". Fermata remembers what you left mono for the next import.
+- **Import takes: slightly different spellings of a piece name are one piece.** "LV1 - Gravity" and "LV01 - Gravity" no longer create a second set of tracks, and the first take of a Pyramix session (whose file names have no number, "LV1 - Gravity_Omni-L") now joins the others as take 0 instead of being handled separately.
+- **Import AAF:** works with stereo tracks joined at import (the left and right names both find the one stereo file), and uses each take file's own track.
+
 ## 2.31.0
 - **Project > Import AAF as edit windows...** Reads an AAF written by Pyramix (or another editor), splits its one long timeline into separate pieces wherever nothing plays on any track for more than 10 seconds (you can change the 10), and makes one edit window per piece: the takes laid out where they sat, the track names kept, and the **cross-fades kept** (their length and position). Nothing is copied: the edits use the audio you already imported into take windows (matched by the files' original names, which Fermata now remembers when it imports), or files found in an extra folder you choose (used where they are). Anything not found is listed.
 - Takes imported before this version do not remember their original names; for those, choose the Pyramix audio folder in the AAF dialog.

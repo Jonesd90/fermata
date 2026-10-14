@@ -920,6 +920,7 @@ var Project::toVar (bool editorialOnly) const
                 put (fo, "track", f.trackId.toString()); put (fo, "trackName", f.trackName);
                 putFilePath (fo, f.file, projectFile.getParentDirectory()); put (fo, "channels", f.numChannels);
                 if (f.sourceName.isNotEmpty()) put (fo, "orig", f.sourceName);
+                if (f.sourceName2.isNotEmpty()) put (fo, "orig2", f.sourceName2);
                 fs.add (fo);
             }
             put (go, "files", fs);
@@ -1053,7 +1054,7 @@ bool Project::fromVar (const var& root)
                         for (auto& fv : *fs)
                         {
                             TakeFile f; f.trackId = juce::Uuid (fv["track"].toString()); f.trackName = fv["trackName"].toString();
-                            f.file = getFilePath (fv, loadBase()); f.numChannels = (int) fv["channels"]; f.sourceName = fv["orig"].toString();
+                            f.file = getFilePath (fv, loadBase()); f.numChannels = (int) fv["channels"]; f.sourceName = fv["orig"].toString(); f.sourceName2 = fv["orig2"].toString();
                             g.files.push_back (f);
                         }
                     if (auto* ws = gv["waiting"].getArray()) for (auto& wv : *ws) g.waiting.push_back (waitingFromVar (wv, loadBase()));

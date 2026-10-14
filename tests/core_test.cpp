@@ -3019,6 +3019,22 @@ int main()
         CHECK (std::abs (sb.gainAt (ed.regions[1].startSample - 100) - want) < 1e-4f);        // no 0 dB swell before the start
     }
 
+    {   // Pyramix-style names: "LV1 - Gravity_x" (first take, no number) and "LV1 - Gravity 002_x" next to "LV01 - Gravity 003_x"; a piano of L / C / R mono mics
+        std::vector<ImportSource> src;
+        auto add = [&] (const juce::String& n, juce::int64 len)
+        { ImportSource x; x.file = juce::File ("/x/" + n + ".wav"); x.channels = 1; x.length = len; x.sampleRate = 96000.0; src.push_back (x); };
+        const char* mics[] = { "Omni-L", "Omni-R", "PnL-C", "PnC-C", "PnR-C", "Sop1-C" };
+        for (auto* m : mics) { add ("LV1 - Gravity_" + juce::String (m), 1000); add ("LV1 - Gravity 002_" + juce::String (m), 2000); add ("LV01 - Gravity 003_" + juce::String (m), 3000); }
+        auto plan = buildImportPlan (src);
+        CHECK (plan.takes.size() == 3 && plan.takes[0].number == 0 && plan.takes[1].number == 2 && plan.takes[2].number == 3);
+        CHECK (plan.tracks.size() == 6);                                                     // one set of tracks, no "LV1 - Gravity ..." copies
+        const auto cands = stereoPairCandidates (plan, false);
+        CHECK (cands.size() == 2);                                                           // Omni and Pn (PnL + PnR)
+        std::set<juce::String> only { "omni" };
+        const auto j = joinStereoPairs (plan, false, &only);
+        CHECK (j.tracks.size() == 5);                                                        // Omni stereo; PnL, PnC, PnR, Sop1 mono
+        CHECK (joinStereoPairs (plan, false).tracks.size() == 4);
+    }
     {   // AAF import (only when the Pyramix sample file is around)
         const juce::File aafFile ("/mnt/user-data/uploads/AAF_Living_Voices.aaf");
         if (aafFile.existsAsFile())

@@ -12,6 +12,7 @@ struct TakeFile
     juce::String trackName;
     juce::File   file;
     int          numChannels = 1;
+    juce::String sourceName2;          // for a stereo track joined from two mono files: the right one's original name
     juce::String sourceName;           // the file name it had when it was imported ("LV01 - Gravity 003_Omni-L.wav"); lets an imported AAF find it again. Empty = recorded here
 };
 

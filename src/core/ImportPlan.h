@@ -1,5 +1,7 @@
 #pragma once
 #include "AudioOps.h"
+#include <set>
+#include <vector>
 
 namespace td
 {
@@ -53,8 +55,14 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources);
     With numbers = true, names ending in 1 and 2 ('Mic 1' and 'Mic 2') count as a pair too. */
 bool hasStereoPairs (const ImportPlan&, bool numbers = false);
 
-/** A copy of the plan in which every such pair is one stereo track (the copy step writes one stereo file from the two mono files). */
-ImportPlan joinStereoPairs (const ImportPlan&, bool numbers = false);
+/** One left / right pair that could become a stereo track: 'key' (lower case base name, "" for a bare L / R) identifies it in joinStereoPairs. */
+struct StereoPairCandidate { juce::String key, name, leftName, rightName; };
+/** Every pair that could be joined, in the order of the tracks. */
+std::vector<StereoPairCandidate> stereoPairCandidates (const ImportPlan&, bool numbers = false);
+
+/** A copy of the plan in which the pairs are one stereo track each (the copy step writes one stereo file from the two mono files).
+    joinOnly: only the pairs whose key is in this set are joined (nullptr = every pair); the others stay two mono tracks. */
+ImportPlan joinStereoPairs (const ImportPlan&, bool numbers = false, const std::set<juce::String>* joinOnly = nullptr);
 
 /** Reads the header information of the files. Files that cannot be read are listed in 'problems'. */
 std::vector<ImportSource> inspectFiles (juce::AudioFormatManager&, const juce::Array<juce::File>&, juce::StringArray& problems);
