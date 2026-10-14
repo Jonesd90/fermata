@@ -1310,8 +1310,8 @@ void MasteringComponent::setView (int v)
 void MasteringComponent::paint (juce::Graphics& g)
 {
     g.fillAll (theme::window);
-    g.setColour (theme::panel); g.fillRect (0, 0, getWidth(), 76);
-    g.setColour (theme::border); g.fillRect (0, 45, getWidth(), 1); g.fillRect (0, 75, getWidth(), 1);
+    g.setColour (theme::panel); g.fillRect (0, 0, getWidth(), 80);
+    g.setColour (theme::border); g.fillRect (0, 45, getWidth(), 1); g.fillRect (0, 79, getWidth(), 1);
 }
 
 void MasteringComponent::resized()
@@ -1321,17 +1321,15 @@ void MasteringComponent::resized()
         auto bar = all.removeFromTop (46).reduced (8, 0);
         vmTab.setBounds (bar.removeFromLeft (150).withSizeKeepingCentre (146, grid::btnH + 4));
         ddpTab.setBounds (bar.removeFromLeft (150).withSizeKeepingCentre (146, grid::btnH + 4));
-        auto r = bar.removeFromRight (juce::jmin (bar.getWidth(), 640));
-        tailBox.setBounds (r.removeFromRight (70).withSizeKeepingCentre (70, grid::btnH));
-        tailCaption.setBounds (r.removeFromRight (42));
-        r.removeFromRight (8);
-        sourceBox.setBounds (r.removeFromRight (210).withSizeKeepingCentre (210, grid::btnH));
-        r.removeFromRight (6);
-        mixerBox.setBounds (r.removeFromRight (200).withSizeKeepingCentre (200, grid::btnH));
-        renderCaption.setBounds (r.removeFromRight (86));
+        (void) bar;                                                                // (the top bar holds only the tabs, so the pin and moon buttons have the corner to themselves)
     }
     {
-        auto strip = all.removeFromTop (30).reduced (8, 3);                        // the renders
+        auto strip = all.removeFromTop (34).reduced (8, 3);                        // the row below: what is rendered (from / source / tail), then the renders
+        renderCaption.setBounds (strip.removeFromLeft (86));
+        mixerBox.setBounds (strip.removeFromLeft (200).withSizeKeepingCentre (200, grid::btnH)); strip.removeFromLeft (6);
+        sourceBox.setBounds (strip.removeFromLeft (210).withSizeKeepingCentre (210, grid::btnH)); strip.removeFromLeft (8);
+        tailCaption.setBounds (strip.removeFromLeft (42));
+        tailBox.setBounds (strip.removeFromLeft (70).withSizeKeepingCentre (70, grid::btnH)); strip.removeFromLeft (14);
         renderAgainBtn.setBounds (strip.removeFromRight (120)); strip.removeFromRight (6);
         prevRenderBtn.setBounds (strip.removeFromRight (170)); strip.removeFromRight (10);
         { const int pw = juce::jmin (220, strip.getWidth() / 3); renderProgress.setBounds (strip.removeFromRight (pw).withSizeKeepingCentre (pw, 16)); strip.removeFromRight (10); }

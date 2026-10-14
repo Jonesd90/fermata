@@ -6,8 +6,11 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.27.1
+- **Mastering window:** "Render from", the source and the Tail moved down into the row under the tabs, so the pin and moon buttons no longer cover the Tail box.
+- **Waveforms:** the colour-by-frequency waveforms (WaveColour) are back exactly as they were; the Pyramix-style pale look made them lose their colours, so it is switched off.
+
 ## 2.27.0
-- **Waveforms:** a new look, closer to Pyramix: a solid, bright clip colour with a pale waveform and a thin dark outline round it (a thump below 100 Hz stays black). It applies in the Edit, Take and Trim windows, with WaveColour on or off.
 - **Mastering window:** the pieces are now only rendered while the **DDP builder** tab is open (the Virtual master tab does not need them, so its render line is hidden and leaving the DDP tab cancels any rendering). The edits are no longer rendered over and over: the renders are now only looked at when the window opens, when you change which pieces are ticked or the render settings, and when something that a ticked piece's sound depends on has really changed (an edit, an audio file, its mixer) while the Mastering window is open. Bringing the window to the front, or a render finishing, no longer starts another look.
 
 ## 2.26.0

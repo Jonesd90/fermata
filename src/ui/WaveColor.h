@@ -14,8 +14,8 @@ namespace td
 {
 namespace chan
 {
-/** Waveform look: true (the default) = a bright, solid clip colour with a pale waveform and a thin dark outline (like Pyramix); false = the older dark clip with a light waveform. */
-inline bool& solidLook() { static bool b = true; return b; }
+/** Waveform look: false (the default) = the dark clip with the WaveColour (colour by frequency) waveform on it, as always; true = a bright clip with a pale waveform and a thin dark outline (the colours are washed out, so it is off). */
+inline bool& solidLook() { static bool b = false; return b; }
 }
 
 /** WaveColour: what colour the waveform of a file is at every moment. The hue says how high the sound is (red low, green middle, blue high),
