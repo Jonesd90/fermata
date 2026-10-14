@@ -19,6 +19,8 @@ juce::String makeRenderParams (const Project&, const MasteringDef&, RenderParams
 /** A short text that changes whenever the rendered sound of this Edit would change: its pieces, fades and automation, the audio files they use,
     the mixer(s) it goes through (levels, sends, plug-in states), the routing and the render settings. Message thread. */
 juce::String masterRenderFingerprint (const Project&, const EditDef&, const RenderParams&);
+/** Looks at a piece's description several times over a fraction of a second; whatever changes by itself (not through anything the person did) is left out of the fingerprint from then on. Logged. */
+juce::StringArray learnMasterRenderVolatile (const Project&, const EditDef&, const RenderParams&);
 
 /** The renders of the Mastering window, kept in the project's "Mastering renders" folder: at most TWO per Edit (slots A and B).
     The newest one is the one that is used; a new render always replaces the older of the two, so the one before the newest stays as a backup.

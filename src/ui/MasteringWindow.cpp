@@ -1879,9 +1879,17 @@ void MasteringComponent::renderFinished (const juce::String& error)
             for (auto& id : renderingIds)
                 if (auto* e = editOf (id))
                 {
-                    const auto fp = masterRenderFingerprint (app.project, *e, rp);
+                    auto fp = masterRenderFingerprint (app.project, *e, rp);
                     const auto before = store.check (id, fp);
-                    if (before.state == MasterRenders::State::Stale) { juce::Logger::writeToLog ("Mastering: the description of \"" + e->name + "\" changed while it was rendered; the new render takes it"); store.restamp (id, fp); }
+                    if (before.state != MasterRenders::State::Stale) continue;
+                    juce::Logger::writeToLog ("Mastering: the description of \"" + e->name + "\" changed while it was rendered; the new render takes it");
+                    store.restamp (id, fp);
+                    if (masterRenderFingerprint (app.project, *e, rp) != fp)                 // still different a moment later: some part of it keeps changing by itself
+                    {
+                        learnMasterRenderVolatile (app.project, *e, rp);
+                        fp = masterRenderFingerprint (app.project, *e, rp);
+                        store.restamp (id, fp);
+                    }
                 }
         }
     }

@@ -2,6 +2,7 @@
 #include "MasterExport.h"
 #include "Playback.h"
 #include <map>
+#include <set>
 
 namespace td
 {
@@ -13,7 +14,58 @@ void removeKeys (juce::var& v, std::initializer_list<const char*> keys)
 {
     if (auto* o = v.getDynamicObject()) for (auto k : keys) o->removeProperty (juce::Identifier (k));
 }
+
+// ---- the parts of a piece's description that keep changing by themselves (found by looking at it several times: see learnMasterRenderVolatile)
+std::map<juce::String, std::set<juce::String>>& volatileParts() { static std::map<juce::String, std::set<juce::String>> m; return m; }
+thread_local std::map<juce::String, juce::String>* g_capture = nullptr;
+
+void flattenVar (const juce::var& v, const juce::String& path, std::map<juce::String, juce::String>& out)
+{
+    if (auto* o = v.getDynamicObject())
+    {
+        for (auto& nv : o->getProperties()) flattenVar (nv.value, path + "/" + nv.name.toString(), out);
+        if (o->getProperties().size() == 0) out[path] = "{}";
+    }
+    else if (auto* a = v.getArray())
+    {
+        for (int i = 0; i < a->size(); ++i) flattenVar ((*a)[i], path + "/" + juce::String (i), out);
+        if (a->isEmpty()) out[path] = "[]";
+    }
+    else out[path] = v.toString();
+}
+
+/** The description as text, without the parts known to change by themselves. */
+juce::String describe (const juce::var& v, const juce::String& tag, const juce::String& editId)
+{
+    std::map<juce::String, juce::String> flat;
+    flattenVar (v, tag, flat);
+    if (g_capture != nullptr) for (auto& kv : flat) (*g_capture)[kv.first] = kv.second;
+    const std::set<juce::String>* skip = nullptr;
+    { const juce::ScopedLock sl (storeLock()); auto it = volatileParts().find (editId); if (it != volatileParts().end()) skip = &it->second; }
+    juce::String text;
+    for (auto& kv : flat) { if (skip != nullptr && skip->count (kv.first) != 0) continue; text << kv.first << "=" << kv.second << "\n"; }
+    return text;
+}
 } // namespace
+
+juce::StringArray learnMasterRenderVolatile (const Project& cp, const EditDef& e, const RenderParams& rp)
+{
+    std::map<juce::String, juce::String> a, b, c;
+    auto sample = [&] (std::map<juce::String, juce::String>& m) { g_capture = &m; masterRenderFingerprint (cp, e, rp); g_capture = nullptr; };
+    sample (a); juce::Thread::sleep (60); sample (b); juce::Thread::sleep (140); sample (c);
+    juce::StringArray found;
+    for (auto& kv : a)
+    {
+        auto ib = b.find (kv.first); auto ic = c.find (kv.first);
+        if ((ib != b.end() && ib->second != kv.second) || (ic != c.end() && ic->second != kv.second)) found.add (kv.first);
+    }
+    if (! found.isEmpty())
+    {
+        { const juce::ScopedLock sl (storeLock()); for (auto& p : found) volatileParts()[e.id.toString()].insert (p); }
+        for (int i = 0; i < found.size() && i < 12; ++i) juce::Logger::writeToLog ("Mastering: \"" + e.name + "\" keeps changing by itself at " + found[i] + " (left out when checking whether its render is up to date)");
+    }
+    return found;
+}
 
 juce::String makeRenderParams (const Project& p, const MasteringDef& def, RenderParams& rp)
 {
@@ -29,7 +81,8 @@ juce::String masterRenderFingerprint (const Project& cp, const EditDef& e, const
     auto& p = const_cast<Project&> (cp);
     juce::var ev = p.editToVar (e);
     removeKeys (ev, { "name", "window", "insertIndex", "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "trackIds" });   // (where the cursor is does not change the sound)
-    juce::String text = juce::JSON::toString (ev, true);
+    const auto editId = e.id.toString();
+    juce::String text = describe (ev, "E", editId);
 
     // the audio files the pieces use: a file mended in place changes the sound without changing the edit
     auto addFiles = [&text] (const std::vector<EditRegion>& rs)
@@ -78,7 +131,7 @@ juce::String masterRenderFingerprint (const Project& cp, const EditDef& e, const
                         }
                     }
             }
-        text << "|M:" << juce::JSON::toString (mv, true);
+        text << "|M:" << describe (mv, "M" + m->id.toString(), editId);
     }
 
     // the design (formats, buses) and the render settings

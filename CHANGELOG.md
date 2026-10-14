@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.30.2
+- **Mastering previews that stayed orange after Render previews:** some part of a piece's description (most likely a plug-in's saved state) keeps changing by itself, so its render never matched. After a render, if the description still differs a moment later, Fermata now looks at it several times over a fraction of a second, finds the parts that change by themselves, leaves just those out of the up-to-date check from then on, and writes them to `fermata-log.txt` ("keeps changing by itself at ..."). Everything you actually change still makes the preview orange.
+- The previews are all re-checked once after this update (they were described a different way before), so press Render previews once.
+
 ## 2.30.1
 - **Mastering previews stay "up to date" after Render previews:** after a render the project can describe a piece slightly differently from when the render started, so two of the four pieces still showed orange. The new render now takes the project's description as it stands when it finishes. (If it still happens, `fermata-log.txt` says which piece's description changed while it rendered.)
 
