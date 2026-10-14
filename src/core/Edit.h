@@ -419,6 +419,20 @@ struct EditDef
         return j;
     }
 
+    /** After pieces were moved apart: where two neighbouring pieces now have silence between them, each of the two sides gets a short fade at its own edge instead of a crossfade
+        that would reach into the gap (a hard stop and start, without a click). Touching or overlapping pieces are left as they are. */
+    void settleGapFades()
+    {
+        for (size_t k = 1; k < regions.size(); ++k)
+        {
+            auto& a = regions[k - 1]; auto& b = regions[k];
+            if (b.startSample <= a.endSample()) continue;
+            if (a.outEnd > 0.0)    { a.outStart = -kDefaultEdgeFade; a.outEnd = 0.0; }
+            if (b.inStart < 0.0)   { b.inStart = 0.0; b.inEnd = kDefaultEdgeFade; }
+            clampFades ((int) k - 1); clampFades ((int) k);
+        }
+    }
+
     /** Default 30 ms centred crossfade for the join before region i. */
     void setDefaultJoinFades (int i)
     {

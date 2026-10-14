@@ -328,15 +328,6 @@ public:
             g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
             g.drawText ("next take goes here", x + 4, rowsEnd - 16, 130, 14, juce::Justification::left);
         }
-        if (! shuffleId.isNull() && shuffleMoved)                                 // the piece being shuffled follows the mouse as a ghost
-            if (auto* sr = e->findAny (shuffleId))
-            {
-                const int gx = xOf ((double) (shuffleSample - shuffleGrab) / rate);
-                const int gw = juce::jmax (3, (int) ((double) sr->length() / rate * pixelsPerSecond));
-                g.setColour (juce::Colour (0x55c26500)); g.fillRect (gx, kRulerH + 11, gw, rowsEnd - kRulerH - 11);
-                g.setColour (juce::Colour (0xffc26500)); g.drawRect (gx, kRulerH + 11, gw, rowsEnd - kRulerH - 11, 2);
-            }
-
         const double ph = app.playheadSeconds();
         if (ph >= 0 && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId)
         {
@@ -689,6 +680,13 @@ public:
                 else if (i > 0 && mid < ed->regions[(size_t) i - 1].startSample + ed->regions[(size_t) i - 1].length() / 2) dir = -1;
                 if (dir == 0 || ed->shuffleRegion (i, dir) < 0) break;
             }
+            // and the piece goes where the mouse takes it: it can leave a stretch of silence next to its neighbours (with Slip Left / Slip Right on, the pieces on that side go with it)
+            if (const int i = ed->indexOf (shuffleId); i >= 0)
+            {
+                const juce::int64 want = juce::jmax ((juce::int64) 0, shuffleSample - shuffleGrab);
+                ed->slideRegion (i, want - ed->regions[(size_t) i].startSample, slipLeft, slipRight);
+            }
+            ed->settleGapFades();
             app.project.markDirty(); updateSize(); repaint();
             return;
         }
@@ -778,6 +776,7 @@ public:
         {
             const bool moved = shuffleMoved;
             shuffleId = juce::Uuid::null(); shuffleMoved = false;
+            if (moved) if (auto* ed = edit()) ed->settleGapFades();
             setMouseCursor (juce::MouseCursor::NormalCursor);
             if (moved) app.project.changed();
             repaint(); return;
@@ -810,7 +809,7 @@ public:
         if (autoDragIndex >= 0) { autoDragIndex = -1; autoDragLane = juce::Uuid::null(); app.project.changed(); }
         if (fadeDrag != 0) { fadeDrag = 0; app.project.changed(); }
         if (dragOverdub) { dragOverdub = false; app.project.changed(); }
-        if (dragging) { dragging = false; baseRegions.clear(); app.project.changed(); }
+        if (dragging) { dragging = false; baseRegions.clear(); if (auto* ed = edit()) ed->settleGapFades(); app.project.changed(); }
         setMouseCursor (juce::MouseCursor::NormalCursor);
     }
 

@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.20.0
+- **Edit window:** a piece can now be dragged by its top banner to wherever you like and it stays there, leaving a stretch of silence if you want one (the last piece too). Dragging past a neighbour's middle still swaps them like cards. With Slip Left / Slip Right on, the pieces on that side move with it. Where silence is left, the pieces get short edge fades instead of a crossfade into the gap.
+
 ## 2.19.1
 - **Trim window:** the bottom row of buttons was squeezed out of sight by the new level faders; the control area is taller again (and the window opens a little taller).
 - **Trim window:** the slide buttons (Slide A, Slide B, Move the join) now also have -100 ms and +100 ms, for sliding a take by a third of a second or more in a few clicks.

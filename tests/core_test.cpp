@@ -2944,6 +2944,24 @@ int main()
         CHECK (ed.shuffleRegion (0, 1) == 1 && ed.regions[0].inEnd > 0.0 && ed.regions[0].inStart == 0.0);   // the new first piece gets an edge fade, not a crossfade
     }
 
+    SECTION ("move: a piece can be dragged away from its neighbours, leaving silence that stays");
+    {
+        EditDef ed; ed.sampleRate = 48000.0;
+        juce::int64 at = 0;
+        for (int k = 0; k < 3; ++k)
+        {
+            EditRegion r; r.sampleRate = 48000.0; r.srcIn = 0; r.srcOut = 48000 * 10; r.startSample = at; r.id = juce::Uuid();
+            RegionFile f; f.trackId = juce::Uuid(); r.files.push_back (f);
+            at += r.length(); ed.regions.push_back (r);
+        }
+        ed.setDefaultJoinFades (1); ed.setDefaultJoinFades (2);
+        CHECK (ed.slideRegion (2, 48000 * 5, false, false) == 48000 * 5);                // the last piece moves later: 5 s of silence
+        CHECK (ed.regions[2].startSample == 48000 * 25 && ed.regions[1].endSample() == 48000 * 20);
+        ed.settleGapFades();
+        CHECK (ed.regions[1].outEnd == 0.0 && ed.regions[2].inStart == 0.0);               // edge fades, no crossfade into the gap
+        CHECK (ed.slideRegion (1, 48000 * 2, false, true) == 48000 * 2 && ed.regions[2].startSample == 48000 * 27);   // slip right carries the pieces after it
+    }
+
     eng.rebuildPlan();
     tmp.deleteRecursively();
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
