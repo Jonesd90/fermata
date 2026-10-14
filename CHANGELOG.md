@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.23.1
+- **Trim window:** Slip Left and Slip Right are now on by default, and they stay as you last set them, in every trim window and between runs.
+
 ## 2.23.0
 - **Trim window:** A / Z (copy the fade across) now copy the fade to the same place IN TIME. Before, they copied its distance from the piece's own edge, which landed somewhere else whenever A's end and B's start were not at the same spot (after pieces had been moved in the edit window).
 - **Trim window:** a line beside the copy buttons says how much silence (or overlap) there is between where A ends and where B starts, and a new **Close gap** button moves B (and everything after it) so it starts exactly where A ends, with the normal crossfade. This is the fix for A and B sitting out of line.

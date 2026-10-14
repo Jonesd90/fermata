@@ -188,6 +188,9 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     /** Playhead behaviour (all windows): on = after Stop the playhead stays where playback stopped, so the next Play goes on from there;
         off = it goes back to where playback started. Remembered between runs. */
     bool playheadFollows = true;
+    /** The trim window's Slip Left / Slip Right boxes: on by default, and they stay as the user last set them (all trim windows, remembered between runs). */
+    bool trimSlipLeft = true, trimSlipRight = true;
+    void setTrimSlip (bool left, bool right);
     void setPlayheadFollows (bool on);
     void stopPlayback();
     /** Seconds played since the playback began, wrapped to the loop length while a loop plays. */

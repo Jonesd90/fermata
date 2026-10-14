@@ -445,6 +445,10 @@ TrimComponent::TrimComponent (AppContext& a, const juce::Uuid& eid, const juce::
     makeGroup (gB, "Slide B (in audio):",    [this] (double ms) { slideB (ms); });
     makeGroup (gJ, "Move the join (cut):",   [this] (double ms) { moveJoinBy (ms); });
 
+    slipLeftToggle.setToggleState (app.trimSlipLeft, juce::dontSendNotification);
+    slipRightToggle.setToggleState (app.trimSlipRight, juce::dontSendNotification);
+    slipLeftToggle.onClick  = [this] { app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
+    slipRightToggle.onClick = [this] { app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
     slipLeftToggle.setTooltip ("Sliding A: every piece to the LEFT of A slides with it. Off: they stay where they are.");
     slipRightToggle.setTooltip ("Sliding B: every piece to the RIGHT of B slides with it. Off: they stay where they are.");
 
