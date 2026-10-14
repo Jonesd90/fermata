@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.23.2
+- **Edit window:** Slip Left and Slip Right are the same setting as in the trim window: on by default, remembered between runs, and a change in one window shows in the other.
+
 ## 2.23.1
 - **Trim window:** Slip Left and Slip Right are now on by default, and they stay as you last set them, in every trim window and between runs.
 

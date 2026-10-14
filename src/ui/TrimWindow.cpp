@@ -615,6 +615,8 @@ void TrimComponent::refreshControls()
 {
     const auto rf = refs();
     updatingControls = true;
+    slipLeftToggle.setToggleState (app.trimSlipLeft, juce::dontSendNotification);          // (the edit window's boxes share this setting)
+    slipRightToggle.setToggleState (app.trimSlipRight, juce::dontSendNotification);
     if (rf.ok())
     {
         const bool hasA = rf.A != nullptr, hasB = rf.B != nullptr;

@@ -1454,8 +1454,11 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     slipRightToggle.setTooltip ("When you slide a piece, every piece AFTER it slides with it (off: they stay where they are).");
     shuffleToggle.setTooltip ("Shuffle on: dragging a piece by its top banner past a neighbour swaps the two, like cards in a deck. Off: a piece goes wherever you drop it, leaving silence if you want.");
     shuffleToggle.onClick = [this] { timeline->shuffleMode = shuffleToggle.getToggleState(); };
-    slipLeftToggle.onClick  = [this] { timeline->slipLeft = slipLeftToggle.getToggleState(); };
-    slipRightToggle.onClick = [this] { timeline->slipRight = slipRightToggle.getToggleState(); };
+    slipLeftToggle.setToggleState (app.trimSlipLeft, juce::dontSendNotification);          // the same Slip Left / Slip Right setting as the trim window: on by default, remembered
+    slipRightToggle.setToggleState (app.trimSlipRight, juce::dontSendNotification);
+    timeline->slipLeft = app.trimSlipLeft; timeline->slipRight = app.trimSlipRight;
+    slipLeftToggle.onClick  = [this] { timeline->slipLeft = slipLeftToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
+    slipRightToggle.onClick = [this] { timeline->slipRight = slipRightToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
     for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &ltcButton, &automationButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &reharmoniserButton, &exportProcButton, &undoFixButton,
                                                           &slipLeftToggle, &slipRightToggle, &shuffleToggle })
     {
@@ -1865,6 +1868,8 @@ void EditWindowComponent::changeListenerCallback (juce::ChangeBroadcaster*) { re
 void EditWindowComponent::timerCallback()
 {
     if (auto* fc = juce::Component::getCurrentlyFocusedComponent(); fc != nullptr && isParentOf (fc)) app.setTransportHandler (this, [this] { togglePlay(); });
+    if (slipLeftToggle.getToggleState() != app.trimSlipLeft)   { slipLeftToggle.setToggleState (app.trimSlipLeft, juce::dontSendNotification);   timeline->slipLeft = app.trimSlipLeft; }
+    if (slipRightToggle.getToggleState() != app.trimSlipRight) { slipRightToggle.setToggleState (app.trimSlipRight, juce::dontSendNotification); timeline->slipRight = app.trimSlipRight; }
     playButton.setButtonText (app.isPlaying() ? "Stop [Space]" : "Play [Space]");
     if (playheadMode.getToggleState() != app.playheadFollows) playheadMode.setToggleState (app.playheadFollows, juce::dontSendNotification);
     if (waveColourBtn.getToggleState() != app.waveColour) { waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification); repaint(); }
