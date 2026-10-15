@@ -741,6 +741,16 @@ struct EditDef
         if (k == 0)
         {
             auto& b = regions.front();
+            if (b.waiting.active()) return 0;
+            if (const auto ext = juce::jmin (b.startSample - b.fadeInBegin(), b.startSample, b.srcIn); ext > 0)       // the fade-in was dragged EARLIER than the piece: the piece grows to cover it
+            {
+                const auto ib = b.fadeInBegin(), ie = b.fadeInFinish();
+                b.srcIn -= ext; b.startSample -= ext;
+                for (auto& g : b.gains) g.at += ext;
+                b.inStart = (double) (ib - b.startSample) / juce::jmax (1.0, b.sampleRate); b.inEnd = (double) (ie - b.startSample) / juce::jmax (1.0, b.sampleRate);
+                clampFades (0);
+                return ext;
+            }
             const auto d = b.fadeInBegin() - b.startSample;
             if (d <= 0 || b.waiting.active() || b.length() - d < (juce::int64) (0.01 * b.sampleRate)) return 0;
             const auto ib = b.fadeInBegin(), ie = b.fadeInFinish(); const auto old = b;
@@ -753,6 +763,15 @@ struct EditDef
             return d;
         }
         auto& a = regions.back();
+        if (a.waiting.active()) return 0;
+        if (const auto ext = a.fadeOutFinish() - a.endSample(); ext > 0)       // the fade-out was dragged LATER than the piece: the piece grows to cover it
+        {
+            const auto ob = a.fadeOutBegin();
+            a.srcOut += ext;
+            a.outEnd = 0.0; a.outStart = (double) (ob - a.endSample()) / juce::jmax (1.0, a.sampleRate);
+            clampFades ((int) regions.size() - 1);
+            return ext;
+        }
         const auto d = a.endSample() - a.fadeOutFinish();
         if (d <= 0 || a.waiting.active() || a.length() - d < (juce::int64) (0.01 * a.sampleRate)) return 0;
         const auto ob = a.fadeOutBegin();
@@ -767,8 +786,8 @@ struct EditDef
     {
         const int n = (int) regions.size();
         if (n == 0) return 0;
-        if (k <= 0) return regions.front().startSample;
-        if (k >= n) return regions.back().endSample();
+        if (k <= 0) return (regions.front().fadeInBegin() + regions.front().fadeInFinish()) / 2;           // the middle of the fade, wherever it has been moved to
+        if (k >= n) return (regions.back().fadeOutBegin() + regions.back().fadeOutFinish()) / 2;
         return (regions[(size_t) k - 1].fadeOutFinish() + regions[(size_t) k].fadeInBegin()) / 2;
     }
 

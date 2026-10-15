@@ -702,6 +702,33 @@ juce::File Project::projectFolder() const
 {
     return projectFile != juce::File() ? projectFile.getParentDirectory() : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Fermata");
 }
+juce::File Project::commentsFolderFor (const EditDef& e) const
+{
+    const auto id = e.id.toString().substring (0, 8);
+    auto name = juce::File::createLegalFileName (e.name.trim()).trim(); if (name.isEmpty()) name = "Edit";
+    const auto base = projectFolder().getChildFile ("comments");
+    for (auto& d : base.findChildFiles (juce::File::findDirectories, false, "* [" + id + "]")) return d;          // the edit may have been renamed since
+    return base.getChildFile (name + " [" + id + "]");
+}
+void Project::saveCommentsCopy (const EditDef& e, const std::vector<juce::File>& importedFiles) const
+{
+    const auto dir = commentsFolderFor (e);
+    dir.deleteRecursively();
+    if (! dir.createDirectory().wasOk()) return;
+    for (auto& f : importedFiles) f.copyFileTo (dir.getChildFile (f.getFileName()));
+    auto json = dir.getChildFile ("comments.json");
+    json.replaceWithText (juce::JSON::toString (feedbackToVar (e.feedback)));
+}
+void Project::restoreSavedComments()
+{
+    for (auto& e : edits)
+    {
+        if (e == nullptr || ! e->feedback.empty()) continue;
+        auto json = commentsFolderFor (*e).getChildFile ("comments.json");
+        juce::var v;
+        if (json.existsAsFile() && ! juce::JSON::parse (json.loadFileAsString(), v).failed()) { feedbackFromVar (v, e->feedback); e->showFeedback = true; }
+    }
+}
 juce::File Project::processingFolder() const { return projectFolder().getChildFile ("Processing Media"); }
 juce::File Project::bouncedFolder() const { return projectFolder().getChildFile ("Bounced Media"); }
 juce::File Project::masteredFolder() const { return bouncedFolder().getChildFile ("Mastered Audio"); }
@@ -1355,6 +1382,7 @@ bool Project::load (const juce::File& f, juce::String& error)
     readingFrom = juce::File();
     if (! ok) { error = "Not a valid Fermata project file"; return false; }
     projectFile = f;
+    restoreSavedComments();
     return true;
 }
 

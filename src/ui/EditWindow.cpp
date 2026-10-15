@@ -40,8 +40,8 @@ public:
     {
         const int n = (int) e.regions.size();
         if (n == 0) return 0;
-        if (k <= 0) return e.regions.front().startSample;
-        if (k >= n) return e.regions.back().endSample();
+        if (k <= 0) return (e.regions.front().fadeInBegin() + e.regions.front().fadeInFinish()) / 2;           // the middle of the fade, wherever it has been moved to
+        if (k >= n) return (e.regions.back().fadeOutBegin() + e.regions.back().fadeOutFinish()) / 2;
         return (e.regions[(size_t) k - 1].fadeOutFinish() + e.regions[(size_t) k].fadeInBegin()) / 2;
     }
     juce::Uuid moveRegion;                     // the piece that Ctrl + click selected whole: it can be dragged sideways (until another click elsewhere)
@@ -1729,6 +1729,8 @@ void EditWindowComponent::importFeedback()
 void EditWindowComponent::importFeedbackFiles (juce::Array<juce::File> files, double frameRate)
 {
     juce::String report; int total = 0;
+    std::vector<juce::Uuid> replaced;                         // edits whose old comments have been superseded by this import (the first file of a batch replaces, the rest add)
+    std::map<juce::String, std::vector<juce::File>> kept;     // the files read for each edit, saved in the project's comments folder
     for (auto& f : files)
     {
         juce::MemoryBlock data;
@@ -1746,6 +1748,13 @@ void EditWindowComponent::importFeedbackFiles (juce::Array<juce::File> files, do
         int late = 0;
         for (auto& n : p.notes) { n.seconds += offset; if (len > 0.0 && n.seconds > len + 2.0) ++late; }
         int updated = 0;
+        if (std::find (replaced.begin(), replaced.end(), target->id) == replaced.end())
+        {   // a new set of comments supersedes the old one; a tick ("done") on a comment that is still in the new set is kept
+            replaced.push_back (target->id);
+            auto oldNotes = target->feedback; target->feedback.clear();
+            for (auto& n : p.notes) for (auto& o : oldNotes) if (o.key == n.key && o.done) n.done = true;
+        }
+        kept[target->id.toString()].push_back (f);
         const int added = feedback::merge (target->feedback, p.notes, &updated);
         target->showFeedback = true;
         total += added;
@@ -1754,6 +1763,7 @@ void EditWindowComponent::importFeedbackFiles (juce::Array<juce::File> files, do
                 + (p.format == "marker list" ? ". Timecode read at " + juce::String (frameRate) + " frames a second" : juce::String())
                 + (late > 0 ? ". " + juce::String (late) + " fall after the end of the edit" : juce::String()) + ".\n";
     }
+    for (auto& id : replaced) if (auto* te = app.project.findEdit (id)) app.project.saveCommentsCopy (*te, kept[id.toString()]);
     app.project.markDirty();
     if (timeline != nullptr) timeline->repaint();
     juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (total > 0 ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon)

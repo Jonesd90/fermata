@@ -213,6 +213,11 @@ public:
           Bounced Media/Mastered Audio   what is bounced from the Mastering window */
     juce::File projectFolder() const;
     juce::File audioFolder() const;                  // Recorded Media
+    /** The saved copy of the comments imported on an edit: <project folder>/comments/<edit name> [id]/ holds the files that were imported and comments.json (the notes, ready to reload).
+        A new import REPLACES the copy. Folders of edits that are gone are left alone. */
+    juce::File commentsFolderFor (const EditDef& e) const;
+    void saveCommentsCopy (const EditDef& e, const std::vector<juce::File>& importedFiles) const;
+    void restoreSavedComments();                    // after a project is opened: an edit with no comments of its own gets its saved copy back
     juce::File processingFolder() const;            // Processing Media: audio sent out with "Export for Processing"
     juce::File bouncedFolder() const;                // Bounced Media
     juce::File masteredFolder() const;               // Bounced Media/Mastered Audio

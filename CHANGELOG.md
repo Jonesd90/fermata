@@ -6,6 +6,11 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.42.0
+- **Dragging the first fade-in earlier / the last fade-out later now grows the piece.** In the Trim window at the very start or end of the edit, moving the outer end of the fade outward makes the piece (the blue region box, its waveform and the edit point) grow to cover the whole fade, using more of the take. (Before, only the orange overlay moved.)
+- **Edit point flags at the start and end of the edit stand in the middle of their fade,** like the flags of joins, wherever the fade has been moved to.
+- **Imported comments are saved in a `comments` folder** in the project folder (one sub-folder per edit: the imported files and `comments.json`). They reload with the project. Importing a new set of comments for an edit replaces the old set and its saved copy (a "done" tick on a comment that is still in the new set is kept; several files imported together are added to each other).
+
 ## 2.41.2
 - **Trim window feels snappier.** Quick successions of changes (dragging the level sliders, clicking the Slide A / Slide B / Move the join buttons repeatedly) now bring the edit up to date at once but redraw the other windows at most about every 100 ms, with one last redraw after the final change (`Project::changedLive`). Accept, Revert, fade drags and shape changes still redraw immediately.
 

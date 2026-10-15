@@ -3309,6 +3309,21 @@ int main()
         }
     }
 
+    SECTION ("dragging the first / last fade outward grows the piece");
+    {
+        EditDef e; e.sampleRate = 48000.0;
+        EditRegion r; r.sampleRate = 48000.0; r.srcIn = 48000 * 5; r.srcOut = 48000 * 15; r.startSample = 48000 * 2; r.sourceLength = 48000 * 60;
+        RegionFile rf; rf.numChannels = 1; r.files.push_back (rf); e.regions.push_back (r);
+        auto& a = e.regions[0];
+        a.outEnd = 1.0; a.outStart = 0.5; a.inStart = -0.5; a.inEnd = 0.0;
+        const auto ob = a.fadeOutBegin(), of = a.fadeOutFinish(), ib = a.fadeInBegin();
+        CHECK (e.trimEdgeToFade (e.regions.size(), false) == 48000);
+        CHECK (e.trimEdgeToFade (0, false) == 24000);
+        auto& b = e.regions[0];
+        CHECK (b.endSample() == of && b.fadeOutBegin() == ob && b.fadeOutFinish() == of);
+        CHECK (b.startSample == ib && b.fadeInBegin() == ib && b.srcIn == 48000 * 5 - 24000);
+        CHECK (e.editPointSample (1) == (ob + of) / 2);
+    }
     SECTION ("fix join crossfade starts only where the corrected audio exists");
     {
         EditDef e; e.sampleRate = 48000.0;
