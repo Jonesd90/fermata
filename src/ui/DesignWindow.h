@@ -35,6 +35,7 @@ private:
     void buildIoPage();
     void buildTracksPage();
     void buildBusPage (Page&, bool external);
+    void buildVcaPage();
     void buildMixersPage();
     bool locked() const;
     void refreshAll();
@@ -45,7 +46,7 @@ private:
     AppContext& app;
     juce::TabbedComponent tabs { juce::TabbedButtonBar::TabsAtTop };
     IoPage ioPage;
-    Page tracksPage, intPage, extPage, mixersPage;
+    Page tracksPage, intPage, extPage, vcaPage, mixersPage;
     juce::Label lockNote;
 };
 } // namespace td

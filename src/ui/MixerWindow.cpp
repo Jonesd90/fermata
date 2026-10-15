@@ -589,6 +589,23 @@ public:
         g.setColour (c.darker (0.45f));          g.fillRect (band.getX(), band.getBottom() - 1, band.getWidth(), 1);
         g.setColour (chan::textOn (c));          g.setFont (juce::FontOptions (9.0f, juce::Font::bold));
         g.drawText (bandText(), band.reduced (4, 0), juce::Justification::centredLeft, true);
+        if (const auto vm = vcaMask(); vm != 0 && appPtr != nullptr)            // the VCAs that control this strip: a glowing number each, at the right of the coloured bar
+        {
+            const int d = 12; int x = band.getRight() - 3 - d;
+            for (int n = kMaxVcas; n-- > 0 && x > band.getX() + 28;)
+            {
+                if (! (vm & (1u << n))) continue;
+                const auto* vd = appPtr->project.vcaByNumber (n + 1);
+                const juce::Colour vc = vd != nullptr && vd->colour != 0 ? juce::Colour (vd->colour) : chan::automaticFor (NodeKind::Vca);
+                const auto cc = juce::Rectangle<float> ((float) x, (float) band.getCentreY() - d * 0.5f, (float) d, (float) d);
+                for (int k = 3; k >= 1; --k) { g.setColour (vc.withAlpha (0.16f)); g.fillEllipse (cc.expanded ((float) k * 1.3f)); }       // the glow
+                g.setColour (vc.brighter (0.2f)); g.fillEllipse (cc);
+                g.setColour (juce::Colours::white.withAlpha (0.9f)); g.drawEllipse (cc, 0.8f);
+                g.setColour (chan::textOn (vc)); g.setFont (juce::FontOptions (n + 1 > 9 ? 7.5f : 9.0f, juce::Font::bold));
+                g.drawText (juce::String (n + 1), cc.toNearestInt(), juce::Justification::centred, false);
+                x -= d + 4;
+            }
+        }
 
         if (const int lat = shownLatency(); lat >= 0)
         {
@@ -626,6 +643,8 @@ protected:
     juce::Rectangle<int> body() const { return getLocalBounds().withTrimmedTop (1 + kBandH + 3).withTrimmedBottom (1 + kPlateH + 3 + (shownLatency() >= 0 ? kLatH : 0)).reduced (4, 0); }
     /** Delay compensation: the samples this channel's plug-ins hold the sound back by (-1: this kind of strip shows nothing). */
     virtual int shownLatency() const { return -1; }
+    /** The VCAs that control this strip (bit n = VCA n+1): they are drawn as glowing numbers on the coloured bar. */
+    virtual juce::uint32 vcaMask() const { return 0; }
     void setLatencyTip (int own, const MixerState& m)
     {
         if (appPtr == nullptr) return;
@@ -853,6 +872,7 @@ public:
     }
 
     int shownLatency() const override { int t = 0; for (auto& sl : strip.slots) t += sl.latencySamples(); return t; }
+    juce::uint32 vcaMask() const override { return strip.vcaMask.load(); }
     void refreshFromModel() override
     {
         setLatencyTip (shownLatency(), mixer);
@@ -1057,6 +1077,7 @@ public:
     int dialCount() const { return dials.size(); }
     void setSendRows (int rows) { sendRows = rows; }
     int shownLatency() const override { int t = 0; for (auto& sl : st.slots) t += sl.latencySamples(); return t; }
+    juce::uint32 vcaMask() const override { return st.vcaMask.load(); }
     void refreshFromModel() override
     {
         setLatencyTip (shownLatency(), mixer);
@@ -1143,6 +1164,173 @@ private:
     juce::OwnedArray<juce::TextButton> toggles; juce::TextButton *mute = nullptr, *solo = nullptr;
 };
 
+/** Which audio tracks and Int Buses a VCA controls in one mixer: a tick box for each. Opens from the strip's Assign button; every tick takes effect at once. */
+class VcaAssignPanel : public juce::Component
+{
+public:
+    VcaAssignPanel (AppContext& a, MixerState& m, const VcaDef& d) : app (a), mixer (m), vcaId (d.id)
+    {
+        title.setText ("VCA " + d.label() + " controls:", juce::dontSendNotification);
+        title.setFont (juce::FontOptions (13.0f, juce::Font::bold)); title.setColour (juce::Label::textColourId, mixTheme().text);
+        addAndMakeVisible (title);
+        allBtn.setButtonText ("All tracks"); noneBtn.setButtonText ("None");
+        allBtn.onClick  = [this] { setAll (true); };
+        noneBtn.onClick = [this] { setAll (false); };
+        addAndMakeVisible (allBtn); addAndMakeVisible (noneBtn);
+        auto add = [this, &d] (const juce::Uuid& id, const juce::String& name)
+        {
+            auto* b = boxes.add (new juce::ToggleButton (name));
+            b->setToggleState (app.project.isVcaMember (mixer, d, id), juce::dontSendNotification);
+            b->setColour (juce::ToggleButton::textColourId, mixTheme().text);
+            b->onClick = [this, id, b]
+            {
+                if (auto* v = app.project.findVca (vcaId)) { app.project.setVcaMember (mixer, *v, id, b->getToggleState()); app.project.changed(); }
+            };
+            ids.add (id);
+            content.addAndMakeVisible (b);
+        };
+        for (auto& t : app.project.tracks) add (t.id, t.name);
+        for (auto& b : app.project.buses) if (! b.external) add (b.id, b.name + "   (Int Bus)");
+        empty.setText ("There are no audio tracks or Int Buses.", juce::dontSendNotification);
+        empty.setColour (juce::Label::textColourId, mixTheme().dim);
+        addChildComponent (empty); empty.setVisible (boxes.isEmpty());
+        viewport.setViewedComponent (&content, false);
+        viewport.setScrollBarsShown (true, false);
+        addAndMakeVisible (viewport);
+        setSize (260, juce::jlimit (150, 460, 70 + boxes.size() * 24));
+    }
+    void paint (juce::Graphics& g) override { g.fillAll (mixTheme().strip); }
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (8);
+        title.setBounds (r.removeFromTop (22));
+        auto row = r.removeFromTop (24);
+        allBtn.setBounds (row.removeFromLeft (90)); row.removeFromLeft (6); noneBtn.setBounds (row.removeFromLeft (70));
+        r.removeFromTop (4);
+        viewport.setBounds (r);
+        const int w = viewport.getWidth() - (viewport.isVerticalScrollBarShown() ? viewport.getScrollBarThickness() : 0);
+        content.setSize (w, juce::jmax (24, boxes.size() * 24));
+        for (int i = 0; i < boxes.size(); ++i) boxes[i]->setBounds (0, i * 24, w, 24);
+        empty.setBounds (r.withHeight (22));
+    }
+private:
+    void setAll (bool on)
+    {
+        auto* v = app.project.findVca (vcaId);
+        if (v == nullptr) return;
+        for (int i = 0; i < boxes.size(); ++i)
+        {
+            if (app.project.kindOf (ids[i]) != NodeKind::Track && on) continue;                  // "All tracks" ticks the audio tracks only
+            boxes[i]->setToggleState (on, juce::dontSendNotification);
+            app.project.setVcaMember (mixer, *v, ids[i], on);
+        }
+        app.project.changed();
+    }
+    AppContext& app; MixerState& mixer; juce::Uuid vcaId;
+    juce::Label title, empty; juce::TextButton allBtn, noneBtn;
+    juce::Viewport viewport; juce::Component content;
+    juce::OwnedArray<juce::ToggleButton> boxes; juce::Array<juce::Uuid> ids;
+};
+
+/** A VCA strip: just a fader (and M / S). It carries no audio: it moves the faders of the strips it controls by the same amount, without touching their own faders. */
+class VcaStrip : public StripBase
+{
+public:
+    VcaStrip (AppContext& a, MixerState& m, const VcaDef& def)
+        : StripBase (&a, def.id), app (a), mixer (m), vcaId (def.id), number (def.number), st (m.vcas[juce::jlimit (0, kMaxVcas - 1, def.number - 1)]),
+          fader ([this] (float db) { st.gainDb.set (db); app.project.markDirty(); }, st.gainDb.get())
+    {
+        addAndMakeVisible (fader);
+        mute = makeToggle (*this, toggles, "M", juce::Colour (0xffe0312b));
+        mute->setTooltip ("Mute everything this VCA controls (this mixer only)");
+        mute->onClick = [this] { st.mute.set (mute->getToggleState()); app.project.markDirty(); };
+        solo = makeToggle (*this, toggles, "S", juce::Colour (0xfff2c200));
+        solo->setColour (juce::TextButton::textColourOnId, juce::Colours::black);
+        solo->setTooltip ("Solo everything this VCA controls: those strips stay open, the rest is silenced (this mixer only)");
+        solo->onClick = [this] { st.solo.set (solo->getToggleState()); app.project.markDirty(); };
+        assignBtn.setButtonText ("Assign...");
+        assignBtn.setTooltip ("Choose the audio tracks and Int Buses this VCA controls. Each one gets a glowing number on its strip.");
+        assignBtn.onClick = [this] { openAssign(); };
+        addAndMakeVisible (assignBtn);
+        countLabel.setJustificationType (juce::Justification::centred); styleField (countLabel, 9.5f);
+        addAndMakeVisible (countLabel);
+        nameEd.setTextToShowWhenEmpty ("name (optional)", mixTheme().dim);
+        nameEd.setFont (juce::FontOptions (11.0f));
+        nameEd.setTooltip ("Type a name: the strip shows  " + juce::String (number) + " - name");
+        nameEd.onReturnKey = [this] { commitName(); };
+        nameEd.onFocusLost = [this] { commitName(); };
+        addAndMakeVisible (nameEd);
+        removeBtn.setButtonText ("Remove strip");
+        removeBtn.setTooltip ("Takes this VCA's strip out of this mixer (the VCA itself stays in the project, and its settings here are kept); add it again with + Strip");
+        removeBtn.onClick = [this]
+        {
+            const auto id = vcaId; auto* mx = &mixer; auto* ap = &app;
+            juce::MessageManager::callAsync ([ap, mx, id] { if (auto* v = ap->project.findVca (id)) ap->project.showVca (*mx, *v, false); });
+        };
+        addAndMakeVisible (removeBtn);
+        refreshFromModel();
+    }
+    void setSendRows (int rows) { sendRows = rows; }
+    void setSlotCount (int n) { nSlots = n; }
+    void refreshFromModel() override
+    {
+        mute->setToggleState (st.mute.get(), juce::dontSendNotification);
+        solo->setToggleState (st.solo.get(), juce::dontSendNotification);
+        fader.setAccent (colour());
+        int n = 0;
+        for (auto& s : mixer.stripPool) if (s->vcaMask.load() & (1u << (number - 1))) ++n;
+        for (auto& b : mixer.busPool)   if (b->vcaMask.load() & (1u << (number - 1))) ++n;
+        countLabel.setText (n == 0 ? juce::String ("controls nothing") : n == 1 ? juce::String ("controls 1 strip") : "controls " + juce::String (n) + " strips", juce::dontSendNotification);
+        if (auto* v = app.project.findVca (vcaId); v != nullptr && ! nameEd.hasKeyboardFocus (false)) nameEd.setText (v->name, juce::dontSendNotification);
+        repaint();
+    }
+    void tick() override { if (! fader.isBeingDragged()) fader.setDb (st.gainDb.get()); }
+    void resized() override
+    {
+        wells.clear(); sections.clear();
+        auto r = body();
+        removeBtn.setBounds (r.removeFromBottom (kOutRowH));
+        r.removeFromBottom (3);
+        auto faderArea = r.removeFromBottom (juce::jmax (kFaderMin, kFaderH + getHeight() - ChannelStrip::heightFor (2 * juce::jmax (1, sendRows), nSlots)));
+        wells.push_back (faderArea.expanded (2, 0));
+        r.removeFromBottom (3);
+        auto ms = r.removeFromBottom (kMSH);
+        mute->setBounds (ms.removeFromLeft (ms.getWidth() / 2).reduced (1, 0));
+        solo->setBounds (ms.reduced (1, 0));
+        fader.setBounds (faderArea);
+        r.removeFromBottom (4);
+        sections.push_back ({ "CONTROLS", r.removeFromTop (kSecH) });
+        assignBtn.setBounds (r.removeFromTop (26).reduced (0, 1));
+        countLabel.setBounds (r.removeFromTop (16));
+        r.removeFromTop (6);
+        sections.push_back ({ "NAME", r.removeFromTop (kSecH) });
+        nameEd.setBounds (r.removeFromTop (22).reduced (0, 1));
+    }
+protected:
+    juce::String bandText() const override { return "VCA " + juce::String (number); }
+    juce::String plateText() const override { auto* v = app.project.findVca (vcaId); return v != nullptr ? v->label() : juce::String(); }
+private:
+    void commitName()
+    {
+        auto* v = app.project.findVca (vcaId);
+        if (v == nullptr) return;
+        const auto t = nameEd.getText().trim();
+        if (t == v->name) return;
+        v->name = t; app.project.markDirty(); app.project.changed();         // (only a refresh: this editor must not be rebuilt while it is being used)
+    }
+    void openAssign()
+    {
+        auto* v = app.project.findVca (vcaId);
+        if (v == nullptr) return;
+        auto panel = std::make_unique<VcaAssignPanel> (app, mixer, *v);
+        juce::CallOutBox::launchAsynchronously (std::move (panel), assignBtn.getScreenBounds(), nullptr);
+    }
+    AppContext& app; MixerState& mixer; juce::Uuid vcaId; int number; VcaState& st; FaderBlock fader;
+    juce::OwnedArray<juce::TextButton> toggles; juce::TextButton *mute = nullptr, *solo = nullptr;
+    juce::TextButton assignBtn, removeBtn; juce::Label countLabel; juce::TextEditor nameEd;
+    int sendRows = 1, nSlots = kNumSlots;
+};
+
 /** The last strip: what the level meters show and how they move (shared by all mixers and remembered), plus the phase scope. */
 class MeterSettingsStrip : public StripBase
 {
@@ -1204,6 +1392,10 @@ public:
         if (auto* mx = mixerState()) monoButton.setToggleState (mx->monoCheck.load(), juce::dontSendNotification);
         monoButton.onClick = [this] { if (auto* mx = mixerState()) mx->monoCheck.store (monoButton.getToggleState()); };
         addAndMakeVisible (monoButton);
+        addStripButton.setButtonText ("+ Strip...");
+        addStripButton.setTooltip ("Add a strip to the project: an Int Bus, an Ext Bus or a VCA (a fader that controls the level of other strips). Int and Ext Buses are added to the whole project (every mixer); a VCA is added to this mixer.");
+        addStripButton.onClick = [this] { chooseNewStrip(); };
+        addAndMakeVisible (addStripButton);
     }
     void resized() override
     {
@@ -1222,10 +1414,47 @@ public:
         r.removeFromTop (4);
         scopeButton.setBounds (r.removeFromTop (26).reduced (0, 1));
         monoButton.setBounds (r.removeFromTop (26).reduced (0, 1));
+        r.removeFromTop (8);
+        addStripButton.setBounds (r.removeFromTop (26).reduced (0, 1));
     }
 protected:
     juce::String bandText() const override { return "METERS"; }
 private:
+    void chooseNewStrip()
+    {
+        auto* mx = mixerState();
+        if (mx == nullptr) return;
+        juce::PopupMenu m, vca;
+        m.addItem (1, "Int Bus");
+        m.addItem (2, "Ext Bus");
+        vca.addItem (10, "New VCA");
+        std::vector<juce::Uuid> hidden;
+        for (auto& v : app.project.vcas)
+            if (! (mx->vcaShown.load() & (1u << (v.number - 1)))) { hidden.push_back (v.id); vca.addItem (100 + (int) hidden.size() - 1, "VCA " + v.label() + "  (already in the project)"); }
+        m.addSubMenu ("VCA", vca);
+        const auto mid = mixer;
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addStripButton), [this, mid, hidden] (int r)
+        {
+            if (r <= 0) return;
+            MixerState* mx2 = nullptr;
+            for (auto& mm : app.project.mixers) if (mm->id == mid) mx2 = mm.get();
+            if (mx2 == nullptr) return;
+            if (app.engine.isRecording()) { showError ("Recording", "Strips cannot be added while recording."); return; }
+            if (r == 1 || r == 2)
+            {
+                const bool ext = r == 2;
+                const juce::String kind = ext ? "Ext bus" : "Int bus";
+                app.project.addBus (kind + " " + juce::String ((int) app.project.busIndices (ext).size() + 1), ext);
+            }
+            else if (r == 10)
+            {
+                if (auto* v = app.project.addVca ({}, false)) app.project.showVca (*mx2, *v, true);
+                else showError ("VCAs", "There can be at most " + juce::String (kMaxVcas) + " VCAs.");
+            }
+            else if (r >= 100 && (size_t) (r - 100) < hidden.size())
+                if (auto* v = app.project.findVca (hidden[(size_t) (r - 100)])) app.project.showVca (*mx2, *v, true);
+        });
+    }
     void setup (juce::ComboBox& box, juce::Label& cap, const juce::String& title, const juce::StringArray& items, int sel, const juce::String& tip)
     {
         styleCaption (cap, title);
@@ -1241,7 +1470,7 @@ private:
         return nullptr;
     }
     AppContext& app; juce::Uuid mixer; std::function<void()> onReset;
-    juce::TextButton resetButton, scopeButton, monoButton;
+    juce::TextButton resetButton, scopeButton, monoButton, addStripButton;
     juce::ComboBox ditherBox, modeBox, riseBox, fallBox, holdBox;
     juce::Label ditherCap, modeCap, riseCap, fallCap, holdCap;
 };
@@ -1483,9 +1712,17 @@ void MixerComponent::rebuild()
                 busStrips.add (bs); maxDials = juce::jmax (maxDials, bs->dialCount());
                 holder->add (bs);
             }
+    juce::Array<VcaStrip*> vcaStrips;
+    for (auto& v : app.project.vcas)                              // VCA strips come after the buses
+        if (m->vcaShown.load() & (1u << (v.number - 1)))
+        {
+            auto* vs = new VcaStrip (app, *m, v);
+            vcaStrips.add (vs); holder->add (vs);
+        }
     const int rows = juce::jmax (1, (maxDials + 1) / 2);
     for (auto* c : chans) c->setSendRows (rows);
     for (auto* b : busStrips) b->setSendRows (rows);
+    for (auto* v : vcaStrips) { v->setSendRows (rows); v->setSlotCount (slotCount); }
     holder->add (new MeterSettingsStrip (app, mixerId, [this] { holder->resetPeaks(); }), 112);
     maxDialsCached = maxDials;
     applyHeight();

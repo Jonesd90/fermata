@@ -189,6 +189,7 @@ struct StripState
     InsertSlot slots[kNumSlots];
     Param meterL, meterR;             // peak since last read (UI resets)
     Param rmsL, rmsR;                 // RMS level (linear, about 300 ms window), updated every block
+    std::atomic<juce::uint32> vcaMask { 0 };   // bit n set: this strip is controlled by VCA number n+1 (of this mixer)
     Param livePkL, livePkR;           // peak since the edit window last looked (the edit window's own meters: quick, like the mixer's, and independent of them)
     float lastGain = 0.0f, lastPre = 0.0f, msL = 0.0f, msR = 0.0f;   // audio thread only
     float lastIn = 1.0f;              // audio thread only: the input gain of the previous block (for a smooth change)
@@ -209,8 +210,17 @@ struct BusState
     InsertSlot slots[kNumSlots];
     Param meterL, meterR;
     Param rmsL, rmsR;
+    std::atomic<juce::uint32> vcaMask { 0 };   // Int Bus: bit n set = controlled by VCA number n+1 (an Ext Bus is never controlled)
     float lastGain = 0.0f, lastPre = 0.0f, msL = 0.0f, msR = 0.0f;
     BusState() { outSend.gainDb.set (0.0f); }
+};
+
+/** A VCA fader as it appears in one mixer: it carries no audio. Its fader (the only automatable thing) adds its gain to every strip it controls
+    (the strips keep their own faders), its mute silences them and its solo keeps them open like a solo on each of them. Which strips it controls is in their vcaMask. */
+struct VcaState
+{
+    Param gainDb { 0.0f };
+    Flag  mute, solo;
 };
 
 /** One of the project's independent mixers. All solo/mute/level/routing state lives here, so
@@ -227,6 +237,25 @@ struct MixerState
     // Pools are never shrunk while the project is open, so the audio thread can hold raw pointers.
     std::vector<std::unique_ptr<StripState>> stripPool;
     std::vector<std::unique_ptr<BusState>>    busPool;
+    VcaState vcas[kMaxVcas];                                // by VCA number - 1
+    std::atomic<juce::uint32> vcaShown { 0 };               // bit n set: the strip of VCA number n+1 is in this mixer (the processing mixer gets the VCAs of the design, other mixers add them with their + button)
+
+    /** Audio thread: what the VCAs in 'mask' do to a strip: their gains multiplied together, or 0 when one of them is muted. */
+    float vcaGain (juce::uint32 mask) const noexcept
+    {
+        if (mask == 0) return 1.0f;
+        float g = 1.0f;
+        for (int i = 0; i < kMaxVcas; ++i)
+            if (mask & (1u << i)) { if (vcas[i].mute.get()) return 0.0f; g *= dbToGain (vcas[i].gainDb.get()); }
+        return g;
+    }
+    /** Audio thread: the VCAs that are soloed, as bits. */
+    juce::uint32 vcaSoloMask() const noexcept
+    {
+        juce::uint32 m = 0;
+        for (int i = 0; i < kMaxVcas; ++i) if (vcas[i].solo.get()) m |= 1u << i;
+        return m;
+    }
 
     StripState* stripFor (const juce::Uuid& trackId)
     {

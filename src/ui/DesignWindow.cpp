@@ -37,13 +37,14 @@ void DesignComponent::IoPage::resized()
 
 DesignComponent::DesignComponent (AppContext& a) : app (a)
 {
-    buildIoPage(); buildTracksPage(); buildBusPage (intPage, false); buildBusPage (extPage, true); buildMixersPage();
+    buildIoPage(); buildTracksPage(); buildBusPage (intPage, false); buildBusPage (extPage, true); buildVcaPage(); buildMixersPage();
     const auto bg = theme::panel;
     tabs.addTab ("1. I/O", bg, &ioPage, false);
     tabs.addTab ("2. Audio tracks", bg, &tracksPage, false);
     tabs.addTab ("3. Int buses", bg, &intPage, false);
     tabs.addTab ("4. Ext buses", bg, &extPage, false);
-    tabs.addTab ("5. Mixers", bg, &mixersPage, false);
+    tabs.addTab ("5. VCAs", bg, &vcaPage, false);
+    tabs.addTab ("6. Mixers", bg, &mixersPage, false);
     addAndMakeVisible (tabs);
     lockNote.setColour (juce::Label::textColourId, theme::warn);
     addAndMakeVisible (lockNote);
@@ -72,7 +73,7 @@ void DesignComponent::changeListenerCallback (juce::ChangeBroadcaster*) { refres
 
 void DesignComponent::refreshAll()
 {
-    ioPage.ins.refresh(); ioPage.outs.refresh(); tracksPage.grid.refresh(); intPage.grid.refresh(); extPage.grid.refresh(); mixersPage.grid.refresh();
+    ioPage.ins.refresh(); ioPage.outs.refresh(); tracksPage.grid.refresh(); intPage.grid.refresh(); extPage.grid.refresh(); vcaPage.grid.refresh(); mixersPage.grid.refresh();
 }
 
 int DesignComponent::nextFreeInput() const
@@ -326,6 +327,46 @@ void DesignComponent::buildBusPage (Page& page, bool external)
         : "An Int Bus is fed by dials on audio tracks and other Int Buses. It can go on to audio tracks, other Int Buses or Ext Buses (its own dials), "
           "Listed in the order you added them; use Up / Down to rearrange, Delete to remove.", juce::dontSendNotification);
     page.note.setJustificationType (juce::Justification::topLeft);
+}
+
+// -------------------------------------------------------------------- VCAs
+void DesignComponent::buildVcaPage()
+{
+    auto& p = app.project;
+    auto& g = vcaPage.grid;
+    g.setRowCountProvider ([&p] { return (int) p.vcas.size(); });
+    g.addColumn ({ "VCA", 60, GridEditor::Type::ReadOnly, [&p] (int r) { return juce::isPositiveAndBelow (r, (int) p.vcas.size()) ? juce::String (p.vcas[(size_t) r].number) : juce::String(); }, {}, {}, {} });
+    g.addColumn ({ "Name (shown as  4 - Strings )", 300, GridEditor::Type::Text,
+                   [&p] (int r) { return juce::isPositiveAndBelow (r, (int) p.vcas.size()) ? p.vcas[(size_t) r].name : juce::String(); },
+                   [this, &p] (int r, const juce::String& v) { if (juce::isPositiveAndBelow (r, (int) p.vcas.size()) && ! locked()) { p.vcas[(size_t) r].name = v; p.structureChanged(); } }, {}, {} });
+    vcaPage.addButton ("Add VCA", [this, &p]
+    {
+        if (locked()) return;
+        if (p.addVca ({}, true) == nullptr) { showError ("VCAs", "There can be at most " + juce::String (kMaxVcas) + " VCAs."); return; }
+        vcaPage.grid.refresh();
+        vcaPage.grid.selectRow ((int) p.vcas.size() - 1);
+    });
+    auto remove = [this, &p] (int r)
+    {
+        if (! juce::isPositiveAndBelow (r, (int) p.vcas.size())) return;
+        if (locked()) { showError ("Recording", "The project design is locked while recording."); return; }
+        const auto id = p.vcas[(size_t) r].id;
+        confirmAsync ("Delete VCA", "Delete VCA " + p.vcas[(size_t) r].label() + "?\n\nThe strips it controlled keep their own faders; they are simply no longer under it.", "Delete",
+                      [this, &p, id] { p.removeVca (id); refreshAll(); });
+    };
+    g.addColumn ({ "", 80, GridEditor::Type::Button, [] (int) { return juce::String ("Delete"); }, [remove] (int r, const juce::String&) { remove (r); }, {}, {} });
+    g.onDeleteKey = remove;
+    vcaPage.addButton ("Delete selected", [this, remove] { remove (vcaPage.grid.getSelectedRow()); });
+    g.addContextItems = [remove, &p] (int row, juce::PopupMenu& m)
+    {
+        if (! juce::isPositiveAndBelow (row, (int) p.vcas.size())) return;
+        m.addItem ("Delete VCA " + p.vcas[(size_t) row].label(), [remove, row] { remove (row); });
+    };
+    vcaPage.note.setText ("A VCA is a fader that carries no audio. In a mixer, its Assign button chooses the audio tracks and Int Buses it controls: moving the VCA by -4 dB lowers each of them by 4 dB "
+                          "while every strip keeps its own fader position and automation. A strip can be under several VCAs (their gains add) and shows a glowing number for each. "
+                          "VCAs added here appear in the processing mixer (and in the Edit mixers); in the other mixers use the + Strip button under the Phase scope button. The VCA's fader can be automated; "
+                          "a name is optional and shows after the number.", juce::dontSendNotification);
+    vcaPage.note.setJustificationType (juce::Justification::topLeft);
 }
 
 // -------------------------------------------------------------------- mixers

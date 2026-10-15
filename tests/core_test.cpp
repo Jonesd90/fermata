@@ -2769,6 +2769,52 @@ int main()
         CHECK (p.importMixerFile (mf, msg) && p.mixers.size() == before + 1 && p.mixers[(size_t) p.cueEnd() - 1]->name == "Renamed in file");
         CHECK (p.save (er));
     }
+    SECTION ("VCAs: numbers, members, gains, mute, save and load");
+    {
+        Project vp; vp.tracks.clear(); vp.buses.clear();
+        const auto t1 = vp.addTrack ("t1", TrackFormat::Mono, 0).id, t2 = vp.addTrack ("t2", TrackFormat::Mono, 1).id;
+        const auto ib = vp.addBus ("int", false).id; const auto eb = vp.addBus ("ext", true).id;
+        auto* a1 = vp.addVca ("Strings", true); CHECK (a1 != nullptr && a1->number == 1 && a1->label() == "1 - Strings");
+        const auto id1 = a1->id;
+        auto* a2 = vp.addVca ({}, true); CHECK (a2 != nullptr && a2->number == 2 && a2->label() == "2");
+        const auto id2 = a2->id;
+        auto& pm = *vp.mixers.front();
+        CHECK ((pm.vcaShown.load() & 3u) == 3u);
+        vp.setVcaMember (pm, *vp.findVca (id1), t1, true); vp.setVcaMember (pm, *vp.findVca (id1), ib, true); vp.setVcaMember (pm, *vp.findVca (id1), eb, true);
+        vp.setVcaMember (pm, *vp.findVca (id2), t1, true);
+        CHECK (vp.isVcaMember (pm, *vp.findVca (id1), t1) && ! vp.isVcaMember (pm, *vp.findVca (id1), t2) && vp.isVcaMember (pm, *vp.findVca (id1), ib));
+        CHECK (! vp.isVcaMember (pm, *vp.findVca (id1), eb));                            // an Ext Bus is never controlled
+        pm.vcas[0].gainDb.set (-4.0f);
+        CHECK (std::abs (pm.vcaGain (pm.stripFor (t1)->vcaMask.load()) - dbToGain (-4.0f)) < 1.0e-6f);     // the strip keeps its own fader, the VCA adds -4 dB
+        pm.vcas[1].gainDb.set (-2.0f);
+        CHECK (std::abs (pm.vcaGain (pm.stripFor (t1)->vcaMask.load()) - dbToGain (-6.0f)) < 1.0e-5f);     // two VCAs add
+        CHECK (pm.vcaGain (pm.stripFor (t2)->vcaMask.load()) == 1.0f);                                      // not controlled: untouched
+        pm.vcas[1].mute.set (true);
+        CHECK (pm.vcaGain (pm.stripFor (t1)->vcaMask.load()) == 0.0f);
+        pm.vcas[1].mute.set (false); pm.vcas[0].solo.set (true);
+        CHECK (pm.vcaSoloMask() == 1u);
+        pm.vcas[0].solo.set (false);
+        juce::String er; vp.name = "vcatest";
+        vp.projectFile = tmp.getChildFile ("vcatest.fermata");
+        CHECK (vp.save (er));
+        Project vq; CHECK (vq.load (vp.projectFile, er));
+        CHECK (vq.vcas.size() == 2 && vq.vcas[0].name == "Strings" && vq.vcas[1].number == 2);
+        auto& qm = *vq.mixers.front();
+        CHECK (std::abs (qm.vcas[0].gainDb.get() + 4.0f) < 1.0e-4f && (qm.vcaShown.load() & 3u) == 3u);
+        CHECK (vq.isVcaMember (qm, vq.vcas[0], t1) && vq.isVcaMember (qm, vq.vcas[0], ib) && vq.isVcaMember (qm, vq.vcas[1], t1) && ! vq.isVcaMember (qm, vq.vcas[0], t2));
+        // removing a VCA frees its number and takes the strips from it; the others keep theirs
+        vp.removeVca (id1);
+        CHECK (vp.vcas.size() == 1 && ! vp.isVcaMember (pm, *vp.findVca (id2), t2) && vp.isVcaMember (pm, *vp.findVca (id2), t1));
+        CHECK (pm.stripFor (t1)->vcaMask.load() == 2u && pm.vcas[0].gainDb.get() == 0.0f);
+        auto* a3 = vp.addVca ({}, false); CHECK (a3 != nullptr && a3->number == 1 && (pm.vcaShown.load() & 1u) == 0u);
+        // a VCA's fader lane is automated through the VCA of the mixer
+        auto& ed = vp.addEdit ("E", juce::Uuid::null());
+        ed.automationOn = true;
+        auto& lane = ed.addLane (id2, autoparam::fader, vp.mixers.front()->id);
+        lane.pts.push_back (AutoPoint()); lane.pts.back().value = -9.0f;
+        auto plan = automationPlanFor (vp, ed, true, vp.mixers.front()->id);
+        CHECK (plan != nullptr && plan->items.size() == 1 && plan->items[0].target == &pm.vcas[1].gainDb);
+    }
     SECTION ("fade curves are separate for the two ends of a region");
     {
         auto dir = tmp.getChildFile ("xc"); dir.createDirectory();

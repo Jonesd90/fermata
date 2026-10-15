@@ -635,9 +635,11 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                                 bool playbackOnly, float* tapL, float* tapR)
 {
     bool anySolo = false;
+    const juce::uint32 vcaSolo = mp.mixer != nullptr ? mp.mixer->vcaSoloMask() : 0u;      // a soloed VCA keeps every strip it controls open
     for (auto& nd : mp.order)
     {
-        const bool me = (nd->kind == NodeKind::Track && nd->strip->solo.get()) || (nd->kind == NodeKind::IntBus && nd->bus->solo.get());
+        const juce::uint32 vm = nd->kind == NodeKind::Track ? nd->strip->vcaMask.load (std::memory_order_relaxed) : nd->kind == NodeKind::IntBus ? nd->bus->vcaMask.load (std::memory_order_relaxed) : 0u;
+        const bool me = (nd->kind == NodeKind::Track && nd->strip->solo.get()) || (nd->kind == NodeKind::IntBus && nd->bus->solo.get()) || (vm & vcaSolo) != 0;
         nd->soloHeard = me;
         anySolo = anySolo || me;
     }
@@ -757,6 +759,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             }
             audible = ! st->mute.get() && (! anySolo || st->solo.get() || nd.soloHeard);
             faderGain = dbToGain (st->gainDb.get());
+            if (const auto vm = st->vcaMask.load (std::memory_order_relaxed); vm != 0 && mp.mixer != nullptr) faderGain *= mp.mixer->vcaGain (vm);      // the VCAs of this strip add their gain
             lastGain = &st->lastGain; lastPre = &st->lastPre; meterL = &st->meterL; meterR = &st->meterR;
         }
         else   // Int Bus or Ext Bus: what is sent to it, through its inserts
@@ -768,6 +771,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             for (auto& slot : b->slots) slot.process (view);
             audible = ! b->mute.get();
             faderGain = dbToGain (b->gainDb.get());
+            if (const auto vm = b->vcaMask.load (std::memory_order_relaxed); vm != 0 && mp.mixer != nullptr) faderGain *= mp.mixer->vcaGain (vm);
             lastGain = &b->lastGain; lastPre = &b->lastPre; meterL = &b->meterL; meterR = &b->meterR;
         }
 

@@ -16,6 +16,7 @@ namespace td
 {
 constexpr int kSendSlots        = 2;    // VST3 inserts that can sit between a channel and one of its sends
 constexpr float kSendOffDb      = -60.0f;   // a send at or below this level is off
+constexpr int kMaxVcas          = 16;   // VCA faders per project (numbered 1 .. 16)
 constexpr int kNumSlots         = 4;    // VST3 insert slots per strip / fx channel
 /** Every piece of audio starts and ends with a short fade (seconds) so nothing clicks; the files are never touched. Editable per piece. */
 constexpr double kDefaultEdgeFade = 0.025;           // the fade at the start / end of an edit, and of a take, until the user changes it (25 ms)

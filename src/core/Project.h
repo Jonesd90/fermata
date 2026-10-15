@@ -49,7 +49,15 @@ struct TrackDef
     (fed by tracks / Int Buses, MUST go to driver outputs or nowhere). */
 struct BusDef { juce::Uuid id; juce::String name; bool external = false; juce::uint32 colour = 0; };
 
-enum class NodeKind { None, Track, IntBus, ExtBus };
+/** A VCA fader: one of up to 16, numbered 1 .. 16 (the number is kept when others are removed). It carries no audio: in each mixer it controls the level of the audio tracks and
+    Int Buses chosen for it there (see VcaState). Written "4 - Strings" when it has a name. */
+struct VcaDef
+{
+    juce::Uuid id; int number = 1; juce::String name; juce::uint32 colour = 0;
+    juce::String label() const { return juce::String (number) + (name.trim().isNotEmpty() ? " - " + name.trim() : juce::String()); }
+};
+
+enum class NodeKind { None, Track, IntBus, ExtBus, Vca };
 enum class SendResult { Refused, Changed, RoutingChanged };
 struct OutputDef { juce::String name; juce::String driverName; };
 
@@ -140,6 +148,18 @@ public:
     /** Global indices (into 'buses') of the Int Buses / Ext Buses, in the order they were added or arranged. */
     std::vector<int> busIndices (bool external) const;
     BusDef* findBus (const juce::Uuid&);
+    // --- VCAs (message thread)
+    std::vector<VcaDef> vcas;                   // sorted by number
+    /** Adds a VCA with the lowest free number (nullptr when all 16 are in use). */
+    VcaDef* addVca (const juce::String& vcaName = {}, bool inProcessingAndEditMixers = false);
+    void showVca (MixerState& mixer, const VcaDef& vca, bool shown);
+    void removeVca (const juce::Uuid& id);
+    VcaDef* findVca (const juce::Uuid&);
+    const VcaDef* findVca (const juce::Uuid&) const;
+    VcaDef* vcaByNumber (int number);
+    /** Puts the audio track or Int Bus 'node' under (or takes it from) the VCA of 'mixer'. */
+    void setVcaMember (MixerState& mixer, const VcaDef& vca, const juce::Uuid& node, bool on);
+    bool isVcaMember (const MixerState& mixer, const VcaDef& vca, const juce::Uuid& node) const;
     NodeKind kindOf (const juce::Uuid&) const;
     /** Gives an audio track or a bus its own colour (ARGB; 0 = back to the automatic colour). Everything that shows the channel repaints. */
     void setChannelColour (const juce::Uuid&, juce::uint32 argb);

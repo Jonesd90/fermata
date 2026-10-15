@@ -121,7 +121,7 @@ inline const std::vector<juce::uint32>& palette()
 /** The colour a channel has when you have not picked one: audio tracks blue, Int Buses violet, Ext Buses red. */
 inline juce::Colour automaticFor (NodeKind k)
 {
-    return juce::Colour (k == NodeKind::IntBus ? 0xff7a5bc4 : k == NodeKind::ExtBus ? 0xffc9503f : 0xff3f7fc4);
+    return juce::Colour (k == NodeKind::IntBus ? 0xff7a5bc4 : k == NodeKind::ExtBus ? 0xffc9503f : k == NodeKind::Vca ? 0xffd9a21b : 0xff3f7fc4);
 }
 
 inline juce::Colour of (const Project& p, const juce::Uuid& id)

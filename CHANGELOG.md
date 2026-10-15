@@ -6,6 +6,12 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.45.0
+- **VCA faders.** A new kind of mixer strip that carries no audio: its fader moves the level of the audio tracks and Int Buses assigned to it by the same amount (a -4 dB move lowers each by 4 dB), while every strip keeps its own fader position. A strip can be under several VCAs (the gains add). The VCA strip has M and S (mute / solo everything it controls), an **Assign...** button that opens a list of tracks and Int Buses to tick, a name box (shown as `4 - Strings`) and a **Remove strip** button. Up to 16 VCAs, numbered 1 to 16; the number stays when others are removed. Every controlled strip gets a glowing number for each of its VCAs on its coloured bar. Ext Buses cannot be controlled (they are where sound leaves).
+- **Project designer: new "5. VCAs" tab** to add, name and delete VCAs; they appear in the processing mixer (and the Edit mixers). Mixers is now tab 6.
+- **+ Strip... button** under the Phase scope / Mono buttons of every mixer: add an Int Bus, an Ext Bus or a VCA (a new one, or one that exists in the project but is not in this mixer yet).
+- The VCA levels, mutes, solos, assignments and which mixers show them are saved with the project and the mixer files, and are copied with the mix. Bounces and the Mastering window hear the VCAs like the live mixer. A VCA's fader is the only thing that can be automated (the playback side is in; the lane row in the Edit window comes next).
+
 ## 2.44.0
 - **ReTouch and De-click in one window.** The Spectral Repair and De-Click windows are now the same window with two buttons, **ReTouch** (key R) and **De-click** (key D), sharing the picture, the box, Undo and the list of fixes. De-click uses only the time span of the box (or the whole picture if there is no box) and ignores its pitch range; the Click sensitivity slider sits next to the buttons.
 - **ReTouch (Attenuate) keeps the harmonics' decay.** It now measures the level of each pitch just before and just after the box and slides smoothly between the two, so a harmonic that is fading out keeps fading at the same rate through the fix, with no bump. (Measured against RX: harmonic ridge change -0.73 dB, was -2.76 dB.)

@@ -131,6 +131,7 @@ var stripToVar (const StripState& s, const juce::Uuid& trackId, bool inserts)
     put (so, "panL", s.panL.get()); put (so, "panR", s.panR.get());
     put (so, "mute", s.mute.get()); put (so, "solo", s.solo.get());
     put (so, "outOn", s.outOn.get()); put (so, "outDest", s.outDest.toString());
+    if (const auto vm = s.vcaMask.load(); vm != 0) put (so, "vcaMask", (juce::int64) vm);
     put (so, "sendList", sendsToVar (s.sends, inserts));
     if (inserts) put (so, "slots", slotsToVar (s.slots));
     return so;
@@ -146,6 +147,7 @@ void stripFromVar (StripState& s, const var& sv, const InsertFactory& factory, d
         s.mute.set ((bool) sv["mute"]); s.solo.set ((bool) sv["solo"]);
         s.outOn.set (sv.hasProperty ("outOn") ? (bool) sv["outOn"] : false);          // older projects had no output button: nothing was routed that way
         s.outDest = juce::Uuid (sv["outDest"].toString());
+        s.vcaMask.store ((juce::uint32) (juce::int64) sv.getProperty ("vcaMask", (juce::int64) 0));
     }
     if (sv.hasProperty ("sendList")) sendsFromVar (s.sends, sv["sendList"], factory, sr, block, inserts, sendLevels);
     else if (sendLevels)
@@ -161,6 +163,7 @@ var busToVar (const BusState& s, const juce::Uuid& busId, bool inserts, bool wit
     put (o, "bus", busId.toString()); put (o, "gainDb", s.gainDb.get()); put (o, "mute", s.mute.get()); put (o, "solo", s.solo.get());
     if (withOutput) put (o, "outFirst", s.outFirst.load());
     put (o, "outOn", s.outOn.get()); put (o, "outDest", s.outDest.toString());
+    if (const auto vm = s.vcaMask.load(); vm != 0) put (o, "vcaMask", (juce::int64) vm);
     put (o, "sendList", sendsToVar (s.sends, inserts));
     if (inserts) put (o, "slots", slotsToVar (s.slots));
     return o;
@@ -174,9 +177,36 @@ void busFromVar (BusState& s, const var& v, const InsertFactory& factory, double
         if (withOutput && v.hasProperty ("outFirst")) s.outFirst.store ((int) v["outFirst"]);
         s.outOn.set (v.hasProperty ("outOn") ? (bool) v["outOn"] : false);
         s.outDest = juce::Uuid (v["outDest"].toString());
+        s.vcaMask.store ((juce::uint32) (juce::int64) v.getProperty ("vcaMask", (juce::int64) 0));
     }
     if (v.hasProperty ("sendList")) sendsFromVar (s.sends, v["sendList"], factory, sr, block, inserts, sendLevels);
     if (inserts) slotsFromVar (s.slots, v["slots"], factory, sr, block);
+}
+
+var vcaStatesToVar (const MixerState& m, const std::vector<VcaDef>& defs)
+{
+    juce::Array<var> a;
+    for (auto& d : defs)
+    {
+        const auto& s = m.vcas[juce::jlimit (0, kMaxVcas - 1, d.number - 1)];
+        var o = obj();
+        put (o, "number", d.number); put (o, "gainDb", s.gainDb.get()); put (o, "mute", s.mute.get()); put (o, "solo", s.solo.get());
+        put (o, "shown", (m.vcaShown.load() & (1u << juce::jlimit (0, kMaxVcas - 1, d.number - 1))) != 0);
+        a.add (o);
+    }
+    return a;
+}
+void vcaStatesFromVar (MixerState& m, const var& v)
+{
+    if (auto* a = v.getArray())
+        for (auto& o : *a)
+        {
+            const int n = (int) o["number"];
+            if (n < 1 || n > kMaxVcas) continue;
+            auto& s = m.vcas[n - 1];
+            s.gainDb.set ((float) (double) o["gainDb"]); s.mute.set ((bool) o["mute"]); s.solo.set ((bool) o["solo"]);
+            if ((bool) o["shown"]) m.vcaShown.fetch_or (1u << (n - 1)); else m.vcaShown.fetch_and (~(1u << (n - 1)));
+        }
 }
 } // namespace
 
@@ -184,7 +214,7 @@ Project::Project() { createDefaultDesign(); }
 
 void Project::createDefaultDesign()
 {
-    inputs.clear(); tracks.clear(); buses.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); preampDevices.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); preampDevices.clear();
     setInputCount (8);
     setOutputCount (4);
     addMixer ("Processing mixer");
@@ -353,6 +383,74 @@ void Project::removeBus (int index)
     structureChanged();
 }
 
+VcaDef* Project::addVca (const juce::String& vcaName, bool inProcessingAndEditMixers)
+{
+    for (int n = 1; n <= kMaxVcas; ++n)
+        if (vcaByNumber (n) == nullptr)
+        {
+            VcaDef d; d.number = n; d.name = vcaName;
+            vcas.push_back (d);
+            std::sort (vcas.begin(), vcas.end(), [] (const VcaDef& x, const VcaDef& y) { return x.number < y.number; });
+            if (inProcessingAndEditMixers)
+                for (size_t i = 0; i < mixers.size(); ++i) if (i == 0 || ! mixers[i]->editId.isNull()) mixers[i]->vcaShown.fetch_or (1u << (n - 1));
+            structureChanged();
+            return findVca (d.id);
+        }
+    return nullptr;
+}
+
+void Project::removeVca (const juce::Uuid& id)
+{
+    for (size_t i = 0; i < vcas.size(); ++i)
+        if (vcas[i].id == id)
+        {
+            const int bit = vcas[i].number - 1;
+            for (auto& m : mixers)                                         // nothing is controlled by it any more, and a later VCA with this number starts fresh
+            {
+                for (auto& s : m->stripPool) s->vcaMask.fetch_and (~(1u << bit));
+                for (auto& b : m->busPool)   b->vcaMask.fetch_and (~(1u << bit));
+                m->vcaShown.fetch_and (~(1u << bit));
+                m->vcas[bit].gainDb.set (0.0f); m->vcas[bit].mute.set (false); m->vcas[bit].solo.set (false);
+            }
+            vcas.erase (vcas.begin() + (std::ptrdiff_t) i);
+            break;
+        }
+    structureChanged();
+}
+
+void Project::showVca (MixerState& m, const VcaDef& vca, bool shown)
+{
+    const juce::uint32 bit = 1u << juce::jlimit (0, kMaxVcas - 1, vca.number - 1);
+    if (shown) m.vcaShown.fetch_or (bit); else m.vcaShown.fetch_and (~bit);
+    markDirty(); structureChanged();
+}
+
+VcaDef* Project::findVca (const juce::Uuid& id)             { for (auto& v : vcas) if (v.id == id) return &v; return nullptr; }
+const VcaDef* Project::findVca (const juce::Uuid& id) const { for (auto& v : vcas) if (v.id == id) return &v; return nullptr; }
+VcaDef* Project::vcaByNumber (int number)                    { for (auto& v : vcas) if (v.number == number) return &v; return nullptr; }
+
+void Project::setVcaMember (MixerState& m, const VcaDef& vca, const juce::Uuid& node, bool on)
+{
+    const juce::uint32 bit = 1u << juce::jlimit (0, kMaxVcas - 1, vca.number - 1);
+    std::atomic<juce::uint32>* mask = nullptr;
+    switch (kindOf (node))
+    {
+        case NodeKind::Track:  mask = &m.stripFor (node)->vcaMask; break;
+        case NodeKind::IntBus: mask = &m.busFor (node)->vcaMask; break;       // (an Ext Bus, being where sound leaves, is never controlled by a VCA)
+        default: return;
+    }
+    if (on) mask->fetch_or (bit); else mask->fetch_and (~bit);
+    markDirty();
+}
+
+bool Project::isVcaMember (const MixerState& m, const VcaDef& vca, const juce::Uuid& node) const
+{
+    const juce::uint32 bit = 1u << juce::jlimit (0, kMaxVcas - 1, vca.number - 1);
+    for (auto& s : m.stripPool) if (s->trackId == node) return (s->vcaMask.load() & bit) != 0;
+    for (auto& b : m.busPool)   if (b->busId == node)   return (b->vcaMask.load() & bit) != 0;
+    return false;
+}
+
 std::vector<int> Project::busIndices (bool external) const
 {
     std::vector<int> r;
@@ -381,6 +479,7 @@ NodeKind Project::kindOf (const juce::Uuid& id) const
 {
     for (auto& t : tracks) if (t.id == id) return NodeKind::Track;
     for (auto& b : buses) if (b.id == id) return b.external ? NodeKind::ExtBus : NodeKind::IntBus;
+    for (auto& v : vcas)  if (v.id == id) return NodeKind::Vca;
     return NodeKind::None;
 }
 
@@ -388,12 +487,14 @@ void Project::setChannelColour (const juce::Uuid& id, juce::uint32 argb)
 {
     for (auto& t : tracks) if (t.id == id) { t.colour = argb; changed(); return; }
     for (auto& b : buses)  if (b.id == id) { b.colour = argb; changed(); return; }
+    for (auto& v : vcas)   if (v.id == id) { v.colour = argb; changed(); return; }
 }
 
 juce::uint32 Project::channelColour (const juce::Uuid& id) const
 {
     for (auto& t : tracks) if (t.id == id) return t.colour;
     for (auto& b : buses)  if (b.id == id) return b.colour;
+    for (auto& v : vcas)   if (v.id == id) return v.colour;
     return 0;
 }
 
@@ -430,6 +531,7 @@ String Project::nodeName (const juce::Uuid& id) const
 {
     for (auto& t : tracks) if (t.id == id) return t.name;
     for (auto& b : buses) if (b.id == id) return b.name;
+    for (auto& v : vcas)  if (v.id == id) return v.label();
     return {};
 }
 
@@ -664,6 +766,7 @@ var Project::mixSnapshot (const MixerState& m, bool withInserts) const
         if (s != nullptr) bs.add (busToVar (*s, f.id, withInserts, false));   // an Ext Bus keeps its own driver outputs
     }
     put (root, "strips", strips); put (root, "buses", bs); put (root, "inserts", withInserts);
+    put (root, "vcaStates", vcaStatesToVar (m, vcas));
     return root;
 }
 
@@ -688,6 +791,7 @@ void Project::applyMix (MixerState& to, const var& snap, double sampleRate, int 
             for (auto& p : to.busPool) if (p->busId == id) f = p.get();
             if (f != nullptr) busFromVar (*f, fv, insertFactory, sampleRate, maxBlock, withInserts, false, parts.faders, parts.sends);
         }
+    if (parts.faders) vcaStatesFromVar (to, snap["vcaStates"]);
     markDirty();
 }
 
@@ -804,6 +908,7 @@ var Project::mixerToVar (const MixerState& mref) const
         if (s != nullptr) fxs.add (busToVar (*s, f.id, true, true));
     }
     put (o, "busStates", fxs);
+    put (o, "vcaStates", vcaStatesToVar (*m, vcas));
     return o;
 }
 
@@ -922,6 +1027,11 @@ var Project::toVar (bool editorialOnly) const
     juce::Array<var> fx;
     for (auto& f : buses) { var o = obj(); put (o, "id", f.id.toString()); put (o, "name", f.name); put (o, "external", f.external); put (o, "colour", (juce::int64) f.colour); fx.add (o); }
     put (root, "buses", fx);
+    {
+        juce::Array<var> va;
+        for (auto& d : vcas) { var o = obj(); put (o, "id", d.id.toString()); put (o, "number", d.number); put (o, "name", d.name); put (o, "colour", (juce::int64) d.colour); va.add (o); }
+        put (root, "vcas", va);
+    }
 
     juce::Array<var> outs;
     for (auto& o : outputs) { var oo = obj(); put (oo, "name", o.name); put (oo, "driverName", o.driverName); outs.add (oo); }
@@ -1002,7 +1112,7 @@ bool Project::fromVar (const var& root)
     if (! root.isObject() || (root.getProperty ("format", {}).toString() != "Fermata project" && root.getProperty ("format", {}).toString() != "TakeDAW project"))
         return false;
 
-    inputs.clear(); tracks.clear(); buses.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); preampDevices.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); preampDevices.clear();
     name = root.getProperty ("name", "Untitled").toString();
     windowBounds.clear();
     if (auto* wb = root["windowBounds"].getDynamicObject())
@@ -1036,6 +1146,13 @@ bool Project::fromVar (const var& root)
         for (auto& v : *a) { BusDef f; f.id = juce::Uuid (v["id"].toString()); f.name = v["name"].toString(); f.external = (bool) v["external"]; f.colour = (juce::uint32) (juce::int64) v["colour"]; buses.push_back (f); }
     else if (auto* a = root["fx"].getArray())
         for (auto& v : *a) { BusDef f; f.id = juce::Uuid (v["id"].toString()); f.name = v["name"].toString(); buses.push_back (f); legacyFx.push_back (f.id); }
+    if (auto* a = root["vcas"].getArray())
+        for (auto& v : *a)
+        {
+            VcaDef d; d.id = juce::Uuid (v["id"].toString()); d.number = (int) v["number"]; d.name = v["name"].toString(); d.colour = (juce::uint32) (juce::int64) v["colour"];
+            if (d.number >= 1 && d.number <= kMaxVcas) vcas.push_back (d);
+        }
+    std::sort (vcas.begin(), vcas.end(), [] (const VcaDef& x, const VcaDef& y) { return x.number < y.number; });
     if (auto* a = root["outputs"].getArray())
         for (auto& v : *a)
         {
@@ -1074,6 +1191,7 @@ bool Project::fromVar (const var& root)
                 if (auto* fs = v[key].getArray())
                     for (auto& fv : *fs)
                         busFromVar (*m->busFor (juce::Uuid (fv.hasProperty ("bus") ? fv["bus"].toString() : fv["fx"].toString())), fv, insertFactory, restoreSampleRate, restoreBlock, true, true);
+            vcaStatesFromVar (*m, v["vcaStates"]);
             mixers.push_back (std::move (m));
         }
 

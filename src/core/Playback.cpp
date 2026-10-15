@@ -254,6 +254,13 @@ std::shared_ptr<AutomationPlan> automationPlanFor (Project& p, const EditDef& e,
             if (m == nullptr && ! p.mixers.empty()) m = p.mixers.front().get();
         }
         else for (auto& mm : p.mixers) if (mm->id == lane.mixerId) m = mm.get();
+        if (const auto* vd = p.findVca (lane.trackId); vd != nullptr && m != nullptr)      // a VCA's fader lane (the only automatable thing of a VCA): trackId holds the VCA's id
+        {
+            if (lane.param != autoparam::fader) continue;
+            AutomationPlan::Item vi; vi.lane = lane; vi.target = &m->vcas[juce::jlimit (0, kMaxVcas - 1, vd->number - 1)].gainDb;
+            plan->items.push_back (std::move (vi));
+            continue;
+        }
         const auto* t = p.findTrack (lane.trackId);
         if (m == nullptr || t == nullptr) continue;
         auto* strip = m->stripFor (lane.trackId);
