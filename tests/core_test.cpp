@@ -3276,6 +3276,53 @@ int main()
         }
     }
 
+    SECTION ("out / in streams: each take is corrected on its own and the edit point stays put");
+    {
+        auto mk = [] (juce::int64 srcIn, juce::int64 len, juce::int64 start, const juce::File& f)
+        {
+            EditRegion r; r.sampleRate = 48000.0; r.srcIn = srcIn; r.srcOut = srcIn + len; r.startSample = start; r.sourceLength = 48000 * 60;
+            RegionFile rf; rf.numChannels = 1; rf.file = f; r.files.push_back (rf);
+            return r;
+        };
+        const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("fermata-stream-test");
+        dir.deleteRecursively(); dir.createDirectory();
+        auto fa = dir.getChildFile ("a.wav"), fb = dir.getChildFile ("b.wav"), na = dir.getChildFile ("a fixed.wav"), nb = dir.getChildFile ("b fixed.wav");
+        for (auto& f : { fa, fb, na, nb }) f.replaceWithText ("x");
+        EditDef e; e.sampleRate = 48000.0;
+        e.regions.push_back (mk (0, 48000 * 10, 0, fa));
+        e.regions.push_back (mk (48000 * 20, 48000 * 10, 48000 * 10, fb));
+        e.setDefaultJoinFades (1);
+        e.regions[0].outStart += 0.3; e.regions[0].outEnd += 0.3; e.regions[1].inStart += 0.3; e.regions[1].inEnd += 0.3; e.clampAll();
+        CHECK (e.commitAllJoins() == 1);
+        const auto J = e.editPointSample (1);
+        const auto ib = e.regions[1].fadeInBegin(), oe = e.regions[0].fadeOutFinish();
+        const EditDef before = e;
+        // marks from 2 s before the edit to 2 s after: the OUT stream corrects its own take through the edit (its handle), the IN stream its own take from before the edit
+        const juce::int64 from = J - 96000, to = J + 96000, h = 48000;
+        std::vector<RegionJob> jobs (2);
+        {
+            auto& A = e.regions[0]; auto& rj = jobs[0]; rj.regionId = A.id;
+            rj.a = A.srcIn + (from - A.startSample); rj.b = A.srcOut; rj.idx = { 0 }; rj.src = { fa }; rj.dest = { na }; rj.fileStart = { 0 };
+            audioops::PieceResult r; r.file = na; r.from = rj.a - h; r.to = A.srcOut + (to - A.endSample()) + h; r.ok = true; rj.results.push_back (r);
+            auto& B = e.regions[1]; auto& rk = jobs[1]; rk.regionId = B.id;
+            rk.a = B.srcIn; rk.b = B.srcIn + (to - B.startSample); rk.idx = { 0 }; rk.src = { fb }; rk.dest = { nb }; rk.fileStart = { 0 };
+            audioops::PieceResult r2; r2.file = nb; r2.from = B.srcIn - (B.startSample - from) - h; r2.to = rk.b + h; r2.ok = true; rk.results.push_back (r2);
+        }
+        const auto base = e.regions;
+        CHECK (applyRegionJobs (e, base, jobs, "fixed"));
+        // find the join between the corrected out piece and the corrected in piece: it is still a real edit point at the same place with the same fades
+        int k = -1; for (int q = 1; q < (int) e.regions.size(); ++q) if (! e.isFixJoin (q) && e.regions[(size_t) q].files[0].file == nb) k = q;
+        CHECK (k > 0);
+        if (k > 0)
+        {
+            CHECK (e.editPointSample (k) == J);
+            CHECK (e.regions[(size_t) k].fadeInBegin() == ib && e.regions[(size_t) k - 1].fadeOutFinish() == oe);
+            CHECK (e.regions[(size_t) k - 1].files[0].file == na);                                           // the out take's own corrected file plays up to the edit (and under its fade past it)
+            CHECK (e.regions[(size_t) k - 1].endSample() == J && e.regions[(size_t) k].startSample == J);
+        }
+        dir.deleteRecursively();
+    }
+
     SECTION ("listener feedback: import, project round trip, review page");
     {
         // the colleague's marker list (tab separated; the comment text is in "Marker Name", the person in "Comment", times are timecode)

@@ -6,6 +6,12 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.40.0
+- **Edit points inside an offline correction: OUT STREAM and IN STREAM.** When marks 1 and 2 contain an edit point and you open Spectral Repair, De-Click, Pitch curve or ReHarmoniSer, two windows open side by side over the same marked part. The OUT STREAM (orange) is the take that plays up to the edit, shown on its own and carried on past the edit through its handle; the IN STREAM (blue) is the take that plays from the edit, shown on its own and started before it. No more mixed picture with a false click line at the join. Correct each stream in its own window.
+- **Write back** in each window only gets that stream ready (press it on an untouched stream to leave that stream as it is). When both are ready they go into the edit together, as ONE undo step, and the edit point and its fades stay exactly where they are: no rendered piece over the join. The X or Cancel on either window closes both and changes nothing.
+- The crossfade at the edit now uses corrected audio on both sides (each take's handle is corrected too).
+- One edit point at a time: if the marks contain more than one, Fermata asks you to mark a shorter part. With no edit point between the marks everything works as before.
+
 ## 2.39.0
 - **The edit point is now where the pieces really change.** When you move an edit point in the Trim window, the boundary between the two pieces now moves to the middle of the crossfade (where the numbered edit flag is). The fades stay at exactly the same times, so the sound is sample-for-sample unchanged. The result: the old blue line is gone, the piece name banner starts at the edit, the spectrogram and the offline fixes use the take you actually hear, and the false click line at the old position disappears. Edit points you moved in older projects are tidied the same way when the project opens.
 - **The join line in the Trim window is a free reference.** Drag its grip (the little triangle in the ruler) anywhere; it changes nothing in the edit. When you let go, the view re-centres on it, so zooming stays on the new line, and the millisecond readings count from it. "Centre" puts it back on the join.
