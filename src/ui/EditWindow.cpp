@@ -2052,9 +2052,9 @@ bool EditWindowComponent::keyPressed (const juce::KeyPress& k)
     if (c == 'o') { setMark (false); return true; }
     if (c == 'p') { markWholeSelected(); return true; }
     if ((c == '1' || c == '2') && ! k.getModifiers().isAnyModifierKeyDown()) { setFixMark (c == '1'); return true; }
-    if (c == '5' && ! k.getModifiers().isAnyModifierKeyDown())            // 5: take both flags away; a piece selected whole is then what the process windows load
+    if (c == '5' && ! k.getModifiers().isAnyModifierKeyDown())            // 5: take all the flags away (1 / 2 and the I / O points); a piece selected whole is then what the process windows load
     {
-        if (auto* e = edit()) { e->fixIn = -1.0; e->fixOut = -1.0; e->fixTracks.clear(); app.project.changed(); }
+        if (auto* e = edit()) { e->fixIn = -1.0; e->fixOut = -1.0; e->markIn = -1.0; e->markOut = -1.0; e->fixTracks.clear(); app.project.changed(); }
         return true;
     }
     if (c == '.' || c == '>') { app.changeWaveZoom (1.4f);        return true; }          // . bigger waveforms

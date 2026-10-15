@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.40.2
+- **OUT STREAM / IN STREAM windows: clearer and independent.** Each window now has a big coloured banner at the top (orange "OUT STREAM", blue "IN STREAM") saying which take it is. Each can be processed, played, stopped and auditioned on its own, in any order, with the mouse. The keyboard (Space, R, arrows ...) starts with the OUT stream. When you press Write back (Accept in Pitch curve) on a stream, that window goes away and the keyboard moves to the other one; when both have been written back they go into the edit together (one undo step). The X on the remaining window cancels everything, including a stream already written back.
+- **Key 5 in the edit window now clears the I / O points as well as the 1 / 2 flags.**
+
 ## 2.40.1
 - **Trimming the start or end of the edit now removes the audio it leaves out.** In the Trim window, when you move the fade-in at the very start of the edit later (say from 0:00 to 0:04), the piece now begins where the fade begins and the unwanted audio before it is cut off, instead of staying there as silence. With Slip right on, everything after it moves up to close the space (the first piece stays at the start of the edit); with it off, the rest stays where it is. The same at the end of the edit: moving the fade-out earlier shortens the last piece. The fade keeps its shape and the sound from the fade on does not change. (The audio you cut stays in the take: you can slide it back later.)
 

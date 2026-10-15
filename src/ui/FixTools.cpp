@@ -100,6 +100,34 @@ inline juce::String regionsSignature (const std::vector<EditRegion>& v)
     return s;
 }
 
+/** What a stream window holds: a coloured banner that says which stream it is, and the tool's own window below it. */
+class StreamFrame : public juce::Component
+{
+public:
+    StreamFrame (std::unique_ptr<juce::Component> content, juce::Colour tint, juce::String big, juce::String small)
+        : inner (std::move (content)), colour (tint), bigText (std::move (big)), smallText (std::move (small))
+    {
+        addAndMakeVisible (*inner);
+        setSize (inner->getWidth(), inner->getHeight() + kBanner);
+    }
+    void focusInner() { inner->grabKeyboardFocus(); }
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().removeFromTop (kBanner);
+        g.setColour (colour); g.fillRect (r);
+        g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (22.0f, juce::Font::bold));
+        const int w = juce::GlyphArrangement::getStringWidthInt (juce::Font (juce::FontOptions (22.0f, juce::Font::bold)), bigText);
+        g.drawText (bigText, r.withTrimmedLeft (14).withWidth (w + 8), juce::Justification::centredLeft);
+        g.setColour (juce::Colours::white.withAlpha (0.9f)); g.setFont (juce::FontOptions (13.0f));
+        g.drawText (smallText, r.withTrimmedLeft (14 + w + 24).withTrimmedRight (10), juce::Justification::centredLeft, true);
+    }
+    void resized() override { auto r = getLocalBounds(); r.removeFromTop (kBanner); inner->setBounds (r); }
+    static constexpr int kBanner = 38;
+    std::unique_ptr<juce::Component> inner;
+private:
+    juce::Colour colour; juce::String bigText, smallText;
+};
+
 struct StreamPair : std::enable_shared_from_this<StreamPair>
 {
     AppContext* app = nullptr; juce::Uuid eid; std::vector<EditRegion> base; juce::String undoLabel, title;
@@ -134,18 +162,42 @@ struct StreamPair : std::enable_shared_from_this<StreamPair>
         on[s] = want;
         return refresh();
     }
+    void focus (int s)
+    {
+        if (win[s] == nullptr) return;
+        win[s]->toFront (true);
+        if (auto* f = dynamic_cast<StreamFrame*> (win[s]->getContentComponent())) f->focusInner();
+    }
+    /** Both windows close and, unless everything was written, nothing of what was made is kept. */
     void closeAll()
     {
         if (closing) return;
         closing = true;
         auto self = shared_from_this();
-        juce::MessageManager::callAsync ([self] { self->win[0].reset(); self->win[1].reset(); });
+        juce::MessageManager::callAsync ([self]
+        {
+            self->win[0].reset(); self->win[1].reset();                      // (a window that is closed without being written puts everything back itself)
+            if (! self->committed)
+            {
+                for (int q = 0; q < 2; ++q)                                  // a stream that was written back is only kept when the other one is too
+                    if (self->written[q]) if (auto* jb = self->jobsOf[q] ? self->jobsOf[q]() : nullptr) { for (auto& rj : *jb) for (auto& r : rj.results) r.file.deleteFile(); jb->clear(); }
+                self->on[0] = self->on[1] = false;
+                self->refresh();
+            }
+        });
     }
-    /** A stream window's 'Write back': this stream is ready. When both are, both go into the edit together, as one undo step. */
+    /** A stream window's 'Write back': that window goes away (the keyboard then belongs to the other one) and its corrected audio waits. When both streams have been written back,
+        both go into the edit together, as one undo step. Closing the remaining window instead cancels everything. */
     void wrote (int s, std::function<bool()> c)
     {
         commit[s] = std::move (c); written[s] = true;
-        if (! (written[0] && written[1]) || committed) return;
+        if (! (written[0] && written[1]))
+        {
+            auto self = shared_from_this();
+            juce::MessageManager::callAsync ([self, s] { if (self->closing) return; self->win[s].reset(); self->focus (1 - s); });
+            return;
+        }
+        if (committed) return;
         committed = true;
         for (int q = 0; q < 2; ++q) { auto* jb = jobsOf[q] ? jobsOf[q]() : nullptr; on[q] = jb != nullptr && ! jb->empty(); }
         bool any = on[0] || on[1];
@@ -164,7 +216,9 @@ struct StreamPair : std::enable_shared_from_this<StreamPair>
             juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon).withTitle (title)
                                               .withMessage ("The edit was changed while the two streams were open (or the corrected audio no longer fits it), so nothing was changed. Please try again.").withButton ("OK"), nullptr);
         }
-        closeAll();
+        closing = true;
+        auto self = shared_from_this();
+        juce::MessageManager::callAsync ([self] { self->win[0].reset(); self->win[1].reset(); });
     }
 };
 
@@ -181,7 +235,10 @@ static void launchStream (const std::shared_ptr<StreamPair>& pair, int slot, std
 {
     const auto tint = slot == 0 ? juce::Colour (0xffc4511a) : juce::Colour (0xff1f6f8b);
     auto w = std::make_unique<StreamWindow> (title, theme::window.interpolatedWith (tint, 0.28f), pair);
-    w->setContentOwned (content.release(), true);
+    const juce::String big = slot == 0 ? "OUT STREAM" : "IN STREAM";
+    const juce::String small = slot == 0 ? "the take that plays UP TO the edit point (carried on past it, where its crossfade uses it)  -  Write back closes this window; the other stream is then yours"
+                                         : "the take that plays FROM the edit point (started before it, where its crossfade uses it)  -  Write back closes this window; the other stream is then yours";
+    w->setContentOwned (new StreamFrame (std::move (content), tint.darker (0.15f), big, small), true);
     w->setUsingNativeTitleBar (true);
     w->setResizable (true, true);
     juce::Rectangle<int> area (0, 0, 1900, 1000);
@@ -608,7 +665,7 @@ public:
         if (ctx.pairWritten)
         {
             acceptBtn.setButtonText ("Accept stream"); closeBtn.setButtonText ("Cancel both");
-            acceptBtn.setTooltip ("Gets this stream ready (with no Preview first, it leaves this stream as it is). When BOTH streams have been accepted the corrected audio goes into the edit, with the edit point and its fades exactly where they are. Cancel (or the X) closes both windows and changes nothing.");
+            acceptBtn.setTooltip ("Gets this stream ready and closes this window (with no Preview first, it leaves this stream as it is). When BOTH streams have been accepted the corrected audio goes into the edit, with the edit point and its fades exactly where they are. Cancel (or the X) closes both windows and changes nothing.");
         }
         refresh();
         ticker.owner = this; ticker.startTimerHz (30);
@@ -723,9 +780,7 @@ private:
         if (ctx.pairWritten && ! tentative)                                  // an untouched stream: it is left as it is
         {
             if (ctx.stop) ctx.stop();
-            pairLocked = true; status.setText ("Left unchanged.  Waiting for the other stream: press Accept there too. Cancel closes both and changes nothing.", juce::dontSendNotification); refresh();
-            juce::Component::SafePointer<CurveDialog> me (this);
-            ctx.pairWritten ([me] { if (me == nullptr) return false; me->accepted = true; return true; });
+            accepted = true; ctx.pairWritten ([] { return true; });
             return;
         }
         if (! tentative || stale) return;
@@ -737,9 +792,7 @@ private:
         }
         if (ctx.pairWritten)
         {
-            pairLocked = true; status.setText ("Accepted.  Waiting for the other stream: press Accept there too. Cancel closes both and changes nothing.", juce::dontSendNotification); refresh();
-            juce::Component::SafePointer<CurveDialog> me (this);
-            ctx.pairWritten ([me] { if (me == nullptr) return false; me->accepted = true; return true; });
+            accepted = true; ctx.pairWritten ([] { return true; });
             return;
         }
         if (ctx.accept) ctx.accept();
@@ -1384,7 +1437,7 @@ public:
         if (ctx.pairWritten)
         {
             finishBtn.setButtonText ("Write back this stream"); close.setButtonText ("Cancel both");
-            finishBtn.setTooltip ("Gets this stream ready. When BOTH streams have been written back (press it on an untouched stream to leave that one as it is) the corrected audio goes into the edit, with the edit point and its fades exactly where they are. Cancel (or the X) closes both windows and changes nothing.");
+            finishBtn.setTooltip ("Gets this stream ready and closes this window (press it on an untouched stream to leave that one as it is). When BOTH streams have been written back the corrected audio goes into the edit, with the edit point and its fades exactly where they are. Cancel (or the X) closes both windows and changes nothing.");
         }
         setWantsKeyboardFocus (true);                                              // Space plays / stops, whatever was clicked last
         for (auto* ch : getChildren()) if (dynamic_cast<juce::Button*> (ch) != nullptr || dynamic_cast<juce::ComboBox*> (ch) != nullptr) ch->setWantsKeyboardFocus (false);
@@ -1758,7 +1811,7 @@ private:
         const auto ops = currentOps();
         if (ops.empty())
         {
-            if (ctx.pairWritten) { lockForPair ("Left unchanged."); juce::Component::SafePointer<RepairDialog> me (this); ctx.pairWritten ([me] { if (me == nullptr) return false; me->accepted = true; return true; }); return; }
+            if (ctx.pairWritten) { if (ctx.stop) ctx.stop(); accepted = true; ctx.pairWritten ([] { return true; }); return; }          // an untouched stream is left as it is; this window goes away
             closeDialogOf (this); return;
         }
         if (prepared && preparedOps == ops.size()) { finishCommit(); return; }
@@ -1790,9 +1843,8 @@ private:
         if (ctx.stop) ctx.stop();
         if (ctx.pairWritten)
         {
-            lockForPair ("Written.");
-            juce::Component::SafePointer<RepairDialog> me (this);
-            ctx.pairWritten ([me] { if (me == nullptr) return false; me->accepted = true; return true; });
+            accepted = true;                                         // (the corrected files wait in the pair; this window goes away and the other stream is next)
+            ctx.pairWritten ([] { return true; });
             return;
         }
         if (! applied)
@@ -2671,6 +2723,7 @@ void repairEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent
     auto pair = makePair (app, eid, nm, declick ? "de-click" : "spectral repair");
     openRepair (app, eid, parent, declick, from, to, outS, pair, 0);
     openRepair (app, eid, parent, declick, from, to, inS, pair, 1);
+    pair->focus (0);                                           // the keyboard (Space ...) starts with the OUT stream
 }
 
 static void openRepair (AppContext& app, const juce::Uuid& eid, juce::Component* parent, bool declick, juce::int64 from, juce::int64 to, const StreamSel& ss, std::shared_ptr<StreamPair> pair, int slot)
@@ -2910,6 +2963,7 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
     auto pair = makePair (app, eid, nm, "reharmoniser");
     openReharmoniser (app, eid, parent, from, to, outS, pair, 0);
     openReharmoniser (app, eid, parent, from, to, inS, pair, 1);
+    pair->focus (0);
 }
 
 static void openReharmoniser (AppContext& app, const juce::Uuid& eid, juce::Component* parent, juce::int64 from, juce::int64 to, const StreamSel& ss, std::shared_ptr<StreamPair> pair, int slot)
@@ -3047,9 +3101,8 @@ static void openReharmoniser (AppContext& app, const juce::Uuid& eid, juce::Comp
             // an OUT / IN stream window: this stream is ready (or left unchanged when nothing was corrected); both go into the edit together when both are ready
             app.stopPlayback();
             if (st->applied) { st->applied = false; pair->put (slot, false); }
-            self->editor.setStatus ((st->jobs.empty() ? juce::String ("Left unchanged. ") : juce::String ("Written. ")) + "Waiting for the other stream: press 'Write back to clip' there too (on an untouched stream it leaves that one as it is). The X closes both windows and changes nothing.", false);
-            self->editor.setInterceptsMouseClicks (false, false);
-            pair->wrote (slot, [st] { st->accepted = true; return true; });
+            st->accepted = true;                                     // (the corrected files wait in the pair; this window goes away and the other stream is next)
+            pair->wrote (slot, [] { return true; });
             return;
         }
         if (st->jobs.empty()) { self->editor.setStatus ("Nothing to write back.", true); return; }
@@ -3291,6 +3344,7 @@ void pitchCurveEdit (AppContext& app, const juce::Uuid& eid, juce::Component* pa
     auto pair = makePair (app, eid, "Pitch curve", "pitch curve");
     openPitchCurve (app, eid, parent, tIn, tOut, outS, pair, 0);
     openPitchCurve (app, eid, parent, tIn, tOut, inS, pair, 1);
+    pair->focus (0);
 }
 
 static void openPitchCurve (AppContext& app, const juce::Uuid& eid, juce::Component* parent, juce::int64 tIn, juce::int64 tOut, const StreamSel& ss, std::shared_ptr<StreamPair> pair, int slot)
