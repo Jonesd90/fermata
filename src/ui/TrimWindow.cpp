@@ -744,7 +744,12 @@ void TrimComponent::dragChanged()
     describe();
 }
 
-void TrimComponent::dragFinished() { app.project.changed(); }
+void TrimComponent::dragFinished()
+{
+    // at the very start / end of the edit the audio that the moved fade leaves out is cut off the piece (and with Slip right on, what follows moves up to close the space)
+    if (auto* e = edit()) { const int k = joinIndex(); if ((k == 0 || k == (int) e->regions.size()) && e->trimEdgeToFade (k, slipRight()) != 0) waves->invalidate(); }
+    app.project.changed();
+}
 
 void TrimComponent::timerCallback()
 {

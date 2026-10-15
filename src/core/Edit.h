@@ -174,6 +174,28 @@ struct EditRegion
             if (std::abs (gains[i].at - at) <= tol) { gains.erase (gains.begin() + (long) i); return true; }
         return false;
     }
+    /** This piece's start moved later by d samples (earlier if negative; its audio did not move): the volume changes, which are counted from the start of the piece, follow.
+        'old' is the piece as it was. The level the old start had been given (and what had happened before the new start) is kept for what is now the start. */
+    void rebaseGains (const EditRegion& old, juce::int64 d)
+    {
+        if (d == 0 || old.gains.empty()) return;
+        EditRegion& b = *this; const EditRegion& oldB = old; const juce::int64 dB = d;
+        const auto tol = (juce::int64) (0.001 * b.sampleRate);
+        b.gains.clear();
+        if (dB > 0)
+        {
+            GainChange c0; c0.at = 0; c0.ramp = 0.0;
+            for (size_t f = 0; f < oldB.files.size(); ++f) c0.db.push_back (oldB.levelDbAt (f, dB));
+            b.gains.push_back (c0);
+            for (auto g : oldB.gains)
+            {
+                const auto rl = (juce::int64) std::llround (g.ramp * b.sampleRate);
+                if (g.at >= dB) { g.at -= dB; b.gains.push_back (g); }
+                else if (g.at + rl > dB) { g.ramp = (double) (g.at + rl - dB) / b.sampleRate; g.at = 0; b.gains.push_back (g); }
+            }
+        }
+        else for (auto g : oldB.gains) { g.at = g.at <= tol ? 0 : g.at - dB; b.gains.push_back (g); }
+    }
     juce::int64 endSample() const noexcept { return startSample + length(); }
     juce::int64 samples (double seconds) const noexcept { return (juce::int64) std::llround (seconds * sampleRate); }
 
@@ -677,6 +699,37 @@ struct EditDef
         return d;
     }
 
+    /** Trim window, at the very START (k = 0) or END (k = number of pieces) of the edit: when the fade has been moved inward, the audio the fade now leaves out (before a fade-in, after a fade-out)
+        is cut off the piece, so it does not sit there as silence. At the start the piece begins where the fade begins; with 'slipRight' everything after it moves earlier by the same amount
+        (the first piece stays at its place), otherwise it stays where it is and a gap is left before it. The fade keeps its shape. Returns how many samples were removed (0 = nothing to do). */
+    juce::int64 trimEdgeToFade (int k, bool slipRight)
+    {
+        const int n = (int) regions.size();
+        if (n == 0 || (k != 0 && k != n)) return 0;
+        if (k == 0)
+        {
+            auto& b = regions.front();
+            const auto d = b.fadeInBegin() - b.startSample;
+            if (d <= 0 || b.waiting.active() || b.length() - d < (juce::int64) (0.01 * b.sampleRate)) return 0;
+            const auto ib = b.fadeInBegin(), ie = b.fadeInFinish(); const auto old = b;
+            b.srcIn += d;
+            if (slipRight) { for (int j = 1; j < n; ++j) regions[(size_t) j].startSample -= d; }
+            else b.startSample += d;
+            b.inStart = 0.0; b.inEnd = (double) (ie - ib) / juce::jmax (1.0, b.sampleRate);
+            b.rebaseGains (old, d);
+            clampFades (0);
+            return d;
+        }
+        auto& a = regions.back();
+        const auto d = a.endSample() - a.fadeOutFinish();
+        if (d <= 0 || a.waiting.active() || a.length() - d < (juce::int64) (0.01 * a.sampleRate)) return 0;
+        const auto ob = a.fadeOutBegin();
+        a.srcOut -= d;
+        a.outEnd = 0.0; a.outStart = (double) (ob - a.endSample()) / juce::jmax (1.0, a.sampleRate);
+        clampFades (n - 1);
+        return d;
+    }
+
     /** Where edit point k stands on the timeline (k = 0 start of the first piece, k = n end of the last): the middle of the crossfade (or of the gap). */
     juce::int64 editPointSample (int k) const
     {
@@ -717,25 +770,7 @@ struct EditDef
         b.inStart  = (double) (ib - b.startSample) / rB; b.inEnd  = (double) (ie - b.startSample) / rB;
 
         // volume changes of B are counted from its start: shift them (the level the old start had been given is kept for what is now the start)
-        if (dB != 0 && ! oldB.gains.empty())
-        {
-            const auto tol = (juce::int64) (0.001 * b.sampleRate);
-            b.gains.clear();
-            if (dB > 0)                                                                // the piece now starts later: what happened before is folded into its first level
-            {
-                GainChange c0; c0.at = 0; c0.ramp = 0.0;
-                for (size_t f = 0; f < oldB.files.size(); ++f) c0.db.push_back (oldB.levelDbAt (f, dB));
-                b.gains.push_back (c0);
-                for (auto g : oldB.gains)
-                {
-                    const auto rl = (juce::int64) std::llround (g.ramp * b.sampleRate);
-                    if (g.at >= dB) { g.at -= dB; b.gains.push_back (g); }
-                    else if (g.at + rl > dB) { g.ramp = (double) (g.at + rl - dB) / b.sampleRate; g.at = 0; b.gains.push_back (g); }   // a glide that was under way carries on
-                }
-            }
-            else                                                                       // it now starts earlier: everything moves later in the piece's own time
-                for (auto g : oldB.gains) { g.at = g.at <= tol ? 0 : g.at - dB; b.gains.push_back (g); }
-        }
+        b.rebaseGains (oldB, dB);
         clampFades (k - 1); clampFades (k);
 
         // automation points that were pinned to the audio of these two pieces are pinned again, to whichever piece now owns that moment

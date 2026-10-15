@@ -3276,6 +3276,39 @@ int main()
         }
     }
 
+    SECTION ("trim at the ends of the edit: the audio a moved fade leaves out is cut off");
+    {
+        auto mk = [] (juce::int64 srcIn, juce::int64 len, juce::int64 start)
+        {
+            EditRegion r; r.sampleRate = 48000.0; r.srcIn = srcIn; r.srcOut = srcIn + len; r.startSample = start; r.sourceLength = 48000 * 60;
+            RegionFile f; f.numChannels = 1; r.files.push_back (f);
+            return r;
+        };
+        for (int slip = 0; slip < 2; ++slip)
+        {
+            EditDef e; e.sampleRate = 48000.0;
+            e.regions.push_back (mk (48000 * 5, 48000 * 10, 0)); e.regions.push_back (mk (48000 * 30, 48000 * 10, 48000 * 10));
+            e.setDefaultJoinFades (1); e.hardenEnds();
+            // the in-fade of the edit was moved from the start to 4 s in (a 25 ms fade)
+            e.regions[0].inStart = 4.0; e.regions[0].inEnd = 4.025;
+            const auto fadeAt = e.regions[0].fadeInBegin(), joinAt = e.editPointSample (1);
+            const auto sound = e.regions[0].srcIn + (fadeAt - e.regions[0].startSample);                   // the file sample where the fade begins
+            CHECK (e.trimEdgeToFade (0, slip == 1) == 48000 * 4);
+            auto& f = e.regions[0];
+            CHECK (f.srcIn == sound && f.inStart == 0.0 && std::abs (f.inEnd - 0.025) < 1e-9);               // the piece begins where the fade begins
+            CHECK (f.startSample == (slip == 1 ? 0 : 48000 * 4));                                           // Slip right: it stays at the start of the edit ...
+            CHECK (e.regions[1].startSample == (slip == 1 ? 48000 * 6 : 48000 * 10));                       // ... and the rest moves up to it
+            CHECK (f.endSample() == e.regions[1].startSample);
+            CHECK (e.editPointSample (1) == (slip == 1 ? joinAt - 48000 * 4 : joinAt));                     // the join keeps its place in the music
+            CHECK (e.trimEdgeToFade (0, slip == 1) == 0);
+            // the end: the out-fade moved 3 s earlier
+            auto& l = e.regions.back(); const auto len0 = l.length();
+            l.outStart = -3.025; l.outEnd = -3.0;
+            CHECK (e.trimEdgeToFade ((int) e.regions.size(), slip == 1) == 48000 * 3);
+            CHECK (l.length() == len0 - 48000 * 3 && l.outEnd == 0.0 && std::abs (l.outStart + 0.025) < 1e-9);
+        }
+    }
+
     SECTION ("out / in streams: each take is corrected on its own and the edit point stays put");
     {
         auto mk = [] (juce::int64 srcIn, juce::int64 len, juce::int64 start, const juce::File& f)

@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.40.1
+- **Trimming the start or end of the edit now removes the audio it leaves out.** In the Trim window, when you move the fade-in at the very start of the edit later (say from 0:00 to 0:04), the piece now begins where the fade begins and the unwanted audio before it is cut off, instead of staying there as silence. With Slip right on, everything after it moves up to close the space (the first piece stays at the start of the edit); with it off, the rest stays where it is. The same at the end of the edit: moving the fade-out earlier shortens the last piece. The fade keeps its shape and the sound from the fade on does not change. (The audio you cut stays in the take: you can slide it back later.)
+
 ## 2.40.0
 - **Edit points inside an offline correction: OUT STREAM and IN STREAM.** When marks 1 and 2 contain an edit point and you open Spectral Repair, De-Click, Pitch curve or ReHarmoniSer, two windows open side by side over the same marked part. The OUT STREAM (orange) is the take that plays up to the edit, shown on its own and carried on past the edit through its handle; the IN STREAM (blue) is the take that plays from the edit, shown on its own and started before it. No more mixed picture with a false click line at the join. Correct each stream in its own window.
 - **Write back** in each window only gets that stream ready (press it on an untouched stream to leave that stream as it is). When both are ready they go into the edit together, as ONE undo step, and the edit point and its fades stay exactly where they are: no rendered piece over the join. The X or Cancel on either window closes both and changes nothing.
