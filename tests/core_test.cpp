@@ -3309,6 +3309,19 @@ int main()
         }
     }
 
+    SECTION ("fix join crossfade starts only where the corrected audio exists");
+    {
+        EditDef e; e.sampleRate = 48000.0;
+        auto mk = [] (juce::int64 srcIn, juce::int64 len, juce::int64 start)
+        { EditRegion r; r.sampleRate = 48000.0; r.srcIn = srcIn; r.srcOut = srcIn + len; r.startSample = start; r.sourceLength = 48000 * 60; RegionFile rf; rf.numChannels = 1; r.files.push_back (rf); return r; };
+        e.regions.push_back (mk (0, 48000, 0)); e.regions.push_back (mk (48000, 48000, 48000)); e.regions.push_back (mk (96000, 48000, 96000));
+        e.setDefaultJoinFades (1); e.setDefaultJoinFades (2);
+        e.regions[1].fixIn = e.regions[1].fixOut = true; e.regions[0].fixOut = true; e.regions[2].fixIn = true;
+        e.keepFixFadesInside (1, 48000, 96000);                      // the corrected file is exactly the piece
+        CHECK (e.regions[1].fadeInBegin() >= 48000 && e.regions[1].fadeOutFinish() <= 96000);
+        CHECK (e.regions[0].fadeOutBegin() == e.regions[1].fadeInBegin() && e.regions[0].fadeOutFinish() == e.regions[1].fadeInFinish());
+        CHECK (e.regions[2].fadeInBegin() == e.regions[1].fadeOutBegin() && e.regions[2].fadeInFinish() == e.regions[1].fadeOutFinish());
+    }
     SECTION ("out / in streams: each take is corrected on its own and the edit point stays put");
     {
         auto mk = [] (juce::int64 srcIn, juce::int64 len, juce::int64 start, const juce::File& f)

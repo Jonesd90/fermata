@@ -3913,7 +3913,9 @@ void relinkEdit (AppContext& app, const juce::Uuid& eid, const juce::Uuid& rid, 
     auto& m = e->regions[(size_t) i];
     for (size_t k = 0; k < where.size(); ++k) { m.files[where[k]].file = m.waiting.files[k]; m.files[where[k]].fileStart = m.waiting.from; }
     m.takeName = m.takeName.upToFirstOccurrenceOf (" (", false, false) + " (" + m.waiting.name + ")";
+    const auto wf = m.waiting.from, wt = m.waiting.to;
     m.waiting = WaitingPiece();
+    e->keepFixFadesInside (i, wf, wt);          // the crossfade must not start before the corrected audio does
     setUndoForEdit (app, eid, old, "re-link corrected audio");
     app.project.changed();
 }

@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.41.1
+- **Crossfades into externally processed / corrected audio no longer fade in from silence.** The corrected file often starts exactly where the piece starts, but the join's crossfade was centred on the join, so its first half faded in nothing (a dip in level). A fix join's crossfade now slides inside the corrected audio (same length), with the matching fade of the neighbouring piece. Applies to re-linking audio from Export for Processing and to offline fixes (Spectral Repair, De-Click, ReHarmoniSer, Pitch curve).
+
 ## 2.41.0
 - **Export for Processing over an edit point asks which take to send.** If the 1/2 marks contain an edit point you can send the **Out stream**, the **In stream**, or **Both** (two separate sets of files, named "<name> - Out Stream" and "<name> - In Stream"). Each is sent at full volume with no fade applied. Out stream: from mark 1 to mark 2 or to where it has faded out completely, whichever comes first. In stream: from where its fade-in begins (or mark 1) to mark 2. The edit point and its crossfade stay in place; re-linking the corrected files puts each take back under its own piece.
 

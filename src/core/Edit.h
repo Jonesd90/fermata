@@ -578,6 +578,38 @@ struct EditDef
         return i + 1;
     }
 
+    /** The audio of piece i exists only for the take range [from,to) (a corrected file from an offline fix or an external program). A crossfade at one of its FIX joins must not
+        start before there is audio to fade in, or end after it has run out: the whole crossfade is slid inside (same length), and the neighbouring piece's matching fade with it. */
+    void keepFixFadesInside (int i, juce::int64 from, juce::int64 to)
+    {
+        if (! juce::isPositiveAndBelow (i, (int) regions.size())) return;
+        auto& r = regions[(size_t) i];
+        const double rate = r.sampleRate > 0 ? r.sampleRate : 48000.0;
+        auto sm = [rate] (double s) { return (juce::int64) std::llround (s * rate); };
+        if (r.fixIn && i > 0)
+        {
+            const auto begin = r.srcIn + sm (r.inStart);
+            if (begin < from)
+            {
+                const double d = (double) (from - begin) / rate;
+                r.inStart += d; r.inEnd += d;
+                auto& p = regions[(size_t) i - 1];
+                p.outStart = (double) (r.fadeInBegin() - p.endSample()) / rate; p.outEnd = (double) (r.fadeInFinish() - p.endSample()) / rate;
+            }
+        }
+        if (r.fixOut && i + 1 < (int) regions.size())
+        {
+            const auto finish = r.srcOut + sm (r.outEnd);
+            if (finish > to)
+            {
+                const double d = (double) (finish - to) / rate;
+                r.outStart -= d; r.outEnd -= d;
+                auto& n = regions[(size_t) i + 1];
+                n.inStart = (double) (r.fadeOutBegin() - n.startSample) / rate; n.inEnd = (double) (r.fadeOutFinish() - n.startSample) / rate;
+            }
+        }
+    }
+
     /** Puts a piece on the main track AT 'sample': a piece that is playing there is cut in two to make room, and everything after moves later. */
     int insertRegionAt (EditRegion r, juce::int64 sample)
     {

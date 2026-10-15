@@ -61,6 +61,11 @@ inline bool applyRegionJob (EditDef& e, const RegionJob& j, const juce::String& 
     if (cutBefore) { mid.fixIn = true; if (i > 0) e.regions[(size_t) i - 1].fixOut = true; }
     if (cutAfter)  { mid.fixOut = true; if (i + 1 < (int) e.regions.size()) e.regions[(size_t) i + 1].fixIn = true; }
     for (size_t k = 0; k < j.idx.size() && j.idx[k] < mid.files.size(); ++k) { mid.files[j.idx[k]].file = j.results[k].file; mid.files[j.idx[k]].fileStart = j.results[k].from; }
+    {   // the corrected files may start / end exactly at the piece: the crossfades of the joins made here must lie where there is audio
+        juce::int64 lo = (std::numeric_limits<juce::int64>::min)(), hi = (std::numeric_limits<juce::int64>::max)();
+        for (auto& res : j.results) { lo = juce::jmax (lo, res.from); hi = juce::jmin (hi, res.to); }
+        e.keepFixFadesInside (i, lo, hi);
+    }
     mid.takeName = mid.takeName.upToFirstOccurrenceOf (" (", false, false) + " (" + suffix + ")";
     return true;
 }
