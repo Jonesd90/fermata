@@ -1,3 +1,4 @@
+#include "WinOwner.h"
 #include "FixTools.h"
 #include "../reharmoniser/ReHarmoniserEditor.h"
 #include "../core/ImportPlan.h"
@@ -227,6 +228,12 @@ class StreamWindow : public juce::DialogWindow
 public:
     StreamWindow (const juce::String& t, juce::Colour bg, std::weak_ptr<StreamPair> p) : juce::DialogWindow (t, bg, true, true), pair (std::move (p)) {}
     void closeButtonPressed() override { if (auto p = pair.lock()) p->closeAll(); }
+    /** Clicking Stop / Play (or anything else in the tool) must never send the window behind the main window: after every click the window is put back on top, without taking the focus. */
+    void mouseUp (const juce::MouseEvent&) override
+    {
+        juce::Component::SafePointer<StreamWindow> self (this);
+        juce::Timer::callAfterDelay (120, [self] { if (self != nullptr && self->isVisible()) self->toFront (false); });
+    }
     std::weak_ptr<StreamPair> pair;
 };
 
@@ -247,6 +254,8 @@ static void launchStream (const std::shared_ptr<StreamPair>& pair, int slot, std
     const int half = area.getWidth() / 2;
     w->setBounds (juce::Rectangle<int> (area.getX() + (slot == 0 ? 0 : half), area.getY(), half, area.getHeight()).reduced (4));
     w->setVisible (true);
+    w->addMouseListener (w.get(), true);                         // (so that a click on any button inside it is seen: see StreamWindow::mouseUp)
+    if (around != nullptr) if (auto* top = around->getTopLevelComponent()) makeOwnedBy (*w, *top);        // an owned window always stays above the window that owns it
     w->toFront (true);
     pair->win[slot] = std::move (w);
 }

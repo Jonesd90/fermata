@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.42.1
+- **OUT / IN stream windows no longer disappear when Stop (or Play) is clicked.** They are now owned by the main window (so Windows keeps them above it) and are put back on top after every click inside them.
+
 ## 2.42.0
 - **Dragging the first fade-in earlier / the last fade-out later now grows the piece.** In the Trim window at the very start or end of the edit, moving the outer end of the fade outward makes the piece (the blue region box, its waveform and the edit point) grow to cover the whole fade, using more of the take. (Before, only the orange overlay moved.)
 - **Edit point flags at the start and end of the edit stand in the middle of their fade,** like the flags of joins, wherever the fade has been moved to.
