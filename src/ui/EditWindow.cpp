@@ -6,6 +6,7 @@
 #include "ColourPicker.h"
 #include "VolumeDialog.h"
 #include "MarkerStrip.h"
+#include "FeedbackUi.h"
 
 namespace td
 {
@@ -46,6 +47,7 @@ public:
     int selectedJoin = -1;                 // the selected edit point: 0 = the start of the edit, k = the join before regions[k], n = the end of the edit; -1 = none
     bool slipLeft = false, slipRight = false, shuffleMode = false;
     double cursorSeconds = -1.0;
+    juce::String selectedFeedback;              // the key of the first comment of the flag that was clicked last
 
     EditDef* edit() const { return app.project.findEdit (editId); }
 
@@ -427,6 +429,7 @@ public:
             if (e->automationOn) paintStripBits (g, tracks[i].id, sx, top + (int) i * rowH, false);
         }
         markerui::paintFlags (g, e->markers, [this] (double s) { return xOf (s); }, sx + kNameW, getHeight(), markers.draggedId());
+        if (e->showFeedback && ! e->feedback.empty()) feedbackui::paintFlags (g, e->feedback, [this] (double s) { return xOf (s); }, sx + kNameW, getHeight(), selectedFeedback);
         g.setColour (juce::Colour (0x55ffffff)); g.fillRect (sx + kNameW - 2, kRulerH + kLaneH, 2, juce::jmax (0, getHeight() - kRulerH - kLaneH));
         if (! clipMoveRegion.isNull() && clipMoveToRow >= 0)                           // Shift + drag: the row the clip will go to
         {
@@ -448,6 +451,22 @@ public:
         auto* ed = this->edit();
         if (ed == nullptr) return;
         markers.setNameWidth (viewport.getViewPositionX() + kNameW);
+        if (e.y >= 0 && e.y < markerui::kStripH && e.x > viewport.getViewPositionX() + kNameW && ed->showFeedback && ! ed->feedback.empty())          // a comment's flag: click to read the thread
+        {
+            auto xo = [this] (double s) { return xOf (s); };
+            const auto th = feedbackui::threadAt (ed->feedback, e.x, xo);
+            if (! th.empty())
+            {
+                selectedFeedback = ed->feedback[(size_t) th.front()].key; repaint();
+                const int fx = xOf (ed->feedback[(size_t) th.front()].seconds);
+                const auto area = localAreaToGlobal (juce::Rectangle<int> (fx, 0, feedbackui::flagWidth (feedbackui::flagText (ed->feedback, th)), markerui::kStripH));
+                juce::Component::SafePointer<EditTimeline> safe (this);
+                feedbackui::showThread ([this] { return edit(); }, th, area,
+                                        [this, safe] { if (safe == nullptr) return; app.project.markDirty(); repaint(); },
+                                        [this, safe] (double s) { if (safe == nullptr) return; if (auto* w = findParentComponentOfClass<EditWindowComponent>()) w->goToSeconds (s); });
+                return;
+            }
+        }
         if (markers.mouseDown (e)) return;                                 // the marker strip along the top: right-click for Add Marker / Clear All; drag a marker
         if (app.showInsertFlag && ! e.mods.isPopupMenu() && e.x >= kNameW && e.y >= markerui::kStripH && e.y < markerui::kStripH + kInsH)       // the insert flag: drag it to where the next take should go
         {
@@ -1407,6 +1426,9 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
                              "You can also drag the files onto this window. Each track goes on its own row.");
     importButton.onClick = [this] { fixtools::showImportMenu (app, juce::Uuid::null(), &importButton, editId); };
     addAndMakeVisible (importButton);
+    feedbackButton.setTooltip ("Comments from listeners: import the file they sent back (or a marker list exported from a review website) and see their comments as flags along the top of this timeline. Make the listening copy with the Virtual Master tab: tick 'Include Feedback Form'.");
+    feedbackButton.onClick = [this] { showFeedbackMenu(); };
+    addAndMakeVisible (feedbackButton); feedbackButton.setWantsKeyboardFocus (false);
     addAndMakeVisible (tracksButton);
     juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<EditWindowComponent> (this)] { if (safe != nullptr) safe->checkMixerStrips(); });
     playButton.onClick = [this] { togglePlay(); };
@@ -1531,7 +1553,7 @@ void EditWindowComponent::resized()
         { &bounceButton }, { &mixerButton, grid::btnW, grid::btnH, 6 }, { &ltcButton, 74, grid::btnH, 14 },
         { &automationButton, grid::btnW, grid::btnH, 14 },
         { &pitchButton }, { &pitchCurveButton, grid::btnW + 24 }, { &repairButton, grid::btnW + 30 }, { &declickButton }, { &reharmoniserButton, grid::btnW + 24 }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, grid::btnW, grid::btnH, 14 },
-        { &tracksButton }, { &importButton, grid::btnW, grid::btnH, 14 },
+        { &tracksButton }, { &importButton, grid::btnW, grid::btnH, 14 }, { &feedbackButton, grid::btnW, grid::btnH, 14 },
         { &slipLeftToggle, 95 }, { &slipRightToggle, 105 }, { &shuffleToggle, 90 }, { &insertFlagToggle, 100, grid::btnH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
@@ -1577,6 +1599,121 @@ void EditWindowComponent::goTo (double seconds)
 }
 
 void EditWindowComponent::goToEnd() { if (auto* e = edit()) goTo (e->lengthSeconds()); }
+
+// ----------------------------------------------------------------------------- listeners' comments
+void EditWindowComponent::showFeedbackMenu()
+{
+    auto* e = edit(); if (e == nullptr) return;
+    int open = 0, done = 0; for (auto& n : e->feedback) (n.done ? done : open)++;
+    juce::PopupMenu m;
+    m.addItem (1, "Import comments from a file...");
+    m.addSeparator();
+    m.addItem (2, "Show the comment flags", ! e->feedback.empty(), e->showFeedback);
+    m.addItem (3, "Mark every comment as done", open > 0);
+    m.addItem (4, "Take away the comments marked done (" + juce::String (done) + ")", done > 0);
+    m.addItem (5, "Take away all comments (" + juce::String ((int) e->feedback.size()) + ")...", ! e->feedback.empty());
+    juce::Component::SafePointer<EditWindowComponent> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&feedbackButton), [safe] (int r)
+    {
+        if (safe == nullptr || r == 0) return;
+        auto* ed = safe->edit(); if (ed == nullptr) return;
+        auto& app = safe->app;
+        if (r == 1) safe->importFeedback();
+        else if (r == 2) { ed->showFeedback = ! ed->showFeedback; app.project.markDirty(); safe->timeline->repaint(); }
+        else if (r == 3) { for (auto& n : ed->feedback) n.done = true; app.project.markDirty(); safe->timeline->repaint(); }
+        else if (r == 4)
+        {
+            ed->feedback.erase (std::remove_if (ed->feedback.begin(), ed->feedback.end(), [] (const FeedbackNote& n) { return n.done; }), ed->feedback.end());
+            app.project.markDirty(); safe->timeline->repaint();
+        }
+        else if (r == 5)
+        {
+            juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon)
+                .withTitle ("Take away all comments").withMessage ("Take every listener comment off this edit? (The files they came from are not touched; you can import them again.)")
+                .withButton ("Take away").withButton ("Cancel").withAssociatedComponent (safe.getComponent()),
+                [safe] (int result)
+                {
+                    if (safe == nullptr || result != 1) return;
+                    if (auto* ed2 = safe->edit()) { ed2->feedback.clear(); safe->app.project.markDirty(); safe->timeline->repaint(); }
+                });
+        }
+    });
+}
+
+void EditWindowComponent::importFeedback()
+{
+    auto* st = app.props.getUserSettings();
+    juce::File start (st != nullptr ? st->getValue ("feedbackFolder") : juce::String());
+    if (! start.isDirectory()) start = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+    feedbackChooser = std::make_unique<juce::FileChooser> ("Choose the comments file(s) sent back by listeners (or exported from a review website)", start, "*.json;*.txt;*.csv;*.tsv");
+    juce::Component::SafePointer<EditWindowComponent> safe (this);
+    feedbackChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::canSelectMultipleItems, [safe] (const juce::FileChooser& fc)
+    {
+        if (safe == nullptr) return;
+        auto files = fc.getResults(); files.removeIf ([] (const juce::File& f) { return f == juce::File(); });
+        if (files.isEmpty()) return;
+        if (auto* st2 = safe->app.props.getUserSettings()) { st2->setValue ("feedbackFolder", files[0].getParentDirectory().getFullPathName()); safe->app.props.saveIfNeeded(); }
+        bool needFps = false;
+        for (auto& f : files)                                                    // JSON (our own listening copy) has plain seconds; a marker list has timecode with frames
+        {
+            juce::FileInputStream in (f); char c[64] = {}; const int n = in.failedToOpen() ? 0 : in.read (c, 63);
+            const juce::String head = juce::String::fromUTF8 (c, n).trimStart().trimCharactersAtStart (juce::String::charToString (0xFEFF)).trimStart();
+            if (! head.startsWithChar ('{') && ! head.startsWithChar ('[')) needFps = true;
+        }
+        double fps = 25.0;
+        if (auto* st2 = safe->app.props.getUserSettings()) fps = st2->getDoubleValue ("feedbackFps", 25.0);
+        if (! needFps) { safe->importFeedbackFiles (files, fps); return; }
+        auto* w = new juce::AlertWindow ("Timecode in this file", "The times in this file are timecode: hours:minutes:seconds:FRAMES. "
+                                         "How many frames a second does the website use? (It only moves a comment by less than a second, so a good guess is fine. 25 is usual in the UK and Europe.)", juce::MessageBoxIconType::QuestionIcon);
+        const char* names[] = { "24", "25", "29.97", "30", "50", "60" }; const double vals[] = { 24, 25, 29.97, 30, 50, 60 };
+        juce::StringArray items; int sel = 2; for (int i = 0; i < 6; ++i) { items.add (names[i]); if (std::abs (vals[i] - fps) < 0.01) sel = i + 1; }
+        w->addComboBox ("fps", items, "Frames per second");
+        w->getComboBoxComponent ("fps")->setSelectedId (sel, juce::dontSendNotification);
+        w->addButton ("Import", 1, juce::KeyPress (juce::KeyPress::returnKey)); w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        w->enterModalState (true, juce::ModalCallbackFunction::create ([safe, w, files, vals] (int r)
+        {
+            const int id = w->getComboBoxComponent ("fps")->getSelectedId();
+            if (safe == nullptr || r != 1) return;
+            const double f = vals[juce::jlimit (0, 5, id - 1)];
+            if (auto* st3 = safe->app.props.getUserSettings()) { st3->setValue ("feedbackFps", f); safe->app.props.saveIfNeeded(); }
+            safe->importFeedbackFiles (files, f);
+        }), true);
+    });
+}
+
+void EditWindowComponent::importFeedbackFiles (juce::Array<juce::File> files, double frameRate)
+{
+    juce::String report; int total = 0;
+    for (auto& f : files)
+    {
+        juce::MemoryBlock data;
+        if (! f.loadFileAsData (data)) { report += f.getFileName() + ": could not be read.\n"; continue; }
+        feedback::Parsed p;
+        const auto err = feedback::parse (data.getData(), data.getSize(), frameRate, f.getFileName(), p);
+        if (err.isNotEmpty()) { report += f.getFileName() + ": " + err + "\n"; continue; }
+        EditDef* target = edit();
+        juce::String where;
+        if (p.editId.isNotEmpty())
+            if (auto* te = app.project.findEdit (juce::Uuid (p.editId))) { if (te != target) where = " (they were made on the edit '" + te->name + "', so they went there)"; target = te; }
+        if (target == nullptr) continue;
+        const double offset = p.hasOffset ? p.offset : (target->sampleRate > 0.0 ? (double) target->firstSample() / target->sampleRate : 0.0);
+        const double len = target->lengthSeconds();
+        int late = 0;
+        for (auto& n : p.notes) { n.seconds += offset; if (len > 0.0 && n.seconds > len + 2.0) ++late; }
+        int updated = 0;
+        const int added = feedback::merge (target->feedback, p.notes, &updated);
+        target->showFeedback = true;
+        total += added;
+        report += f.getFileName() + ": " + juce::String (added) + " new comment" + (added == 1 ? "" : "s") + " from " + juce::String ((int) p.notes.size()) + " in the file" + where
+                + (updated > 0 ? ", " + juce::String (updated) + " already there and updated" : juce::String())
+                + (p.format == "marker list" ? ". Timecode read at " + juce::String (frameRate) + " frames a second" : juce::String())
+                + (late > 0 ? ". " + juce::String (late) + " fall after the end of the edit" : juce::String()) + ".\n";
+    }
+    app.project.markDirty();
+    if (timeline != nullptr) timeline->repaint();
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (total > 0 ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon)
+        .withTitle ("Comments").withMessage (report.trim() + (total > 0 ? "\n\nThe flags are along the top of the timeline. Click one to read it." : juce::String())).withButton ("OK").withAssociatedComponent (this), nullptr);
+}
 
 void EditWindowComponent::showTracksMenu()
 {

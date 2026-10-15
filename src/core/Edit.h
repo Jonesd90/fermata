@@ -2,6 +2,7 @@
 #include "Common.h"
 #include "Automation.h"
 #include "Markers.h"
+#include "Feedback.h"
 
 namespace td
 {
@@ -220,6 +221,8 @@ struct EditDef
     // ---- automation (drawn in the edit window; only plays from the edit) ----
     bool                 showLtc = false;       // the LTC track's row is shown in this edit window (the triangle button)
     std::vector<Marker>  markers;               // quick markers along the top of this edit window (not part of undo)
+    std::vector<FeedbackNote> feedback;         // listeners' comments (Include Feedback Form / imported marker lists), drawn as flags on this edit window (not part of undo)
+    bool                 showFeedback = true;
     bool                 automationOn = false;
     std::vector<AutoLane> lanes;
 

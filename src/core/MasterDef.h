@@ -41,6 +41,8 @@ struct MasterExportSettings
     float        peakDb = -1.0f;
     bool         peakTogether = false;          // false: every file reaches the peak level on its own. true: one gain for all (the loudest reaches it)
     bool         numberFiles = true;            // "01 - name"
+    bool         feedbackForm = false;          // also make a listening copy of every file: ONE .html with the recording inside, a waveform, play controls and a comment form
+    int          formAudio = 0;                 // what goes inside it: 0 = WAV (full quality, the export's rate and bit depth), 1 = FLAC (lossless, about half the size), 2 = MP3 (small; needs LAME)
     juce::String folder;
     MasterTags   album;               // album, albumArtist, genre, year, comment, copyright: the defaults for every file
 };

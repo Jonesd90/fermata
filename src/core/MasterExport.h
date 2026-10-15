@@ -13,6 +13,8 @@ struct MasterJobItem
     juce::String baseName;
     MasterTags   tags;               // already merged with the album tags
     int          trackNo = 0;
+    juce::String editName, projectName;   // for the listening copy
+    double       editOffsetSeconds = 0.0;   // where the exported file's time 0 sits on the edit's timeline
 };
 
 struct MasterJobSpec

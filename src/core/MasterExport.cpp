@@ -3,6 +3,7 @@
 #include "AudioOps.h"
 #include "Resampler.h"
 #include "Dither.h"
+#include "ReviewPage.h"
 
 namespace td
 {
@@ -155,6 +156,8 @@ juce::String makeFilesSpec (const Project& p, const MasteringDef& def, MasterJob
     {
         ++n;
         MasterJobItem j; j.editId = edits[i]->id; j.trackNo = n;
+        j.editName = edits[i]->name; j.projectName = p.name;
+        j.editOffsetSeconds = edits[i]->sampleRate > 0.0 ? (double) edits[i]->firstSample() / edits[i]->sampleRate : 0.0;
         const auto base = its[i]->fileName.trim().isNotEmpty() ? its[i]->fileName.trim() : edits[i]->name;
         j.baseName = def.vm.numberFiles ? juce::String (n).paddedLeft ('0', 2) + " - " + base : base;
         j.tags = mergeTags (its[i]->tags, def.vm.album, its[i]->tags.title.isNotEmpty() ? its[i]->tags.title : base);
@@ -464,6 +467,29 @@ MasterExportResult MasterExportJob::executeInner()
             pk = juce::jmax (pk, pkOne);
             finals.push_back (dest);
             if (spec.kind == MasterJobSpec::Kind::Files) R.files.add (dest.getFullPathName());
+        }
+        if (spec.kind == MasterJobSpec::Kind::Files && o.feedbackForm)
+        {
+            const auto fmtForm = o.formAudio == 2 ? MasterFormat::Mp3 : o.formAudio == 1 ? MasterFormat::Flac : MasterFormat::Wav;
+            const auto audioFile = spec.workFolder.getChildFile ("form-" + juce::String (i + 1).paddedLeft ('0', 2) + masterFileExtension (fmtForm));
+            setStatus ("Making the listening copy " + juce::String (i + 1) + " of " + juce::String (n) + "...");
+            float pkForm = 0.0f;
+            auto e = finalise (proc[(size_t) i], audioFile, rates[(size_t) i], gain, item, pkForm, fmtForm);
+            if (e == "Cancelled.") { R.cancelled = true; for (auto& f : finals) f.deleteFile(); return R; }
+            if (e.isEmpty())
+            {
+                reviewpage::Spec ps;
+                ps.audio = audioFile; ps.mime = fmtForm == MasterFormat::Mp3 ? "audio/mpeg" : fmtForm == MasterFormat::Flac ? "audio/flac" : "audio/wav";
+                ps.piece = item.tags.title.isNotEmpty() ? item.tags.title : item.editName; ps.project = item.projectName; ps.editId = item.editId.toString();
+                ps.offsetSeconds = item.editOffsetSeconds; ps.durationSeconds = (double) R.frames[(size_t) i] / juce::jmax (1.0, rates[(size_t) i]);
+                ps.peaks = reviewpage::computePeaks (proc[(size_t) i], gain, reviewpage::peakColumnsFor (ps.durationSeconds), &cancelFlag);
+                const auto page = spec.destFolder.getNonexistentChildFile (sanitiseForFile (item.baseName) + " - listening copy", ".html", true);
+                e = reviewpage::write (page, ps, &cancelFlag);
+                if (e.isEmpty()) R.files.add (page.getFullPathName());
+            }
+            audioFile.deleteFile();
+            if (e == "Cancelled.") { R.cancelled = true; for (auto& f : finals) f.deleteFile(); return R; }
+            if (e.isNotEmpty()) { R.error = "The listening copy could not be made: " + e; for (auto& f : finals) f.deleteFile(); return R; }
         }
         overall = juce::jmax (overall, pk);
         sub = (float) (i + 1) / (float) n * (spec.kind == MasterJobSpec::Kind::Disc ? 0.3f : 1.0f);

@@ -612,7 +612,17 @@ MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (pr
         else vm.oggQuality = id - 1;
         touched();
     };
-    for (auto* t : { &normToggle, &overallToggle, &individualToggle, &numberToggle }) vmHolder.addChildComponent (*t);
+    for (auto* t : { &normToggle, &overallToggle, &individualToggle, &numberToggle, &feedbackToggle }) vmHolder.addChildComponent (*t);
+    cap (formCaption, "Listening copy for reviewers", true); cap (formAudioCaption, "Audio inside"); styleCaption (formInfo, "");
+    formInfo.setMinimumHorizontalScale (1.0f); formInfo.setJustificationType (juce::Justification::topLeft);
+    for (auto* l : { &formCaption, &formAudioCaption, &formInfo }) vmHolder.addChildComponent (*l);
+    vmHolder.addChildComponent (formAudioBox);
+    formAudioBox.addItem ("WAV (full quality, the same rate and bit depth)", 1); formAudioBox.addItem ("FLAC (lossless, about half the size)", 2); formAudioBox.addItem ("MP3 (small, needs LAME)", 3);
+    feedbackToggle.setTooltip ("Besides the audio file, Fermata makes ONE .html file per track with the recording inside it. Send it to a listener: they double-click it, "
+                               "see the waveform, play it, and press a button to add comments (with an optional bar) at the time they hear something. They save a small file and send it back; "
+                               "import it in the edit window (Feedback button) and the comments appear as flags on the timeline. Works in any current browser on Windows, Mac, iPhone / iPad and Android.");
+    feedbackToggle.onClick = [this] { def().vm.feedbackForm = feedbackToggle.getToggleState(); touched(); refreshFormatControls(); };
+    formAudioBox.onChange = [this] { if (updating) return; def().vm.formAudio = juce::jlimit (0, 2, formAudioBox.getSelectedId() - 1); touched(); refreshFormatControls(); };
     cap (alsoCaption, "Also export every file as (all in one go)", true); vmHolder.addChildComponent (alsoCaption);
     {
         const char* an[] = { "WAV", "AIFF", "FLAC", "Ogg Vorbis", "MP3" };
@@ -1025,6 +1035,17 @@ void MasteringComponent::refreshFormatControls()
     overallToggle.setEnabled (vm.normalise); individualToggle.setEnabled (vm.normalise); peakEditor.setEnabled (vm.normalise);
     peakEditor.setText (juce::String (vm.peakDb, 1), false);
     numberToggle.setToggleState (vm.numberFiles, juce::dontSendNotification);
+    feedbackToggle.setToggleState (vm.feedbackForm, juce::dontSendNotification);
+    formAudioBox.setSelectedId (vm.formAudio + 1, juce::dontSendNotification);
+    formAudioBox.setEnabled (vm.feedbackForm);
+    {
+        double rate = vm.sampleRate;
+        if (rate <= 0.0) { rate = 48000.0; for (auto& it : def().items) if (it.include) if (auto* e = app.project.findEdit (it.editId)) if (e->sampleRate > 0.0) { rate = e->sampleRate; break; } }
+        const double bytesPerMin = vm.formAudio == 0 ? rate * (vm.bitDepth / 8.0) * 2.0 * 60.0 : vm.formAudio == 1 ? rate * (vm.bitDepth == 16 ? 2.0 : 3.0) * 2.0 * 60.0 * 0.55 : 320000.0 / 8.0 * 60.0 * 0.5;
+        juce::String t = "About " + juce::String (bytesPerMin * 1.34 / 1.0e6, 0) + " MB of file for every minute of music (the page is the audio plus about a third).";
+        if (vm.formAudio == 0 && bytesPerMin * 1.34 / 1.0e6 > 60.0) t += " Phones and tablets may struggle with files over about 150 MB; FLAC is half the size with no loss.";
+        formInfo.setText (vm.feedbackForm ? t : juce::String(), juce::dontSendNotification);
+    }
     if (vm.folder.trim().isEmpty()) vm.folder = app.project.masteredFolder().getFullPathName();           // the default place: the project's Bounced Media / Mastered Audio folder
     folderEditor.setText (vm.folder, false);
     if (mp3 && view == 0)
@@ -1202,7 +1223,7 @@ void MasteringComponent::chooseFolder (bool disc)
 // ----------------------------------------------------------------------------- exporting
 void MasteringComponent::setBusy (bool busy)
 {
-    for (juce::Component* c : std::initializer_list<juce::Component*> { &formatBox, &rateBox, &bitsBox, &ditherBox, &qualityBox, &normToggle, &overallToggle, &individualToggle, &numberToggle, &alsoCaption, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4], &peakEditor,
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &formatBox, &rateBox, &bitsBox, &ditherBox, &qualityBox, &normToggle, &overallToggle, &individualToggle, &numberToggle, &feedbackToggle, &formAudioBox, &formCaption, &formAudioCaption, &formInfo, &alsoCaption, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4], &peakEditor,
                                                                          &folderEditor, &chooseButton, &mixerBox, &sourceBox, &tailBox, &vmAll, &vmNone, &vmUp, &vmDown, &autoPq, &allGapsBox, &ddpChoose,
                                                                          &ddpFolderEditor, &zipToggle, &cueToggle, &ddpNorm, &ddpTogether, &ddpPeakEditor, &ddpUp, &ddpDown, &gapEditor, &ddpCheck })
         c->setEnabled (! busy);
@@ -1289,7 +1310,7 @@ void MasteringComponent::setView (int v)
         c->setVisible (vm);
     showButton.setVisible (vm && showButton.isVisible());
     for (juce::Component* c : std::initializer_list<juce::Component*> { &fmtCaption, &rateCaption, &bitsCaption, &ditherCaption, &levelCaption, &albumCaption, &fileCaption, &nameCaption, &folderCaption,
-                                                                         &formatBox, &rateBox, &bitsBox, &ditherBox, &normToggle, &overallToggle, &individualToggle, &numberToggle, &alsoCaption, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4], &peakEditor, &peakUnit,
+                                                                         &formatBox, &rateBox, &bitsBox, &ditherBox, &normToggle, &overallToggle, &individualToggle, &numberToggle, &feedbackToggle, &formAudioBox, &formCaption, &formAudioCaption, &formInfo, &alsoCaption, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4], &peakEditor, &peakUnit,
                                                                          &folderEditor, &chooseButton })
         c->setVisible (vm);
     for (auto* f : albumFields) { f->caption.setVisible (vm); f->editor.setVisible (vm); }
@@ -1400,6 +1421,12 @@ void MasteringComponent::layoutVm (juce::Rectangle<int> area)
     y += 6;
     nameCaption.setBounds (row (20));
     numberToggle.setBounds (row (22));
+    y += 4;
+    formCaption.setBounds (row (20));
+    feedbackToggle.setBounds (row (22));
+    { auto r = row (grid::btnH + 2); formAudioCaption.setBounds (r.removeFromLeft (110)); formAudioBox.setBounds (r.removeFromLeft (juce::jmin (r.getWidth(), 340))); }
+    formInfo.setBounds (row (feedbackToggle.getToggleState() ? 34 : 4));
+    y += 4;
     alsoCaption.setBounds (row (20));
     { auto r = row (24); const int cw = juce::jmax (60, r.getWidth() / 5); for (int f = 0; f < 5; ++f) alsoToggle[f].setBounds (r.removeFromLeft (cw)); }
     { auto r = row (grid::btnH + 2); folderCaption.setBounds (r.removeFromLeft (60)); chooseButton.setBounds (r.removeFromRight (136)); r.removeFromRight (4); folderEditor.setBounds (r); }

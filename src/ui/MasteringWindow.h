@@ -99,7 +99,9 @@ private:
     juce::TextButton vmAll { "Tick all" }, vmNone { "Tick none" }, vmUp { "Move up" }, vmDown { "Move down" };
     juce::Label fmtCaption, rateCaption, bitsCaption, ditherCaption, qualityCaption, levelCaption, albumCaption, fileCaption, nameCaption, folderCaption, vmStatus;
     juce::ComboBox formatBox, rateBox, bitsBox, ditherBox, qualityBox;
-    juce::Label alsoCaption;
+    juce::Label alsoCaption, formCaption, formAudioCaption, formInfo;
+    juce::ToggleButton feedbackToggle { "Include Feedback Form (a listening copy of every file)" };
+    juce::ComboBox formAudioBox;
     juce::ToggleButton alsoToggle[5];
     juce::ToggleButton normToggle { "Set the peak level to" }, overallToggle { "Overall: one gain for all the files (they keep their balance)" },
                        individualToggle { "Individually: every file reaches the peak level on its own" }, numberToggle { "Number the files: 01 - name" };

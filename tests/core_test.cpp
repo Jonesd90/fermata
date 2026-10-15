@@ -17,6 +17,8 @@
 #include "../src/core/Aaf.h"
 #include "../src/core/SpectralPicture.h"
 #include "../src/core/EditFix.h"
+#include "../src/core/Feedback.h"
+#include "../src/core/ReviewPage.h"
 #include <cstdio>
 
 using namespace td;
@@ -3205,6 +3207,93 @@ int main()
             CHECK (readAaf (aafFile, 3000.0).pieces.size() == 1);
         }
         CHECK (aafFileNameOf ("file:///C:/Audio/LV01%20-%20Gravity.wav") == "LV01 - Gravity.wav");
+    }
+
+    SECTION ("listener feedback: import, project round trip, review page");
+    {
+        // the colleague's marker list (tab separated; the comment text is in "Marker Name", the person in "Comment", times are timecode)
+        const auto sample = juce::File (__FILE__).getParentDirectory().getChildFile ("data").getChildFile ("marker_list_sample.txt");
+        juce::MemoryBlock mb; CHECK (sample.loadFileAsData (mb));
+        feedback::Parsed pr;
+        const auto err = feedback::parse (mb.getData(), mb.getSize(), 25.0, "sample.txt", pr);
+        CHECK (err.isEmpty());
+        CHECK (pr.notes.size() == 16);
+        if (pr.notes.size() == 16)
+        {
+            CHECK (pr.notes[0].who == "Jo T" && pr.notes[0].text.startsWith ("I find bar 3 and 4"));
+            CHECK (std::abs (pr.notes[0].seconds - (23.0 + 23.0 / 25.0)) < 1e-9);          // 00:00:23:23 at 25 fps
+            CHECK (std::abs (pr.notes[3].seconds - (72.0 + 11.0 / 25.0)) < 1e-9);          // 00:01:12:11
+            CHECK (pr.notes[0].colour == "Red" && pr.notes[3].colour == "Green" && pr.notes[7].colour == "Orange");
+            CHECK (pr.notes[1].who == "Josh Quinlan" && pr.notes[2].who == "Dave Jones");
+        }
+        // threads: replies at the same time share a flag
+        std::vector<FeedbackNote> list; int upd = 0;
+        CHECK (feedback::merge (list, pr.notes, &upd) == 16 && upd == 0);
+        const auto th = feedback::threads (list);
+        CHECK (th.size() == 5 && th[0].size() == 3 && th[1].size() == 4 && th[2].size() == 3 && th[3].size() == 3 && th[4].size() == 3);
+        list[0].done = true;
+        CHECK (feedback::merge (list, pr.notes, &upd) == 0 && list.size() == 16 && list[0].done);       // importing again adds nothing and keeps the tick
+        // a UTF-8 file with a byte-order mark, quotes, commas and accents; and times as m:ss
+        {
+            const juce::String csv = juce::String::fromUTF8 ("\xEF\xBB\xBF" "Time,Author,Comment\n\"1:05.5\",Zo\xC3\xAB,\"Too early, in bar 7\"\n12,Sam,\"He said \"\"no\"\"\"\n");
+            feedback::Parsed p2;
+            const auto utf = csv.toRawUTF8();
+            CHECK (feedback::parse (utf, std::strlen (utf), 25.0, "x.csv", p2).isEmpty());
+            CHECK (p2.notes.size() == 2 && std::abs (p2.notes[0].seconds - 65.5) < 1e-9 && p2.notes[0].who == juce::String::fromUTF8 ("Zo\xC3\xAB") && p2.notes[0].text == "Too early, in bar 7");
+            CHECK (p2.notes.size() == 2 && p2.notes[1].text == "He said \"no\"" && std::abs (p2.notes[1].seconds - 12.0) < 1e-9);
+        }
+        // what the review page sends back
+        {
+            const juce::String js = "{\"fermata\":\"feedback\",\"v\":1,\"id\":\"abc\",\"edit\":\"E1\",\"piece\":\"Angel\",\"offset\":2.5,\"duration\":100,"
+                                    "\"notes\":[{\"id\":\"n1\",\"t\":12.345,\"bar\":\"Bar 19 -24\",\"text\":\"flat\",\"who\":\"Anna\",\"at\":\"2026-10-15T10:00:00Z\"}]}";
+            feedback::Parsed p3; const auto u = js.toRawUTF8();
+            CHECK (feedback::parse (u, std::strlen (u), 25.0, "back.json", p3).isEmpty());
+            CHECK (p3.editId == "E1" && p3.hasOffset && std::abs (p3.offset - 2.5) < 1e-9 && p3.notes.size() == 1);
+            CHECK (p3.notes[0].key == "n1" && p3.notes[0].bar == "Bar 19 -24" && p3.notes[0].who == "Anna" && std::abs (p3.notes[0].seconds - 12.345) < 1e-9);
+        }
+        CHECK (! feedback::parse ("hello", 5, 25.0, "x", pr).isEmpty());
+        // saved with the project
+        {
+            Project pj; auto ed = std::make_unique<EditDef>(); ed->id = juce::Uuid(); ed->name = "Piece"; ed->feedback = list; ed->showFeedback = false;
+            const auto id = ed->id; pj.edits.push_back (std::move (ed));
+            Project pj2; CHECK (pj2.fromVar (pj.toVar()));
+            auto* e2 = pj2.findEdit (id);
+            CHECK (e2 != nullptr && e2->feedback.size() == 16 && ! e2->showFeedback && e2->feedback[0].done && e2->feedback[0].who == "Jo T");
+        }
+        // the listening copy: audio goes inside one html, base64 in whole pieces
+        {
+            const auto dir = tmp.getChildFile ("review"); dir.createDirectory();
+            const auto wav = dir.getChildFile ("t.wav");
+            {
+                auto w = audioops::makeWavWriter (wav, 96000.0, 2, true);
+                std::vector<float> a (96000 * 7), b (96000 * 7);
+                for (size_t i = 0; i < a.size(); ++i) { a[i] = 0.5f * std::sin (0.05f * (float) i) * (i > 96000 * 3 ? 1.0f : 0.2f); b[i] = -a[i]; }
+                const float* pp[2] = { a.data(), b.data() }; w->writeFromFloatArrays (pp, 2, (int) a.size());
+            }
+            reviewpage::Spec sp; sp.audio = wav; sp.mime = "audio/wav"; sp.piece = "Angel </script> & co"; sp.project = "P"; sp.editId = "E1"; sp.offsetSeconds = 2.5; sp.durationSeconds = 7.0;
+            sp.peaks = reviewpage::computePeaks (wav, 1.0f, reviewpage::peakColumnsFor (7.0));
+            CHECK ((int) sp.peaks.size() == reviewpage::peakColumnsFor (7.0) * 2);
+            CHECK (sp.peaks[2 * 100 + 1] > 15 && sp.peaks[2 * 100 + 1] < 25 && sp.peaks[2 * 100] < -15);            // the quiet start is about 20 % of the loud end
+            CHECK (sp.peaks[2 * 2000 + 1] >= 95);                                                                    // the loud part reaches the top
+            const auto html = dir.getChildFile ("t.html");
+            CHECK (reviewpage::write (html, sp).isEmpty());
+            CHECK (reviewpage::write (html, sp).isEmpty());                                                         // twice: the second one replaces, never appends
+            const auto text = html.loadFileAsString();
+            CHECK (text.startsWith ("<!DOCTYPE html>") && text.contains ("class=\"ch\"") && text.trimEnd().endsWith ("</html>"));
+            CHECK (! text.contains ("Angel </script>") && text.contains ("Angel &lt;/script&gt; &amp; co"));
+            CHECK (text.indexOf ("__META__") < 0 && text.indexOf ("__CHUNKS__") < 0 && text.indexOf ("__TITLE__") < 0);
+            CHECK (text.indexOf ("</html>") == text.lastIndexOf ("</html>"));
+            // decode the chunks again: it is the same WAV
+            juce::MemoryBlock all; int at = 0, chunks = 0;
+            for (;;)
+            {
+                const int s0 = text.indexOf (at, "class=\"ch\">"); if (s0 < 0) break;
+                const int s1 = s0 + 11, e1 = text.indexOf (s1, "</script>");
+                juce::MemoryOutputStream mo (all, true); CHECK (juce::Base64::convertFromBase64 (mo, text.substring (s1, e1))); ++chunks; at = e1;
+            }
+            juce::MemoryBlock orig; wav.loadFileAsData (orig);
+            CHECK (chunks >= 2 && all.getSize() == (size_t) wav.getSize() && all.getSize() == orig.getSize() && std::memcmp (all.getData(), orig.getData(), all.getSize()) == 0);
+        }
     }
 
     eng.rebuildPlan();

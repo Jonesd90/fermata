@@ -1,0 +1,17 @@
+Name	Type	Marker Name	Comment	Start	Duration	Color
+Sequence 1	Sequence	I find bar 3 and 4 rather flat - any other version better?	Jo T	00:00:23:23	00:00:00:00	Red
+Sequence 1	Sequence	Definitely the best take, and I think it's quite nice tbh	Josh Quinlan	00:00:23:23	00:00:00:00	Red
+Sequence 1	Sequence	I've managed to just tuck up the tenor Enat and bass Eflat which I think helps tune it a little better	Dave Jones	00:00:23:23	00:00:00:00	Red
+Sequence 1	Sequence	I think I hear a tenor or bass trying to come in a beat early in 17 - is it enough to bother anyone?	Jo T	00:01:12:11	00:00:00:00	Green
+Sequence 1	Sequence	Oh yes, bothers me. Sorry!	Russell	00:01:12:11	00:00:00:00	Red
+Sequence 1	Sequence	Easy enough to remove that in denoising!	Josh Quinlan	00:01:12:11	00:00:00:00	Red
+Sequence 1	Sequence	Fixed	Dave Jones	00:01:12:11	00:00:00:00	Red
+Sequence 1	Sequence	End of 38 untidy s	Jo T	00:02:04:03	00:00:00:00	Orange
+Sequence 1	Sequence	Denoise later	Josh Quinlan	00:02:04:03	00:00:00:00	Red
+Sequence 1	Sequence	Tidied but it might be too obvious. It's a tricky one!	Dave Jones	00:02:04:03	00:00:00:00	Red
+Sequence 1	Sequence	Quite a loud page turn at 49	Jo T	00:02:31:18	00:00:00:00	Orange
+Sequence 1	Sequence	Denoise later	Josh Quinlan	00:02:31:18	00:00:00:00	Red
+Sequence 1	Sequence	Fixed	Dave Jones	00:02:31:18	00:00:00:00	Red
+Sequence 1	Sequence	2'29-30 scuffs and background scrapes. 3'25 scuffs. 4.21 same 4'29 after track ends noise.	Russell	00:02:33:18	00:00:00:00	Orange
+Sequence 1	Sequence	Denoise later	Josh Quinlan	00:02:33:18	00:00:00:00	Red
+Sequence 1	Sequence	Fixed these	Dave Jones	00:02:33:18	00:00:00:00	Red

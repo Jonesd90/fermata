@@ -18,6 +18,7 @@ public:
     bool keyPressed (const juce::KeyPress&) override;
     void mouseDown (const juce::MouseEvent&) override;
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
+    void goToSeconds (double seconds) { goTo (seconds); }       // (the timeline's feedback flags use it)
     void filesDropped (const juce::StringArray& files, int x, int y) override;
 
 private:
@@ -37,6 +38,10 @@ private:
     void markWholeSelected();
     void openBounce();
     void showTracksMenu();
+    void showFeedbackMenu();
+    void importFeedback();
+    void importFeedbackFiles (juce::Array<juce::File> files, double frameRate);
+    std::unique_ptr<juce::FileChooser> feedbackChooser;
     // ---- transport: Start, Back 5 s, Play / Stop, Forward 5 s, End (of the last piece). They work while playing too, and you can play on beyond the end.
     double transportNow() const;
     void goTo (double seconds);
@@ -54,7 +59,7 @@ private:
     juce::TextButton playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, trimButton { "Trim Window [T]" }, deleteButton { "Delete piece" },
                      leftButton { "Move earlier" }, rightButton { "Move later" }, endButton { "Next goes at end" },
                      zoomInButton { "+" }, zoomOutButton { "-" }, bounceButton { "Bounce Out..." }, mixerButton { "Edit Mixer" }, ltcButton { juce::String::fromUTF8 ("\xE2\x96\xB6 LTC") }, automationButton { "Automation" },
-                     pitchButton { "Pitch..." }, pitchCurveButton { "Pitch curve..." }, repairButton { "Spectral Repair..." }, declickButton { "De-Click..." }, reharmoniserButton { "ReHarmoniSer..." }, exportProcButton { "Export for Processing..." }, undoFixButton { "Undo fix" }, tracksButton { "Tracks..." }, importButton { "Import..." };
+                     pitchButton { "Pitch..." }, pitchCurveButton { "Pitch curve..." }, repairButton { "Spectral Repair..." }, declickButton { "De-Click..." }, reharmoniserButton { "ReHarmoniSer..." }, exportProcButton { "Export for Processing..." }, undoFixButton { "Undo fix" }, tracksButton { "Tracks..." }, importButton { "Import..." }, feedbackButton { "Feedback..." };
     juce::ToggleButton slipLeftToggle { "Slip Left" }, slipRightToggle { "Slip Right" }, shuffleToggle { "Shuffle" }, insertFlagToggle { "Insert flag" };
     LoopButton loopToggle;
     PlayheadModeButton playheadMode;

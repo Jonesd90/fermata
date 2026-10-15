@@ -53,7 +53,7 @@ var MasteringDef::toVar() const
         var s = newObj();
         put (s, "format", (int) vm.format); put (s, "rate", vm.sampleRate); put (s, "bits", vm.bitDepth); put (s, "dither", (int) vm.dither);
         put (s, "mp3Kbps", vm.mp3Kbps); put (s, "mp3Vbr", vm.mp3Vbr); put (s, "oggQuality", vm.oggQuality); put (s, "flacLevel", vm.flacLevel); put (s, "extraFormats", vm.extraFormats); put (s, "normalise", vm.normalise);
-        put (s, "peak", (double) vm.peakDb); put (s, "together", vm.peakTogether); put (s, "number", vm.numberFiles); put (s, "folder", vm.folder);
+        put (s, "peak", (double) vm.peakDb); put (s, "together", vm.peakTogether); put (s, "number", vm.numberFiles); put (s, "form", vm.feedbackForm); put (s, "formAudio", vm.formAudio); put (s, "folder", vm.folder);
         put (s, "album", tagsToVar (vm.album));
         put (root, "vm", s);
     }
@@ -100,7 +100,7 @@ void MasteringDef::fromVar (const var& root)
         vm.mp3Kbps = (int) s["mp3Kbps"]; vm.mp3Vbr = juce::jlimit (0, 9, (int) s["mp3Vbr"]); vm.oggQuality = juce::jmax (0, (int) s["oggQuality"]);
         vm.flacLevel = s["flacLevel"].isVoid() ? 5 : juce::jlimit (0, 8, (int) s["flacLevel"]); vm.extraFormats = juce::jlimit (0, 31, (int) s["extraFormats"]);
         vm.normalise = s["normalise"].isVoid() ? true : (bool) s["normalise"]; vm.peakDb = s["peak"].isVoid() ? -1.0f : (float) (double) s["peak"];
-        vm.peakTogether = (bool) s["together"]; vm.numberFiles = s["number"].isVoid() ? true : (bool) s["number"]; vm.folder = s["folder"].toString();
+        vm.peakTogether = (bool) s["together"]; vm.numberFiles = s["number"].isVoid() ? true : (bool) s["number"]; vm.feedbackForm = (bool) s["form"]; vm.formAudio = juce::jlimit (0, 2, (int) s["formAudio"]); vm.folder = s["folder"].toString();
         vm.album = tagsFromVar (s["album"]);
     }
     if (auto* a = root["items"].getArray())
