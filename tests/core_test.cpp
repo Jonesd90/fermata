@@ -1652,6 +1652,21 @@ int main()
             CHECK (z == noisy);
             for (long n = 0; n < t0 - 9000; ++n) if (y[(size_t) n] != noisy[(size_t) n]) { CHECK (false); break; }
         }
+        // Attenuate with linked channels: a stereo pair keeps its level difference and its time difference (the stereo image)
+        {
+            const long t0 = (long) (2 * sr), t1 = t0 + (long) (0.2 * sr);
+            std::vector<float> Lc = tone, Rc (tone.size(), 0.0f); juce::Random rnd (31);
+            for (long n = t0; n < t1; ++n) Lc[(size_t) n] += 1.0f * (rnd.nextFloat() * 2.0f - 1.0f);
+            const long delay = 20;                                                          // the right microphone hears it 20 samples later, and quieter
+            for (size_t n = (size_t) delay; n < Lc.size(); ++n) Rc[n] = 0.5f * Lc[n - (size_t) delay];
+            RepairParams p; p.mode = RepairMode::Attenuate; p.strength = 1.0; p.linkChannels = true;
+            std::vector<std::vector<float>> ch { Lc, Rc }; FixSpec spec; spec.kind = FixSpec::Kind::Patch; spec.f0 = 0.0; spec.f1 = 24000.0; spec.repair = p;
+            audioops::applyFix (ch, sr, t0, t1, spec, 0);
+            double e = 0, ref = 0;                                                          // right should still be half of left, 20 samples later
+            for (long n = t0 + 200; n < t1 - 200; ++n) { const double d = (double) ch[1][(size_t) n] - 0.5 * (double) ch[0][(size_t) (n - delay)]; e += d * d; ref += std::pow (0.5 * (double) ch[0][(size_t) (n - delay)], 2.0); }
+            CHECK (e < 0.01 * ref);
+            CHECK (ch[0] != Lc);                                                            // and something was done
+        }
         // the sharp picture: a steady tone is a thin line, a click a thin column
         {
             std::vector<float> t ((size_t) (2 * sr)); for (size_t n = 0; n < t.size(); ++n) t[n] = 0.3f * (float) std::sin (2 * dsp::kPi * 1000.0 * (double) n / sr);

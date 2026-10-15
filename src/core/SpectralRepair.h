@@ -21,6 +21,7 @@ enum class RepairMode { Replace = 0, Attenuate = 1 };
 struct RepairParams
 {
     RepairMode mode = RepairMode::Attenuate;
+    bool   linkChannels = false;                        // Attenuate: the channels of one file (a stereo pair) get the same gain, so the stereo image is not changed
     int    bands = 1024;                                // Attenuate: the frequency bands of the analysis (the FFT is twice this)
     bool   multiRes = true;                             // Attenuate: a longer window for the bass, a shorter one for the top
     double strength = 1.0;                              // 0 .. 1: how much of the repair replaces the original inside the box
@@ -192,15 +193,20 @@ public:
     /** Pulls down what sticks out of the box above the normal level of the sound around it (the sound underneath stays). Several analysis sizes when multiRes is on. */
     static void attenuate (std::vector<float>& x, double sr, long t0, long t1, double f0, double f1, const RepairParams& p)
     {
-        if (p.strength <= 0.0 || t1 <= t0) return;
+        std::vector<std::vector<float>*> xs { &x }; attenuate (xs, sr, t0, t1, f0, f1, p);
+    }
+    /** Attenuate on several channels at once: with p.linkChannels all of them get the same gain (a stereo pair keeps its timing and level difference). */
+    static void attenuate (std::vector<std::vector<float>*>& xs, double sr, long t0, long t1, double f0, double f1, const RepairParams& p)
+    {
+        if (p.strength <= 0.0 || t1 <= t0 || xs.empty()) return;
         int baseN = 256; while (baseN < 2 * p.bands && baseN < 16384) baseN <<= 1;
         if (p.multiRes)
         {
-            attenuatePass (x, sr, baseN * 2, 0.0, 400.0, t0, t1, f0, f1, p);
-            attenuatePass (x, sr, baseN, 400.0, 3000.0, t0, t1, f0, f1, p);
-            attenuatePass (x, sr, juce::jmax (256, baseN / 4), 3000.0, 1.0e9, t0, t1, f0, f1, p);
+            attenuatePass (xs, sr, baseN * 2, 0.0, 400.0, t0, t1, f0, f1, p);
+            attenuatePass (xs, sr, baseN, 400.0, 3000.0, t0, t1, f0, f1, p);
+            attenuatePass (xs, sr, juce::jmax (256, baseN / 4), 3000.0, 1.0e9, t0, t1, f0, f1, p);
         }
-        else attenuatePass (x, sr, baseN, 0.0, 1.0e9, t0, t1, f0, f1, p);
+        else attenuatePass (xs, sr, baseN, 0.0, 1.0e9, t0, t1, f0, f1, p);
     }
 
 private:
@@ -216,9 +222,10 @@ private:
         h ^= h >> 15; h *= 0x2c1b3c6du; h ^= h >> 12; h *= 0x297a2d39u; h ^= h >> 15;
         return (double) (h & 0xffffff) / 16777216.0;
     }
-    static void attenuatePass (std::vector<float>& x, double sr, int N, double bandLo, double bandHi, long t0, long t1, double f0, double f1, const RepairParams& p)
+    static void attenuatePass (std::vector<std::vector<float>*>& xs, double sr, int N, double bandLo, double bandHi, long t0, long t1, double f0, double f1, const RepairParams& p)
     {
-        const long L = (long) x.size();
+        const int nch = (int) xs.size(); if (nch < 1) return;
+        const long L = (long) xs[0]->size();
         const int H = N / 4, bins = N / 2 + 1;
         const double hzPerBin = sr / (double) N;
         const double lo = juce::jmax (f0, bandLo * 0.7), hi = juce::jmin (f1, bandHi * 1.3);
@@ -232,14 +239,16 @@ private:
         const long F = (E - S - N) / H + 1;
         if (F < 4) return;
         const dsp::FFT fft (N); const auto win = dsp::hann (N);
-        std::vector<std::vector<std::complex<double>>> X ((size_t) F, std::vector<std::complex<double>> ((size_t) bins));
         std::vector<std::complex<double>> buf ((size_t) N);
-        for (long f = 0; f < F; ++f)
-        {
-            for (int i = 0; i < N; ++i) buf[(size_t) i] = (double) x[(size_t) (S + f * H + i)] * win[(size_t) i];
-            fft.forward (buf);
-            for (int b = 0; b < bins; ++b) X[(size_t) f][(size_t) b] = buf[(size_t) b];
-        }
+        using Spec = std::vector<std::vector<std::complex<double>>>;
+        std::vector<Spec> X ((size_t) nch, Spec ((size_t) F, std::vector<std::complex<double>> ((size_t) bins)));
+        for (int c = 0; c < nch; ++c)
+            for (long f = 0; f < F; ++f)
+            {
+                for (int i = 0; i < N; ++i) buf[(size_t) i] = (double) (*xs[(size_t) c])[(size_t) (S + f * H + i)] * win[(size_t) i];
+                fft.forward (buf);
+                for (int b = 0; b < bins; ++b) X[(size_t) c][(size_t) f][(size_t) b] = buf[(size_t) b];
+            }
         // which frames are clean sound to learn from (wholly outside the box, within the surrounding length), and which touch the box
         std::vector<long> left, right, hit;
         for (long f = 0; f < F; ++f)
@@ -253,87 +262,89 @@ private:
         if (hit.empty() || (! haveL && ! haveR)) return;
         const bool horizontal = p.direction != RepairDirection::UpDown, vertical = p.direction != RepairDirection::LeftRight;
         const double strength = juce::jlimit (0.0, 1.0, p.strength);
-        // per bin, the magnitudes of the clean frames before and after (pooled with the neighbouring bins, so the statistics are steady), sorted:
-        // 'sortX' gives the normal level (a quantile drawn per cell), 'topX' the level that counts as clearly too loud (only what is above it is touched)
-        std::vector<std::vector<float>> sortL, sortR; std::vector<float> topL, topR;
-        if (horizontal)
-        {
-            sortL.assign ((size_t) bins, {}); sortR.assign ((size_t) bins, {}); topL.assign ((size_t) bins, -1.0f); topR.assign ((size_t) bins, -1.0f);
-            for (int b = b0; b <= b1; ++b)
-            {
-                for (int side = 0; side < 2; ++side)
-                {
-                    const auto& fr = side == 0 ? left : right; if ((side == 0 ? ! haveL : ! haveR)) continue;
-                    auto& v = (side == 0 ? sortL : sortR)[(size_t) b];
-                    for (auto f : fr) for (int k = juce::jmax (0, b - 2); k <= juce::jmin (bins - 1, b + 2); ++k) v.push_back ((float) std::abs (X[(size_t) f][(size_t) k]));
-                    std::sort (v.begin(), v.end());
-                    (side == 0 ? topL : topR)[(size_t) b] = v[(size_t) juce::jmin ((int) v.size() - 1, (int) (0.80 * (double) v.size()))];
-                }
-            }
-        }
         const double wgt = juce::jlimit (0.02, 0.98, p.weighting >= 0.0 ? p.weighting : 0.5);
         const double wExp = std::log (wgt) / std::log (0.5);
         const int vW = juce::jmax (4, (int) std::ceil (juce::jlimit (5.0, 1000.0, p.contextPct) / 100.0 * (double) (b1 - b0 + 1)));
-        // the gain of every hit frame and bin (1 = untouched), in the log domain
-        std::vector<std::vector<float>> G (hit.size(), std::vector<float> ((size_t) bins, 0.0f));
         double winEnergy = 0.0; for (int i = 0; i < N; ++i) winEnergy += win[(size_t) i] * win[(size_t) i];
-        for (size_t hi2 = 0; hi2 < hit.size(); ++hi2)
+        // the gain of every hit frame and bin (1 = untouched), in the log domain, for every channel
+        std::vector<std::vector<std::vector<float>>> G ((size_t) nch, std::vector<std::vector<float>> (hit.size(), std::vector<float> ((size_t) bins, 0.0f)));
+        for (int c = 0; c < nch; ++c)
         {
-            const long f = hit[hi2], s = S + f * H;
-            double inGap = 0.0;                                                        // the part of this frame's window energy that lies in the box
-            for (long n = juce::jmax (s, t0); n < juce::jmin (s + N, t1); ++n) inGap += win[(size_t) (n - s)] * win[(size_t) (n - s)];
-            const double wf = juce::jlimit (0.0, 1.0, inGap / winEnergy * 1.6);
-            if (wf <= 0.0) continue;
-            const double centre = (double) s + 0.5 * (double) N;
-            double alpha = juce::jlimit (0.0, 1.0, (centre - (double) t0) / (double) gap);
-            alpha = std::pow (alpha, wExp);
-            // the level above and below the box in this frame (for the vertical direction)
-            double below = 0.0, above = 0.0; int nb = 0, na = 0;
-            if (vertical)
+            auto& Xc = X[(size_t) c];
+            // per bin, the magnitudes of the clean frames before and after (pooled with the neighbouring bins, so the statistics are steady), sorted:
+            // 'sortX' gives the normal level (a quantile drawn per cell), 'topX' the level that counts as clearly too loud (only what is above it is touched)
+            std::vector<std::vector<float>> sortL, sortR; std::vector<float> topL, topR;
+            if (horizontal)
             {
-                for (int b = juce::jmax (0, b0 - vW); b < b0; ++b) { below += std::abs (X[(size_t) f][(size_t) b]); ++nb; }
-                for (int b = b1 + 1; b <= juce::jmin (bins - 1, b1 + vW); ++b) { above += std::abs (X[(size_t) f][(size_t) b]); ++na; }
-                if (nb > 0) below /= nb; if (na > 0) above /= na;
+                sortL.assign ((size_t) bins, {}); sortR.assign ((size_t) bins, {}); topL.assign ((size_t) bins, -1.0f); topR.assign ((size_t) bins, -1.0f);
+                for (int b = b0; b <= b1; ++b)
+                    for (int side = 0; side < 2; ++side)
+                    {
+                        const auto& fr = side == 0 ? left : right; if (side == 0 ? ! haveL : ! haveR) continue;
+                        auto& v = (side == 0 ? sortL : sortR)[(size_t) b];
+                        for (auto f : fr) for (int k = juce::jmax (0, b - 2); k <= juce::jmin (bins - 1, b + 2); ++k) v.push_back ((float) std::abs (Xc[(size_t) f][(size_t) k]));
+                        std::sort (v.begin(), v.end());
+                        (side == 0 ? topL : topR)[(size_t) b] = v[(size_t) juce::jmin ((int) v.size() - 1, (int) (0.80 * (double) v.size()))];
+                    }
             }
-            for (int b = b0; b <= b1; ++b)
+            auto& Gc = G[(size_t) c];
+            for (size_t hi2 = 0; hi2 < hit.size(); ++hi2)
             {
-                const double mag = std::abs (X[(size_t) f][(size_t) b]);
-                if (mag < 1.0e-12) continue;
-                double th = -1.0, tv = -1.0, thr = -1.0;
-                if (horizontal)
-                {
-                    const double u = 0.20 + 0.40 * hash01 ((unsigned) f, (unsigned) b);
-                    auto draw = [&] (const std::vector<float>& v) { return v.empty() ? -1.0 : (double) v[(size_t) juce::jmin ((int) v.size() - 1, (int) (u * (double) v.size()))]; };
-                    const double a = draw (sortL[(size_t) b]), c = draw (sortR[(size_t) b]);
-                    if (a > 0.0 && c > 0.0) th = std::exp ((1.0 - alpha) * std::log (a) + alpha * std::log (c));
-                    else th = a > 0.0 ? a : c;
-                    const double ta = haveL ? (double) topL[(size_t) b] : -1.0, tc = haveR ? (double) topR[(size_t) b] : -1.0;
-                    if (ta > 0.0 && tc > 0.0) thr = std::exp ((1.0 - alpha) * std::log (ta) + alpha * std::log (tc));
-                    else thr = ta > 0.0 ? ta : tc;
-                }
+                const long f = hit[hi2], s = S + f * H;
+                double inGap = 0.0;                                                        // the part of this frame's window energy that lies in the box
+                for (long n = juce::jmax (s, t0); n < juce::jmin (s + N, t1); ++n) inGap += win[(size_t) (n - s)] * win[(size_t) (n - s)];
+                const double wf = juce::jlimit (0.0, 1.0, inGap / winEnergy * 1.6);
+                if (wf <= 0.0) continue;
+                const double centre = (double) s + 0.5 * (double) N;
+                double alpha = juce::jlimit (0.0, 1.0, (centre - (double) t0) / (double) gap);
+                alpha = std::pow (alpha, wExp);
+                // the level above and below the box in this frame (for the vertical direction)
+                double below = 0.0, above = 0.0; int nb = 0, na = 0;
                 if (vertical)
                 {
-                    const double beta = (double) (b - b0) / (double) juce::jmax (1, b1 - b0);
-                    if (nb > 0 && na > 0 && below > 0.0 && above > 0.0) tv = std::exp ((1.0 - beta) * std::log (below) + beta * std::log (above));
-                    else tv = nb > 0 ? below : (na > 0 ? above : -1.0);
+                    for (int b = juce::jmax (0, b0 - vW); b < b0; ++b) { below += std::abs (Xc[(size_t) f][(size_t) b]); ++nb; }
+                    for (int b = b1 + 1; b <= juce::jmin (bins - 1, b1 + vW); ++b) { above += std::abs (Xc[(size_t) f][(size_t) b]); ++na; }
+                    if (nb > 0) below /= nb;
+                    if (na > 0) above /= na;
                 }
-                double target = th > 0.0 && tv > 0.0 ? std::sqrt (th * tv) : (th > 0.0 ? th : tv);
-                if (target <= 0.0 || mag <= target) continue;
-                if (thr > 0.0 && tv <= 0.0 && mag <= thr) continue;                      // within the normal variation of the sound around: left alone
-                double wb = 1.0;                                                       // the edges of the box in pitch, and of this analysis size's part of the pitch range
-                const double hz = (double) b * hzPerBin;
-                if (b - b0 < 3) wb = juce::jmin (wb, (double) (b - b0 + 1) / 4.0);
-                if (b1 - b < 3) wb = juce::jmin (wb, (double) (b1 - b + 1) / 4.0);
-                if (hz < f0 || hz > f1) wb *= 0.5;
-                if (bandLo > 0.0) wb *= smoothStepLog (hz, bandLo);
-                if (bandHi < 1.0e8) wb *= 1.0 - smoothStepLog (hz, bandHi);
-                const double g = target / mag;                                          // < 1
-                G[hi2][(size_t) b] = (float) (std::log (g) * wf * wb * strength);
+                for (int b = b0; b <= b1; ++b)
+                {
+                    const double mag = std::abs (Xc[(size_t) f][(size_t) b]);
+                    if (mag < 1.0e-12) continue;
+                    double th = -1.0, tv = -1.0, thr = -1.0;
+                    if (horizontal)
+                    {
+                        const double u = 0.20 + 0.40 * hash01 ((unsigned) f, (unsigned) b);
+                        auto draw = [&] (const std::vector<float>& v) { return v.empty() ? -1.0 : (double) v[(size_t) juce::jmin ((int) v.size() - 1, (int) (u * (double) v.size()))]; };
+                        const double a = draw (sortL[(size_t) b]), cc = draw (sortR[(size_t) b]);
+                        if (a > 0.0 && cc > 0.0) th = std::exp ((1.0 - alpha) * std::log (a) + alpha * std::log (cc));
+                        else th = a > 0.0 ? a : cc;
+                        const double ta = haveL ? (double) topL[(size_t) b] : -1.0, tc = haveR ? (double) topR[(size_t) b] : -1.0;
+                        if (ta > 0.0 && tc > 0.0) thr = std::exp ((1.0 - alpha) * std::log (ta) + alpha * std::log (tc));
+                        else thr = ta > 0.0 ? ta : tc;
+                    }
+                    if (vertical)
+                    {
+                        const double beta = (double) (b - b0) / (double) juce::jmax (1, b1 - b0);
+                        if (nb > 0 && na > 0 && below > 0.0 && above > 0.0) tv = std::exp ((1.0 - beta) * std::log (below) + beta * std::log (above));
+                        else tv = nb > 0 ? below : (na > 0 ? above : -1.0);
+                    }
+                    double target = th > 0.0 && tv > 0.0 ? std::sqrt (th * tv) : (th > 0.0 ? th : tv);
+                    if (target <= 0.0 || mag <= target) continue;
+                    if (thr > 0.0 && tv <= 0.0 && mag <= thr) continue;                      // within the normal variation of the sound around: left alone
+                    double wb = 1.0;                                                       // the edges of the box in pitch, and of this analysis size's part of the pitch range
+                    const double hz = (double) b * hzPerBin;
+                    if (b - b0 < 3) wb = juce::jmin (wb, (double) (b - b0 + 1) / 4.0);
+                    if (b1 - b < 3) wb = juce::jmin (wb, (double) (b1 - b + 1) / 4.0);
+                    if (hz < f0 || hz > f1) wb *= 0.5;
+                    if (bandLo > 0.0) wb *= smoothStepLog (hz, bandLo);
+                    if (bandHi < 1.0e8) wb *= 1.0 - smoothStepLog (hz, bandHi);
+                    const double g = target / mag;                                          // < 1
+                    Gc[hi2][(size_t) b] = (float) (std::log (g) * wf * wb * strength);
+                }
             }
-        }
-        // smooth the gain a little in time and pitch (no musical noise): a 3 x 3 average of the log gain
-        {
-            auto Gs = G;
+            // smooth the gain a little in time and pitch (no musical noise): a 3 x 3 average of the log gain
+            auto Gs = Gc;
             for (size_t i = 0; i < hit.size(); ++i)
                 for (int b = b0; b <= b1; ++b)
                 {
@@ -344,35 +355,50 @@ private:
                             const long ii = (long) i + di; const int bb = b + db;
                             if (ii < 0 || ii >= (long) hit.size() || bb < 0 || bb >= bins) continue;
                             const double w = (di == 0 ? 2.0 : 1.0) * (db == 0 ? 2.0 : 1.0);
-                            a += w * G[(size_t) ii][(size_t) bb]; wsum += w;
+                            a += w * Gc[(size_t) ii][(size_t) bb]; wsum += w;
                         }
                     Gs[i][(size_t) b] = (float) (a / wsum);
                 }
             // keep the stronger of the smoothed and the original (so a loud click is not diluted)
-            for (size_t i = 0; i < hit.size(); ++i) for (int b = b0; b <= b1; ++b) G[i][(size_t) b] = juce::jmin (G[i][(size_t) b], Gs[i][(size_t) b] * 0.5f + G[i][(size_t) b] * 0.5f);
+            for (size_t i = 0; i < hit.size(); ++i) for (int b = b0; b <= b1; ++b) Gc[i][(size_t) b] = juce::jmin (Gc[i][(size_t) b], Gs[i][(size_t) b] * 0.5f + Gc[i][(size_t) b] * 0.5f);
         }
-        for (size_t i = 0; i < hit.size(); ++i)
-            for (int b = b0; b <= b1; ++b)
-                X[(size_t) hit[i]][(size_t) b] *= std::exp ((double) G[i][(size_t) b]);
-        // back to sound: overlap-add the changed frames
-        std::vector<double> out ((size_t) (E - S), 0.0), norm ((size_t) (E - S), 0.0);
+        // linked channels (a stereo pair): ONE gain for all of them, the one found for the louder channel in that frame and bin. Every channel is then turned down
+        // by exactly the same amount with its own phase kept, so the time differences between the microphones and the level difference between them are not changed
+        if (p.linkChannels && nch > 1)
+            for (size_t i = 0; i < hit.size(); ++i)
+                for (int b = b0; b <= b1; ++b)
+                {
+                    int best = 0; double bm = -1.0;
+                    for (int c = 0; c < nch; ++c) { const double m = std::abs (X[(size_t) c][(size_t) hit[i]][(size_t) b]); if (m > bm) { bm = m; best = c; } }
+                    const float g = G[(size_t) best][i][(size_t) b];
+                    for (int c = 0; c < nch; ++c) G[(size_t) c][i][(size_t) b] = g;
+                }
+        // back to sound: apply the gains, overlap-add the changed frames
         std::vector<char> isHit ((size_t) F, 0); for (auto f : hit) isHit[(size_t) f] = 1;
-        for (long f = 0; f < F; ++f)
+        for (int c = 0; c < nch; ++c)
         {
-            const long s = S + f * H;
-            if (! isHit[(size_t) f] && (s + N <= t0 - N || s >= t1 + N)) continue;
-            for (int b = 0; b < bins; ++b) buf[(size_t) b] = X[(size_t) f][(size_t) b];
-            for (int b = 1; b < N / 2; ++b) buf[(size_t) (N - b)] = std::conj (buf[(size_t) b]);
-            buf[0] = std::complex<double> (buf[0].real(), 0.0); buf[(size_t) N / 2] = std::complex<double> (buf[(size_t) N / 2].real(), 0.0);
-            fft.inverse (buf);
-            const size_t o = (size_t) (f * H);
-            for (int i = 0; i < N && o + (size_t) i < out.size(); ++i) { out[o + (size_t) i] += buf[(size_t) i].real() * win[(size_t) i]; norm[o + (size_t) i] += win[(size_t) i] * win[(size_t) i]; }
-        }
-        // the samples in and around the box (all four overlapping frames present) are replaced; the rest of the sound is untouched
-        for (long n = juce::jmax (S, t0 - N); n < juce::jmin (E, t1 + N); ++n)
-        {
-            const size_t i = (size_t) (n - S);
-            if (norm[i] > 0.9) x[(size_t) n] = (float) (out[i] / norm[i]);              // all four overlapping frames present
+            auto& Xc = X[(size_t) c]; auto& Gc = G[(size_t) c];
+            for (size_t i = 0; i < hit.size(); ++i)
+                for (int b = b0; b <= b1; ++b)
+                    Xc[(size_t) hit[i]][(size_t) b] *= std::exp ((double) Gc[i][(size_t) b]);
+            std::vector<double> out ((size_t) (E - S), 0.0), norm ((size_t) (E - S), 0.0);
+            for (long f = 0; f < F; ++f)
+            {
+                const long s = S + f * H;
+                if (! isHit[(size_t) f] && (s + N <= t0 - N || s >= t1 + N)) continue;
+                for (int b = 0; b < bins; ++b) buf[(size_t) b] = Xc[(size_t) f][(size_t) b];
+                for (int b = 1; b < N / 2; ++b) buf[(size_t) (N - b)] = std::conj (buf[(size_t) b]);
+                buf[0] = std::complex<double> (buf[0].real(), 0.0); buf[(size_t) N / 2] = std::complex<double> (buf[(size_t) N / 2].real(), 0.0);
+                fft.inverse (buf);
+                const size_t o = (size_t) (f * H);
+                for (int i = 0; i < N && o + (size_t) i < out.size(); ++i) { out[o + (size_t) i] += buf[(size_t) i].real() * win[(size_t) i]; norm[o + (size_t) i] += win[(size_t) i] * win[(size_t) i]; }
+            }
+            // the samples in and around the box (all four overlapping frames present) are replaced; the rest of the sound is untouched
+            for (long n = juce::jmax (S, t0 - N); n < juce::jmin (E, t1 + N); ++n)
+            {
+                const size_t i = (size_t) (n - S);
+                if (norm[i] > 0.9) (*xs[(size_t) c])[(size_t) n] = (float) (out[i] / norm[i]);              // all four overlapping frames present
+            }
         }
     }
 public:

@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.35.0
+- **Spectral Repair: Link stereo (on by default, Attenuate).** A stereo file is now turned down by the same amount on both sides (the amount found for the louder side) with each side's own phase kept, so the time differences between the microphones and the level difference between them, which make the stereo image, are not changed. Untick it to treat each channel on its own. It applies to stereo files (pairs joined at import); two separate mono files are still processed one by one.
+- The Pattern and Partials + Noise tabs of RX will not be built.
+
 ## 2.34.1
 - **Attenuate tuned against real examples** (a double consonant and a click in a held chord, each with the iZotope RX result): the patch now settles to the same level as RX's within about 1 dB, and sound outside the noise is moved by less than half a dB. Draw the box tight round the noise for the best match.
 

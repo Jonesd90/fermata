@@ -1100,6 +1100,9 @@ public:
         for (int b : { 128, 256, 512, 1024, 2048, 4096 }) bandsBox.addItem ("Bands: " + juce::String (b), b);
         bandsBox.setSelectedId (1024, juce::dontSendNotification);
         bandsBox.setTooltip ("How finely the sound is split into pitches for Attenuate. More bands follow steady notes more exactly; fewer bands are sharper in time (clicks). 1024 suits most things.");
+        linkBtn.setToggleState (true, juce::dontSendNotification);
+        linkBtn.setTooltip ("A stereo file is turned down by the SAME amount on both sides (the amount found for the louder side), with each side's own phase kept. The time difference between the microphones and the level difference between them, which make the stereo image, are then not changed. Untick to treat every channel on its own.");
+        linkBtn.onClick = [this] { invalidate(); };
         multiBtn.setToggleState (true, juce::dontSendNotification);
         multiBtn.setTooltip ("Attenuate works with a long window for the bass and a short one for the top and joins them smoothly, so both low notes and clicks are matched well.");
         specBtn.setTooltip ("How the picture is drawn: sharpness, colours, and the levels shown.");
@@ -1108,7 +1111,7 @@ public:
         bandsBox.onChange = [this] { invalidate(); };
         multiBtn.onClick = [this] { invalidate(); };
         view.onNeedDetail = [this] (const PictureRequest& rq) { startDetail (rq); };
-        for (auto* x : std::initializer_list<juce::Component*> { &methodBox, &bandsBox, &multiBtn, &specBtn, &dirBox, &previewBtn, &compareBtn, &revertBtn, &finishBtn, &close, &playBtn, &stopBtn, &loopBtn, &hearCap, &hearBox, &scaleBox, &detailBox }) addAndMakeVisible (x);
+        for (auto* x : std::initializer_list<juce::Component*> { &methodBox, &bandsBox, &multiBtn, &linkBtn, &specBtn, &dirBox, &previewBtn, &compareBtn, &revertBtn, &finishBtn, &close, &playBtn, &stopBtn, &loopBtn, &hearCap, &hearBox, &scaleBox, &detailBox }) addAndMakeVisible (x);
         scaleBox.addItem ("Pitch scale: Mel (as iZotope RX)", 6); scaleBox.addItem ("Pitch scale: linear (even Hz)", 1); scaleBox.addItem ("Pitch scale: mostly linear", 2); scaleBox.addItem ("Pitch scale: halfway", 3);
         scaleBox.addItem ("Pitch scale: mostly musical", 4); scaleBox.addItem ("Pitch scale: musical (every octave the same height)", 5);
         scaleBox.setSelectedId (6, juce::dontSendNotification); view.setMel();
@@ -1215,8 +1218,8 @@ public:
         dirCap.setBounds (rowA.removeFromLeft (58)); dirBox.setBounds (rowA.removeFromLeft (230)); rowA.removeFromLeft (10);
         strengthCap.setBounds (rowA.removeFromLeft (56)); strength.setBounds (rowA);
         // second row: patch: surrounding length and before / after;  declick: the sensitivity
-        bandsBox.setBounds (rowB.removeFromLeft (110)); rowB.removeFromLeft (6); multiBtn.setBounds (rowB.removeFromLeft (150)); rowB.removeFromLeft (10);
-        surroundCap.setBounds (rowB.removeFromLeft (112)); surround.setBounds (rowB.removeFromLeft (230)); rowB.removeFromLeft (10);
+        bandsBox.setBounds (rowB.removeFromLeft (110)); rowB.removeFromLeft (6); multiBtn.setBounds (rowB.removeFromLeft (140)); rowB.removeFromLeft (4); linkBtn.setBounds (rowB.removeFromLeft (150)); rowB.removeFromLeft (8);
+        surroundCap.setBounds (rowB.removeFromLeft (112)); surround.setBounds (rowB.removeFromLeft (170)); rowB.removeFromLeft (8);
         weightCap.setBounds (rowB.removeFromLeft (92)); weight.setBounds (rowB);
         sensCapRow = rowB; sensCap.setBounds (10, rowB.getY(), 130, rowB.getHeight()); sens.setBounds (150, rowB.getY(), 330, rowB.getHeight());
         status.setBounds (r.removeFromBottom (22).reduced (2, 0));
@@ -1338,7 +1341,7 @@ private:
         updateSurround();
         const bool att = p && methodBox.getSelectedId() == 1;
         for (auto* c : std::initializer_list<juce::Component*> { &dirBox, &dirCap, &strength, &strengthCap, &surround, &surroundCap, &methodBox }) c->setVisible (p);
-        bandsBox.setVisible (att); multiBtn.setVisible (att);
+        bandsBox.setVisible (att); multiBtn.setVisible (att); linkBtn.setVisible (att);
         weight.setVisible (p && lookingAcross()); weightCap.setVisible (p && lookingAcross());
         sens.setVisible (! p); sensCap.setVisible (! p);
         if (view.hasSelection())
@@ -1364,7 +1367,7 @@ private:
         {
             spec.kind = FixSpec::Kind::Patch; spec.f0 = view.selF0(); spec.f1 = view.selF1();
             spec.repair.mode = methodBox.getSelectedId() == 1 ? RepairMode::Attenuate : RepairMode::Replace;
-            spec.repair.bands = bandsBox.getSelectedId(); spec.repair.multiRes = multiBtn.getToggleState();
+            spec.repair.bands = bandsBox.getSelectedId(); spec.repair.multiRes = multiBtn.getToggleState(); spec.repair.linkChannels = linkBtn.getToggleState();
             spec.repair.strength = strength.getValue() / 100.0;
             spec.repair.direction = (RepairDirection) (dirBox.getSelectedId() - 1);
             spec.repair.contextPct = surround.getValue();
@@ -1523,7 +1526,7 @@ private:
     RepairContext ctx;
     bool declickOnly = false;                                 // true: the De-Click window (finds and mends clicks); false: Spectral Repair (rebuilds a box of the picture)
     InfoNote intro; juce::Label info, sensCap, strengthCap, dirCap, surroundCap, weightCap;
-    SpectrogramView view; juce::ComboBox modeBox, dirBox, scaleBox, detailBox, methodBox, bandsBox; juce::ToggleButton multiBtn { "Multi-resolution" }; juce::TextButton specBtn { "Spectrogram settings..." };
+    SpectrogramView view; juce::ComboBox modeBox, dirBox, scaleBox, detailBox, methodBox, bandsBox; juce::ToggleButton multiBtn { "Multi-resolution" }, linkBtn { "Link stereo" }; juce::TextButton specBtn { "Spectrogram settings..." };
     std::shared_ptr<std::atomic<bool>> detailCancel; juce::Slider sens, strength, surround, weight;
     juce::TextButton playBtn { "Play" }, stopBtn { "Stop" };
     juce::ToggleButton loopBtn { "Loop" };

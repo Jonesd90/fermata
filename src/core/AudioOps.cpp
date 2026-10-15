@@ -126,6 +126,13 @@ bool spliceFile (juce::AudioFormatManager& fm, const juce::File& src, const juce
 
 void applyFix (std::vector<std::vector<float>>& chans, double sr, long s0, long s1, const FixSpec& spec, long xfade)
 {
+    if (spec.kind == FixSpec::Kind::Patch && spec.repair.mode == RepairMode::Attenuate && spec.repair.linkChannels && chans.size() > 1)
+    {
+        std::vector<std::vector<float>*> xs; for (auto& c : chans) xs.push_back (&c);
+        const long L = (long) chans[0].size(); const long a = juce::jlimit (0L, L, s0), b = juce::jlimit (0L, L, s1);
+        if (b - a >= 2) SpectralRepair::attenuate (xs, sr, a, b, spec.f0, spec.f1, spec.repair);
+        return;
+    }
     for (auto& x : chans)
     {
         const long L = (long) x.size();
