@@ -439,7 +439,7 @@ public:
             {
                 auto nameArea = r.reduced (8, 0);
                 auto bottom = nameArea.removeFromBottom (juce::jmin (20, nameArea.getHeight() / 2 + 2));
-                g.drawFittedText (tracks[i].name, nameArea.withTrimmedRight (46), juce::Justification::centredLeft, 2, 1.0f);
+                g.drawFittedText (tracks[i].name, nameArea.withTrimmedRight (8).withTrimmedLeft (rowH >= 40 ? 0 : 42).withTrimmedTop (rowH >= 40 ? 20 : 0), juce::Justification::centredLeft, 2, 1.0f);
                 const auto* lane = e->findLane (tracks[i].id, selOf (tracks[i].id).param, selOf (tracks[i].id).mixer);
                 const bool locked = lane != nullptr && lane->locked;
                 auto lockR = lockRect (sx, top + (int) i * rowH);
@@ -453,7 +453,7 @@ public:
             else
             {
                 const int rowTop = top + (int) i * rowH;
-                g.drawFittedText (tracks[i].name, r.reduced (8, 2).withTrimmedRight (46).withTrimmedBottom (rowH >= 40 ? 10 : 0), juce::Justification::centredLeft, 2, 1.0f);
+                g.drawFittedText (tracks[i].name, r.reduced (8, 2).withTrimmedRight (8).withTrimmedLeft (rowH >= 40 ? 0 : 42).withTrimmedTop (rowH >= 40 ? 20 : 0).withTrimmedBottom (rowH >= 40 ? 10 : 0), juce::Justification::centredLeft, 2, 1.0f);
                 paintStripBits (g, tracks[i].id, sx, rowTop, rowH >= 40);
             }
             if (e->automationOn) paintStripBits (g, tracks[i].id, sx, top + (int) i * rowH, false);
@@ -926,8 +926,8 @@ private:
     juce::Uuid autoDragLane = juce::Uuid::null(); int autoDragIndex = -1; int autoDragRow = 0; float autoPrevY = 0.0f;
 
     LaneSel& selOf (const juce::Uuid& trackId) { return laneSel[trackId.toString()]; }
-    juce::Rectangle<int> muteRect (int sx, int rowTop) const { return { sx + kNameW - 42, rowTop + 3, 18, 16 }; }
-    juce::Rectangle<int> soloRect (int sx, int rowTop) const { return { sx + kNameW - 22, rowTop + 3, 18, 16 }; }
+    juce::Rectangle<int> muteRect (int sx, int rowTop) const { return { sx + 10, rowTop + 3, 18, 16 }; }
+    juce::Rectangle<int> soloRect (int sx, int rowTop) const { return { sx + 30, rowTop + 3, 18, 16 }; }
     StripState* stripOf (const juce::Uuid& trackId) const
     {
         auto* m = mixerFor (juce::Uuid::null());

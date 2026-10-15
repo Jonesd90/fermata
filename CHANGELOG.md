@@ -6,6 +6,11 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.43.0
+- **Take window meters show playback.** While a take plays back, the small horizontal meters of each track show the level of the mixer strip (a stereo track shows left over right), as in the edit window. While recording they show the input as before.
+- **M and S buttons at the top left of each track, above the name** (take window and edit window), side by side, so it is clear which track they belong to. The take window now has them too (the same mute / solo flags as the mixer strip). The name sits below them; in low rows it sits to their right.
+- **The track-name column of the take window can be resized** by dragging its right edge (like the edit window). The width is shared by all take windows and the buttons, meters and ARM switch follow it.
+
 ## 2.42.1
 - **OUT / IN stream windows no longer disappear when Stop (or Play) is clicked.** They are now owned by the main window (so Windows keeps them above it) and are put back on top after every click inside them.
 

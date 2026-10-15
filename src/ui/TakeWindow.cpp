@@ -7,7 +7,8 @@
 
 namespace td
 {
-static constexpr int kRulerH = 34 + markerui::kStripH, kLaneH = 50, kNameW = 150;      // (the top 14 pixels of the ruler band are the marker strip)
+static constexpr int kRulerH = 34 + markerui::kStripH, kLaneH = 50;
+static int kNameW = 150;                          // width of the track-name column (drag its right edge to change it; shared by all take windows)      // (the top 14 pixels of the ruler band are the marker strip)
 
 /** The scrolling content: ruler, one lane of take names, then one row per track. */
 /** The little non-modal box for a take's IN Bar / OUT Bar (so it can be filled in while recording, with the keyboard already in the IN box). */
@@ -387,7 +388,19 @@ public:
             g.setColour (tc.darker (0.3f).withAlpha (0.8f)); g.fillRect (sx, top + (int) i * rowH + rowH - 1, kNameW, 1);
             g.setColour (theme::text); g.setFont (juce::jlimit (9.0f, 14.0f, (float) rowH - 4.0f));
             const bool tall = rowH >= 44;
-            g.drawText (tracks[i]->name, r.reduced (8, 0).withTrimmedRight (36).withTrimmedBottom (tall ? 14 : 0), juce::Justification::centredLeft, true);
+            g.drawText (tracks[i]->name, tall ? r.reduced (8, 0).withTrimmedRight (36).withTrimmedTop (22).withTrimmedBottom (14) : r.withTrimmedLeft (46).withTrimmedRight (38), juce::Justification::centredLeft, true);
+            if (auto* st = stripOf (tracks[i]->id))       // M / S at the top left, above the name (the same flags as the mixer strip)
+            {
+                auto drawBtn = [&] (juce::Rectangle<int> br, const char* t, bool on, juce::Colour c)
+                {
+                    g.setColour (on ? c : juce::Colour (0xff2a2f36)); g.fillRoundedRectangle (br.toFloat(), 3.0f);
+                    g.setColour (theme::border); g.drawRoundedRectangle (br.toFloat(), 3.0f, 1.0f);
+                    g.setColour (on ? juce::Colours::black : theme::text); g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+                    g.drawText (t, br, juce::Justification::centred, false);
+                };
+                drawBtn (muteRect (sx, top + (int) i * rowH), "M", st->mute.get(), juce::Colour (0xffe05a3a));
+                drawBtn (soloRect (sx, top + (int) i * rowH), "S", st->solo.get(), juce::Colour (0xfff2c200));
+            }
             g.setColour (theme::dimText); g.setFont (11.0f);
             if (tall)
             g.drawText (tracks[i]->format == TrackFormat::Mono ? "mono" : tracks[i]->format == TrackFormat::Stereo ? "stereo" : juce::String (tracks[i]->channelCount()) + "-ch",
@@ -489,6 +502,19 @@ public:
             }
         const bool inLane = e.y >= kRulerH && e.y < kRulerH + kLaneH;
         const int sx = viewport.getViewPositionX();
+        if (! e.mods.isPopupMenu() && std::abs (e.x - (sx + kNameW)) <= 4 && e.y >= kRulerH) { widthDrag = true; return; }          // the right edge of the name column: drag to resize
+        if (! e.mods.isPopupMenu() && e.x >= sx && e.x < sx + kNameW && e.y >= kRulerH + kLaneH)    // click on a track's M / S switch
+        {
+            const auto shown = shownTracks();
+            const int row = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
+            if (juce::isPositiveAndBelow (row, (int) shown.size()))
+                if (auto* st = stripOf (shown[(size_t) row]->id))
+                {
+                    const int rowTop = kRulerH + kLaneH + row * rowH;
+                    if (muteRect (sx, rowTop).expanded (1).contains (e.getPosition())) { st->mute.set (! st->mute.get()); app.project.markDirty(); repaint(); return; }
+                    if (soloRect (sx, rowTop).expanded (1).contains (e.getPosition())) { st->solo.set (! st->solo.get()); app.project.markDirty(); repaint(); return; }
+                }
+        }
         if (! e.mods.isPopupMenu() && e.x >= sx && e.x < sx + kNameW && e.y >= kRulerH + kLaneH)    // click on a track's ARM switch
         {
             const auto shown = shownTracks();
@@ -570,6 +596,7 @@ public:
     {
         auto* w = def();
         if (w == nullptr) return;
+        if (widthDrag) { kNameW = juce::jlimit (110, 700, e.x - viewport.getViewPositionX()); markers.setNameWidth (viewport.getViewPositionX() + kNameW); updateSize(); repaint(); return; }
         if (markers.mouseDrag (e)) return;
         if (fadeDrag != 0)
         {
@@ -631,11 +658,13 @@ public:
     void mouseMoveImpl (const juce::MouseEvent& e)
     {
         auto* w = def(); bool isIn = true;
+        if (std::abs (e.x - (viewport.getViewPositionX() + kNameW)) <= 4 && e.y >= kRulerH) { setMouseCursor (juce::MouseCursor::LeftRightResizeCursor); return; }
         setMouseCursor (w != nullptr && (fadeHandleAt (*w, e.getPosition(), isIn) != nullptr || editFlagAt (*w, e.getPosition()) != 0) ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
     }
 
     void mouseUpImpl (const juce::MouseEvent& e)
     {
+        if (widthDrag) { widthDrag = false; setMouseCursor (juce::MouseCursor::NormalCursor); repaint(); return; }
         if (markers.mouseUp (e)) return;
         if (markActive) { markActive = false; app.project.changed(); }
         if (flagDrag != 0) { flagDrag = 0; app.project.changed(); }
@@ -670,6 +699,13 @@ public:
 private:
     TakeWindowDef* def() const { return app.project.findTakeWindow (windowId); }
     /** The ARM switch of the track row that starts at y (it stays at the left edge while the window is scrolled sideways). */
+    bool widthDrag = false;
+    juce::Rectangle<int> muteRect (int sx, int rowTop) const { return { sx + 10, rowTop + 3, 18, 16 }; }
+    juce::Rectangle<int> soloRect (int sx, int rowTop) const { return { sx + 30, rowTop + 3, 18, 16 }; }
+    StripState* stripOf (const juce::Uuid& trackId) const          // the processing mixer's strip: the take window plays through it
+    {
+        return app.project.mixers.empty() ? nullptr : app.project.mixers.front()->stripFor (trackId);
+    }
     juce::Rectangle<int> armRect (int rowTop) const
     {
         const int sx = viewport.getViewPositionX();
@@ -967,11 +1003,15 @@ private:
         for (auto* t : shownTracks())
         {
             auto& m = meterOf (t->id);
+            float playL = 0.0f, playR = 0.0f;                    // while a take plays back the bars show what the mixer strip measures (it always keeps measuring, so it is read every time)
+            if (auto* st = stripOf (t->id)) { playL = st->livePkL.take(); playR = st->livePkR.take(); }
+            const bool playing = app.isPlaying() && ! app.engine.isRecording();
             for (int c = 0; c < juce::jmin (kMaxMeterCh, t->channelCount()); ++c)
             {
                 float pk = 0.0f;
                 const int in = t->inputOf (c);
-                if (juce::isPositiveAndBelow (in, (int) app.inPeaks.size())) pk = app.inPeaks[(size_t) in];
+                if (playing) pk = t->channelCount() > 1 ? (c == 0 ? playL : playR) : juce::jmax (playL, playR);
+                else if (juce::isPositiveAndBelow (in, (int) app.inPeaks.size())) pk = app.inPeaks[(size_t) in];
                 auto& lv = m.level[(size_t) c]; auto& hv = m.hold[(size_t) c]; auto& ha = m.holdAt[(size_t) c];
                 lv = juce::jmax (pk, lv * 0.86f);
                 if (pk >= hv || now - ha > 1500) { hv = pk >= hv ? pk : lv; ha = now; }
