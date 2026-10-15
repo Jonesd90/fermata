@@ -722,6 +722,21 @@ public:
         const double span = juce::jlimit (std::log (1.6), hi - lo, std::log (fHi / fLo) * factor);
         setFreqWindow (0.5 * (std::log (fLo) + std::log (fHi)) - 0.5 * span, span);
     }
+    /** Dragging the pitch scale at the left moves what is shown up and down (the picture follows the mouse) and never changes how much is shown:
+        the shift is made in the units the scale is drawn in (Mel, straight Hz, or octaves), from the window as it was when the drag began. 'down' is the drag
+        distance as a fraction of the picture's height (down = positive = higher pitches come into view). */
+    void dragPitchWindow (double down)
+    {
+        auto toU = [this] (double f) { return mel ? PictureAxis::melOf (f) : warp < 0.5 ? f : std::log (f); };
+        auto fromU = [this] (double u) { return mel ? PictureAxis::hzOfMel (u) : warp < 0.5 ? u : std::exp (u); };
+        const double u0 = toU (panF), u1 = toU (panF1), span = u1 - u0;
+        const double minU = toU (kMinHz), maxU = toU (maxHz());
+        double lo = u0 + down * span;
+        lo = juce::jlimit (minU, juce::jmax (minU, maxU - span), lo);
+        fLo = juce::jmax ((double) kMinHz, fromU (lo)); fHi = juce::jmin ((double) maxHz(), fromU (lo + span));
+        if (fHi <= fLo * 1.01) fHi = fLo * 1.01;
+        dirty = true; repaint(); scheduleDetail();
+    }
     void panFreq (double logShift) { setFreqWindow (std::log (fLo) + logShift, std::log (fHi / fLo)); }
     /** 0 = pitch spread evenly (linear), 1 = every octave the same height (musical); in between is a blend. */
     void setScale (double w) { warp = juce::jlimit (0.0, 1.0, w); mel = false; dirty = true; repaint(); scheduleDetail(); }
@@ -854,7 +869,7 @@ public:
         if (knobArea().expanded (3).contains (e.getPosition())) { mode = Mode::knob; rollStart = rollPos; return; }
         if (rulerArea().contains (e.getPosition())) { mode = Mode::pan; panT0 = vt0; return; }
         auto pl = plotArea();
-        if (e.x < pl.getX() && e.y >= pl.getY() && e.y < pl.getBottom()) { mode = Mode::pitchPan; panF = fLo; return; }
+        if (e.x < pl.getX() && e.y >= pl.getY() && e.y < pl.getBottom()) { mode = Mode::pitchPan; panF = fLo; panF1 = fHi; return; }
         if (const int ed = edgesAt (e.getPosition()))                    // on an edge or corner of the box: drag it to resize the box
         {
             a = { selT0(), selF0() }; b = { selT1(), selF1() };        // a = lower-left corner, b = upper-right
@@ -887,7 +902,7 @@ public:
             repaint();
         }
         else if (mode == Mode::pan) setWindow (panT0 - (double) e.getDistanceFromDragStartX() / (double) juce::jmax (1, pl.getWidth()) * (vt1 - vt0), vt1 - vt0);
-        else if (mode == Mode::pitchPan) { fLo = panF; panFreq ((double) e.getDistanceFromDragStartY() / (double) juce::jmax (1, pl.getHeight()) * std::log (fHi / fLo)); }
+        else if (mode == Mode::pitchPan) dragPitchWindow ((double) e.getDistanceFromDragStartY() / (double) juce::jmax (1, pl.getHeight()));
         else if (mode == Mode::knob)
         {
             setRoll (rollStart - (double) e.getDistanceFromDragStartY() / 45.0);       // smooth: about 45 px per colour look
@@ -1101,7 +1116,7 @@ private:
     }
     MergedSpectrogram spec; double duration = 1.0; juce::Image image; bool dirty = true;
     double vt0 = 0.0, vt1 = 1.0, fLo = kMinHz, fHi = 20000.0, warp = 1.0;
-    int preset = 0; double rollPos = 0.0, rollStart = 0.0; Mode mode = Mode::none; double panT0 = 0.0, panF = kMinHz;
+    int preset = 0; double rollPos = 0.0, rollStart = 0.0; Mode mode = Mode::none; double panT0 = 0.0, panF = kMinHz, panF1 = 20000.0;
     std::array<juce::Colour, 256> lut, lutD;
     SpectroSettings ss; bool mel = true; DetailPicture detail; bool detailStale = true; juce::int64 detailSeq = 0; PictureOptions detailOpt, lastOpt;
     bool hasSel = false; juce::Point<double> a, b; double playT = -1.0, cueT = -1.0;

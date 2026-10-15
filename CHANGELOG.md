@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.38.1
+- **Fixed: dragging the pitch scale in Spectral Repair and De-Click zoomed instead of moving.** Click-dragging the frequency scale at the left of the picture now slides the visible part up and down, following the mouse, and never changes how much is shown. It works the same on every pitch scale (Mel, even Hz, octaves) and stops at the lowest and highest pitch. (Both windows use the same picture, so both are fixed.)
+
 ## 2.38.0
 - **The top band stays put when you scroll down.** In the edit window and the take window, when there are more tracks than fit and you scroll down, the markers, the flags, the ruler (timeline), the piece / take names and the edit points now stay fixed at the top, like the buttons, and the track names stay at the left. You can click, drag and right-click in the band wherever you have scrolled to.
 - **Markers and Feedback markers each have their own line and their own tick box.** The edit window's top band now has a line for your markers (amber flags, as before) and, under it, a line for the listeners' comments (teal flags with a thin stripe of the colour the website gave them). The new **Markers** and **Feedback markers** tick boxes in the toolbar show or hide each one (remembered with the project); the left of each line says which it is. The take window has the **Markers** tick box too.
