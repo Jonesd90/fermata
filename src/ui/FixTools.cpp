@@ -3694,6 +3694,27 @@ static juce::String exportedMessage (const juce::String& name, const juce::File&
            "Fermata keeps none of these files open, so the other program can overwrite them freely.";
 }
 
+/** The piece of region 'rid' that the exported take range [a,b) covers becomes a piece of its own that waits for corrected audio. The exported range may reach past the piece into its handle
+    (an OUT / IN stream export): the corrected file then also gives the audio under the crossfade. False if the region is no longer there as it was. */
+static bool markWaiting (EditDef& e2, const juce::Uuid& rid, juce::int64 a, juce::int64 b, const juce::String& name, const std::vector<juce::File>& dest, const std::vector<juce::Uuid>& trk, bool subset)
+{
+    int i = e2.indexOf (rid);
+    if (i < 0 || e2.regions[(size_t) i].waiting.active()) return false;
+    const auto pa = juce::jmax (a, e2.regions[(size_t) i].srcIn), pb = juce::jmin (b, e2.regions[(size_t) i].srcOut);
+    if (pb <= pa) return false;
+    const bool cutAfter = pb < e2.regions[(size_t) i].srcOut, cutBefore = pa > e2.regions[(size_t) i].srcIn;
+    if (cutAfter)  e2.splitRegion (i, pb - e2.regions[(size_t) i].srcIn);
+    if (cutBefore) i = e2.splitRegion (i, pa - e2.regions[(size_t) i].srcIn);
+    auto& mid = e2.regions[(size_t) i];
+    mid.waiting.name = name; mid.waiting.from = a; mid.waiting.to = b; mid.waiting.files = dest;
+    mid.waiting.tracks = subset ? trk : std::vector<juce::Uuid>();
+    if (cutBefore) { mid.setInCurve (FadeCurve::Linear); if (i > 0) e2.regions[(size_t) i - 1].setOutCurve (FadeCurve::Linear); }
+    if (cutAfter)  { mid.setOutCurve (FadeCurve::Linear); if (i + 1 < (int) e2.regions.size()) e2.regions[(size_t) i + 1].setInCurve (FadeCurve::Linear); }
+    if (cutBefore) { mid.fixIn = true; if (i > 0) e2.regions[(size_t) i - 1].fixOut = true; }                 // not edit points
+    if (cutAfter)  { mid.fixOut = true; if (i + 1 < (int) e2.regions.size()) e2.regions[(size_t) i + 1].fixIn = true; }
+    return true;
+}
+
 void exportForProcessingEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent)
 {
     const juce::String title = "Export for Processing";
@@ -3701,6 +3722,87 @@ void exportForProcessingEdit (AppContext& app, const juce::Uuid& eid, juce::Comp
     if (e->fixIn < 0.0 || e->fixOut <= e->fixIn) { say (title, "First mark the part to send out with keys 1 (IN) and 2 (OUT) in this window: put the white playhead where you want it and press the key."); return; }
     const double rate = e->sampleRate > 0 ? e->sampleRate : 48000.0;
     const auto tIn = (juce::int64) std::llround (e->fixIn * rate), tOut = (juce::int64) std::llround (e->fixOut * rate);
+    // an edit point between the marks: the two takes are sent out separately (the OUT stream and / or the IN stream), each as it is in the file: full volume, no fade
+    {
+        juce::int64 lastEnd = 0;
+        for (auto& r : e->regions) if (r.endSample() > tIn && r.startSample < tOut) lastEnd = juce::jmax (lastEnd, r.endSample());
+        StreamSel outS, inS;
+        const int sm = lastEnd > tIn ? detectStreams (*e, tIn, juce::jmin (tOut, lastEnd), outS, inS, title) : 0;
+        if (sm < 0) return;
+        if (sm == 1)
+        {
+            struct Stream { juce::Uuid rid; juce::int64 a = 0, b = 0; juce::String label; std::vector<juce::File> src; std::vector<juce::String> names; std::vector<juce::int64> fstart; std::vector<juce::Uuid> trk; };
+            auto plan = std::make_shared<std::vector<Stream>>();      // [0] = out, [1] = in (a stream that cannot be sent has an empty 'src')
+            plan->resize (2);
+            const bool subset = ! e->fixTracks.empty();
+            juce::String notes;
+            auto fill = [&] (Stream& st, const EditRegion& r, juce::int64 lo, juce::int64 hi, const juce::String& label)
+            {
+                st.label = label;
+                lo = juce::jmax (lo, r.startSample - r.srcIn); if (r.sourceLength > 0) hi = juce::jmin (hi, r.startSample + (r.sourceLength - r.srcIn));
+                if (hi - lo < (juce::int64) (0.01 * rate) || r.waiting.active()) return;
+                st.rid = r.id; st.a = r.srcIn + (lo - r.startSample); st.b = r.srcIn + (hi - r.startSample);
+                for (auto& f : r.files) { if (! e->fixUses (f.trackId)) continue; st.src.push_back (f.file); st.names.push_back (f.trackName); st.fstart.push_back (f.fileStart); st.trk.push_back (f.trackId); }
+            };
+            const EditRegion* A = nullptr; const EditRegion* B = nullptr;
+            for (auto& r : e->regions) { if (r.id == outS.ids.back()) A = &r; if (r.id == inS.ids.front()) B = &r; }
+            if (A == nullptr || B == nullptr) return;
+            // OUT: from mark 1 to mark 2, or to where it has faded out completely, whichever comes first.  IN: from where its fade-in begins (or mark 1) to mark 2.  No fades are applied to what is sent.
+            fill ((*plan)[0], *A, juce::jmax (tIn, A->startSample), juce::jmin (tOut, A->fadeOutFinish()), "Out Stream");
+            fill ((*plan)[1], *B, juce::jmax (tIn, B->fadeInBegin()), juce::jmin (tOut, B->endSample()), "In Stream");
+            if (outS.ids.size() > 1 && tIn < A->startSample) notes << "\n\nNOTE: the OUT stream before " << formatTime ((double) A->startSample / rate).substring (3, 12) << " is made of an earlier fix, so only the part from there on is sent.";
+            if (inS.ids.size() > 1 && tOut > B->endSample()) notes << "\n\nNOTE: the IN stream is sent up to the end of its piece (" << formatTime ((double) B->endSample() / rate).substring (3, 12) << "); what follows is made of an earlier fix.";
+            const bool haveOut = ! (*plan)[0].src.empty(), haveIn = ! (*plan)[1].src.empty();
+            if (! haveOut && ! haveIn) { say (title, "There is nothing to send: the marked part is too short on both sides of the edit point, or the tracks you chose with Alt + drag are not there."); return; }
+            auto ask = [&app, eid, plan, notes, parent = juce::Component::SafePointer<juce::Component> (parent), subset, title] (bool wantOut, bool wantIn)
+            {
+                if (wantOut && (*plan)[0].src.empty()) { say (title, "The OUT stream has nothing to send between the marks."); return; }
+                if (wantIn && (*plan)[1].src.empty()) { say (title, "The IN stream has nothing to send between the marks."); return; }
+                askProcessingName ("Give this job a name, e.g. \"bar 4\" or \"click removal\". 'Out Stream' / 'In Stream' is added to the end of it. Each becomes a folder in Processing Media with one file per track, "
+                                   "in the format they were recorded, at full volume with no fade applied.", "", [&app, eid, plan, notes, parent, subset, wantOut, wantIn] (const juce::String& name)
+                {
+                    struct Made { std::shared_ptr<ExportJob> job; juce::Uuid rid; juce::int64 a, b; juce::String full; std::vector<juce::Uuid> trk; };
+                    auto made = std::make_shared<std::vector<Made>>();
+                    for (int q = 0; q < 2; ++q)
+                    {
+                        if (! (q == 0 ? wantOut : wantIn)) continue;
+                        auto& st = (*plan)[(size_t) q]; const auto full = name + " - " + st.label;
+                        made->push_back ({ makeExportJob (app, full, st.src, st.names, st.fstart, st.a, st.b), st.rid, st.a, st.b, full, st.trk });
+                    }
+                    AudioJob::Work work = [made] (AudioJob& job) -> juce::String { for (auto& m : *made) { const auto err = exportWork (m.job) (job); if (err.isNotEmpty()) { for (auto& o : *made) o.job->folder.deleteRecursively(); return err; } } return {}; };
+                    auto onSuccess = [&app, eid, made, subset, notes]
+                    {
+                        auto* e2 = app.project.findEdit (eid);
+                        const auto old = e2 != nullptr ? e2->regions : std::vector<EditRegion>();
+                        bool ok = e2 != nullptr;
+                        if (ok) for (auto& m : *made) ok = markWaiting (*e2, m.rid, m.a, m.b, m.full, m.job->dest, m.trk, subset) && ok;
+                        if (! ok)
+                        {
+                            if (e2 != nullptr) e2->regions = old;
+                            for (auto& m : *made) m.job->folder.deleteRecursively();
+                            say ("Export for Processing", "The edit changed while the audio was being exported, so nothing was changed. Please try again."); return;
+                        }
+                        setUndoForEdit (app, eid, old, "export for processing");
+                        app.project.changed();
+                        juce::String msg;
+                        for (auto& m : *made) msg << "'" << m.full << "' is in the folder\n" << m.job->folder.getFullPathName() << "\n\n";
+                        msg << "Open the files in your other software (e.g. iZotope RX), correct them and save OVER the same files, keeping the same length, sample rate and channels. "
+                               "Then right-click each 'Waiting for corrected audio' block and choose 'Re-link corrected audio'. Fermata keeps none of these files open, so the other program can overwrite them freely." << notes;
+                        say ("Export for Processing", msg);
+                    };
+                    launchDialog (std::make_unique<SimpleJobDialog> ("Exporting '" + name + "'...", work, onSuccess, nullptr), "Export for Processing", parent.getComponent());
+                });
+            };
+            juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon).withTitle (title)
+                                              .withMessage ("The marked part has an edit point in it. Which take do you want to send out?\n\n"
+                                                            "OUT stream: the take that plays up to the edit point, from mark 1 until it is completely faded out (or mark 2, whichever comes first).\n"
+                                                            "IN stream: the take that plays from the edit point, from where its fade-in begins (or mark 1) to mark 2.\n\n"
+                                                            "Each is sent at full volume with no fade applied, so the edit and its crossfade stay in place and each take can be corrected on its own. 'Both' sends two separate sets of files.")
+                                              .withButton ("Out stream").withButton ("In stream").withButton ("Both").withButton ("Cancel"),
+                                          [ask, haveOut, haveIn] (int r) { juce::ignoreUnused (haveOut, haveIn); if (r == 1) ask (true, false); else if (r == 2) ask (false, true); else if (r == 3) ask (true, true); });
+            return;
+        }
+    }
     const EditRegion* region = nullptr;
     for (auto& r : e->regions) if (tIn >= r.startSample && tIn < r.endSample()) region = &r;
     if (region == nullptr) { say (title, "Mark 1 is not on any piece of audio."); return; }
@@ -3709,34 +3811,26 @@ void exportForProcessingEdit (AppContext& app, const juce::Uuid& eid, juce::Comp
     if (to - from < (juce::int64) (0.01 * rate)) { say (title, "The marked part is too short (it must be inside one piece, at least about 0.01 s)."); return; }
     const auto a = region->srcIn + (from - region->startSample), b = a + (to - from);
     const auto rid = region->id;
-    const bool shortened = tOut > region->endSample();                          // the marked part runs on past the next edit point: only the part up to it is sent
     std::vector<juce::File> src; std::vector<juce::String> names; std::vector<juce::int64> fstart; std::vector<juce::Uuid> trk;
     for (auto& f : region->files) { if (! e->fixUses (f.trackId)) continue; src.push_back (f.file); names.push_back (f.trackName); fstart.push_back (f.fileStart); trk.push_back (f.trackId); }
     if (src.empty()) { say (title, "None of the tracks you marked with Alt + drag are in this piece."); return; }
     const bool subset = ! e->fixTracks.empty();
     askProcessingName ("Give this job a name, e.g. \"bar 4\" or \"click removal\". It becomes a folder in Processing Media with " + juce::String ((int) src.size()) + " file(s), one per track, "
-                       "in the format they were recorded.", "", [&app, eid, rid, a, b, src, names, fstart, trk, subset, shortened, parent = juce::Component::SafePointer<juce::Component> (parent)] (const juce::String& name)
+                       "in the format they were recorded.", "", [&app, eid, rid, a, b, src, names, fstart, trk, subset, parent = juce::Component::SafePointer<juce::Component> (parent)] (const juce::String& name)
     {
         auto j = makeExportJob (app, name, src, names, fstart, a, b);
-        auto onSuccess = [&app, eid, rid, a, b, j, name, trk, subset, shortened]
+        auto onSuccess = [&app, eid, rid, a, b, j, name, trk, subset]
         {
-            auto* e2 = app.project.findEdit (eid); int i = e2 ? e2->indexOf (rid) : -1;
-            bool ok = i >= 0 && ! e2->regions[(size_t) i].waiting.active() && a >= e2->regions[(size_t) i].srcIn && b <= e2->regions[(size_t) i].srcOut;
-            if (! ok) { j->folder.deleteRecursively(); say ("Export for Processing", "The edit changed while the audio was being exported, so nothing was changed. Please try again."); return; }
-            const auto old = e2->regions;
-            const bool cutAfter = b < e2->regions[(size_t) i].srcOut, cutBefore = a > e2->regions[(size_t) i].srcIn;
-            if (cutAfter)  e2->splitRegion (i, b - e2->regions[(size_t) i].srcIn);
-            if (cutBefore) i = e2->splitRegion (i, a - e2->regions[(size_t) i].srcIn);
-            auto& mid = e2->regions[(size_t) i];
-            mid.waiting.name = name; mid.waiting.from = a; mid.waiting.to = b; mid.waiting.files = j->dest;
-            mid.waiting.tracks = subset ? trk : std::vector<juce::Uuid>();
-            if (cutBefore) { mid.setInCurve (FadeCurve::Linear); if (i > 0) e2->regions[(size_t) i - 1].setOutCurve (FadeCurve::Linear); }
-            if (cutAfter)  { mid.setOutCurve (FadeCurve::Linear); if (i + 1 < (int) e2->regions.size()) e2->regions[(size_t) i + 1].setInCurve (FadeCurve::Linear); }
-            if (cutBefore) { mid.fixIn = true; if (i > 0) e2->regions[(size_t) i - 1].fixOut = true; }                 // not edit points
-            if (cutAfter)  { mid.fixOut = true; if (i + 1 < (int) e2->regions.size()) e2->regions[(size_t) i + 1].fixIn = true; }
+            auto* e2 = app.project.findEdit (eid);
+            const auto old = e2 != nullptr ? e2->regions : std::vector<EditRegion>();
+            if (e2 == nullptr || ! markWaiting (*e2, rid, a, b, name, j->dest, trk, subset))
+            {
+                if (e2 != nullptr) e2->regions = old;
+                j->folder.deleteRecursively(); say ("Export for Processing", "The edit changed while the audio was being exported, so nothing was changed. Please try again."); return;
+            }
             setUndoForEdit (app, eid, old, "export for processing");
             app.project.changed();
-            say ("Export for Processing", exportedMessage (name, j->folder) + (shortened ? juce::String ("\n\nNOTE: the part you marked runs past the next edit point (another take starts there), so only the part up to that edit point was sent. Send the rest as a second job.") : juce::String()));
+            say ("Export for Processing", exportedMessage (name, j->folder));
         };
         launchDialog (std::make_unique<SimpleJobDialog> ("Exporting '" + name + "'...", exportWork (j), onSuccess, nullptr), "Export for Processing", parent.getComponent());
     });
@@ -3809,7 +3903,7 @@ void relinkEdit (AppContext& app, const juce::Uuid& eid, const juce::Uuid& rid, 
         else for (size_t q = 0; q < r.files.size(); ++q) if (r.files[q].trackId == r.waiting.tracks[k]) fi = q;
         where.push_back (fi);
     }
-    bool fits = r.srcIn == r.waiting.from && r.srcOut == r.waiting.to && (! r.waiting.tracks.empty() || r.waiting.files.size() == r.files.size());
+    bool fits = r.srcIn >= r.waiting.from && r.srcOut <= r.waiting.to && (! r.waiting.tracks.empty() || r.waiting.files.size() == r.files.size());          // (an OUT / IN stream file reaches past the piece, into its handle)
     for (auto fi : where) if (fi >= r.files.size()) fits = false;
     if (! fits) { say (title, "This piece was changed after it was sent out, so the corrected files no longer fit it. Use 'Stop waiting: keep the original audio'."); return; }
     std::vector<int> ch; for (auto fi : where) ch.push_back (r.files[fi].numChannels);
@@ -3817,7 +3911,7 @@ void relinkEdit (AppContext& app, const juce::Uuid& eid, const juce::Uuid& rid, 
     if (problems.isNotEmpty()) { say (title, problems + "\nNothing was changed. Fix the files in your other software (same length, sample rate and channels) and try again."); return; }
     const auto old = e->regions;
     auto& m = e->regions[(size_t) i];
-    for (size_t k = 0; k < where.size(); ++k) { m.files[where[k]].file = m.waiting.files[k]; m.files[where[k]].fileStart = m.srcIn; }
+    for (size_t k = 0; k < where.size(); ++k) { m.files[where[k]].file = m.waiting.files[k]; m.files[where[k]].fileStart = m.waiting.from; }
     m.takeName = m.takeName.upToFirstOccurrenceOf (" (", false, false) + " (" + m.waiting.name + ")";
     m.waiting = WaitingPiece();
     setUndoForEdit (app, eid, old, "re-link corrected audio");
