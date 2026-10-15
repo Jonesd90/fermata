@@ -6,6 +6,11 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.39.0
+- **The edit point is now where the pieces really change.** When you move an edit point in the Trim window, the boundary between the two pieces now moves to the middle of the crossfade (where the numbered edit flag is). The fades stay at exactly the same times, so the sound is sample-for-sample unchanged. The result: the old blue line is gone, the piece name banner starts at the edit, the spectrogram and the offline fixes use the take you actually hear, and the false click line at the old position disappears. Edit points you moved in older projects are tidied the same way when the project opens.
+- **The join line in the Trim window is a free reference.** Drag its grip (the little triangle in the ruler) anywhere; it changes nothing in the edit. When you let go, the view re-centres on it, so zooming stays on the new line, and the millisecond readings count from it. "Centre" puts it back on the join.
+- Export for Processing: if the marked part runs past the next edit point, only the part up to it is sent (a processing piece is always one take), and the message now says so.
+
 ## 2.38.1
 - **Fixed: dragging the pitch scale in Spectral Repair and De-Click zoomed instead of moving.** Click-dragging the frequency scale at the left of the picture now slides the visible part up and down, following the mouse, and never changes how much is shown. It works the same on every pitch scale (Mel, even Hz, octaves) and stops at the lowest and highest pitch. (Both windows use the same picture, so both are fixed.)
 

@@ -677,6 +677,83 @@ struct EditDef
         return d;
     }
 
+    /** Where edit point k stands on the timeline (k = 0 start of the first piece, k = n end of the last): the middle of the crossfade (or of the gap). */
+    juce::int64 editPointSample (int k) const
+    {
+        const int n = (int) regions.size();
+        if (n == 0) return 0;
+        if (k <= 0) return regions.front().startSample;
+        if (k >= n) return regions.back().endSample();
+        return (regions[(size_t) k - 1].fadeOutFinish() + regions[(size_t) k].fadeInBegin()) / 2;
+    }
+
+    /** Puts the boundary between the two pieces of join k (the point where the audio is "handed over") exactly in the middle of the crossfade, which is where the edit point flag is.
+        The fades keep their ABSOLUTE times and each piece keeps reading the same file samples at the same timeline times, so the sound is sample-for-sample the same; only the pieces' edges
+        (and so the piece names, the click line of the spectrogram, which take an offline fix opens, ...) move to where the edit really is.
+        Does nothing for joins made by offline fixes, for pieces waiting for processed audio, joins with silence between them, or when a piece would become too short / run out of audio.
+        Returns the number of samples the boundary moved (0 = nothing changed). */
+    juce::int64 commitJoin (int k)
+    {
+        const int n = (int) regions.size();
+        if (k < 1 || k >= n || isFixJoin (k)) return 0;
+        auto& a = regions[(size_t) k - 1]; auto& b = regions[(size_t) k];
+        if (a.waiting.active() || b.waiting.active()) return 0;
+        if (b.startSample > a.endSample()) return 0;                                   // silence between them: not a handover
+        const auto J = editPointSample (k);
+        const auto dA = J - a.endSample(), dB = J - b.startSample;
+        if (dA == 0 && dB == 0) return 0;
+        const auto minA = (juce::int64) (0.01 * a.sampleRate), minB = (juce::int64) (0.01 * b.sampleRate);
+        if (a.length() + dA < minA || b.length() - dB < minB) return 0;
+        if (a.sourceLength > 0 && a.srcOut + dA > a.sourceLength) return 0;
+        if (b.srcIn + dB < 0 || a.srcOut + dA <= a.srcIn) return 0;
+
+        const auto ob = a.fadeOutBegin(), oe = a.fadeOutFinish(), ib = b.fadeInBegin(), ie = b.fadeInFinish();
+        const auto oldB = b;                                                           // (for the volume changes)
+        const auto A0 = a.endSample(), B0 = b.startSample;
+        a.srcOut += dA;
+        b.srcIn += dB; b.startSample += dB;
+        const double rA = juce::jmax (1.0, a.sampleRate), rB = juce::jmax (1.0, b.sampleRate);
+        a.outStart = (double) (ob - a.endSample()) / rA; a.outEnd = (double) (oe - a.endSample()) / rA;
+        b.inStart  = (double) (ib - b.startSample) / rB; b.inEnd  = (double) (ie - b.startSample) / rB;
+
+        // volume changes of B are counted from its start: shift them (the level the old start had been given is kept for what is now the start)
+        if (dB != 0 && ! oldB.gains.empty())
+        {
+            const auto tol = (juce::int64) (0.001 * b.sampleRate);
+            b.gains.clear();
+            if (dB > 0)                                                                // the piece now starts later: what happened before is folded into its first level
+            {
+                GainChange c0; c0.at = 0; c0.ramp = 0.0;
+                for (size_t f = 0; f < oldB.files.size(); ++f) c0.db.push_back (oldB.levelDbAt (f, dB));
+                b.gains.push_back (c0);
+                for (auto g : oldB.gains)
+                {
+                    const auto rl = (juce::int64) std::llround (g.ramp * b.sampleRate);
+                    if (g.at >= dB) { g.at -= dB; b.gains.push_back (g); }
+                    else if (g.at + rl > dB) { g.ramp = (double) (g.at + rl - dB) / b.sampleRate; g.at = 0; b.gains.push_back (g); }   // a glide that was under way carries on
+                }
+            }
+            else                                                                       // it now starts earlier: everything moves later in the piece's own time
+                for (auto g : oldB.gains) { g.at = g.at <= tol ? 0 : g.at - dB; b.gains.push_back (g); }
+        }
+        clampFades (k - 1); clampFades (k);
+
+        // automation points that were pinned to the audio of these two pieces are pinned again, to whichever piece now owns that moment
+        for (auto& lane : lanes)
+            for (auto& p : lane.pts)
+                if (! p.floating && (p.region == a.id || p.region == b.id)) anchorPoint (p, p.time);
+        juce::ignoreUnused (A0, B0);
+        return dB != 0 ? dB : dA;
+    }
+
+    /** Commits every join (see commitJoin). Returns how many joins moved. */
+    int commitAllJoins()
+    {
+        int moved = 0;
+        for (int k = 1; k < (int) regions.size(); ++k) if (commitJoin (k) != 0) ++moved;
+        return moved;
+    }
+
     /** 'A' key: copy the fade-out of the region before the join onto the fade-in of the region after it. */
     void copyOutToIn (int k)
     {

@@ -1152,6 +1152,7 @@ bool Project::fromVar (const var& root)
                 }
             e->hardenEnds();                                    // older projects: the ends of the edit get their short fades too
             e->clampAll();
+            e->commitAllJoins();                                // older projects: the edit points that were moved in the trim window get their pieces' edges moved with them (the sound does not change)
             edits.push_back (std::move (e));
         }
 

@@ -38,7 +38,9 @@ public:
     bool isAuditioning() const { return app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId; }
     double viewSeconds = 2.0;
     juce::int64 centreSample = 0;
-    void viewMoved();                                       // the view was panned: redraw (no edit changed)
+    juce::int64 refSample = 0;                              // the "join" reference line: only a reference (the ruler counts from it, zoom centres on it); it never changes the edit
+    void refMoved();                                        // the reference line was dragged: refresh the "relative to" texts
+    void viewMoved();                                    // the view was panned: redraw (no edit changed)
     void dragChanged();                                     // while dragging: cheap
     void dragFinished();                                    // mouse released: tell everyone
 

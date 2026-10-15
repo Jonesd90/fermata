@@ -3209,6 +3209,73 @@ int main()
         CHECK (aafFileNameOf ("file:///C:/Audio/LV01%20-%20Gravity.wav") == "LV01 - Gravity.wav");
     }
 
+    SECTION ("join commit: the pieces' edges move to the edit point and the sound does not change");
+    {
+        auto mk = [] (juce::int64 srcIn, juce::int64 len, juce::int64 start)
+        {
+            EditRegion r; r.sampleRate = 48000.0; r.srcIn = srcIn; r.srcOut = srcIn + len; r.startSample = start; r.sourceLength = 48000 * 60;
+            RegionFile f; f.numChannels = 1; r.files.push_back (f);
+            return r;
+        };
+        // what is heard at timeline sample t: for each piece that makes sound, the file sample it plays and its gain (fades and volume changes)
+        auto heard = [] (const EditDef& e, juce::int64 t)
+        {
+            std::vector<std::pair<juce::int64, float>> out;
+            for (auto& r : e.regions)
+            {
+                const bool pieceLevel = ! r.gains.empty() && r.gains[0].at <= (juce::int64) (0.001 * r.sampleRate);      // (the level given to the whole piece holds from its first sound, as in playback)
+                const float g = r.gainAt (t) * r.levelAt (0, pieceLevel ? juce::jmax ((juce::int64) 0, t - r.startSample) : t - r.startSample);
+                if (g > 0.0f) out.push_back ({ r.srcIn + (t - r.startSample), g });
+            }
+            return out;
+        };
+        auto same = [&] (const EditDef& a, const EditDef& b, juce::int64 t0, juce::int64 t1)
+        {
+            for (juce::int64 t = t0; t < t1; t += 5)
+            {
+                const auto x = heard (a, t), y = heard (b, t);
+                if (x.size() != y.size()) return false;
+                for (size_t i = 0; i < x.size(); ++i) if (x[i].first != y[i].first || std::abs (x[i].second - y[i].second) > 1e-6f) return false;
+            }
+            return true;
+        };
+        for (int variant = 0; variant < 4; ++variant)
+        {
+            EditDef e; e.sampleRate = 48000.0;
+            e.regions.push_back (mk (0, 48000 * 10, 0));
+            e.regions.push_back (mk (48000 * 20, 48000 * 10, 48000 * 10));
+            e.setDefaultJoinFades (1);
+            const double shift = variant == 1 || variant == 3 ? -0.2 : 0.2;                               // the user moved the fades later (or earlier) in the trim window
+            e.regions[0].outStart += shift; e.regions[0].outEnd += shift; e.regions[1].inStart += shift; e.regions[1].inEnd += shift;
+            if (variant >= 2) { GainChange g; g.at = 0; g.db = { -6.0f }; e.regions[1].gains.push_back (g); GainChange h; h.at = 48000 * 2; h.ramp = 1.0; h.db = { 3.0f }; e.regions[1].gains.push_back (h); }
+            e.clampAll();
+            const EditDef before = e;
+            const auto J = e.editPointSample (1);
+            CHECK (J != e.regions[1].startSample);                                                          // the edit point had been moved away from the region boundary
+            CHECK (e.commitJoin (1) != 0);
+            CHECK (e.regions[0].endSample() == J && e.regions[1].startSample == J);                         // the boundary is the edit point (where the flag is)
+            CHECK (e.editPointSample (1) == J);
+            CHECK (e.regionAt (J - 1) == 0 && e.regionAt (J) == 1);
+            if (! same (before, e, J - 48000 / 2, J + 48000 / 2)) std::printf ("   variant %d\n", variant); CHECK (same (before, e, J - 48000 / 2, J + 48000 / 2));                                          // the same sound
+            CHECK (same (before, e, 0, 48000 * 40));
+            CHECK (e.commitJoin (1) == 0 && e.commitAllJoins() == 0);                                       // done once, done
+            const auto nb = e.regions[1].fadeInBegin(), na = e.regions[0].fadeOutFinish();
+            CHECK (nb == before.regions[1].fadeInBegin() && na == before.regions[0].fadeOutFinish());       // the fades stayed at the same times
+        }
+        // not touched: a join made by an offline fix, and a join with silence between the pieces
+        {
+            EditDef e; e.sampleRate = 48000.0;
+            e.regions.push_back (mk (0, 48000 * 10, 0)); e.regions.push_back (mk (48000 * 20, 48000 * 10, 48000 * 10));
+            e.setDefaultJoinFades (1);
+            e.regions[0].outStart += 0.2; e.regions[0].outEnd += 0.2; e.regions[1].inStart += 0.2; e.regions[1].inEnd += 0.2;
+            e.regions[1].fixIn = true; e.regions[0].fixOut = true;
+            CHECK (e.commitAllJoins() == 0);
+            e.regions[1].fixIn = false; e.regions[0].fixOut = false;
+            e.regions[1].startSample += 100;
+            CHECK (e.commitAllJoins() == 0);
+        }
+    }
+
     SECTION ("listener feedback: import, project round trip, review page");
     {
         // the colleague's marker list (tab separated; the comment text is in "Marker Name", the person in "Comment", times are timecode)

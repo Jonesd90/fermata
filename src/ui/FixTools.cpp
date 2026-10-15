@@ -3292,15 +3292,16 @@ void exportForProcessingEdit (AppContext& app, const juce::Uuid& eid, juce::Comp
     if (to - from < (juce::int64) (0.01 * rate)) { say (title, "The marked part is too short (it must be inside one piece, at least about 0.01 s)."); return; }
     const auto a = region->srcIn + (from - region->startSample), b = a + (to - from);
     const auto rid = region->id;
+    const bool shortened = tOut > region->endSample();                          // the marked part runs on past the next edit point: only the part up to it is sent
     std::vector<juce::File> src; std::vector<juce::String> names; std::vector<juce::int64> fstart; std::vector<juce::Uuid> trk;
     for (auto& f : region->files) { if (! e->fixUses (f.trackId)) continue; src.push_back (f.file); names.push_back (f.trackName); fstart.push_back (f.fileStart); trk.push_back (f.trackId); }
     if (src.empty()) { say (title, "None of the tracks you marked with Alt + drag are in this piece."); return; }
     const bool subset = ! e->fixTracks.empty();
     askProcessingName ("Give this job a name, e.g. \"bar 4\" or \"click removal\". It becomes a folder in Processing Media with " + juce::String ((int) src.size()) + " file(s), one per track, "
-                       "in the format they were recorded.", "", [&app, eid, rid, a, b, src, names, fstart, trk, subset, parent = juce::Component::SafePointer<juce::Component> (parent)] (const juce::String& name)
+                       "in the format they were recorded.", "", [&app, eid, rid, a, b, src, names, fstart, trk, subset, shortened, parent = juce::Component::SafePointer<juce::Component> (parent)] (const juce::String& name)
     {
         auto j = makeExportJob (app, name, src, names, fstart, a, b);
-        auto onSuccess = [&app, eid, rid, a, b, j, name, trk, subset]
+        auto onSuccess = [&app, eid, rid, a, b, j, name, trk, subset, shortened]
         {
             auto* e2 = app.project.findEdit (eid); int i = e2 ? e2->indexOf (rid) : -1;
             bool ok = i >= 0 && ! e2->regions[(size_t) i].waiting.active() && a >= e2->regions[(size_t) i].srcIn && b <= e2->regions[(size_t) i].srcOut;
@@ -3318,7 +3319,7 @@ void exportForProcessingEdit (AppContext& app, const juce::Uuid& eid, juce::Comp
             if (cutAfter)  { mid.fixOut = true; if (i + 1 < (int) e2->regions.size()) e2->regions[(size_t) i + 1].fixIn = true; }
             setUndoForEdit (app, eid, old, "export for processing");
             app.project.changed();
-            say ("Export for Processing", exportedMessage (name, j->folder));
+            say ("Export for Processing", exportedMessage (name, j->folder) + (shortened ? juce::String ("\n\nNOTE: the part you marked runs past the next edit point (another take starts there), so only the part up to that edit point was sent. Send the rest as a second job.") : juce::String()));
         };
         launchDialog (std::make_unique<SimpleJobDialog> ("Exporting '" + name + "'...", exportWork (j), onSuccess, nullptr), "Export for Processing", parent.getComponent());
     });
