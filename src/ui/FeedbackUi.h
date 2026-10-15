@@ -27,9 +27,10 @@ inline bool allDone (const std::vector<FeedbackNote>& list, const std::vector<in
     return true;
 }
 
-inline void paintFlags (juce::Graphics& g, const std::vector<FeedbackNote>& list, const std::function<int (double)>& xOf, int leftLimit, int totalHeight, const juce::String& selectedKey)
+inline void paintFlags (juce::Graphics& g, const std::vector<FeedbackNote>& list, const std::function<int (double)>& xOf, int stripY, int leftLimit, int totalHeight, const juce::String& selectedKey)
 {
     const int h = markerui::kStripH;
+    const auto teal = juce::Colour (0xff35b7c9);                                      // feedback flags are teal (the user's own markers are amber); the colour the website gave is a stripe on the flag
     g.setFont (flagFont());
     for (auto& th : feedback::threads (list))
     {
@@ -37,17 +38,16 @@ inline void paintFlags (juce::Graphics& g, const std::vector<FeedbackNote>& list
         const int x = xOf (first.seconds);
         if (x < leftLimit) continue;
         const bool done = allDone (list, th), sel = first.key == selectedKey;
-        const auto col = done ? juce::Colour (0xff6d7078) : juce::Colour (feedback::colourArgb (first.colour));
-        g.setColour (col.withAlpha (sel ? 0.9f : 0.45f));
-        g.fillRect (x, h, sel ? 2 : 1, juce::jmax (0, totalHeight - h));
+        const auto body = done ? juce::Colour (0xff6d7078) : teal;
+        g.setColour (body.withAlpha (sel ? 0.9f : 0.4f));
+        g.fillRect (x, stripY + h, sel ? 2 : 1, juce::jmax (0, totalHeight - stripY - h));
         const auto text = flagText (list, th);
-        auto f = juce::Rectangle<int> (x, 0, flagWidth (text), h - 1);
-        juce::Path p;                                                                  // a little speech bubble with its point on the time
-        p.addRoundedRectangle ((float) f.getX(), (float) f.getY(), (float) f.getWidth(), (float) f.getHeight(), 3.0f);
-        g.setColour (col); g.fillPath (p);
+        auto f = juce::Rectangle<int> (x, stripY, flagWidth (text), h - 1);
+        g.setColour (body); g.fillRoundedRectangle (f.toFloat(), 3.0f);
+        if (first.colour.isNotEmpty() && ! done) { g.setColour (juce::Colour (feedback::colourArgb (first.colour))); g.fillRect (f.getX(), f.getY(), 4, f.getHeight()); }
         if (sel) { g.setColour (juce::Colours::white); g.drawRoundedRectangle (f.toFloat().reduced (0.5f), 3.0f, 1.5f); }
-        g.setColour (done ? juce::Colour (0xffd0d2d8) : juce::Colour (0xff111111));
-        g.drawText (text, f.reduced (6, 0), juce::Justification::centredLeft, true);
+        g.setColour (done ? juce::Colour (0xffd0d2d8) : juce::Colour (0xff0b1b1e));
+        g.drawText (text, f.reduced (8, 0), juce::Justification::centredLeft, true);
         if (done) g.fillRect (f.getX() + 3, f.getCentreY(), f.getWidth() - 6, 1);
     }
 }

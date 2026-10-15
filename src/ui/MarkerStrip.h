@@ -76,6 +76,7 @@ public:
 
     /** The name column is resizable in the edit window: give the current width before each use. */
     void setNameWidth (int w) { nameW = w; }
+    int yOffset = 0;                     // when the strip is drawn at the top of a scrolled window: how far down it really is (for the name box)
 
     bool inStrip (const juce::MouseEvent& e) const { return e.y >= 0 && e.y < kStripH && e.x > nameW; }
     bool dragging() const { return dragId != juce::Uuid::null(); }
@@ -160,7 +161,7 @@ private:
             if (safe == nullptr) return;
             if (auto* l2 = list()) if (auto* mm = findMarker (*l2, id)) { mm->name = name; if (changed) changed(); owner.repaint(); }
         });
-        const auto area = owner.localAreaToGlobal (juce::Rectangle<int> (toX (m->seconds), 0, flagWidth (m->name), kStripH));
+        const auto area = owner.localAreaToGlobal (juce::Rectangle<int> (toX (m->seconds), yOffset, flagWidth (m->name), kStripH));
         juce::CallOutBox::launchAsynchronously (std::move (box), area, nullptr);
     }
 

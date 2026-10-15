@@ -64,7 +64,7 @@ private:
                      editInButton { "Edit IN [1]" }, editOutButton { "Edit OUT [2]" },
                      toEditButton { "To edit [3]" }, toEditAtButton { "To playhead [4]" }, editWindowButton { "Edit window" }, bounceButton { "Bounce Out..." },
                      importButton { "Import takes..." }, pitchButton { "Pitch..." }, pitchCurveButton { "Pitch curve..." }, repairButton { "Spectral Repair..." }, declickButton { "De-Click..." }, exportProcButton { "Export for Processing..." }, undoFixButton { "Undo fix" }, barSearchButton { "Search for bar" };
-    juce::ToggleButton overdubBox { "Overdub" };
+    juce::ToggleButton overdubBox { "Overdub" }, markersToggle { "Markers" };
     LoopButton loopToggle;
     PlayheadModeButton playheadMode;
     RainbowButton waveColourBtn;

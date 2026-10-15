@@ -223,6 +223,7 @@ struct EditDef
     std::vector<Marker>  markers;               // quick markers along the top of this edit window (not part of undo)
     std::vector<FeedbackNote> feedback;         // listeners' comments (Include Feedback Form / imported marker lists), drawn as flags on this edit window (not part of undo)
     bool                 showFeedback = true;
+    bool                 showMarkers = true;          // the Markers tick box in the edit window
     bool                 automationOn = false;
     std::vector<AutoLane> lanes;
 

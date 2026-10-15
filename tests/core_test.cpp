@@ -3254,11 +3254,11 @@ int main()
         CHECK (! feedback::parse ("hello", 5, 25.0, "x", pr).isEmpty());
         // saved with the project
         {
-            Project pj; auto ed = std::make_unique<EditDef>(); ed->id = juce::Uuid(); ed->name = "Piece"; ed->feedback = list; ed->showFeedback = false;
+            Project pj; auto ed = std::make_unique<EditDef>(); ed->id = juce::Uuid(); ed->name = "Piece"; ed->feedback = list; ed->showFeedback = false; ed->showMarkers = false;
             const auto id = ed->id; pj.edits.push_back (std::move (ed));
             Project pj2; CHECK (pj2.fromVar (pj.toVar()));
             auto* e2 = pj2.findEdit (id);
-            CHECK (e2 != nullptr && e2->feedback.size() == 16 && ! e2->showFeedback && e2->feedback[0].done && e2->feedback[0].who == "Jo T");
+            CHECK (e2 != nullptr && e2->feedback.size() == 16 && ! e2->showFeedback && ! e2->showMarkers && e2->feedback[0].done && e2->feedback[0].who == "Jo T");
         }
         // the listening copy: audio goes inside one html, base64 in whole pieces
         {

@@ -52,6 +52,7 @@ struct TakeWindowDef
     int          nextNumber = 1;
     std::vector<TakeGroup> groups;
     bool showLtc = false;                         // the LTC track's row is shown in this window (the triangle button)
+    bool showMarkers = true;                      // the Markers tick box
     std::vector<Marker> markers;                  // quick markers along the top of this window (not part of undo)
     std::vector<juce::Uuid> hiddenTracks;         // tracks removed from THIS window's view (other windows and the mixers are not touched)
 

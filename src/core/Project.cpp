@@ -828,6 +828,7 @@ var Project::editToVar (const EditDef& eref) const
     if (! e->markers.empty()) put (o, "markers", markersToVar (e->markers));
     if (! e->feedback.empty()) put (o, "feedback", feedbackToVar (e->feedback));
     if (! e->showFeedback) put (o, "showFeedback", false);
+    if (! e->showMarkers) put (o, "showMarkers", false);
     {
         juce::Array<var> ls;
         for (auto& l : e->lanes)
@@ -930,6 +931,7 @@ var Project::toVar (bool editorialOnly) const
         { juce::Array<var> hid; for (auto& h : w->hiddenTracks) hid.add (h.toString()); put (o, "hiddenTracks", hid); }
         if (w->showLtc) put (o, "showLtc", true);
         if (! w->markers.empty()) put (o, "markers", markersToVar (w->markers));
+        if (! w->showMarkers) put (o, "showMarkers", false);
         juce::Array<var> gs;
         for (auto& g : w->groups)
         {
@@ -1061,7 +1063,7 @@ bool Project::fromVar (const var& root)
             w->overdub = (bool) v["overdub"];
             if (v.hasProperty ("playhead")) w->playheadSeconds = juce::jmax (0.0, (double) v["playhead"]);
             w->showLtc = v.hasProperty ("showLtc") && (bool) v["showLtc"];
-            markersFromVar (v["markers"], w->markers);
+            markersFromVar (v["markers"], w->markers); w->showMarkers = v["showMarkers"].isVoid() ? true : (bool) v["showMarkers"];
             if (auto* hid = v["hiddenTracks"].getArray()) for (auto& h : *hid) w->hiddenTracks.push_back (juce::Uuid (h.toString()));
             if (auto* gs = v["groups"].getArray())
                 for (auto& gv : *gs)
@@ -1131,7 +1133,7 @@ bool Project::fromVar (const var& root)
             if (auto* os = v["overdubs"].getArray()) for (auto& rv : *os) e->overdubs.push_back (regionFromVar (rv));
             if (auto* ta = v["trackIds"].getArray()) for (auto& tv : *ta) { juce::Uuid u (tv.toString()); if (! u.isNull()) e->trackIds.push_back (u); }
             if (v.hasProperty ("playhead")) e->playheadSeconds = juce::jmax (0.0, (double) v["playhead"]);
-            e->automationOn = (bool) v["automationOn"]; e->showLtc = v.hasProperty ("showLtc") && (bool) v["showLtc"]; markersFromVar (v["markers"], e->markers); feedbackFromVar (v["feedback"], e->feedback); e->showFeedback = v["showFeedback"].isVoid() ? true : (bool) v["showFeedback"];
+            e->automationOn = (bool) v["automationOn"]; e->showLtc = v.hasProperty ("showLtc") && (bool) v["showLtc"]; markersFromVar (v["markers"], e->markers); feedbackFromVar (v["feedback"], e->feedback); e->showFeedback = v["showFeedback"].isVoid() ? true : (bool) v["showFeedback"]; e->showMarkers = v["showMarkers"].isVoid() ? true : (bool) v["showMarkers"];
             if (auto* ls = v["autoLanes"].getArray())
                 for (auto& lv : *ls)
                 {
@@ -1172,9 +1174,9 @@ juce::String Project::undoState() const
         if (auto* d = o.getDynamicObject()) for (auto* k : keys) d->removeProperty (juce::Identifier (k));
     };
     if (auto* a = v["takeWindows"].getArray())
-        for (auto& w : *a) strip (w, { "editTake", "editIn", "editOut", "editTracks", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub", "markers" });
+        for (auto& w : *a) strip (w, { "editTake", "editIn", "editOut", "editTracks", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub", "markers", "showMarkers" });
     if (auto* a = v["edits"].getArray())
-        for (auto& e : *a) strip (e, { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex", "markers", "feedback", "showFeedback" });
+        for (auto& e : *a) strip (e, { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex", "markers", "feedback", "showFeedback", "showMarkers" });
     if (auto m = v["mastering"]; m.isObject()) strip (m, { "view" });
     return juce::JSON::toString (v, true);
 }
@@ -1206,7 +1208,7 @@ void restoreEditorial (Project& p, const var& snapshot, const juce::Uuid& liveTa
         if (auto* live = p.findEdit (te->id))
         {
             te->markIn = live->markIn; te->markOut = live->markOut; te->fixIn = live->fixIn; te->fixOut = live->fixOut; te->fixTracks = live->fixTracks;
-            te->playheadSeconds = live->playheadSeconds; te->insertIndex = live->insertIndex; te->markers = live->markers; te->feedback = live->feedback; te->showFeedback = live->showFeedback;
+            te->playheadSeconds = live->playheadSeconds; te->insertIndex = live->insertIndex; te->markers = live->markers; te->feedback = live->feedback; te->showFeedback = live->showFeedback; te->showMarkers = live->showMarkers;
             *live = std::move (*te);
         }
         else p.edits.push_back (std::move (te));

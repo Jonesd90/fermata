@@ -13,7 +13,10 @@ namespace td
 /** How many different takes the edit is made from (a take used in several pieces counts once). */
 static int takesInEdit (const EditDef& e) { std::set<juce::String> t; for (auto& r : e.regions) t.insert (r.takeId.toString()); return (int) t.size(); }
 static constexpr int kInsH = 14;                                           // the strip with the flag that shows where the next take goes
-static constexpr int kRulerH = 22 + markerui::kStripH + kInsH, kLaneH = 38;        // (the top 14 pixels of the ruler band are the marker strip, the next 14 the insert flag)
+static constexpr int kFbH = 14;                                            // the strip with the listeners' comment flags (its own line, under the markers)
+static constexpr int kInsY = markerui::kStripH + kFbH;                     // where the insert strip starts
+static constexpr int kRulerTop = kInsY + kInsH;                            // where the ruler's numbers start
+static constexpr int kRulerH = 22 + kRulerTop, kLaneH = 38;                // (the top band: the marker strip, then the feedback strip, then the insert flag, then the ruler)
 static int kNameW = 210;                        // width of the track-name column (drag its right edge to change it; shared by all edit windows)
 
 class EditTimeline : public juce::Component, private juce::ChangeListener, private juce::Timer
@@ -125,12 +128,38 @@ public:
         setSize (juce::jmax (contentW, viewport.getMaximumVisibleWidth()), juce::jmax (contentH, viewport.getMaximumVisibleHeight()));
     }
 
+    /** The top band (markers, feedback flags, insert flag, ruler, piece names and edit points) stays at the top of the window however far you scroll down:
+        the whole picture is painted once where it is, then the band is painted again over the top of the visible part. */
     void paint (juce::Graphics& g) override
+    {
+        headerPass = false;
+        paintAll (g);
+        const int sy = viewport.getViewPositionY();
+        if (sy > 0)
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            g.reduceClipRegion (juce::Rectangle<int> (0, sy, getWidth(), kRulerH + kLaneH));
+            g.setOrigin (0, sy);
+            headerPass = true;
+            paintAll (g);
+            headerPass = false;
+        }
+    }
+    bool headerPass = false;
+    int hdrShift = 0;                          // while the mouse works in the sticky band: how far down it has been moved
+    int stickyShift (const juce::MouseEvent& e) const
+    {
+        const int sy = viewport.getViewPositionY();
+        return (sy > 0 && e.y >= sy && e.y < sy + kRulerH + kLaneH) ? sy : 0;
+    }
+    juce::MouseEvent shifted (const juce::MouseEvent& e, int by) const { return by == 0 ? e : e.withNewPosition (e.position - juce::Point<float> (0.0f, (float) by)); }
+
+    void paintAll (juce::Graphics& g)
     {
         g.fillAll (theme::wave);
         auto* e = edit();
         if (e == nullptr) return;
-        const auto tracks = rowTracks();
+        const auto tracks = headerPass ? std::vector<TrackDef>() : rowTracks();
         const int top = kRulerH + kLaneH;
         const int rowsEnd = top + juce::jmax (1, (int) tracks.size()) * rowH;
 
@@ -146,6 +175,7 @@ public:
         }
         g.setColour (theme::ruler); g.fillRect (0, 0, getWidth(), kRulerH);
         g.setColour (juce::Colours::black.withAlpha (0.22f)); g.fillRect (0, 0, getWidth(), markerui::kStripH);          // the marker strip
+        g.setColour (juce::Colour (0x2635b7c9)); g.fillRect (0, markerui::kStripH, getWidth(), kFbH);                    // the feedback strip (its own line, tinted)
         const double step = pixelsPerSecond >= 200 ? 0.5 : pixelsPerSecond >= 60 ? 1.0 : pixelsPerSecond >= 24 ? 5.0 : pixelsPerSecond >= 8 ? 10.0 : pixelsPerSecond >= 3 ? 60.0 : 300.0;
         // fainter unlabelled lines between the labelled ones: 5 s -> every 1 s, 1 s -> every 0.5 s, then 0.25 s (two zoom steps), then 0.1 s however far in
         const double minor = pixelsPerSecond >= 450 ? 0.1 : pixelsPerSecond >= 200 ? 0.25 : pixelsPerSecond >= 60 ? 0.5 : pixelsPerSecond >= 24 ? 1.0 : pixelsPerSecond >= 8 ? 5.0 : pixelsPerSecond >= 3 ? 10.0 : 60.0;
@@ -160,7 +190,7 @@ public:
         {
             const int x = xOf (s);
             g.setColour (theme::grid); g.drawVerticalLine (x, (float) kRulerH - 8, (float) getHeight());
-            g.setColour (theme::dimText); g.drawText (formatTime (s).substring (3, 8), x + 3, 2 + markerui::kStripH + kInsH, 60, 16, juce::Justification::left);
+            g.setColour (theme::dimText); g.drawText (formatTime (s).substring (3, 8), x + 3, 2 + kRulerTop, 60, 16, juce::Justification::left);
         }
 
         if (e->isEmpty())
@@ -317,7 +347,7 @@ public:
             int x = xOf ((double) at / rate);
             bool snapped = true;
             if (insertDrag) { x = insertShownX; snapped = insertSnapped; }
-            const int sy = markerui::kStripH;
+            const int sy = kInsY;
             g.setColour (juce::Colours::black.withAlpha (0.12f)); g.fillRect (0, sy, getWidth(), kInsH);
             const auto orange = juce::Colour (0xffc26500);
             g.setColour (snapped ? orange : orange.withAlpha (0.55f));
@@ -343,8 +373,8 @@ public:
         if (e->playheadSeconds > 0)                                  // where key 4 / an overdub in the take window will be placed
         {
             const int x = xOf (e->playheadSeconds);
-            g.setColour (juce::Colour (0xff6a4cc2)); g.fillRect (x, markerui::kStripH + kInsH, 1, kRulerH - markerui::kStripH - kInsH);
-            juce::Path tri; tri.addTriangle ((float) x - 5, (float) (markerui::kStripH + kInsH), (float) x + 6, (float) (markerui::kStripH + kInsH), (float) x, (float) (markerui::kStripH + kInsH) + 9.0f); g.fillPath (tri);
+            g.setColour (juce::Colour (0xff6a4cc2)); g.fillRect (x, kRulerTop, 1, kRulerH - kRulerTop);
+            juce::Path tri; tri.addTriangle ((float) x - 5, (float) kRulerTop, (float) x + 6, (float) kRulerTop, (float) x, (float) kRulerTop + 9.0f); g.fillPath (tri);
         }
         if (e->markIn >= 0 || e->markOut >= 0)                      // I / O points (used by Bounce Out)
         {
@@ -428,8 +458,8 @@ public:
             }
             if (e->automationOn) paintStripBits (g, tracks[i].id, sx, top + (int) i * rowH, false);
         }
-        markerui::paintFlags (g, e->markers, [this] (double s) { return xOf (s); }, sx + kNameW, getHeight(), markers.draggedId());
-        if (e->showFeedback && ! e->feedback.empty()) feedbackui::paintFlags (g, e->feedback, [this] (double s) { return xOf (s); }, sx + kNameW, getHeight(), selectedFeedback);
+        if (e->showMarkers) markerui::paintFlags (g, e->markers, [this] (double s) { return xOf (s); }, sx + kNameW, getHeight(), markers.draggedId());
+        if (e->showFeedback && ! e->feedback.empty()) feedbackui::paintFlags (g, e->feedback, [this] (double s) { return xOf (s); }, markerui::kStripH, sx + kNameW, getHeight(), selectedFeedback);
         g.setColour (juce::Colour (0x55ffffff)); g.fillRect (sx + kNameW - 2, kRulerH + kLaneH, 2, juce::jmax (0, getHeight() - kRulerH - kLaneH));
         if (! clipMoveRegion.isNull() && clipMoveToRow >= 0)                           // Shift + drag: the row the clip will go to
         {
@@ -442,16 +472,26 @@ public:
         }
         g.setColour (theme::panel.withAlpha (0.96f)); g.fillRect (sx, rowsEnd, kNameW, juce::jmax (0, getHeight() - rowsEnd));
         g.setColour (theme::panel.withAlpha (0.96f)); g.fillRect (sx, 0, kNameW, top);
+        g.setFont (juce::FontOptions (10.5f, juce::Font::bold));                                                       // what each line of the band is
+        g.setColour (e->showMarkers ? markerui::flagColour() : theme::dimText.withAlpha (0.6f));
+        g.drawText (e->showMarkers ? "Markers" : "Markers (hidden)", sx + 6, 0, kNameW - 12, markerui::kStripH, juce::Justification::centredLeft, true);
+        g.setColour (e->showFeedback ? juce::Colour (0xff35b7c9) : theme::dimText.withAlpha (0.6f));
+        g.drawText (e->showFeedback ? "Feedback" : "Feedback (hidden)", sx + 6, markerui::kStripH, kNameW - 12, kFbH, juce::Justification::centredLeft, true);
     }
 
-    void mouseDown (const juce::MouseEvent& e) override
+    void mouseDown (const juce::MouseEvent& e0) override { hdrShift = stickyShift (e0); mouseDownImpl (shifted (e0, hdrShift)); }
+    void mouseDrag (const juce::MouseEvent& e0) override { mouseDragImpl (shifted (e0, hdrShift)); }
+    void mouseUp (const juce::MouseEvent& e0) override { const int by = hdrShift; hdrShift = 0; mouseUpImpl (shifted (e0, by)); }
+    void mouseMove (const juce::MouseEvent& e0) override { mouseMoveImpl (shifted (e0, stickyShift (e0))); }
+
+    void mouseDownImpl (const juce::MouseEvent& e)
     {
         grabKeyboardFocus();
         dragging = false; markDrag = false; markActive = false;
         auto* ed = this->edit();
         if (ed == nullptr) return;
         markers.setNameWidth (viewport.getViewPositionX() + kNameW);
-        if (e.y >= 0 && e.y < markerui::kStripH && e.x > viewport.getViewPositionX() + kNameW && ed->showFeedback && ! ed->feedback.empty())          // a comment's flag: click to read the thread
+        if (e.y >= markerui::kStripH && e.y < markerui::kStripH + kFbH && e.x > viewport.getViewPositionX() + kNameW && ed->showFeedback && ! ed->feedback.empty())          // a comment's flag: click to read the thread
         {
             auto xo = [this] (double s) { return xOf (s); };
             const auto th = feedbackui::threadAt (ed->feedback, e.x, xo);
@@ -459,7 +499,7 @@ public:
             {
                 selectedFeedback = ed->feedback[(size_t) th.front()].key; repaint();
                 const int fx = xOf (ed->feedback[(size_t) th.front()].seconds);
-                const auto area = localAreaToGlobal (juce::Rectangle<int> (fx, 0, feedbackui::flagWidth (feedbackui::flagText (ed->feedback, th)), markerui::kStripH));
+                const auto area = localAreaToGlobal (juce::Rectangle<int> (fx, markerui::kStripH + hdrShift, feedbackui::flagWidth (feedbackui::flagText (ed->feedback, th)), kFbH));
                 juce::Component::SafePointer<EditTimeline> safe (this);
                 feedbackui::showThread ([this] { return edit(); }, th, area,
                                         [this, safe] { if (safe == nullptr) return; app.project.markDirty(); repaint(); },
@@ -467,8 +507,9 @@ public:
                 return;
             }
         }
-        if (markers.mouseDown (e)) return;                                 // the marker strip along the top: right-click for Add Marker / Clear All; drag a marker
-        if (app.showInsertFlag && ! e.mods.isPopupMenu() && e.x >= kNameW && e.y >= markerui::kStripH && e.y < markerui::kStripH + kInsH)       // the insert flag: drag it to where the next take should go
+        markers.yOffset = hdrShift;
+        if (ed->showMarkers && markers.mouseDown (e)) return;              // the marker strip along the top: right-click for Add Marker / Clear All; drag a marker
+        if (app.showInsertFlag && ! e.mods.isPopupMenu() && e.x >= kNameW && e.y >= kInsY && e.y < kInsY + kInsH)       // the insert flag: drag it to where the next take should go
         {
             insertDrag = true; insertDragMove (e.x);
             return;
@@ -677,7 +718,7 @@ public:
         repaint();
     }
 
-    void mouseDrag (const juce::MouseEvent& e) override
+    void mouseDragImpl (const juce::MouseEvent& e)
     {
         auto* ed = edit();
         if (ed == nullptr) return;
@@ -774,7 +815,7 @@ public:
         repaint();
     }
 
-    void mouseMove (const juce::MouseEvent& e) override
+    void mouseMoveImpl (const juce::MouseEvent& e)
     {
         auto* ed = edit(); EditRegion* fr = nullptr; bool isIn = true;
         if (std::abs (e.x - (viewport.getViewPositionX() + kNameW)) <= 4 && e.y >= kRulerH) { setMouseCursor (juce::MouseCursor::LeftRightResizeCursor); return; }
@@ -783,7 +824,7 @@ public:
         (void) isIn;
     }
 
-    void mouseUp (const juce::MouseEvent& e) override
+    void mouseUpImpl (const juce::MouseEvent& e)
     {
         if (markers.mouseUp (e)) return;
         if (insertDrag)
@@ -1429,6 +1470,12 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     feedbackButton.setTooltip ("Comments from listeners: import the file they sent back (or a marker list exported from a review website) and see their comments as flags along the top of this timeline. Make the listening copy with the Virtual Master tab: tick 'Include Feedback Form'.");
     feedbackButton.onClick = [this] { showFeedbackMenu(); };
     addAndMakeVisible (feedbackButton); feedbackButton.setWantsKeyboardFocus (false);
+    markersToggle.setTooltip ("Show or hide your own markers (the amber flags on the top line). Right-click that line to add one.");
+    feedbackToggle.setTooltip ("Show or hide the listeners' comment flags (the teal flags on the line under the markers).");
+    if (auto* e0 = edit()) { markersToggle.setToggleState (e0->showMarkers, juce::dontSendNotification); feedbackToggle.setToggleState (e0->showFeedback, juce::dontSendNotification); }
+    markersToggle.onClick = [this] { if (auto* e1 = edit()) { e1->showMarkers = markersToggle.getToggleState(); app.project.markDirty(); timeline->repaint(); } };
+    feedbackToggle.onClick = [this] { if (auto* e1 = edit()) { e1->showFeedback = feedbackToggle.getToggleState(); app.project.markDirty(); timeline->repaint(); } };
+    for (auto* b : { &markersToggle, &feedbackToggle }) { addAndMakeVisible (b); b->setWantsKeyboardFocus (false); }
     addAndMakeVisible (tracksButton);
     juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<EditWindowComponent> (this)] { if (safe != nullptr) safe->checkMixerStrips(); });
     playButton.onClick = [this] { togglePlay(); };
@@ -1553,7 +1600,7 @@ void EditWindowComponent::resized()
         { &bounceButton }, { &mixerButton, grid::btnW, grid::btnH, 6 }, { &ltcButton, 74, grid::btnH, 14 },
         { &automationButton, grid::btnW, grid::btnH, 14 },
         { &pitchButton }, { &pitchCurveButton, grid::btnW + 24 }, { &repairButton, grid::btnW + 30 }, { &declickButton }, { &reharmoniserButton, grid::btnW + 24 }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, grid::btnW, grid::btnH, 14 },
-        { &tracksButton }, { &importButton, grid::btnW, grid::btnH, 14 }, { &feedbackButton, grid::btnW, grid::btnH, 14 },
+        { &tracksButton }, { &importButton, grid::btnW, grid::btnH, 14 }, { &feedbackButton, grid::btnW, grid::btnH, 8 }, { &markersToggle, 80 }, { &feedbackToggle, 140, grid::btnH, 14 },
         { &slipLeftToggle, 95 }, { &slipRightToggle, 105 }, { &shuffleToggle, 90 }, { &insertFlagToggle, 100, grid::btnH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
@@ -1608,7 +1655,6 @@ void EditWindowComponent::showFeedbackMenu()
     juce::PopupMenu m;
     m.addItem (1, "Import comments from a file...");
     m.addSeparator();
-    m.addItem (2, "Show the comment flags", ! e->feedback.empty(), e->showFeedback);
     m.addItem (3, "Mark every comment as done", open > 0);
     m.addItem (4, "Take away the comments marked done (" + juce::String (done) + ")", done > 0);
     m.addItem (5, "Take away all comments (" + juce::String ((int) e->feedback.size()) + ")...", ! e->feedback.empty());
@@ -1619,7 +1665,6 @@ void EditWindowComponent::showFeedbackMenu()
         auto* ed = safe->edit(); if (ed == nullptr) return;
         auto& app = safe->app;
         if (r == 1) safe->importFeedback();
-        else if (r == 2) { ed->showFeedback = ! ed->showFeedback; app.project.markDirty(); safe->timeline->repaint(); }
         else if (r == 3) { for (auto& n : ed->feedback) n.done = true; app.project.markDirty(); safe->timeline->repaint(); }
         else if (r == 4)
         {

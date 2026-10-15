@@ -155,12 +155,42 @@ public:
         setSize (juce::jmax (contentW, viewport.getMaximumVisibleWidth()), juce::jmax (contentH, viewport.getMaximumVisibleHeight()));
     }
 
+    /** The top band (marker strip, ruler, take banners, In / Out flags) stays at the top of the window however far you scroll down:
+        the picture is painted once where it is, then the band is painted again over the top of the visible part. */
     void paint (juce::Graphics& g) override
+    {
+        headerPass = false;
+        paintAll (g);
+        const int sy = viewport.getViewPositionY();
+        if (sy > 0)
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            g.reduceClipRegion (juce::Rectangle<int> (0, sy, getWidth(), kRulerH + kLaneH));
+            g.setOrigin (0, sy);
+            headerPass = true;
+            paintAll (g);
+            headerPass = false;
+        }
+    }
+    bool headerPass = false;
+    int hdrShift = 0;
+    int stickyShift (const juce::MouseEvent& e) const
+    {
+        const int sy = viewport.getViewPositionY();
+        return (sy > 0 && e.y >= sy && e.y < sy + kRulerH + kLaneH) ? sy : 0;
+    }
+    juce::MouseEvent shifted (const juce::MouseEvent& e, int by) const { return by == 0 ? e : e.withNewPosition (e.position - juce::Point<float> (0.0f, (float) by)); }
+    void mouseDown (const juce::MouseEvent& e0) override { hdrShift = stickyShift (e0); mouseDownImpl (shifted (e0, hdrShift)); }
+    void mouseDrag (const juce::MouseEvent& e0) override { mouseDragImpl (shifted (e0, hdrShift)); }
+    void mouseUp (const juce::MouseEvent& e0) override { const int by = hdrShift; hdrShift = 0; mouseUpImpl (shifted (e0, by)); }
+    void mouseMove (const juce::MouseEvent& e0) override { mouseMoveImpl (shifted (e0, stickyShift (e0))); }
+
+    void paintAll (juce::Graphics& g)
     {
         g.fillAll (theme::wave);
         auto* w = def();
         if (w == nullptr) return;
-        const auto tracks = shownTracks();
+        const auto tracks = headerPass ? std::vector<const TrackDef*>() : shownTracks();
         const int top = kRulerH + kLaneH;
         const int rowsBottom = top + juce::jmax (1, (int) tracks.size()) * rowH;
 
@@ -345,7 +375,7 @@ public:
             g.fillPath (tri);
         }
 
-        markerui::paintFlags (g, w->markers, [this] (double s) { return xOf (s); }, viewport.getViewPositionX() + kNameW, getHeight(), markers.draggedId());
+        if (w->showMarkers) markerui::paintFlags (g, w->markers, [this] (double s) { return xOf (s); }, viewport.getViewPositionX() + kNameW, getHeight(), markers.draggedId());
         const int sx = viewport.getViewPositionX();
         for (size_t i = 0; i < tracks.size(); ++i)
         {
@@ -394,7 +424,7 @@ public:
         g.setColour (theme::panel.withAlpha (0.96f)); g.fillRect (sx, 0, kNameW, top);
     }
 
-    void mouseDown (const juce::MouseEvent& e) override
+    void mouseDownImpl (const juce::MouseEvent& e)
     {
         dragId = {}; dragging = false; markDragTake = {}; markActive = false;
         closeBarsPopup();
@@ -402,7 +432,8 @@ public:
         auto* w = def();
         if (w == nullptr) return;
         markers.setNameWidth (viewport.getViewPositionX() + kNameW);
-        if (markers.mouseDown (e)) return;                                 // the marker strip along the top: right-click for Add Marker / Clear All; drag a marker
+        markers.yOffset = hdrShift;
+        if (w->showMarkers && markers.mouseDown (e)) return;                                 // the marker strip along the top: right-click for Add Marker / Clear All; drag a marker
         flagDrag = 0;
         if (! e.mods.isPopupMenu() && (flagDrag = editFlagAt (*w, e.getPosition())) != 0) return;       // grab an Edit IN / OUT flag to move it
         if (e.mods.isPopupMenu() && e.x >= kNameW)                         // right-click on a part waiting for corrected audio: re-link it
@@ -535,7 +566,7 @@ public:
         }
     }
 
-    void mouseDrag (const juce::MouseEvent& e) override
+    void mouseDragImpl (const juce::MouseEvent& e)
     {
         auto* w = def();
         if (w == nullptr) return;
@@ -597,13 +628,13 @@ public:
         }
     }
 
-    void mouseMove (const juce::MouseEvent& e) override
+    void mouseMoveImpl (const juce::MouseEvent& e)
     {
         auto* w = def(); bool isIn = true;
         setMouseCursor (w != nullptr && (fadeHandleAt (*w, e.getPosition(), isIn) != nullptr || editFlagAt (*w, e.getPosition()) != 0) ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
     }
 
-    void mouseUp (const juce::MouseEvent& e) override
+    void mouseUpImpl (const juce::MouseEvent& e)
     {
         if (markers.mouseUp (e)) return;
         if (markActive) { markActive = false; app.project.changed(); }
@@ -1103,6 +1134,10 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     addAndMakeVisible (loopToggle);
     if (auto* w0 = def()) overdubBox.setToggleState (w0->overdub, juce::dontSendNotification);
     addAndMakeVisible (overdubBox);
+    markersToggle.setTooltip ("Show or hide your own markers (the flags on the top line). Right-click that line to add one.");
+    if (auto* w1 = def()) markersToggle.setToggleState (w1->showMarkers, juce::dontSendNotification);
+    markersToggle.onClick = [this] { if (auto* w2 = def()) { w2->showMarkers = markersToggle.getToggleState(); app.project.markDirty(); timeline->repaint(); } };
+    markersToggle.setWantsKeyboardFocus (false); addAndMakeVisible (markersToggle);
     editWindowButton.onClick = [this] { openEditWindow(); };
     bounceButton.onClick = [this] { openBounce(); };
     importButton.setTooltip ("Bring in the takes of a session recorded in another program (multichannel / polyphonic WAV, or one mono / stereo file per track). "
@@ -1220,7 +1255,7 @@ void TakeWindowComponent::resized()
         { &nameLabel, 45 }, { &nameEditor, 200, grid::btnH, 10 }, { &takeBox, 84, 58, 14 },
         { &recordButton, grid::btnW, grid::btnH, 6 }, { &timeLabel, 150, 28, 14 },
         { &startButton, 40, grid::btnH, 2 }, { &backButton, 40, grid::btnH, 2 }, { &playButton }, { &fwdButton, 40, grid::btnH, 2 }, { &endTransportButton, 40, grid::btnH, 6 }, { &playMarkedButton }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
-        { &editInButton }, { &editOutButton }, { &toEditButton }, { &toEditAtButton }, { &overdubBox, grid::btnW - 10, grid::btnH, 14 },
+        { &editInButton }, { &editOutButton }, { &toEditButton }, { &toEditAtButton }, { &overdubBox, grid::btnW - 10, grid::btnH, 6 }, { &markersToggle, 80, grid::btnH, 14 },
         { &editWindowButton }, { &bounceButton, grid::btnW, grid::btnH, 14 },
         { &sendCaption, 120, grid::btnH, 2 }, { &sendBox, 200, grid::btnH, 14 },
         { &ltcButton, 74, grid::btnH, 14 }, { &armAllButton }, { &armNoneButton, grid::btnW, grid::btnH, 14 },
