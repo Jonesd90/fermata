@@ -180,6 +180,7 @@ class HueWheel : public juce::Component, public juce::SettableTooltipClient
 public:
     std::function<void (double)> onHue;
     double hue = 0.083;
+    void set (double h) { hue = h; repaint(); if (onHue) onHue (hue); }
     void paint (juce::Graphics& g) override
     {
         const auto b = getLocalBounds().toFloat().reduced (3.0f);
@@ -208,7 +209,6 @@ private:
         double h = (std::atan2 ((double) dx, (double) -dy)) / juce::MathConstants<double>::twoPi;      // 0 at the top, clockwise
         set (h - std::floor (h));
     }
-    void set (double h) { hue = h; repaint(); if (onHue) onHue (hue); }
 };
 
 class ReHarmoniserEditor::View : public juce::Component
@@ -844,7 +844,34 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     startTimerHz (30);
 }
 
-ReHarmoniserEditor::~ReHarmoniserEditor() { setLookAndFeel (nullptr); stopTimer(); if (worker) worker->cancel(); }
+void ReHarmoniserEditor::restoreViewSettings()
+{
+    if (! host.loadSetting) return;
+    auto num = [this] (const char* k, juce::Slider& s)
+    {
+        const auto v = host.loadSetting (k); if (v.isEmpty()) return;
+        s.setValue (juce::jlimit (s.getMinimum(), s.getMaximum(), v.getDoubleValue()), juce::sendNotificationSync);
+    };
+    num ("rh.opacity", opacityRow.s); num ("rh.contrast", contrastRow.s); num ("rh.isoPre", isoPreRow.s); num ("rh.isoPost", isoPostRow.s); num ("rh.key", keyRow.s);
+    num ("rh.gain", gainRow.s); num ("rh.lines", linesRow.s);
+    const auto hv = host.loadSetting ("rh.hue");
+    if (hv.isNotEmpty() && hueWheel != nullptr) static_cast<HueWheel*> (hueWheel.get())->set (hv.getDoubleValue());
+    const auto dv = host.loadSetting ("rh.detail");
+    if (dv.isNotEmpty()) { const int id = juce::jlimit (1, 3, dv.getIntValue()); if (id != detailBox.getSelectedId()) { detailBox.setSelectedId (id, juce::dontSendNotification); detailMode = id - 1; } }
+}
+
+void ReHarmoniserEditor::saveViewSettings()
+{
+    if (! host.saveSetting) return;
+    auto put = [this] (const char* k, double v) { host.saveSetting (k, juce::String (v, 4)); };
+    put ("rh.opacity", opacityRow.s.getValue()); put ("rh.contrast", contrastRow.s.getValue()); put ("rh.isoPre", isoPreRow.s.getValue()); put ("rh.isoPost", isoPostRow.s.getValue());
+    put ("rh.key", keyRow.s.getValue()); put ("rh.gain", gainRow.s.getValue()); put ("rh.lines", linesRow.s.getValue());
+    if (hueWheel != nullptr) put ("rh.hue", static_cast<HueWheel*> (hueWheel.get())->hue);
+    host.saveSetting ("rh.detail", juce::String (detailBox.getSelectedId()));
+}
+
+ReHarmoniserEditor::~ReHarmoniserEditor() {
+    saveViewSettings(); setLookAndFeel (nullptr); stopTimer(); if (worker) worker->cancel(); }
 
 int ReHarmoniserEditor::appliedCount() const { int n = 0; for (auto& e : edits) if (e.enabled) ++n; return n; }
 bool ReHarmoniserEditor::hasAppliedChanges() const { return appliedCount() > 0; }

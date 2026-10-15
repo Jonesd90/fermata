@@ -49,6 +49,8 @@ struct EditorHost
     std::function<void()> writeBack;                                         // the user pressed "Write back to clip" (setCorrected has already been called with the final corrections)
     std::function<void()> cancel;                                            // the user pressed Cancel
     std::function<void (const juce::String&)> log;                           // errors and notes for the log file
+    std::function<juce::String (const juce::String& key)> loadSetting;       // remembered settings of the View block (empty = none saved)
+    std::function<void (const juce::String& key, const juce::String& value)> saveSetting;
 };
 
 class ReHarmoniserEditor : public juce::Component, private juce::Timer
@@ -67,6 +69,8 @@ public:
 
     /** Names for the channels of the audio (for the See mixer), in the order of the Block. Call before or after setAudio. */
     void setChannelNames (const juce::StringArray&);
+    /** Puts back the View settings saved last time (host.loadSetting): call once after the host hooks are set. They are saved when the editor closes. */
+    void restoreViewSettings();
 
     /** Shows a message on the status line (the host uses it while it is loading the audio). */
     void setStatus (const juce::String&, bool error = false);
@@ -111,6 +115,7 @@ private:
     void rebuildEditsList();
     void loadAsPending (const NoteEdit&);
     void startJob (const juce::String& stage, std::function<juce::String (Worker&)> work, std::function<void (const juce::String&)> done);
+    void saveViewSettings();
     void syncSliders();
     void sliderChanged();
     void detectReference();

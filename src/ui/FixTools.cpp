@@ -20,6 +20,29 @@ static void say (const juce::String& title, const juce::String& text)
     juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon).withTitle (title).withMessage (text).withButton ("OK"), nullptr);
 }
 
+/** The program's own little settings file for the things the offline windows remember (their size and place, the way they look). */
+static juce::PropertiesFile& uiPrefs()
+{
+    static juce::PropertiesFile* f = [] ()
+    {
+        juce::PropertiesFile::Options o; o.applicationName = "ui-windows"; o.filenameSuffix = ".settings"; o.folderName = "Fermata"; o.osxLibrarySubFolder = "Application Support";
+        o.storageFormat = juce::PropertiesFile::storeAsXML; o.millisecondsBeforeSaving = 0; o.ignoreCaseOfKeyNames = true;
+        return new juce::PropertiesFile (o);                     // (kept for the whole run: it saves itself at every change)
+    }();
+    return *f;
+}
+/** Remembers where a window was and how big, until the next time it opens (a window that can be resized). */
+struct BoundsKeeper : juce::ComponentListener
+{
+    juce::String key; juce::Rectangle<int> last;
+    void componentMovedOrResized (juce::Component& c, bool, bool) override { last = c.getBounds(); }
+    void componentBeingDeleted (juce::Component& c) override
+    {
+        if (last.getWidth() > 100 && last.getHeight() > 100) uiPrefs().setValue ("win." + key, last.toString());
+        c.removeComponentListener (this); delete this;
+    }
+};
+
 static void launchDialog (std::unique_ptr<juce::Component> content, const juce::String& title, juce::Component* around, bool resizable = false)
 {
     juce::DialogWindow::LaunchOptions o;
@@ -30,7 +53,23 @@ static void launchDialog (std::unique_ptr<juce::Component> content, const juce::
     o.useNativeTitleBar = true;
     o.resizable = resizable;
     o.componentToCentreAround = around;
-    o.launchAsync();
+    auto* dw = o.launchAsync();
+    if (dw != nullptr && resizable)
+    {
+        const auto key = title.retainCharacters ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789- ");
+        auto saved = juce::Rectangle<int>::fromString (uiPrefs().getValue ("win." + key));
+        if (saved.getWidth() >= 300 && saved.getHeight() >= 200)
+        {
+            const auto& displays = juce::Desktop::getInstance().getDisplays();
+            const auto area = displays.getDisplayForRect (saved)->userArea;
+            saved.setSize (juce::jmin (saved.getWidth(), area.getWidth()), juce::jmin (saved.getHeight(), area.getHeight()));
+            // keep it on a screen (the screens may have changed since): if less than 120 pixels of it would show, it is centred instead
+            if (! area.getIntersection (saved).expanded (0).contains (saved.getX() + 60, saved.getY() + 20) && ! area.contains (saved.getCentre())) saved.setCentre (area.getCentre());
+            saved.setPosition (juce::jlimit (area.getX(), juce::jmax (area.getX(), area.getRight() - saved.getWidth()), saved.getX()), juce::jlimit (area.getY(), juce::jmax (area.getY(), area.getBottom() - saved.getHeight()), saved.getY()));
+            dw->setBounds (saved);
+        }
+        auto* k = new BoundsKeeper(); k->key = key; k->last = dw->getBounds(); dw->addComponentListener (k);
+    }
 }
 
 static void closeDialogOf (juce::Component* c)
@@ -699,6 +738,7 @@ public:
     }
     /** The round colour control (bottom left): each step is another colour map and another range of levels, so quiet noises show up. */
     void rollColour (double amount) { setRoll (rollPos + amount); }
+    double rollValue() const { return rollPos; }
     void setRoll (double p)
     {
         rollPos = std::fmod (std::fmod (p, (double) kPresets) + (double) kPresets, (double) kPresets);
@@ -1149,6 +1189,7 @@ public:
         revertBtn.setTooltip ("Takes the last fix off again. Press it again to take off the one before.");
         compareBtn.setTooltip ("Switches the picture between the original and the repaired sound.");
         view.onSelection = [this] { refreshControls(); invalidate(); };
+        loadControls();
         refreshControls();
         close.setButtonText ("Cancel");
         setWantsKeyboardFocus (true);                                              // Space plays / stops, whatever was clicked last
@@ -1182,8 +1223,32 @@ public:
                     self->scanned = true; self->refreshControls();
                 });
     }
+    juce::String prefKey (const char* k) const { return juce::String (declickOnly ? "declick." : "repair.") + k; }
+    /** What the controls were set to last time (the picture settings, the repair settings): put back when the window opens, saved when it closes. */
+    void loadControls()
+    {
+        auto& p = uiPrefs();
+        auto num = [&] (const char* k, juce::Slider& s) { const auto key = prefKey (k); if (p.containsKey (key)) s.setValue (juce::jlimit (s.getMinimum(), s.getMaximum(), p.getDoubleValue (key)), juce::dontSendNotification); };
+        auto id = [&] (const char* k, juce::ComboBox& b) { const auto key = prefKey (k); if (p.containsKey (key) && b.indexOfItemId (p.getIntValue (key)) >= 0) b.setSelectedId (p.getIntValue (key), juce::dontSendNotification); };
+        num ("sens", sens); num ("strength", strength); num ("surround", surround); num ("weight", weight);
+        id ("method", methodBox); id ("bands", bandsBox); id ("dir", dirBox); id ("scale", scaleBox); id ("detail", detailBox);
+        if (p.containsKey (prefKey ("multi"))) multiBtn.setToggleState (p.getBoolValue (prefKey ("multi")), juce::dontSendNotification);
+        if (p.containsKey (prefKey ("link"))) linkBtn.setToggleState (p.getBoolValue (prefKey ("link")), juce::dontSendNotification);
+        if (p.containsKey (prefKey ("roll"))) view.setRoll (p.getDoubleValue (prefKey ("roll")));
+        const int sc = scaleBox.getSelectedId();
+        if (sc == 6) view.setMel(); else { static const double w[] = { 0.0, 0.25, 0.5, 0.75, 1.0 }; view.setScale (w[juce::jlimit (0, 4, sc - 1)]); }
+    }
+    void saveControls()
+    {
+        auto& p = uiPrefs();
+        p.setValue (prefKey ("sens"), sens.getValue()); p.setValue (prefKey ("strength"), strength.getValue()); p.setValue (prefKey ("surround"), surround.getValue()); p.setValue (prefKey ("weight"), weight.getValue());
+        p.setValue (prefKey ("method"), methodBox.getSelectedId()); p.setValue (prefKey ("bands"), bandsBox.getSelectedId()); p.setValue (prefKey ("dir"), dirBox.getSelectedId());
+        p.setValue (prefKey ("scale"), scaleBox.getSelectedId()); p.setValue (prefKey ("detail"), detailBox.getSelectedId());
+        p.setValue (prefKey ("multi"), multiBtn.getToggleState()); p.setValue (prefKey ("link"), linkBtn.getToggleState()); p.setValue (prefKey ("roll"), view.rollValue());
+    }
     ~RepairDialog() override
     {
+        saveControls();
         ticker.stopTimer(); ticker.owner = nullptr;
         if (detailCancel != nullptr) detailCancel->store (true);
         if (ctx.stop) ctx.stop();
@@ -2626,6 +2691,9 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
     // ---- the editor's host
     auto& h = d->editor.host;
     h.log = [] (const juce::String& s) { juce::Logger::writeToLog (s); };
+    h.loadSetting = [] (const juce::String& k) { return uiPrefs().getValue ("reharmoniser." + k); };
+    h.saveSetting = [] (const juce::String& k, const juce::String& v) { uiPrefs().setValue ("reharmoniser." + k, v); };
+    d->editor.restoreViewSettings();
     h.play = [&app, eid, from, rate, nm, putIn] (double x, double y, bool loop)
     {
         if (! putIn()) { say (nm, "The corrected audio does not fit the edit any more (" + gApplyWhy + ")."); return; }
