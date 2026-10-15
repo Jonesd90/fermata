@@ -6,6 +6,13 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.44.0
+- **ReTouch and De-click in one window.** The Spectral Repair and De-Click windows are now the same window with two buttons, **ReTouch** (key R) and **De-click** (key D), sharing the picture, the box, Undo and the list of fixes. De-click uses only the time span of the box (or the whole picture if there is no box) and ignores its pitch range; the Click sensitivity slider sits next to the buttons.
+- **ReTouch (Attenuate) keeps the harmonics' decay.** It now measures the level of each pitch just before and just after the box and slides smoothly between the two, so a harmonic that is fading out keeps fading at the same rate through the fix, with no bump. (Measured against RX: harmonic ridge change -0.73 dB, was -2.76 dB.)
+- **Better de-clicker.** Clicks are found against a model learned from a de-spiked copy, so loud clicks no longer hide each other, clicks that were left alone are now found, and note onsets and dense crackle are no longer mistaken for clicks. Mending is guarded against making a hole (a mend that is too quiet is replaced by a prediction from both sides).
+- **Bug fix:** dragging on the spectrogram made a note selection but moved the whole window (caused by the window-raise fix of 2.42.1).
+- **Bug fix:** resizing the selection box by an edge or corner could make it perfectly narrow or flat; a move that would collapse it is now ignored.
+
 ## 2.43.0
 - **Take window meters show playback.** While a take plays back, the small horizontal meters of each track show the level of the mixer strip (a stereo track shows left over right), as in the edit window. While recording they show the input as before.
 - **M and S buttons at the top left of each track, above the name** (take window and edit window), side by side, so it is clear which track they belong to. The take window now has them too (the same mute / solo flags as the mixer strip). The name sits below them; in low rows it sits to their right.

@@ -227,13 +227,21 @@ class StreamWindow : public juce::DialogWindow
 {
 public:
     StreamWindow (const juce::String& t, juce::Colour bg, std::weak_ptr<StreamPair> p) : juce::DialogWindow (t, bg, true, true), pair (std::move (p)) {}
+    ~StreamWindow() override { removeMouseListener (&raiser); }
     void closeButtonPressed() override { if (auto p = pair.lock()) p->closeAll(); }
-    /** Clicking Stop / Play (or anything else in the tool) must never send the window behind the main window: after every click the window is put back on top, without taking the focus. */
-    void mouseUp (const juce::MouseEvent&) override
+    /** Clicking Stop / Play (or anything else in the tool) must never send the window behind the main window: after every click the window is put back on top, without taking the focus.
+        (A separate listener that only looks at mouse-ups: the window itself must NOT get the mouse events of its children, or a drag on the spectrogram would move the window.) */
+    struct RaiseAfterClick : public juce::MouseListener
     {
-        juce::Component::SafePointer<StreamWindow> self (this);
-        juce::Timer::callAfterDelay (120, [self] { if (self != nullptr && self->isVisible()) self->toFront (false); });
-    }
+        explicit RaiseAfterClick (juce::Component& o) : owner (&o) {}
+        void mouseUp (const juce::MouseEvent&) override
+        {
+            juce::Component::SafePointer<juce::Component> self (owner);
+            juce::Timer::callAfterDelay (120, [self] { if (self != nullptr && self->isVisible()) self->toFront (false); });
+        }
+        juce::Component* owner;
+    };
+    RaiseAfterClick raiser { *this };
     std::weak_ptr<StreamPair> pair;
 };
 
@@ -254,7 +262,7 @@ static void launchStream (const std::shared_ptr<StreamPair>& pair, int slot, std
     const int half = area.getWidth() / 2;
     w->setBounds (juce::Rectangle<int> (area.getX() + (slot == 0 ? 0 : half), area.getY(), half, area.getHeight()).reduced (4));
     w->setVisible (true);
-    w->addMouseListener (w.get(), true);                         // (so that a click on any button inside it is seen: see StreamWindow::mouseUp)
+    w->addMouseListener (&w->raiser, true);                      // (so that a click on any button inside it is seen: see StreamWindow::RaiseAfterClick)
     if (around != nullptr) if (auto* top = around->getTopLevelComponent()) makeOwnedBy (*w, *top);        // an owned window always stays above the window that owns it
     w->toFront (true);
     pair->win[slot] = std::move (w);
@@ -1131,10 +1139,18 @@ public:
         else if (mode == Mode::resize)
         {
             const auto q = toTF (e.getPosition());
-            if (edgeMask & 1) a.x = q.x;
-            if (edgeMask & 2) b.x = q.x;
-            if (edgeMask & 4) b.y = q.y;                                 // the top edge is the highest pitch
-            if (edgeMask & 8) a.y = q.y;
+            auto na = a, nb = b;
+            if (edgeMask & 1) na.x = q.x;
+            if (edgeMask & 2) nb.x = q.x;
+            if (edgeMask & 4) nb.y = q.y;                                // the top edge is the highest pitch
+            if (edgeMask & 8) na.y = q.y;
+            // never let the box collapse to a line while it is being resized: a move that would do that is ignored
+            const auto pl2 = plotArea();
+            const double pxT = (vt1 - vt0) / (double) juce::jmax (1, pl2.getWidth());
+            const bool thinT = std::abs (nb.x - na.x) < juce::jmax (0.002, 3.0 * pxT);
+            const bool thinF = std::abs (hzToY (nb.y, pl2) - hzToY (na.y, pl2)) < 3;
+            if (! thinT || (edgeMask & 3) == 0) { a.x = na.x; b.x = nb.x; }
+            if (! thinF || (edgeMask & 12) == 0) { a.y = na.y; b.y = nb.y; }
             repaint();
         }
         else if (mode == Mode::pan) setWindow (panT0 - (double) e.getDistanceFromDragStartX() / (double) juce::jmax (1, pl.getWidth()) * (vt1 - vt0), vt1 - vt0);
@@ -1403,7 +1419,7 @@ public:
         bandsBox.onChange = [this] { invalidate(); };
         multiBtn.onClick = [this] { invalidate(); };
         view.onNeedDetail = [this] (const PictureRequest& rq) { startDetail (rq); };
-        for (auto* x : std::initializer_list<juce::Component*> { &methodBox, &bandsBox, &multiBtn, &linkBtn, &specBtn, &dirBox, &previewBtn, &compareBtn, &revertBtn, &finishBtn, &close, &playBtn, &stopBtn, &loopBtn, &hearCap, &hearBox, &scaleBox, &detailBox }) addAndMakeVisible (x);
+        for (auto* x : std::initializer_list<juce::Component*> { &methodBox, &bandsBox, &multiBtn, &linkBtn, &specBtn, &dirBox, &previewBtn, &declickBtn, &compareBtn, &revertBtn, &finishBtn, &close, &playBtn, &stopBtn, &loopBtn, &hearCap, &hearBox, &scaleBox, &detailBox }) addAndMakeVisible (x);
         scaleBox.addItem ("Pitch scale: Mel (as iZotope RX)", 6); scaleBox.addItem ("Pitch scale: linear (even Hz)", 1); scaleBox.addItem ("Pitch scale: mostly linear", 2); scaleBox.addItem ("Pitch scale: halfway", 3);
         scaleBox.addItem ("Pitch scale: mostly musical", 4); scaleBox.addItem ("Pitch scale: musical (every octave the same height)", 5);
         scaleBox.setSelectedId (6, juce::dontSendNotification); view.setMel();
@@ -1416,7 +1432,7 @@ public:
         view.onNote = [this] (const juce::String& t) { status.setText (t, juce::dontSendNotification); };
         hearCap.setText ("Listen to", juce::dontSendNotification); hearCap.setColour (juce::Label::textColourId, theme::text);
         hearBox.addItem ("Original", 1); hearBox.addItem ("Fixed (after Fix)", 2); hearBox.setSelectedId (1, juce::dontSendNotification);
-        hearBox.setTooltip ("Which sound Play plays: the audio as it is, or the audio with the repair applied (available after you press Fix). Press Play while a loop runs to hear the other one.");
+        hearBox.setTooltip ("Which sound Play plays: the audio as it is, or the audio with the repair applied (available after you press ReTouch or De-click). Press Play while a loop runs to hear the other one.");
         playBtn.setColour (juce::TextButton::buttonColourId, theme::accent);
         playBtn.setTooltip ("Plays the part of the picture you can see, from the red playhead if you have clicked the time ruler to place one (zoom in with the left / right arrows to play a shorter piece, zoom out to hear more), through the mixers, with a playhead on the picture. No repair is needed: use it to listen for what has to be mended. Key: Space");
         loopBtn.setTooltip ("Repeat what is playing until you press Stop");
@@ -1427,14 +1443,16 @@ public:
         hearBox.onChange = [this] { if (isPlayingNow()) playPressed(); };
         ticker.owner = this; ticker.startTimerHz (30);
         if (ctx.hold) ctx.hold (true);
-        previewBtn.onClick = [this] { preview(); };
+        previewBtn.onClick = [this] { preview (false); };
+        declickBtn.onClick = [this] { preview (true); };
         compareBtn.onClick = [this] { toggleCompare(); };
         revertBtn.onClick = [this] { revert(); };
         finishBtn.onClick = [this] { finish(); };
         close.onClick = [this] { if (running) job.requestCancel(); else closeDialogOf (this); };
-        previewBtn.setColour (juce::TextButton::buttonColourId, theme::accent);
+        previewBtn.setColour (juce::TextButton::buttonColourId, theme::accent); declickBtn.setColour (juce::TextButton::buttonColourId, theme::accent);
         finishBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1f7a46));
-        previewBtn.setTooltip ("Does the fix on the box you drew (or on every click found, in De-Click) and shows the result. It does not play, and nothing is written to the files yet: press Play to listen, and Undo if it did not work. You can then draw a box round another problem and press Fix again: the earlier fixes stay.");
+        declickBtn.setTooltip ("Finds and mends the clicks in the time span of the box (or everywhere if there is no box; the pitch range of the box is ignored) and shows the result. Set how many it finds with Click sensitivity. Same rules as ReTouch: nothing is written yet, Play to listen, Undo if it did not work.");
+        previewBtn.setTooltip ("ReTouch: rebuilds or turns down the box you drew from its surroundings and shows the result. It does not play, and nothing is written to the files yet: press Play to listen, and Undo if it did not work. You can then draw a box round another problem and press ReTouch or De-click again: the earlier fixes stay.");
         finishBtn.setTooltip ("Writes all the fixes into the files (everything between the marks is rendered again in one go). The Undo command of the window brings the original back afterwards.");
         close.setTooltip ("Closes the window and puts everything back as it was (nothing is kept).");
         revertBtn.setTooltip ("Takes the last fix off again. Press it again to take off the one before.");
@@ -1474,12 +1492,12 @@ public:
                     self->origSpec = std::make_shared<MergedSpectrogram> (*spec);
                     self->view.setData (std::move (*spec), secs);
                     self->status.setText (self->declickOnly
-                        ? "Press Space (or Play) to listen to what is in view (left / right arrows zoom in time, down / up zoom in / out in pitch, click the ruler to place the playhead, drag it to move; R = Fix). Clicks show as thin vertical lines. Drag a box to limit the search to that stretch of time (drag its edges to resize it), or leave it to search everything. Set the sensitivity and press Fix, then Play to listen; Undo if it did not work. Write back to file when you are happy.  Double-click the picture to clear the box."
-                        : "Press Space (or Play) to listen to what is in view (left / right arrows zoom in time, down / up zoom in / out in pitch, click the ruler to place the playhead, drag it to move; R = Fix). Drag a box around the noise (drag its edges or corners to resize it), set the controls, then press Fix, then Play to listen. Undo if it did not work; or draw a box round the next problem and Fix again (the earlier fixes stay). Write back to file when you are happy.  Double-click the picture to clear the box.", juce::dontSendNotification);
+                        ? "Press Space (or Play) to listen to what is in view (left / right arrows zoom in time, down / up zoom in / out in pitch, click the ruler to place the playhead, drag it to move; R = ReTouch, D = De-click). Clicks show as thin vertical lines. Drag a box to limit the search to that stretch of time (drag its edges to resize it), or leave it to search everything. Set the sensitivity and press ReTouch (or De-click), then Play to listen; Undo if it did not work. Write back to file when you are happy.  Double-click the picture to clear the box."
+                        : "Press Space (or Play) to listen to what is in view (left / right arrows zoom in time, down / up zoom in / out in pitch, click the ruler to place the playhead, drag it to move; R = ReTouch, D = De-click). Drag a box around the noise (drag its edges or corners to resize it), set the controls, then press ReTouch (or De-click), then Play to listen. Undo if it did not work; or draw a box round the next problem and ReTouch / De-click again (the earlier fixes stay). Write back to file when you are happy.  Double-click the picture to clear the box.", juce::dontSendNotification);
                     self->scanned = true; self->refreshControls();
                 });
     }
-    juce::String prefKey (const char* k) const { return juce::String (declickOnly ? "declick." : "repair.") + k; }
+    juce::String prefKey (const char* k) const { return juce::String ("repair.") + k; }
     /** What the controls were set to last time (the picture settings, the repair settings): put back when the window opens, saved when it closes. */
     void loadControls()
     {
@@ -1530,7 +1548,9 @@ public:
         finishBtn.setBounds (rowC.removeFromRight (170)); rowC.removeFromRight (8);
         revertBtn.setBounds (rowC.removeFromRight (90)); rowC.removeFromRight (8);
         compareBtn.setBounds (rowC.removeFromRight (150)); rowC.removeFromRight (8);
-        previewBtn.setBounds (rowC.removeFromRight (160));
+        previewBtn.setBounds (rowC.removeFromRight (120)); rowC.removeFromRight (8);
+        declickBtn.setBounds (rowC.removeFromRight (120)); rowC.removeFromRight (14);
+        sensCap.setBounds (rowC.removeFromLeft (110)); sens.setBounds (rowC.removeFromLeft (260));
         playBtn.setBounds (rowT.removeFromLeft (90)); rowT.removeFromLeft (6);
         stopBtn.setBounds (rowT.removeFromLeft (70)); rowT.removeFromLeft (8);
         loopBtn.setBounds (rowT.removeFromLeft (70)); rowT.removeFromLeft (14);
@@ -1543,7 +1563,6 @@ public:
         bandsBox.setBounds (rowB.removeFromLeft (110)); rowB.removeFromLeft (6); multiBtn.setBounds (rowB.removeFromLeft (140)); rowB.removeFromLeft (4); linkBtn.setBounds (rowB.removeFromLeft (150)); rowB.removeFromLeft (8);
         surroundCap.setBounds (rowB.removeFromLeft (112)); surround.setBounds (rowB.removeFromLeft (170)); rowB.removeFromLeft (8);
         weightCap.setBounds (rowB.removeFromLeft (92)); weight.setBounds (rowB);
-        sensCapRow = rowB; sensCap.setBounds (10, rowB.getY(), 130, rowB.getHeight()); sens.setBounds (150, rowB.getY(), 330, rowB.getHeight());
         status.setBounds (r.removeFromBottom (22).reduced (2, 0));
         { auto ir = r.removeFromBottom (22); specBtn.setBounds (ir.removeFromRight (150)); ir.removeFromRight (6); scaleBox.setBounds (ir.removeFromRight (300)); ir.removeFromRight (6); detailBox.setBounds (ir.removeFromRight (210)); info.setBounds (ir.reduced (2, 0)); }
         view.setBounds (r);
@@ -1558,14 +1577,19 @@ protected:
         }
         if ((k.getTextCharacter() == 'r' || k.getTextCharacter() == 'R') && ! k.getModifiers().isAnyModifierKeyDown())      // R: do the fix with the settings as they are
         {
-            if (previewBtn.isEnabled()) preview();
+            if (previewBtn.isEnabled()) preview (false);
+            return true;
+        }
+        if ((k.getTextCharacter() == 'd' || k.getTextCharacter() == 'D') && ! k.getModifiers().isAnyModifierKeyDown())
+        {
+            if (declickBtn.isEnabled()) preview (true);
             return true;
         }
         if (scanned && view.zoomKey (k)) return true;                           // arrows: right / left zoom in / out in time, up / down in pitch
         return false;
     }
 private:
-    bool patchMode() const { return modeBox.getSelectedId() == 1; }
+    bool patchMode() const { return true; }      // one window for both: ReTouch and De-click share the picture, the box and the list of fixes
     void updateSurround() { const bool lr = dirBox.getSelectedId() != 2; view.setSurround (patchMode() && scanned, surround.getValue(), dirBox.getSelectedId() - 1, lr ? weight.getValue() / 100.0 : 0.5); }
     bool lookingAcross() const { return dirBox.getSelectedId() != 2; }
     /** The changes that make up the repaired sound: everything accepted so far, plus the change being previewed. */
@@ -1582,7 +1606,7 @@ private:
         dropPendingPrepared();
         if (! previewValid) return;
         previewValid = false; pvTracks = nullptr;
-        status.setText ("The settings changed: press Fix.", juce::dontSendNotification);
+        status.setText ("The settings changed: press ReTouch or De-click.", juce::dontSendNotification);
         refreshControls();
     }
     /** Back to the original sound, and the repaired files thrown away (they no longer match the settings). */
@@ -1622,7 +1646,7 @@ private:
             applied = true;
         }
         playRange();
-        status.setText ("Playing the REPAIRED sound (through the repair). Write back to file keeps it, Undo takes the last fix off, or draw another box and Fix again.", juce::dontSendNotification);
+        status.setText ("Playing the REPAIRED sound (through the repair). Write back to file keeps it, Undo takes the last fix off, or draw another box and ReTouch / De-click again.", juce::dontSendNotification);
         refreshControls();
     }
     void startRepairedPlayback()
@@ -1633,7 +1657,7 @@ private:
         dropPrepared();
         auto prep = ctx.prepare;
         status.setText ("Making the repaired sound ready to listen to...", juce::dontSendNotification);
-        previewBtn.setEnabled (false); finishBtn.setEnabled (false); revertBtn.setEnabled (false); compareBtn.setEnabled (false); playBtn.setEnabled (false);
+        previewBtn.setEnabled (false); declickBtn.setEnabled (false); finishBtn.setEnabled (false); revertBtn.setEnabled (false); compareBtn.setEnabled (false); playBtn.setEnabled (false);
         juce::Component::SafePointer<RepairDialog> self (this);
         const auto n = ops.size();
         runJob ([prep, ops] (AudioJob& j) { return prep (ops, j); },
@@ -1653,7 +1677,7 @@ private:
         if (hearBox.getSelectedId() == 2)
         {
             if (haveRepair()) { startRepairedPlayback(); return; }
-            status.setText ("There is no repair to listen to yet: press Fix first. Playing the original.", juce::dontSendNotification);
+            status.setText ("There is no repair to listen to yet: press ReTouch or De-click first. Playing the original.", juce::dontSendNotification);
         }
         playOriginal();
     }
@@ -1665,7 +1689,7 @@ private:
         for (auto* c : std::initializer_list<juce::Component*> { &dirBox, &dirCap, &strength, &strengthCap, &surround, &surroundCap, &methodBox }) c->setVisible (p);
         bandsBox.setVisible (att); multiBtn.setVisible (att); linkBtn.setVisible (att);
         weight.setVisible (p && lookingAcross()); weightCap.setVisible (p && lookingAcross());
-        sens.setVisible (! p); sensCap.setVisible (! p);
+        sens.setVisible (true); sensCap.setVisible (true);
         if (view.hasSelection())
             info.setText ("Selected: " + juce::String (view.selT0(), 3) + " - " + juce::String (view.selT1(), 3) + " s  ("
                           + juce::String ((view.selT1() - view.selT0()) * 1000.0, 0) + " ms),  " + juce::String ((int) view.selF0()) + " - " + juce::String ((int) view.selF1()) + " Hz"
@@ -1674,7 +1698,7 @@ private:
                            + (committed.empty() ? juce::String() : juce::String ("      ") + juce::String ((int) committed.size()) + " fix(es) made"), juce::dontSendNotification);
         const bool ready = scanned && ! running;
         playBtn.setEnabled (ready); stopBtn.setEnabled (ready); loopBtn.setEnabled (ready); hearBox.setEnabled (ready);
-        previewBtn.setEnabled (ready && (p ? view.hasSelection() : true));
+        previewBtn.setEnabled (ready && view.hasSelection()); declickBtn.setEnabled (ready);
         finishBtn.setEnabled (ready && (haveRepair() || ctx.pairWritten != nullptr));
         revertBtn.setEnabled (ready && ! history.empty());
         compareBtn.setEnabled (ready && ! history.empty());
@@ -1682,11 +1706,11 @@ private:
         if (pairLocked) { for (auto* ch : getChildren()) if (ch != &close && ch != &status && ch != &info && ch != &bar) ch->setEnabled (false); view.setInterceptsMouseClicks (false, false); }
     }
     /** The settings as they are now (and the part of the area they apply to). */
-    FixSpec buildSpec (juce::int64& t0, juce::int64& t1) const
+    FixSpec buildSpec (juce::int64& t0, juce::int64& t1, bool declick) const
     {
         FixSpec spec; t0 = 0; t1 = ctx.length;
         if (view.hasSelection()) { t0 = (juce::int64) std::llround (view.selT0() * ctx.rate); t1 = (juce::int64) std::llround (view.selT1() * ctx.rate); }
-        if (patchMode())
+        if (! declick)
         {
             spec.kind = FixSpec::Kind::Patch; spec.f0 = view.selF0(); spec.f1 = view.selF1();
             spec.repair.mode = methodBox.getSelectedId() == 1 ? RepairMode::Attenuate : RepairMode::Replace;
@@ -1700,17 +1724,17 @@ private:
         return spec;
     }
     double seconds() const { return (double) ctx.length / ctx.rate; }
-    void preview()
+    void preview (bool declick)
     {
         if (! scanned || running || origTracks == nullptr) return;
         dropPendingPrepared();
-        juce::int64 t0 = 0, t1 = 0; const auto spec = buildSpec (t0, t1);
+        juce::int64 t0 = 0, t1 = 0; const auto spec = buildSpec (t0, t1, declick);
         pvSpec = spec; pvT0 = t0; pvT1 = t1;
         auto src = origTracks; const double rate = ctx.rate;
         struct Out { MergedSpectrogram spec; std::shared_ptr<std::vector<std::vector<float>>> tracks; };
         auto out = std::make_shared<Out>();
         status.setText ("Fixing...", juce::dontSendNotification);
-        previewBtn.setEnabled (false); finishBtn.setEnabled (false); revertBtn.setEnabled (false); compareBtn.setEnabled (false);
+        previewBtn.setEnabled (false); declickBtn.setEnabled (false); finishBtn.setEnabled (false); revertBtn.setEnabled (false); compareBtn.setEnabled (false);
         juce::Component::SafePointer<RepairDialog> self (this);
         const int detailN = detailSize();
         runJob ([src, out, spec, t0, t1, rate, detailN] (AudioJob& j) -> juce::String
@@ -1742,7 +1766,7 @@ private:
                     self->dropPendingPrepared();
                     self->changedWhileRunning = false;
                     self->hearBox.setSelectedId (2, juce::dontSendNotification);
-                    self->status.setText ("Fix " + juce::String ((int) self->committed.size()) + " done (not written yet). Press Play to listen to it. If it worked, draw a box round the next problem and press Fix again, or press Write back to file. If not, press Undo and try again.", juce::dontSendNotification);
+                    self->status.setText ("Fix " + juce::String ((int) self->committed.size()) + " done (not written yet). Press Play to listen to it. If it worked, draw a box round the next problem and press ReTouch or De-click again, or press Write back to file. If not, press Undo and try again.", juce::dontSendNotification);
                     self->refreshControls();
                 });
     }
@@ -1826,7 +1850,7 @@ private:
         if (prepared && preparedOps == ops.size()) { finishCommit(); return; }
         dropPrepared();
         auto prep = ctx.prepare;
-        previewBtn.setEnabled (false); finishBtn.setEnabled (false); revertBtn.setEnabled (false); compareBtn.setEnabled (false); playBtn.setEnabled (false);
+        previewBtn.setEnabled (false); declickBtn.setEnabled (false); finishBtn.setEnabled (false); revertBtn.setEnabled (false); compareBtn.setEnabled (false); playBtn.setEnabled (false);
         status.setText ("Writing: repairing every track from the first mark to the last and making the new files...", juce::dontSendNotification);
         juce::Component::SafePointer<RepairDialog> self (this);
         const auto n = ops.size();
@@ -1877,7 +1901,7 @@ private:
     size_t preparedOps = 0;                                        // how many changes the prepared files contain
     std::vector<RepairOp> committed;                               // the changes accepted so far (in order)
     std::shared_ptr<std::vector<std::vector<float>>> pvTracks;     // the audio with the previewed change in it
-    juce::TextButton previewBtn { "Fix" }, compareBtn { "Show before" }, revertBtn { "Undo" }, finishBtn { "Write back to file" }, close { "Cancel" };
+    juce::TextButton previewBtn { "ReTouch" }, declickBtn { "De-click" }, compareBtn { "Show before" }, revertBtn { "Undo" }, finishBtn { "Write back to file" }, close { "Cancel" };
     struct Step { std::shared_ptr<std::vector<std::vector<float>>> tracks; std::shared_ptr<MergedSpectrogram> spec; };
     std::vector<Step> history;                                     // the state before each fix, for Undo
     bool scanned = false, previewValid = false, showingAfter = false;
@@ -2799,10 +2823,10 @@ static void openRepair (AppContext& app, const juce::Uuid& eid, juce::Component*
     const juce::String lead = ss.on ? ss.label + ": the sound of the " + (slot == 0 ? "take that plays up to the edit point, carried on past it (its crossfade uses that part)" : "take that plays from the edit point, started before it (its crossfade uses that part)")
                                       + ", on its own. Correct it here; correct the other stream in the other window; then press Write back in BOTH. The edit point and its fades stay exactly where they are. " : juce::String();
     c.what = lead + (declick ? juce::String (only.empty() ? "All " : "The ") + juce::String ((int) trackIds.size()) + " tracks between marks 1 and 2 are shown as one picture, "
-                       + (pieces > 1 && ! ss.on ? "across the edit points (" + juce::String (pieces) + " pieces). " : juce::String ("")) + "Clicks are found and mended on every track (drag a box to limit the search to that stretch of time, drag its edges to resize it). Set the sensitivity, then press Fix and Play to listen; Undo if it did not work, and Write back to file when you are happy. "
+                       + (pieces > 1 && ! ss.on ? "across the edit points (" + juce::String (pieces) + " pieces). " : juce::String ("")) + "Clicks are found and mended on every track (drag a box to limit the search to that stretch of time, drag its edges to resize it). Set the sensitivity, then press De-click and Play to listen; Undo if it did not work, and Write back to file when you are happy. "
                        "Each piece is repaired in its own place: the edit points and their fades stay exactly as they are, and the original files are not touched (Undo fix brings them back)."
                      : juce::String (only.empty() ? "All " : "The ") + juce::String ((int) trackIds.size()) + " tracks between marks 1 and 2 are shown as one picture, "
-                       + (pieces > 1 && ! ss.on ? "across the edit points (" + juce::String (pieces) + " pieces). " : juce::String ("")) + "Draw a box round the noise (time and pitch), then press Fix: "
+                       + (pieces > 1 && ! ss.on ? "across the edit points (" + juce::String (pieces) + " pieces). " : juce::String ("")) + "Draw a box round the noise (time and pitch), then press ReTouch (or De-click if it is clicks): "
                        "the box is rebuilt from the clean sound next to it, on every track. Press Play to listen, Undo if it did not work, and Write back to file when you are happy. Each piece is repaired in its own place: the edit points and their fades stay exactly as they are, and the original files are not touched (Undo fix brings them back).");
     const auto total = to - from;
     c.load = [parts, total] (AudioJob& j)

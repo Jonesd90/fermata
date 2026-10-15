@@ -271,21 +271,41 @@ private:
         for (int c = 0; c < nch; ++c)
         {
             auto& Xc = X[(size_t) c];
-            // per bin, the magnitudes of the clean frames before and after (pooled with the neighbouring bins, so the statistics are steady), sorted:
-            // 'sortX' gives the normal level (a quantile drawn per cell), 'topX' the level that counts as clearly too loud (only what is above it is touched)
-            std::vector<std::vector<float>> sortL, sortR; std::vector<float> topL, topR;
+            // per bin, the LEVEL OF THE SOUND around the box as a line in dB over time (a steady note, a decaying harmonic, a floor of noise): fitted to the last clean frames before the box
+            // and the first ones after it, weighted towards the box, and evaluated at the two edges of the box. Inside the box the level is carried from one edge value to the other
+            // (so a harmonic that is dying away keeps dying away at its own rate and joins up with itself on the other side); 'spread' is how much the sound at that pitch varies around its line
+            // (a tonal line hardly varies: nothing is added to it; noise varies: it keeps its natural scatter)
+            std::vector<float> lvL, lvR, spL, spR;
             if (horizontal)
             {
-                sortL.assign ((size_t) bins, {}); sortR.assign ((size_t) bins, {}); topL.assign ((size_t) bins, -1.0f); topR.assign ((size_t) bins, -1.0f);
-                for (int b = b0; b <= b1; ++b)
-                    for (int side = 0; side < 2; ++side)
+                lvL.assign ((size_t) bins, 0.0f); lvR.assign ((size_t) bins, 0.0f); spL.assign ((size_t) bins, 0.0f); spR.assign ((size_t) bins, 0.0f);
+                const int K = juce::jmax (6, (int) (0.06 * sr / (double) H));
+                for (int side = 0; side < 2; ++side)
+                {
+                    const auto& fr = side == 0 ? left : right; if (side == 0 ? ! haveL : ! haveR) continue;
+                    const int n = (int) fr.size(), k = juce::jmin (K, n);
+                    const double edge = side == 0 ? (double) t0 : (double) t1;
+                    for (int b = b0; b <= b1; ++b)
                     {
-                        const auto& fr = side == 0 ? left : right; if (side == 0 ? ! haveL : ! haveR) continue;
-                        auto& v = (side == 0 ? sortL : sortR)[(size_t) b];
-                        for (auto f : fr) for (int k = juce::jmax (0, b - 2); k <= juce::jmin (bins - 1, b + 2); ++k) v.push_back ((float) std::abs (Xc[(size_t) f][(size_t) k]));
-                        std::sort (v.begin(), v.end());
-                        (side == 0 ? topL : topR)[(size_t) b] = v[(size_t) juce::jmin ((int) v.size() - 1, (int) (0.80 * (double) v.size()))];
+                        double sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0, mn = 1.0e9, mx = -1.0e9;
+                        std::vector<double> ys, xs2, ws;
+                        for (int i = 0; i < k; ++i)
+                        {
+                            const long f = side == 0 ? fr[(size_t) (n - 1 - i)] : fr[(size_t) i];            // i = 0 is the frame nearest to the box
+                            const double y = std::log (std::abs (Xc[(size_t) f][(size_t) b]) + 1.0e-9);
+                            const double xt = (double) (S + f * H) + 0.5 * (double) N, w = std::pow (0.88, (double) i);
+                            ys.push_back (y); xs2.push_back ((xt - edge) / (double) H); ws.push_back (w);
+                            sw += w; sx += w * xs2.back(); sy += w * y; sxx += w * xs2.back() * xs2.back(); sxy += w * xs2.back() * y; mn = juce::jmin (mn, y); mx = juce::jmax (mx, y);
+                        }
+                        const double den = sw * sxx - sx * sx;
+                        double slope = std::abs (den) > 1.0e-9 ? (sw * sxy - sx * sy) / den : 0.0;
+                        double icpt = (sy - slope * sx) / sw;                                              // the line's level at the edge of the box (x = 0)
+                        icpt = juce::jlimit (mn - 0.4, mx + 0.4, icpt);
+                        double var = 0; for (size_t i = 0; i < ys.size(); ++i) { const double r = ys[i] - (icpt + slope * xs2[i]); var += ws[i] * r * r; }
+                        (side == 0 ? lvL : lvR)[(size_t) b] = (float) icpt;
+                        (side == 0 ? spL : spR)[(size_t) b] = (float) std::sqrt (var / sw);
                     }
+                }
             }
             auto& Gc = G[(size_t) c];
             for (size_t hi2 = 0; hi2 < hit.size(); ++hi2)
@@ -311,17 +331,13 @@ private:
                 {
                     const double mag = std::abs (Xc[(size_t) f][(size_t) b]);
                     if (mag < 1.0e-12) continue;
-                    double th = -1.0, tv = -1.0, thr = -1.0;
+                    double th = -1.0, tv = -1.0;
                     if (horizontal)
                     {
-                        const double u = 0.20 + 0.40 * hash01 ((unsigned) f, (unsigned) b);
-                        auto draw = [&] (const std::vector<float>& v) { return v.empty() ? -1.0 : (double) v[(size_t) juce::jmin ((int) v.size() - 1, (int) (u * (double) v.size()))]; };
-                        const double a = draw (sortL[(size_t) b]), cc = draw (sortR[(size_t) b]);
-                        if (a > 0.0 && cc > 0.0) th = std::exp ((1.0 - alpha) * std::log (a) + alpha * std::log (cc));
-                        else th = a > 0.0 ? a : cc;
-                        const double ta = haveL ? (double) topL[(size_t) b] : -1.0, tc = haveR ? (double) topR[(size_t) b] : -1.0;
-                        if (ta > 0.0 && tc > 0.0) thr = std::exp ((1.0 - alpha) * std::log (ta) + alpha * std::log (tc));
-                        else thr = ta > 0.0 ? ta : tc;
+                        const double u = hash01 ((unsigned) f, (unsigned) b);
+                        const double eL = haveL ? (double) lvL[(size_t) b] + u * (double) spL[(size_t) b] : 0.0, eR = haveR ? (double) lvR[(size_t) b] + u * (double) spR[(size_t) b] : 0.0;
+                        if (haveL && haveR) th = std::exp ((1.0 - alpha) * eL + alpha * eR);
+                        else th = std::exp (haveL ? eL : eR);
                     }
                     if (vertical)
                     {
@@ -331,7 +347,6 @@ private:
                     }
                     double target = th > 0.0 && tv > 0.0 ? std::sqrt (th * tv) : (th > 0.0 ? th : tv);
                     if (target <= 0.0 || mag <= target) continue;
-                    if (thr > 0.0 && tv <= 0.0 && mag <= thr) continue;                      // within the normal variation of the sound around: left alone
                     double wb = 1.0;                                                       // the edges of the box in pitch, and of this analysis size's part of the pitch range
                     const double hz = (double) b * hzPerBin;
                     if (b - b0 < 3) wb = juce::jmin (wb, (double) (b - b0 + 1) / 4.0);
@@ -460,42 +475,149 @@ public:
         return true;
     }
 
-    /** One pass of the click finder over [t0,t1). Returns how many gaps were mended. */
-    static int declickPass (std::vector<float>& x, long t0, long t1, double sensitivity, std::vector<std::pair<long, long>>* found)
+    /** A gap [t0,t1) filled by predicting forward from the sound before it and backward from the sound after it, cross-faded: it keeps the LEVEL of the sound (a mend by
+        interpolation of a long gap can come out too quiet: a hole). */
+    static bool extrapolateBlend (std::vector<float>& x, long t0, long t1, int order)
+    {
+        const long L = (long) x.size(), m = t1 - t0;
+        if (m < 1 || t0 < 600 || t1 > L - 600) return false;
+        const int p = juce::jlimit (16, 128, order);
+        auto predict = [&] (std::vector<double>& seq, long known, long count)                 // seq[0..known) is known; extends it by 'count' samples
+        {
+            std::vector<double> R ((size_t) p + 1, 0.0);
+            const long a0 = juce::jmax (0L, known - 2048);
+            for (int k = 0; k <= p; ++k) for (long n = a0 + k; n < known; ++n) R[(size_t) k] += seq[(size_t) n] * seq[(size_t) (n - k)];
+            if (R[0] < 1.0e-14) { for (long i = 0; i < count; ++i) seq.push_back (0.0); return; }
+            R[0] *= 1.0 + 1.0e-6;
+            const auto a = levinson (R, p);
+            for (long i = 0; i < count; ++i)
+            {
+                double v = 0.0; const long n = (long) seq.size();
+                for (int k = 1; k <= p; ++k) v -= a[(size_t) k] * seq[(size_t) (n - k)];
+                seq.push_back (v);
+            }
+        };
+        std::vector<double> fw (x.begin() + juce::jmax (0L, t0 - 2048), x.begin() + t0);
+        const long fk = (long) fw.size(); predict (fw, fk, m);
+        std::vector<double> bw; for (long n = juce::jmin (L, t1 + 2048) - 1; n >= t1; --n) bw.push_back ((double) x[(size_t) n]);
+        const long bk = (long) bw.size(); predict (bw, bk, m);
+        for (long i = 0; i < m; ++i)
+        {
+            const double w = 0.5 - 0.5 * std::cos (juce::MathConstants<double>::pi * ((double) i + 0.5) / (double) m);        // 0 at the start of the gap, 1 at its end
+            x[(size_t) (t0 + i)] = (float) ((1.0 - w) * fw[(size_t) (fk + i)] + w * bw[(size_t) (bk + (m - 1 - i))]);
+        }
+        return true;
+    }
+    static double rmsRange (const std::vector<float>& x, long a, long b)
+    {
+        a = juce::jmax (0L, a); b = juce::jmin ((long) x.size(), b);
+        if (b <= a) return 0.0;
+        double e = 0.0; for (long n = a; n < b; ++n) e += (double) x[(size_t) n] * (double) x[(size_t) n];
+        return std::sqrt (e / (double) (b - a));
+    }
+
+    /** One pass of the click finder over [t0,t1). Returns how many gaps were mended.
+        The sound is whitened block by block (a linear-prediction model of each stretch, so loud and quiet passages are judged by their own standard); a click is either a sample that jumps
+        out of the residual, or a short stretch whose residual ENERGY is well above normal (a crackle whose single samples are not extreme). A gap is not mended when the sound after it is much
+        louder or quieter than before it (a note starting or stopping is music, not a click), and a mend that came out too quiet is redone by predicting from both sides. */
+    static int declickPass (std::vector<float>& x, long t0, long t1, double sensitivity, std::vector<std::pair<long, long>>* found, double sr = 48000.0, bool crackles = true)
     {
         const long L = (long) x.size();
-        const int p = 32;
-        const long s0 = juce::jmax (0L, t0 - 1024), s1 = juce::jmin (L, t1 + 1024);
-        std::vector<double> R ((size_t) p + 1, 0.0);
-        for (int k = 0; k <= p; ++k) for (long n = s0 + k; n < s1; ++n) R[(size_t) k] += (double) x[(size_t) n] * (double) x[(size_t) (n - k)];
-        if (R[0] < 1.0e-12) return 0;
-        R[0] *= 1.0 + 1.0e-9;
-        const auto a = levinson (R, p);
+        const int p = juce::jlimit (24, 48, (int) (sr / 3000.0));
+        const long ctxM = 1024;
+        const long s0 = juce::jmax (0L, t0 - ctxM), s1 = juce::jmin (L, t1 + ctxM);
+        if (s1 - s0 < 4L * p) return 0;
         std::vector<double> e ((size_t) (s1 - s0), 0.0);
-        for (long n = s0 + p; n < s1; ++n) { double sum = 0.0; for (int k = 0; k <= p; ++k) sum += a[(size_t) k] * (double) x[(size_t) (n - k)]; e[(size_t) (n - s0)] = sum; }
+        // block by block: a prediction model of the stretch (from the block and 1024 samples each side), and its residual over the block
+        const long blk = 4096;
+        for (long b0 = s0; b0 < s1; b0 += blk)
+        {
+            const long b1 = juce::jmin (s1, b0 + blk), f0 = juce::jmax (0L, b0 - ctxM), f1 = juce::jmin (L, b1 + ctxM);
+            // the model is learnt from a copy in which the grossest spikes (a second difference far out of the normal) are taken out, so a loud click does not spoil the model of its whole block
+            std::vector<double> fit ((size_t) (f1 - f0)); for (long n = f0; n < f1; ++n) fit[(size_t) (n - f0)] = (double) x[(size_t) n];
+            {
+                std::vector<double> d2, mags;
+                for (long n = f0 + 1; n + 1 < f1; ++n) { const double d = fit[(size_t) (n - f0)] - 0.5 * (fit[(size_t) (n - f0 - 1)] + fit[(size_t) (n - f0 + 1)]); d2.push_back (d); mags.push_back (std::abs (d)); }
+                if (mags.size() > 16)
+                {
+                    auto mid = mags.begin() + (long) mags.size() / 2; std::nth_element (mags.begin(), mid, mags.end());
+                    const double lim = 12.0 * 1.4826 * *mid + 1.0e-12;
+                    std::vector<char> bad (fit.size(), 0);
+                    for (size_t i = 0; i < d2.size(); ++i) if (std::abs (d2[i]) > lim) for (long q = (long) i - 1; q <= (long) i + 3; ++q) if (q >= 0 && q < (long) bad.size()) bad[(size_t) q] = 1;
+                    for (size_t i = 0; i < bad.size();)
+                    {
+                        if (! bad[i]) { ++i; continue; }
+                        size_t j = i; while (j < bad.size() && bad[j]) ++j;                       // [i,j) is a run of spoilt samples: a straight line across it from the good ones either side
+                        const double va = i > 0 ? fit[i - 1] : 0.0, vb = j < fit.size() ? fit[j] : va;
+                        for (size_t q = i; q < j; ++q) fit[q] = va + (vb - va) * (double) (q - i + 1) / (double) (j - i + 1);
+                        i = j;
+                    }
+                }
+            }
+            std::vector<double> R ((size_t) p + 1, 0.0);
+            for (int k = 0; k <= p; ++k) for (long n = k; n < f1 - f0; ++n) R[(size_t) k] += fit[(size_t) n] * fit[(size_t) (n - k)];
+            if (R[0] < 1.0e-14) continue;
+            R[0] *= 1.0 + 1.0e-9;
+            const auto a = levinson (R, p);
+            for (long n = juce::jmax (b0, (long) p); n < b1; ++n) { double sum = 0.0; for (int k = 0; k <= p; ++k) sum += a[(size_t) k] * (double) x[(size_t) (n - k)]; e[(size_t) (n - s0)] = sum; }
+        }
         const double hi = juce::jmap (juce::jlimit (1.0, 10.0, sensitivity), 1.0, 10.0, 12.0, 3.0);      // a sample this many 'sigmas' out is a click
         const double lo = juce::jmax (1.6, hi * 0.45);                                                     // ... and its neighbours are part of it while they are above this
-        std::vector<double> sig (e.size(), 1.0e-9);
-        const long block = 2048;
-        for (long b0 = s0; b0 < s1; b0 += block)
+        const double energyDb = juce::jmap (juce::jlimit (1.0, 10.0, sensitivity), 1.0, 10.0, 15.0, 6.0);  // a stretch whose residual energy is this many dB above normal is a click
+        // the normal size of the residual here: the median of its size in small blocks, and of the neighbouring blocks (so it follows the loudness of the music)
+        const long sub = juce::jmax (64L, (long) (sr * 0.004));
+        const long nSub = (s1 - s0 + sub - 1) / sub;
+        std::vector<double> subMed ((size_t) nSub, 1.0e-9);
+        for (long i = 0; i < nSub; ++i)
         {
-            const long b1 = juce::jmin (s1, b0 + block);
-            std::vector<double> mag; for (long n = b0; n < b1; ++n) mag.push_back (std::abs (e[(size_t) (n - s0)]));
-            if (mag.size() < 16) continue;
-            auto mid = mag.begin() + (long) mag.size() / 2; std::nth_element (mag.begin(), mid, mag.end());
+            std::vector<double> mag; for (long n = s0 + i * sub; n < juce::jmin (s1, s0 + (i + 1) * sub); ++n) mag.push_back (std::abs (e[(size_t) (n - s0)]));
+            if (mag.size() < 8) { subMed[(size_t) i] = i > 0 ? subMed[(size_t) i - 1] : 1.0e-9; continue; }
+            auto mid = mag.begin() + (long) mag.size() / 2; std::nth_element (mag.begin(), mid, mag.end()); subMed[(size_t) i] = *mid;
+        }
+        std::vector<double> sig (e.size(), 1.0e-9);
+        for (long i = 0; i < nSub; ++i)
+        {
+            std::vector<double> nb; for (long j = juce::jmax (0L, i - 4); j <= juce::jmin (nSub - 1, i + 4); ++j) nb.push_back (subMed[(size_t) j]);
+            auto mid = nb.begin() + (long) nb.size() / 2; std::nth_element (nb.begin(), mid, nb.end());
             const double sigma = juce::jmax (1.0e-9, 1.4826 * *mid);
-            for (long n = b0; n < b1; ++n) sig[(size_t) (n - s0)] = sigma;
+            for (long n = s0 + i * sub; n < juce::jmin (s1, s0 + (i + 1) * sub); ++n) sig[(size_t) (n - s0)] = sigma;
         }
         auto big = [&] (long n, double k) { return std::abs (e[(size_t) (n - s0)]) > k * sig[(size_t) (n - s0)]; };
         std::vector<char> flag (e.size(), 0);
-        for (long n = juce::jmax (s0 + p, t0); n < juce::jmin (s1, t1); ++n) if (big (n, hi)) flag[(size_t) (n - s0)] = 1;
-        // a long click does not jump on every sample: follow it outwards while the residual stays clearly above normal
+        const long first0 = juce::jmax (s0 + p, t0), last0 = juce::jmin (s1, t1);
+        for (long n = first0; n < last0; ++n) if (big (n, hi)) flag[(size_t) (n - s0)] = 1;
+        // a long click does not jump on every sample: follow it outwards while the residual stays clearly above normal (but not for ever)
+        const long reach = juce::jmax (24L, (long) (sr * 0.0015));
         for (long n = s0 + p; n < s1; ++n)
             if (flag[(size_t) (n - s0)] == 1)
             {
-                for (long m = n + 1; m < s1 && m < n + 400 && big (m, lo); ++m) if (! flag[(size_t) (m - s0)]) flag[(size_t) (m - s0)] = 2;
-                for (long m = n - 1; m >= s0 + p && m > n - 400 && big (m, lo); --m) if (! flag[(size_t) (m - s0)]) flag[(size_t) (m - s0)] = 2;
+                for (long m = n + 1; m < s1 && m < n + reach && big (m, lo); ++m) if (! flag[(size_t) (m - s0)]) flag[(size_t) (m - s0)] = 2;
+                for (long m = n - 1; m >= s0 + p && m > n - reach && big (m, lo); --m) if (! flag[(size_t) (m - s0)]) flag[(size_t) (m - s0)] = 2;
             }
+        // a crackle: a short stretch with far more residual energy than normal, even if no single sample is extreme (only once the loud spikes are mended: they would spoil the model)
+        if (crackles)
+        {
+            const long W = juce::jmax (16L, (long) (sr * 0.0005));
+            std::vector<double> cum (e.size() + 1, 0.0), cumN (e.size() + 1, 0.0);
+            for (size_t i = 0; i < e.size(); ++i) { const double q = e[i] / sig[i]; cum[i + 1] = cum[i] + q * q; }
+            const double ratio = std::pow (10.0, energyDb / 10.0);
+            std::vector<char> eflag (e.size(), 0);
+            for (long n = juce::jmax (s0 + p + W, t0); n < juce::jmin (s1 - W, t1); ++n)
+            {
+                const double en = cum[(size_t) (n - s0 + W / 2)] - cum[(size_t) (n - s0 - W / 2)];
+                if (en > ratio * (double) W * 1.0) eflag[(size_t) (n - s0)] = 1;                         // (a quiet stretch has about 1 per sample in these units, as sigma is its own scale)
+            }
+            for (long n = s0; n < s1;)
+            {
+                if (! eflag[(size_t) (n - s0)]) { ++n; continue; }
+                long a = n; while (n < s1 && eflag[(size_t) (n - s0)]) ++n;
+                long b = n;                                                                              // [a,b): the stretch; trim its ends to where the residual really is above normal
+                while (a < b && ! big (a, 1.8)) ++a;
+                while (b > a && ! big (b - 1, 1.8)) --b;
+                if (b - a < 3) continue;
+                for (long m = a; m < b; ++m) if (! flag[(size_t) (m - s0)]) flag[(size_t) (m - s0)] = 3;
+            }
+        }
         std::vector<std::pair<long, long>> gaps;
         for (long n = s0; n < s1;)
         {
@@ -506,11 +628,42 @@ public:
             g0 = juce::jmax (t0, g0); g1 = juce::jmin (t1, g1);
             if (! gaps.empty() && g0 - gaps.back().second < 24) gaps.back().second = g1; else gaps.push_back ({ g0, g1 });
         }
+        // many separate 'clicks' close together are not clicks: they are the hammer or a key of an instrument, a pencil on a desk ... (an attack): left alone
+        {
+            std::vector<char> drop (gaps.size(), 0);
+            const long win = (long) (sr * 0.003);
+            for (size_t i = 0; i < gaps.size(); ++i)
+            {
+                int near = 0; for (size_t j = 0; j < gaps.size(); ++j) if (j != i && std::abs (gaps[j].first - gaps[i].first) < win) ++near;
+                if (near >= 3) drop[i] = 1;
+            }
+            std::vector<std::pair<long, long>> keepG; for (size_t i = 0; i < gaps.size(); ++i) if (! drop[i]) keepG.push_back (gaps[i]);
+            gaps.swap (keepG);
+        }
         int mended = 0;
+        const long maxGap = juce::jmin (1500L, (long) (sr * 0.016));
+        const long ref = juce::jmax (64L, (long) (sr * 0.0025));
         for (auto& g : gaps)
         {
             const long m = g.second - g.first;
-            if (interpolate (x, g.first, g.second, (int) juce::jlimit (40L, 128L, m / 4))) { ++mended; if (found) found->push_back (g); }
+            if (m < 1 || m > maxGap) continue;
+            if (m > 12)                                                             // a note starting or stopping is music, not a click: after it the residual stays high (or was high before it)
+            {
+                auto resRms = [&] (long a, long b) { a = juce::jmax (s0 + p, a); b = juce::jmin (s1, b); if (b <= a + 8) return -1.0; std::vector<double> v; for (long n = a; n < b; ++n) v.push_back (std::abs (e[(size_t) (n - s0)] / sig[(size_t) (n - s0)])); auto mid = v.begin() + (long) v.size() / 2; std::nth_element (v.begin(), mid, v.end()); return *mid; };       // (the median: the ringing of a loud click does not count)
+                const double rb = resRms (g.first - ref, g.first - 1), ra = resRms (g.second + p, g.second + p + ref);
+                if (rb > 0.0 && ra > 0.0 && (ra > 2.5 * rb || rb > 2.5 * ra)) continue;
+            }
+            const std::vector<float> keep (x.begin() + g.first, x.begin() + g.second);
+            if (! interpolate (x, g.first, g.second, (int) juce::jlimit (48L, 160L, m / 3))) continue;
+            if (m > 48)                                                             // a mend that came out too quiet (a hole) is redone from both sides
+            {
+                const double rr = 0.5 * (rmsRange (x, g.first - 128, g.first) + rmsRange (x, g.second, g.second + 128)), rg = rmsRange (x, g.first, g.second);
+                if (rr > 1.0e-7 && rg < 0.55 * rr)
+                {
+                    if (! extrapolateBlend (x, g.first, g.second, (int) juce::jlimit (32L, 128L, m / 2))) std::copy (keep.begin(), keep.end(), x.begin() + g.first);
+                }
+            }
+            ++mended; if (found) found->push_back (g);
         }
         return mended;
     }
@@ -531,7 +684,7 @@ public:
         int total = 0;
         for (int pass = 0; pass < 3; ++pass)
         {
-            const int n = declickPass (x, t0, t1, sensitivity, found);
+            const int n = declickPass (x, t0, t1, sensitivity, found, sampleRate, pass > 0);
             total += n;
             if (n == 0) break;
         }
