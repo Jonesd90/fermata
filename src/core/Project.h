@@ -278,10 +278,22 @@ public:
     void resolveAllAutomation() { for (auto& e : edits) if (e != nullptr && ! e->lanes.empty()) e->resolveAutomation(); }
     void refreshNormalisedGains() { for (auto& e : edits) if (e != nullptr) e->refreshNormalised(); }
     void commitAllJoins()   { for (auto& e : edits) if (e != nullptr) e->commitAllJoins(); }          // the pieces' edges sit at the edit points (see EditDef::commitJoin)
+    /** Like changed(), for edits that come in quick succession (a slider being dragged, a nudge button clicked repeatedly): the data is brought up to date at once, but the
+        windows (which redraw everything) are told at most about every 100 ms, and always once more after the last change, so the display never stays out of date. */
+    void changedLive()
+    {
+        commitAllJoins(); resolveAllAutomation(); refreshNormalisedGains(); dirty = true; undoPending = true; undoDirtyAt = juce::Time::getMillisecondCounter();
+        const auto now = juce::Time::getMillisecondCounter();
+        if (now - lastLiveSend >= 100u) { lastLiveSend = now; trail.stopTimer(); sendChangeMessage(); }
+        else if (! trail.isTimerRunning()) trail.startTimer (100);
+    }
     void changed()          { commitAllJoins(); resolveAllAutomation(); refreshNormalisedGains(); dirty = true; undoPending = true; undoDirtyAt = juce::Time::getMillisecondCounter(); sendChangeMessage(); }
     /** Tracks / effects channels / mixers / inputs / outputs / names changed: UI must rebuild, engine must re-plan. */
     void structureChanged() { resolveAllAutomation(); dirty = true; undoPending = true; undoDirtyAt = juce::Time::getMillisecondCounter(); structure.sendChangeMessage(); sendChangeMessage(); }
     void markDirty() noexcept { dirty = true; }          // value tweaks (faders etc.) that need saving but no UI refresh
+    struct Trail : juce::Timer { Project& p; explicit Trail (Project& o) : p (o) {} void timerCallback() override { stopTimer(); p.lastLiveSend = juce::Time::getMillisecondCounter(); p.sendChangeMessage(); } };
+    Trail trail { *this };
+    juce::uint32 lastLiveSend = 0;
     juce::ChangeBroadcaster structure;
     std::atomic<bool> dirty { false };
 };

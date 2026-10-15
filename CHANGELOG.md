@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.41.2
+- **Trim window feels snappier.** Quick successions of changes (dragging the level sliders, clicking the Slide A / Slide B / Move the join buttons repeatedly) now bring the edit up to date at once but redraw the other windows at most about every 100 ms, with one last redraw after the final change (`Project::changedLive`). Accept, Revert, fade drags and shape changes still redraw immediately.
+
 ## 2.41.1
 - **Crossfades into externally processed / corrected audio no longer fade in from silence.** The corrected file often starts exactly where the piece starts, but the join's crossfade was centred on the join, so its first half faded in nothing (a dip in level). A fix join's crossfade now slides inside the corrected audio (same length), with the matching fade of the neighbouring piece. Applies to re-linking audio from Export for Processing and to offline fixes (Spectral Repair, De-Click, ReHarmoniSer, Pitch curve).
 

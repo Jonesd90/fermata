@@ -541,7 +541,7 @@ TrimComponent::TrimComponent (AppContext& a, const juce::Uuid& eid, const juce::
         auto* r = isA ? rf.A : rf.B;
         if (r == nullptr) return;
         r->setPieceLevelDb ((float) (isA ? levelA : levelB).getValue());
-        app.project.changed();
+        app.project.changedLive();
     };
     levelA.onValueChange = [levelChanged] { levelChanged (true); };
     levelB.onValueChange = [levelChanged] { levelChanged (false); };
@@ -768,7 +768,7 @@ void TrimComponent::slideA (double ms)
     const auto want = (juce::int64) std::llround (ms * 0.001 * e->regions[(size_t) k].sampleRate);
     const auto did = e->slipOut (k, want, slipLeft());
     if (did != want) app.setNotice ("A cannot slide any further that way: " + juce::String (std::abs (did) / e->regions[(size_t) k].sampleRate * 1000.0, 0) + " ms is all the take allows (it runs out of audio, or the piece would become too short)");
-    app.project.changed();
+    app.project.changedLive();
 }
 
 void TrimComponent::slideB (double ms)
@@ -779,7 +779,7 @@ void TrimComponent::slideB (double ms)
     const auto want = (juce::int64) std::llround (ms * 0.001 * e->regions[(size_t) k].sampleRate);
     const auto did = e->slipIn (k, want, slipRight());
     if (did != want) app.setNotice ("B cannot slide any further that way: " + juce::String (std::abs (did) / e->regions[(size_t) k].sampleRate * 1000.0, 0) + " ms is all the take allows (it runs out of audio at its start, or the piece would become too short)");
-    app.project.changed();
+    app.project.changedLive();
 }
 
 void TrimComponent::moveJoinBy (double ms)
@@ -789,7 +789,7 @@ void TrimComponent::moveJoinBy (double ms)
     auto* e = rf.e; const int k = rf.k;
     e->moveJoin (k, (juce::int64) std::llround (ms * 0.001 * e->regions[(size_t) k].sampleRate));
     recentre();
-    app.project.changed();
+    app.project.changedLive();
 }
 
 void TrimComponent::resetFades()
