@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.35.1
+- **Fixed: processing across an edit point (a join made by an earlier fix) could leave the sound after the join silent.** The corrected files of the pieces on either side of the join were given the SAME name, so the second one was written on to the end of the first and the piece read the wrong audio (it stopped after a second or two). Every new file now gets a name of its own, and a new WAV always replaces an old file of the same name instead of being added to it. This affects Re-HarmoniSer, Spectral Repair, De-Click, Pitch correction and the pitch curve in an edit window.
+- All of those now put the corrected pieces into the edit in one shared way, and give every real edit point its own fades and curves back exactly (before, only Re-HarmoniSer did, and it could turn the equal-power crossfade after the marked area into a linear one). Marks that only just touch a piece (less than 60 ms of it) no longer cut a sliver out of it: the 30 ms crossfades of a join cannot fit in a piece that short, and the sound dipped there. A test crosses the marks over the joins in many ways and checks that the edit sounds exactly the same and the fades are as they were.
+
 ## 2.35.0
 - **Spectral Repair: Link stereo (on by default, Attenuate).** A stereo file is now turned down by the same amount on both sides (the amount found for the louder side) with each side's own phase kept, so the time differences between the microphones and the level difference between them, which make the stereo image, are not changed. Untick it to treat each channel on its own. It applies to stereo files (pairs joined at import); two separate mono files are still processed one by one.
 - The Pattern and Partials + Noise tabs of RX will not be built.

@@ -16,6 +16,7 @@
 #include "../src/core/Ltc.h"
 #include "../src/core/Aaf.h"
 #include "../src/core/SpectralPicture.h"
+#include "../src/core/EditFix.h"
 #include <cstdio>
 
 using namespace td;
@@ -1651,6 +1652,99 @@ int main()
             auto z = noisy; p.strength = 0.0; SpectralRepair::repair (z, sr, t0, t1, 0.0, 24000.0, p);
             CHECK (z == noisy);
             for (long n = 0; n < t0 - 9000; ++n) if (y[(size_t) n] != noisy[(size_t) n]) { CHECK (false); break; }
+        }
+        // new files named before they are written never share a name, and a WAV written over an old file replaces it (no adding to the end)
+        {
+            const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("fermata-names-test"); dir.deleteRecursively(); dir.createDirectory();
+            const auto n1 = audioops::uniqueFile (dir.getChildFile ("a (reharmonised).wav")), n2 = audioops::uniqueFile (dir.getChildFile ("a (reharmonised).wav"));
+            CHECK (n1 != n2);
+            std::vector<float> s1 (4000, 0.25f), s2 (1000, -0.25f);
+            CHECK (audioops::writeWav (n1, { s1 }, 48000.0)); CHECK (audioops::writeWav (n1, { s2 }, 48000.0));
+            juce::AudioFormatManager fmx; fmx.registerBasicFormats();
+            auto rd = audioops::openReader (fmx, n1);
+            CHECK (rd != nullptr && rd->lengthInSamples == 1000);
+            rd.reset(); dir.deleteRecursively();
+        }
+        // processing across edit points: whichever way the marks cross the joins, with the pieces made again from identical sound the edit must sound exactly as before,
+        // and the real edit points must keep the fades and the curves they had
+        {
+            const double r8 = 8000.0; juce::AudioFormatManager fmx; fmx.registerBasicFormats();
+            const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("fermata-join-test"); dir.deleteRecursively(); dir.createDirectory();
+            juce::Random rnd (5);
+            std::vector<juce::File> takeFile; std::vector<std::vector<float>> takeAudio;
+            for (int k = 0; k < 3; ++k) { std::vector<float> v ((size_t) (6 * r8)); for (auto& x : v) x = rnd.nextFloat() * 0.5f - 0.25f; takeAudio.push_back (v); takeFile.push_back (dir.getChildFile ("take" + juce::String (k) + ".wav")); CHECK (audioops::writeWav (takeFile.back(), { v }, r8, true)); }
+            const auto trk = juce::Uuid();
+            auto makeEdit = [&] (bool middleIsFix)
+            {
+                EditDef e; e.sampleRate = r8;
+                for (int k = 0; k < 3; ++k)
+                {
+                    EditRegion r; r.sampleRate = r8; r.takeName = "Take " + juce::String (k); r.srcIn = (juce::int64) (1.0 * r8); r.srcOut = (juce::int64) (3.0 * r8); r.startSample = (juce::int64) (2.0 * r8 * k);
+                    RegionFile f; f.trackId = trk; f.trackName = "Mic"; f.file = takeFile[(size_t) k]; r.files.push_back (f); r.id = juce::Uuid();
+                    e.regions.push_back (r);
+                }
+                e.setDefaultJoinFades (1); e.setDefaultJoinFades (2);
+                if (middleIsFix) { auto& m = e.regions[1]; m.fixIn = m.fixOut = true; e.regions[0].fixOut = true; e.regions[2].fixIn = true; m.curve = FadeCurve::Linear; e.regions[0].setOutCurve (FadeCurve::Linear); e.regions[2].setInCurve (FadeCurve::Linear); e.regions[2].setOutCurve (FadeCurve::EqualPower); }
+                return e;
+            };
+            auto renderEdit = [&] (const EditDef& e)
+            {
+                std::vector<float> out ((size_t) (6 * r8), 0.0f);
+                for (auto& r : e.regions)
+                {
+                    auto rd = audioops::openReader (fmx, r.files[0].file); if (rd == nullptr) continue;
+                    const auto t0 = juce::jmax ((juce::int64) 0, r.fadeInBegin()), t1 = juce::jmin ((juce::int64) out.size(), r.fadeOutFinish());
+                    if (t1 <= t0) continue;
+                    std::vector<std::vector<float>> ch; audioops::readRange (*rd, r.srcIn + (t0 - r.startSample) - r.files[0].fileStart, t1 - t0, ch);
+                    for (juce::int64 t = t0; t < t1 && (size_t) (t - t0) < ch[0].size(); ++t) out[(size_t) t] += ch[0][(size_t) (t - t0)] * r.gainAt (t);
+                }
+                return out;
+            };
+            struct Marks { double from, to; };
+            for (bool fixMiddle : { false, true })
+                for (auto m : { Marks { 0.5, 5.5 }, Marks { 1.9, 4.1 }, Marks { 1.98, 2.02 }, Marks { 2.5, 3.9 }, Marks { 3.99, 6.0 }, Marks { 0.2, 3.0 }, Marks { 1.0, 2.0 } })
+                {
+                    auto e = makeEdit (fixMiddle); const auto base = e.regions; const auto before = renderEdit (e);
+                    const auto from = (juce::int64) (m.from * r8), to = (juce::int64) (m.to * r8);
+                    std::vector<RegionJob> jobs; FixSpec spec; spec.kind = FixSpec::Kind::Reharmonise; int made = 0;
+                    for (auto& r : base)
+                    {
+                        if (r.endSample() <= from || r.startSample >= to) continue;
+                        const auto r0 = juce::jmax (from, r.startSample), r1 = juce::jmin (to, r.endSample());
+                        if (r1 - r0 < 2) continue;
+                        RegionJob j; j.regionId = r.id; const auto a = r.srcIn + (r0 - r.startSample), b = r.srcIn + (r1 - r.startSample);
+                        j.a = a; j.b = b; j.fixFrom = a; j.fixTo = b; j.outFrom = a - (juce::int64) r8; j.outTo = b + (juce::int64) r8; j.idx = { 0 }; j.src = { r.files[0].file }; j.fileStart = { 0 };
+                        const auto A = juce::jmax ((juce::int64) 0, j.outFrom), B = juce::jmin ((juce::int64) (6 * r8), j.outTo);
+                        const auto dest = audioops::uniqueFile (dir.getChildFile ("fix.wav")); j.dest = { dest };
+                        const auto& src = takeAudio[(size_t) (&r - &base[0])];
+                        CHECK (audioops::writeWav (dest, { std::vector<float> (src.begin() + (long) A, src.begin() + (long) B) }, r8, true));
+                        audioops::PieceResult pr; pr.file = dest; pr.from = A; pr.to = B; pr.ok = true; j.results.push_back (pr); jobs.push_back (j); ++made;
+                    }
+                    if (made == 0) continue;
+                    const bool ok = applyRegionJobs (e, base, jobs, "reharmonised");
+                    CHECK (ok);
+                    if (! ok) continue;
+                    const auto after = renderEdit (e);
+                    double worst = 0; for (size_t i = 0; i < before.size(); ++i) worst = juce::jmax (worst, (double) std::abs (before[i] - after[i]));
+                    if (worst >= 1.0e-4)
+                    {
+                        size_t wi = 0; double wv = 0; for (size_t i = 0; i < before.size(); ++i) if (std::abs (before[i] - after[i]) > wv) { wv = std::abs (before[i] - after[i]); wi = i; }
+                        std::printf ("  join test: fixMiddle=%d marks %.2f-%.2f worst diff %.5f at %.4f s; regions now:", (int) fixMiddle, m.from, m.to, wv, (double) wi / r8);
+                        for (auto& r : e.regions) std::printf (" [%.3f..%.3f in %.3f/%.3f out %.3f/%.3f]", (double) r.startSample / r8, (double) r.endSample() / r8, r.inStart, r.inEnd, r.outStart, r.outEnd);
+                        std::printf ("\n");
+                    }
+                    CHECK (worst < 1.0e-4);                                                     // the sound is the same
+                    // the real edit points: the fades and curves of every original region are where they were
+                    for (size_t j = 0; j < base.size(); ++j)
+                    {
+                        const auto& ob = base[j]; const int first = e.indexOf (ob.id); CHECK (first >= 0); if (first < 0) continue;
+                        const int last = j + 1 < base.size() ? e.indexOf (base[j + 1].id) - 1 : (int) e.regions.size() - 1;
+                        const auto& f = e.regions[(size_t) first]; const auto& l = e.regions[(size_t) last];
+                        CHECK (f.inStart == ob.inStart && f.inEnd == ob.inEnd && f.curve == ob.curve && f.fixIn == ob.fixIn);
+                        CHECK (l.outStart == ob.outStart && l.outEnd == ob.outEnd && l.outCurveValue() == ob.outCurveValue() && l.fixOut == ob.fixOut);
+                    }
+                }
+            dir.deleteRecursively();
         }
         // Attenuate with linked channels: a stereo pair keeps its level difference and its time difference (the stereo image)
         {

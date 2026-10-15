@@ -1,4 +1,6 @@
 #include "AudioOps.h"
+#include <mutex>
+#include <set>
 #include "Dither.h"
 
 namespace td { namespace audioops
@@ -26,21 +28,31 @@ bool readRange (juce::AudioFormatReader& r, juce::int64 start, juce::int64 n, st
     return true;
 }
 
+/** A name that is not used by a file AND has not been handed out before in this run. (Several new files are named first and written later, e.g. the pieces of one
+    fix on either side of an edit point: they must not all get the same name just because none of them exists yet.) */
 juce::File uniqueFile (const juce::File& wanted)
 {
-    if (! wanted.exists()) return wanted;
-    const auto base = wanted.getFileNameWithoutExtension(), ext = wanted.getFileExtension();
-    for (int i = 2; i < 10000; ++i)
+    static std::mutex lock; static std::set<juce::String> handedOut;
+    const std::lock_guard<std::mutex> g (lock);
+    auto taken = [&] (const juce::File& f) { return f.exists() || handedOut.count (f.getFullPathName().toLowerCase()) > 0; };
+    juce::File result = wanted;
+    if (taken (wanted))
     {
-        auto f = wanted.getParentDirectory().getChildFile (base + " (" + juce::String (i) + ")" + ext);
-        if (! f.exists()) return f;
+        const auto base = wanted.getFileNameWithoutExtension(), ext = wanted.getFileExtension();
+        for (int i = 2; i < 100000; ++i)
+        {
+            auto f = wanted.getParentDirectory().getChildFile (base + " (" + juce::String (i) + ")" + ext);
+            if (! taken (f)) { result = f; break; }
+        }
     }
-    return wanted;
+    handedOut.insert (result.getFullPathName().toLowerCase());
+    return result;
 }
 
 std::unique_ptr<juce::AudioFormatWriter> makeWavWriter (const juce::File& f, double sr, int numChannels, bool floatData)
 {
     f.getParentDirectory().createDirectory();
+    f.deleteFile();                                  // (a file stream opens an existing file at its END: a new WAV would be added to the old one)
     juce::WavAudioFormat wav;
     std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (f);
     if (static_cast<juce::FileOutputStream*> (stream.get())->failedToOpen()) return nullptr;

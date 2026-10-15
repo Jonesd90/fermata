@@ -4,6 +4,7 @@
 #include "../core/ProjectCopy.h"
 #include "../core/Aaf.h"
 #include "../core/SpectralPicture.h"
+#include "../core/EditFix.h"
 #include <array>
 #include <atomic>
 #include <thread>
@@ -2062,18 +2063,6 @@ static void setUndoForEdit (AppContext& app, const juce::Uuid& eid, std::vector<
     };
 }
 
-/** Everything one region of an edit needs for a fix, gathered on the message thread. */
-struct RegionJob
-{
-    juce::Uuid regionId; juce::int64 a = 0, b = 0;           // the piece [a,b) of the take that becomes its own region
-    juce::int64 outFrom = 0, outTo = 0, fixFrom = 0, fixTo = 0;
-    std::vector<juce::File> src, dest; std::vector<juce::int64> fileStart;
-    std::vector<size_t> idx;                                  // which files of the region these are (all of them, or just the tracks chosen with Alt + drag)
-    std::vector<audioops::FixOp> ops;                         // the changes made to this piece, in take samples (one, or several accepted in the repair window)
-    std::vector<audioops::PieceResult> results;
-    double curveZero = 0.0;                                   // (pitch curve) samples from the first sample fixed to curve time 0
-};
-
 static juce::File editFixDest (const juce::File& folder, const EditRegion& r, const RegionFile& f, const FixSpec& spec)
 {
     return audioops::uniqueFile (folder.getChildFile (sanitiseForFile (r.takeName.upToFirstOccurrenceOf (" (", false, false) + " - " + f.trackName) + " (" + spec.shortName() + ").wav"));
@@ -2112,42 +2101,6 @@ static juce::String runRegionJob (RegionJob& j, const FixSpec& spec, AudioJob& j
         j.results.push_back (res);
     }
     return {};
-}
-
-/** Message thread: cuts the region at a and b and swaps the middle piece onto the new files. */
-static juce::String gApplyWhy;                                   // why the last applyRegionJob said no (shown in the message and written to the log)
-static bool applyFail (const juce::String& why) { gApplyWhy = why; juce::Logger::writeToLog ("applyRegionJob refused: " + why); return false; }
-
-static bool applyRegionJob (EditDef& e, const RegionJob& j, const juce::String& suffix)
-{
-    int i = e.indexOf (j.regionId);
-    if (i < 0) return applyFail ("the region is no longer in the edit");
-    {
-        const auto& r = e.regions[(size_t) i];
-        if (j.a < r.srcIn || j.b > r.srcOut || j.b <= j.a) return applyFail ("the piece " + juce::String (j.a) + ".." + juce::String (j.b) + " is outside the region " + juce::String (r.srcIn) + ".." + juce::String (r.srcOut));
-        if (j.results.size() != j.idx.size()) return applyFail ("the corrected files are missing (" + juce::String ((int) j.results.size()) + " of " + juce::String ((int) j.idx.size()) + ")");
-        for (auto& res : j.results)
-        {
-            if (! res.ok) return applyFail ("a corrected file was not made");
-            if (! res.file.existsAsFile()) return applyFail ("the corrected file " + res.file.getFileName() + " is missing");
-            if (res.from > j.a || res.to < j.b) return applyFail ("a corrected file covers " + juce::String (res.from) + ".." + juce::String (res.to) + " but " + juce::String (j.a) + ".." + juce::String (j.b) + " is needed");
-        }
-    }
-    const bool cutAfter = j.b < e.regions[(size_t) i].srcOut, cutBefore = j.a > e.regions[(size_t) i].srcIn;
-    if (cutAfter)  e.splitRegion (i, j.b - e.regions[(size_t) i].srcIn);
-    if (cutBefore) i = e.splitRegion (i, j.a - e.regions[(size_t) i].srcIn);
-    auto& mid = e.regions[(size_t) i];
-    // The new piece and the old audio around it are almost the same sound, so the crossfades where they meet are LINEAR:
-    // the two gains then always add up to exactly 1 and there is no bump (an equal-power fade would add about 3 dB in the middle).
-    // ONLY the joins made here get the linear fade. A fade at the original edge of the region (a real edit point) keeps the curve the user chose.
-    if (cutBefore) { mid.setInCurve (FadeCurve::Linear); if (i > 0) e.regions[(size_t) i - 1].setOutCurve (FadeCurve::Linear); }
-    if (cutAfter)  { mid.setOutCurve (FadeCurve::Linear); if (i + 1 < (int) e.regions.size()) e.regions[(size_t) i + 1].setInCurve (FadeCurve::Linear); }
-    // the joins made here are only there to put the fixed audio in: they are not edit points (no number, skipped by next / previous fade in the Trim window)
-    if (cutBefore) { mid.fixIn = true; if (i > 0) e.regions[(size_t) i - 1].fixOut = true; }
-    if (cutAfter)  { mid.fixOut = true; if (i + 1 < (int) e.regions.size()) e.regions[(size_t) i + 1].fixIn = true; }
-    for (size_t k = 0; k < j.idx.size() && j.idx[k] < mid.files.size(); ++k) { mid.files[j.idx[k]].file = j.results[k].file; mid.files[j.idx[k]].fileStart = j.results[k].from; }
-    mid.takeName = mid.takeName.upToFirstOccurrenceOf (" (", false, false) + " (" + suffix + ")";
-    return true;
 }
 
 // ======================================================================================================== take window: pitch / repair
@@ -2408,8 +2361,8 @@ void pitchEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent)
     c.finish = [&app, eid, jobs, spec]
     {
         auto* e2 = app.project.findEdit (eid); if (e2 == nullptr || jobs->empty()) return;
-        const auto old = e2->regions; bool allOk = true;
-        for (size_t i = jobs->size(); i-- > 0;) allOk = applyRegionJob (*e2, (*jobs)[i], spec->shortName()) && allOk;
+        const auto old = e2->regions;
+        const bool allOk = applyRegionJobs (*e2, old, *jobs, spec->shortName());
         if (! allOk) { e2->regions = old; say ("Pitch correction", "The edit changed while the audio was being processed, so nothing was changed. Please try again."); return; }
         setUndoForEdit (app, eid, old, "pitch correction");
         app.project.changed();
@@ -2530,8 +2483,8 @@ void repairEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent
     c.apply = [&app, eid, st, deleteFiles]
     {
         auto* e2 = app.project.findEdit (eid); if (e2 == nullptr || st->jobs.empty()) return false;
-        st->old = e2->regions; bool ok = true;
-        for (size_t i = st->jobs.size(); i-- > 0;) ok = applyRegionJob (*e2, st->jobs[i], st->suffix) && ok;
+        st->old = e2->regions;
+        const bool ok = applyRegionJobs (*e2, st->old, st->jobs, st->suffix);
         if (! ok) { e2->regions = st->old; deleteFiles(); return false; }
         st->applied = true; app.project.changed();
         return true;
@@ -2652,27 +2605,7 @@ void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* 
     {
         if (st->jobs.empty() || st->applied) return true;
         auto* e2 = app.project.findEdit (eid); if (e2 == nullptr) return false;
-        e2->regions = st->base; bool ok = true; gApplyWhy = {};
-        for (size_t i = st->jobs.size(); i-- > 0;) ok = applyRegionJob (*e2, st->jobs[i], "reharmonised") && ok;
-        // the real edit points keep their crossfades exactly as they were: the first piece of each original region has its fade-in back, the last piece its fade-out
-        // (only the joins made for this fix are new, and they are linear)
-        if (ok)
-            for (size_t j = 0; j < st->base.size(); ++j)
-            {
-                const auto& ob = st->base[j];
-                const int first = e2->indexOf (ob.id);
-                if (first < 0) continue;
-                const int last = j + 1 < st->base.size() ? e2->indexOf (st->base[j + 1].id) - 1 : (int) e2->regions.size() - 1;
-                if (last < first) continue;
-                auto& f = e2->regions[(size_t) first]; auto& l = e2->regions[(size_t) last];
-                f.inStart = ob.inStart; f.inEnd = ob.inEnd; f.curve = ob.curve; f.fixIn = ob.fixIn;
-                l.outStart = ob.outStart; l.outEnd = ob.outEnd; l.outCurve = ob.outCurve; l.outCurveOwn = ob.outCurveOwn; l.fixOut = ob.fixOut;
-                if (first == last) { f.setOutCurve (ob.outCurveValue()); }
-            }
-        // the edit must come out exactly as long as it went in, to the sample, with every region where it was
-        auto span = [] (const std::vector<EditRegion>& v) { juce::int64 sum = 0, lo = (std::numeric_limits<juce::int64>::max)(), hi = 0; for (auto& r : v) { sum += r.length(); lo = juce::jmin (lo, r.startSample); hi = juce::jmax (hi, r.endSample()); } return std::array<juce::int64, 3> { sum, lo, hi }; };
-        if (ok && span (e2->regions) != span (st->base)) { ok = false; gApplyWhy = "the edit would have changed length"; juce::Logger::writeToLog ("ReHarmoniSer: refused, the edit would not be the same length"); }
-        if (! ok) { e2->regions = st->base; app.project.changed(); return false; }
+        if (! applyRegionJobs (*e2, st->base, st->jobs, "reharmonised")) { e2->regions = st->base; app.project.changed(); return false; }
         st->applied = true; app.project.changed();
         return true;
     };
@@ -3005,8 +2938,8 @@ void pitchCurveEdit (AppContext& app, const juce::Uuid& eid, juce::Component* pa
     c.apply = [&app, eid, st, deleteFiles]
     {
         auto* e2 = app.project.findEdit (eid); if (e2 == nullptr || st->jobs.empty()) { deleteFiles(); return false; }
-        st->old = e2->regions; bool allOk = true;
-        for (size_t i = st->jobs.size(); i-- > 0;) allOk = applyRegionJob (*e2, st->jobs[i], "pitch curve") && allOk;
+        st->old = e2->regions;
+        const bool allOk = applyRegionJobs (*e2, st->old, st->jobs, "pitch curve");
         if (! allOk) { e2->regions = st->old; deleteFiles(); return false; }
         st->applied = true; app.project.changed();
         return true;
