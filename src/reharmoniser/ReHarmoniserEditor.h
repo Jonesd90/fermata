@@ -48,6 +48,7 @@ struct EditorHost
     std::function<void (double hz, double levelDb)> playTone;                // a short tone (the piano keys), at this level in dB (the Key level slider)
     std::function<void()> writeBack;                                         // the user pressed "Write back to clip" (setCorrected has already been called with the final corrections)
     std::function<void()> cancel;                                            // the user pressed Cancel
+    bool leaveUnchangedOk = false;                                           // one stream window of an Out / In pair: "Write back to clip" with nothing changed means "leave this stream as it is" (the host handles that)
     std::function<void (const juce::String&)> log;                           // errors and notes for the log file
     std::function<juce::String (const juce::String& key)> loadSetting;       // remembered settings of the View block (empty = none saved)
     std::function<void (const juce::String& key, const juce::String& value)> saveSetting;

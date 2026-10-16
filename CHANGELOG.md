@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.46.1
+- **ReHarmoniSer Out / In windows: an untouched stream can be written back.** Pressing Write back to clip on a stream where nothing was changed now simply means "leave this stream as it is": its window closes and the other stream goes into the edit. (It used to say "Nothing has been changed yet. Press Cancel to close.", and there was no way to finish without changing both streams.)
+
 ## 2.46.0
 - **De-click now repairs dropouts.** A run of digital silence in the middle of sound (like the 128-sample hole, 1.3 ms, at 4.05 s in the close mics of the test files) used to stay: only the jump at each end of it was smoothed. The hole is now rebuilt from the sound before and after it (and brought up to the level around it). Real silence and very quiet passages are left alone. On clean piano with holes cut into it the error drops by 12 dB at 128 samples and the filled level is within 1 dB of the original.
 - **Bus / VCA view in the Edit window.** A new **Buses / VCAs** button swaps the rows from audio tracks to the Int Buses and VCAs, each with its own automation lane (labels, M / S, colour and lane choice work as on a track; no audio is shown). Int Buses can automate Gain, Fader, Pan, sends and plug-in parameters like an audio track; VCAs automate their Fader. Automation plays, is part of Bounce Out and the Mastering render.

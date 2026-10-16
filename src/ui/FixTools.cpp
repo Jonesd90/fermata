@@ -3126,6 +3126,7 @@ static void openReharmoniser (AppContext& app, const juce::Uuid& eid, juce::Comp
         if (err.isNotEmpty()) say (nm, err);
     };
     h.cancel = [self] { if (self != nullptr) self->closeMe(); };
+    h.leaveUnchangedOk = pair != nullptr;
     h.writeBack = [&app, eid, st, self, putIn, pair, slot]
     {
         if (self == nullptr) return;

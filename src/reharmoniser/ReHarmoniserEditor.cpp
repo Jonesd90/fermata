@@ -838,7 +838,7 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     originalBtn.setTooltip ("Plays the audio with none of the changes. Press again to hear them. Greyed out until something has been changed.");
     originalBtn.onClick = [this] { toggleOriginal(); };
     writeBtn.onClick = [this] { writeBack(); }; cancelBtn.onClick = [this] { if (worker->running()) worker->cancel(); if (host.cancel) host.cancel(); };
-    writeBtn.setTooltip ("Puts all the corrected notes back into the clip and closes this window");
+    writeBtn.setTooltip (host.leaveUnchangedOk ? "Puts all the corrected notes back into the clip and closes this window. In an Out / In pair, press it on a stream you did not change too: that stream is simply left as it is." : "Puts all the corrected notes back into the clip and closes this window");
     openSection (-1); updateButtons(); updateInfo();
     setSize (1280, 800);
     startTimerHz (30);
@@ -1506,7 +1506,11 @@ void ReHarmoniserEditor::writeBack()
 {
     if (busy || hostBusy) return;
     if (cand.has || bcand.has || (vcand.has && vcand.preview)) { setStatus ("A correction is not applied yet: press Apply correction / Erase (apply), or Deselect / Discard stroke, first.", true); return; }
-    if (! hasAppliedChanges()) { setStatus ("Nothing has been changed yet. Press Cancel to close.", true); return; }
+    if (! hasAppliedChanges())
+    {
+        if (host.leaveUnchangedOk && host.writeBack) { host.writeBack(); return; }                 // an untouched stream of an Out / In pair is simply left as it is
+        setStatus ("Nothing has been changed yet. Press Cancel to close.", true); return;
+    }
     if (hostState == HostState::Corrected && ! originalMode) { if (host.writeBack) host.writeBack(); return; }
     renderAndSet (false, [this] { if (host.writeBack) host.writeBack(); });
 }
