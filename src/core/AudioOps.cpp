@@ -141,7 +141,7 @@ bool spliceFile (juce::AudioFormatManager& fm, const juce::File& src, const juce
     is 0: nothing is to be changed. */
 bool boxRoundClick (const FixSpec& spec, double sr, long a, long b)
 {
-    return spec.kind == FixSpec::Kind::Patch && spec.repair.strength > 0.0 && spec.f0 <= 1000.0 && b - a <= (long) (0.25 * sr);
+    return spec.kind == FixSpec::Kind::Patch && spec.repair.mode != RepairMode::Gain && spec.repair.strength > 0.0 && spec.f0 <= 1000.0 && b - a <= (long) (0.25 * sr);
 }
 
 bool findsLost (const FixSpec& spec, double sr, juce::int64 s0, juce::int64 s1)

@@ -2011,6 +2011,29 @@ int main()
                 CHECK (s2 < orig - 10.0);                                                      // and the late copy is gone further in
                 CHECK (std::abs (endIn - after) < 4.0);                                        // no step where the box ends
             }
+            // Gain of a box: only the box changes, by the amount asked (louder, quieter, or silent)
+            {
+                const long t0 = (long) (0.4 * sr), t1 = (long) (1.0 * sr);
+                for (double db : { -12.0, 6.0, -200.0 })
+                {
+                    RepairParams p; p.mode = RepairMode::Gain; p.gainDb = db; p.strength = 1.0;
+                    auto y = messy; SpectralRepair::repair (y, sr, t0, t1, 1500.0, 3000.0, p);
+                    const long m0 = t0 + 4096, m1 = t1 - 4096;
+                    const double in0 = bandDb (messy, m0, m1, 1700, 2800), in1 = bandDb (y, m0, m1, 1700, 2800);
+                    const double lo0 = bandDb (messy, m0, m1, 200, 1100), lo1 = bandDb (y, m0, m1, 200, 1100);
+                    const double hi0 = bandDb (messy, m0, m1, 4500, 9000), hi1 = bandDb (y, m0, m1, 4500, 9000);
+                    std::printf ("  box gain %.0f dB: in the box %.1f dB, below it %.2f dB, above it %.2f dB\n", db, in1 - in0, lo1 - lo0, hi1 - hi0);
+                    if (db > -100.0) CHECK (std::abs ((in1 - in0) - db) < 1.0); else CHECK (in1 - in0 < -40.0);
+                    CHECK (std::abs (lo1 - lo0) < 0.5 && std::abs (hi1 - hi0) < 0.5);
+                    for (long n = 0; n < t0 - 4096; ++n) if (y[(size_t) n] != messy[(size_t) n]) { CHECK (false); break; }
+                    for (long n = t1 + 4096; n < (long) L; ++n) if (y[(size_t) n] != messy[(size_t) n]) { CHECK (false); break; }
+                }
+                std::vector<std::vector<float>> ch { messy }; FixSpec spec; spec.kind = FixSpec::Kind::Patch; spec.f0 = 100.0; spec.f1 = 900.0;
+                spec.repair.mode = RepairMode::Gain; spec.repair.gainDb = -6.0; spec.repair.strength = 1.0;
+                CHECK (! audioops::boxRoundClick (spec, sr, 0, (long) (0.1 * sr)));        // a small low box with Gain is never taken for a click
+                audioops::applyFix (ch, sr, t0, t1, spec, 0);
+                CHECK (std::abs ((bandDb (ch[0], t0 + 4096, t1 - 4096, 200, 800) - bandDb (messy, t0 + 4096, t1 - 4096, 200, 800)) + 6.0) < 1.0);
+            }
             // the main consonant itself, outside the boxes, is untouched
             const double mainBefore = bandDb (messy, (long) (1.52 * sr), (long) (1.70 * sr), 4000, 12000);
             auto both = messy; RepairParams p; p.mode = RepairMode::Attenuate; p.strength = 1.0; p.consonant = true;

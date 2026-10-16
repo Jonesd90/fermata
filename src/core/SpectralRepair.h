@@ -16,7 +16,7 @@ enum class RepairDirection { LeftRight = 0, UpDown = 1, Both = 2 };
 
 /** What a spectral repair does to the box: Attenuate pulls down only what sticks out above the normal level of the sound around it (the sound underneath stays: best for a
     click, a cough or a dropped pencil over a held chord); Replace rebuilds the box from the sound around it. */
-enum class RepairMode { Replace = 0, Attenuate = 1 };
+enum class RepairMode { Replace = 0, Attenuate = 1, Gain = 2 };      // Gain: the box is simply made louder or quieter by gainDb
 
 /** The controls of a spectral repair (like iZotope RX's Spectral Repair). */
 struct RepairParams
@@ -29,6 +29,7 @@ struct RepairParams
     RepairDirection direction = RepairDirection::LeftRight;
     double contextPct = 100.0;                          // how much surrounding sound is used, as a % of the box (its length in time, its height in frequency)
     double weighting = 0.5;                             // 0 = only the sound BEFORE the box, 1 = only the sound AFTER it, 0.5 = both equally (cross-fade)
+    double gainDb = 0.0;                                // Gain: how much louder (+) or quieter (-) the box becomes; -120 or lower = silence
     bool   consonant = false;                           // Attenuate: a STRAY CONSONANT (an early or late copy of a consonant next to the main one): the box is matched to the side
                                                         // away from the main consonant (found from all the tracks together while the before / after slider is in the middle)
     double consonantBefore = -1.0;                      // consonant: how much the sound BEFORE the box is matched (1 = only before, 0 = only after), found by the repair window on
@@ -181,6 +182,7 @@ public:
         t0 = juce::jlimit (0L, L, t0); t1 = juce::jlimit (0L, L, t1);
         if (t1 - t0 < 2) return;
         if (p.mode == RepairMode::Attenuate) { attenuate (x, sr, t0, t1, f0, f1, p); return; }
+        if (p.mode == RepairMode::Gain) { boxGain (x, sr, t0, t1, f0, f1, p.gainDb * juce::jlimit (0.0, 1.0, p.strength), p.bands); return; }
         const double ctxPct = juce::jlimit (5.0, 1000.0, p.contextPct);
         const bool doH = p.direction != RepairDirection::UpDown, doV = p.direction != RepairDirection::LeftRight;
         const std::vector<float> orig = x;
@@ -193,6 +195,66 @@ public:
         for (long n = t0; n < t1; ++n) x[(size_t) n] = (float) ((double) orig[(size_t) n] + s * ((double) (*rep)[(size_t) n] - (double) orig[(size_t) n]));
     }
 
+
+    // ------------------------------------------------------------------------------------------------ gain
+    /** Makes the box [t0,t1) x [f0,f1 Hz) louder or quieter by gainDb (-120 dB or lower: silent), and nothing else. The gain comes in and goes out smoothly at the
+        box's edges (over one analysis window in time, a few bins in pitch), so there is no click and no hard edge; the rest of the sound is untouched. */
+    static void boxGain (std::vector<float>& x, double sr, long t0, long t1, double f0, double f1, double gainDb, int bands = 1024)
+    {
+        const long L = (long) x.size();
+        t0 = juce::jlimit (0L, L, t0); t1 = juce::jlimit (0L, L, t1);
+        if (t1 - t0 < 2 || std::abs (gainDb) < 1.0e-6 || f1 <= f0) return;
+        int N = 256; while (N < 2 * bands && N < 8192) N <<= 1;
+        while (N > 256 && N > 2 * (t1 - t0)) N >>= 1;                                // a short box: a shorter window, so the gain stays inside it
+        const int H = N / 4, bins = N / 2 + 1; const double hz = sr / (double) N;
+        const double g = gainDb <= -120.0 ? 0.0 : std::pow (10.0, gainDb / 20.0);
+        const long S = juce::jmax (0L, t0 - 2L * N), E = juce::jmin (L, t1 + 2L * N);
+        if (E - S < (long) N) return;
+        const long F = (E - S - N) / H + 1;
+        const dsp::FFT fft (N); const auto win = dsp::hann (N);
+        double winEnergy = 0.0; for (int i = 0; i < N; ++i) winEnergy += win[(size_t) i] * win[(size_t) i];
+        // the gain per bin: full inside the pitch range, a short smooth slope (about a third of an octave, at least 3 bins) at each edge, half-way at the edge itself
+        std::vector<double> gb ((size_t) bins, 1.0);
+        for (int b = 0; b < bins; ++b)
+        {
+            const double f = (double) b * hz;
+            auto edge = [&] (double e, bool lowEdge)                                  // 0 outside, 1 inside, smooth across e
+            {
+                if (e <= 0.0) return 1.0;
+                const double w = juce::jmax (3.0 * hz, e * 0.12);
+                const double u = juce::jlimit (0.0, 1.0, ((lowEdge ? f - e : e - f) + w) / (2.0 * w));
+                return u * u * (3.0 - 2.0 * u);
+            };
+            const double inside = edge (f0, true) * (f1 >= sr * 0.49 ? 1.0 : edge (f1, false));
+            gb[(size_t) b] = 1.0 + (g - 1.0) * inside;
+        }
+        std::vector<double> out ((size_t) (E - S), 0.0), norm ((size_t) (E - S), 0.0);
+        std::vector<std::complex<double>> buf ((size_t) N);
+        for (long fr = 0; fr < F; ++fr)
+        {
+            const long s = S + fr * H;
+            for (int i = 0; i < N; ++i) buf[(size_t) i] = (double) x[(size_t) (s + i)] * win[(size_t) i];
+            double inGap = 0.0;                                                          // how much of this frame lies in the box
+            for (long n = juce::jmax (s, t0); n < juce::jmin (s + N, t1); ++n) inGap += win[(size_t) (n - s)] * win[(size_t) (n - s)];
+            const double wf = juce::jlimit (0.0, 1.0, inGap / winEnergy);
+            if (wf > 0.0)
+            {
+                fft.forward (buf);
+                for (int b = 0; b < bins; ++b) buf[(size_t) b] *= 1.0 + (gb[(size_t) b] - 1.0) * wf;
+                for (int b = 1; b < N / 2; ++b) buf[(size_t) (N - b)] = std::conj (buf[(size_t) b]);
+                buf[0] = std::complex<double> (buf[0].real(), 0.0); buf[(size_t) N / 2] = std::complex<double> (buf[(size_t) N / 2].real(), 0.0);
+                fft.inverse (buf);
+                for (int i = 0; i < N; ++i) buf[(size_t) i] = buf[(size_t) i].real() * win[(size_t) i];
+            }
+            else for (int i = 0; i < N; ++i) buf[(size_t) i] = buf[(size_t) i].real() * win[(size_t) i];
+            for (int i = 0; i < N; ++i) { out[(size_t) (fr * H + i)] += buf[(size_t) i].real(); norm[(size_t) (fr * H + i)] += win[(size_t) i] * win[(size_t) i]; }
+        }
+        for (long n = juce::jmax (S, t0 - (long) N); n < juce::jmin (E, t1 + (long) N); ++n)
+        {
+            const size_t i = (size_t) (n - S);
+            if (norm[i] > 0.9) x[(size_t) n] = (float) (out[i] / norm[i]);
+        }
+    }
 
     // ------------------------------------------------------------------------------------------------ attenuate
     /** Pulls down what sticks out of the box above the normal level of the sound around it (the sound underneath stays). Several analysis sizes when multiRes is on. */

@@ -796,7 +796,8 @@ public:
 
 /** The little pictures on the buttons of the edit and take windows. Each is drawn from a 24 x 24 grid so it stays sharp at any size. */
 enum class Icon { Start, Rewind, Play, Stop, Forward, End, Record, Trim, Bounce, Pitch, Repair, Reharm, Tracks, Feedback, Mixer, Earlier, Later, Delete, Undo, Automation, Buses,
-                  ExportProc, ImportMulti, Markers, FeedbackMarkers, SlipLeft, SlipRight, Shuffle, InsertFlag, NextAtEnd };
+                  ExportProc, ImportMulti, Markers, FeedbackMarkers, SlipLeft, SlipRight, Shuffle, InsertFlag, NextAtEnd,
+                  Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search };
 
 inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area)
 {
@@ -877,8 +878,91 @@ inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area)
         seg (7.5f, 7.6f, 7.5f, 3.6f, 1.9f, Colour (0xff6a4a30));
         g.restoreState();
     };
+    auto stave = [&] (float x1, float x2, float yTop, float gap)               // five lines of a musical stave
+    {
+        for (int i = 0; i < 5; ++i) seg (x1, yTop + (float) i * gap, x2, yTop + (float) i * gap, 0.9f, W);
+    };
+    auto markText = [&] (const juce::String& t, Colour c)                       // "M1" / "M2"
+    {
+        g.setColour (c); g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
+        g.drawText (t, juce::Rectangle<float> (0.0f, 2.0f, 24.0f, 20.0f), juce::Justification::centred, false);
+    };
+    auto fist = [&] (float x, float y, float w, float h, Colour c, Colour dk)   // a clenched fist seen from the side: curled fingers facing left, the thumb across them
+    {
+        const Colour lt = c.brighter (0.25f);
+        P body; body.addRoundedRectangle (x, y, w, h, juce::jmin (w, h) * 0.32f); fill (body, c);
+        // the four curled fingers: rounded bumps down the left side, each with a crease
+        const float fh = h / 4.0f;
+        for (int i = 0; i < 4; ++i)
+        {
+            const float fy = y + (float) i * fh;
+            P f; f.addRoundedRectangle (x - w * 0.10f, fy + 0.15f, w * 0.62f, fh - 0.3f, fh * 0.48f); fill (f, c);
+            g.setColour (dk); g.strokePath (f, juce::PathStrokeType (0.55f));
+        }
+        // the thumb: folded across the front of the fingers, from the wrist side
+        P t; t.addRoundedRectangle (x + w * 0.18f, y + h * 0.50f, w * 0.72f, h * 0.30f, h * 0.14f); fill (t, lt);
+        g.setColour (dk); g.strokePath (t, juce::PathStrokeType (0.55f));
+        g.setColour (dk); g.strokePath (body, juce::PathStrokeType (0.7f));
+    };
+    auto arm = [&] (bool strong)                                                // an arm bent 90 degrees at the elbow: the upper arm level, the forearm up, a fist on top
+    {
+        const Colour c = strong ? Rd : Colour (0xff3fbf5f), dk = c.darker (0.45f);
+        if (strong)
+        {
+            P a; a.startNewSubPath (2.0f, 15.5f); a.lineTo (2.0f, 21.0f); a.cubicTo (8.0f, 21.5f, 13.0f, 21.5f, 16.5f, 20.5f);      // under the upper arm, to the elbow
+            a.cubicTo (20.5f, 19.5f, 21.0f, 15.5f, 20.0f, 11.0f); a.lineTo (19.0f, 7.0f);                                             // the forearm up the outside
+            a.lineTo (13.8f, 7.8f); a.lineTo (15.2f, 12.5f);                                                                            // the inside of the forearm
+            a.cubicTo (13.0f, 9.0f, 7.5f, 8.5f, 6.0f, 12.0f); a.cubicTo (5.0f, 14.0f, 3.5f, 15.0f, 2.0f, 15.5f); a.closeSubPath();    // the bicep: a big curve
+            fill (a, c); g.setColour (dk); g.strokePath (a, juce::PathStrokeType (0.8f));
+            P bl; bl.startNewSubPath (7.5f, 15.0f); bl.cubicTo (9.5f, 13.0f, 12.0f, 13.3f, 13.5f, 15.0f); stroke (bl, 0.9f, dk);       // the line of the muscle
+            fist (13.4f, 0.8f, 7.4f, 7.6f, c, dk);
+        }
+        else
+        {
+            P a; a.startNewSubPath (2.5f, 18.0f); a.lineTo (15.0f, 18.0f); a.lineTo (16.0f, 8.8f); stroke (a, 2.4f, c);              // thin as a stick
+            g.setColour (c); g.fillEllipse (13.6f, 17.0f, 2.6f, 2.6f);                                                                  // a bony elbow
+            fist (14.2f, 3.0f, 4.2f, 5.4f, c, dk);                                                                                      // a small fist
+        }
+    };
     switch (ic)
     {
+        case Icon::Overdub:
+            rect (1.5f, 6.5f, 21, 11, 1.5f, Colour (0xff2f6fc0));
+            rect (3.5f, 10.2f, 17, 3.6f, 1.0f, Colour (0xff9fd0ff));
+            break;
+        case Icon::Mark1: markText ("M1", Colour (0xff4a9cff)); break;
+        case Icon::Mark2: markText ("M2", Colour (0xffff9a1f)); break;
+        case Icon::ToEdit:     arrowH (1.5f, 11.0f, 12, W, 2); stave (12.5f, 22.5f, 7.0f, 2.5f); g.setColour (W); g.fillEllipse (16.0f, 11.0f, 3.2f, 2.4f); break;
+        case Icon::ToPlayhead: arrowH (1.5f, 11.0f, 12, W, 2); tri (13.0f, 5.0f, 13.0f, 19.0f, 22.5f, 12.0f, Colour (0xff3fbf5f)); break;
+        case Icon::Flag:
+            seg (6, 3, 6, 21.5f, 1.8f, W);
+            { P f; f.startNewSubPath (7, 3.5f); f.cubicTo (11, 1.8f, 14, 5.6f, 19.5f, 3.8f); f.lineTo (19.5f, 12.0f); f.cubicTo (14, 13.8f, 11, 10.0f, 7, 11.7f); f.closeSubPath(); fill (f, Ye); }
+            break;
+        case Icon::EditWin:
+        {
+            stave (2.0f, 22.0f, 6.0f, 3.0f);
+            P c;                                                                 // a treble clef: the curl round the G line, up to the top loop, down the stem to the tail
+            c.startNewSubPath (11.6f, 15.0f);
+            c.cubicTo (9.6f, 15.0f, 9.0f, 12.6f, 10.6f, 11.6f);
+            c.cubicTo (12.8f, 10.4f, 15.4f, 12.4f, 14.6f, 15.4f);
+            c.cubicTo (13.8f, 18.2f, 8.4f, 18.4f, 7.6f, 14.4f);
+            c.cubicTo (7.0f, 11.0f, 11.0f, 9.0f, 12.6f, 6.6f);
+            c.cubicTo (13.8f, 4.8f, 13.6f, 2.0f, 12.4f, 1.8f);
+            c.cubicTo (11.0f, 1.8f, 10.4f, 4.6f, 11.0f, 8.0f);
+            c.lineTo (12.6f, 20.6f);
+            c.cubicTo (12.8f, 22.6f, 10.6f, 23.0f, 10.0f, 21.4f);
+            stroke (c, 1.6f, Ye);
+            g.setColour (Ye); g.fillEllipse (9.3f, 20.3f, 2.4f, 2.4f);
+            break;
+        }
+        case Icon::ArmAll:  arm (true);  break;
+        case Icon::ArmNone: arm (false); break;
+        case Icon::ImportTakes: container (1, 8, 11, 10); clipboard (14.5f, 4.5f, 8, 15); break;
+        case Icon::Search:
+            g.setColour (W); g.drawEllipse (3.0f, 3.0f, 12.0f, 12.0f, 2.2f);
+            g.setColour (Bl.withAlpha (0.25f)); g.fillEllipse (4.2f, 4.2f, 9.6f, 9.6f);
+            seg (13.6f, 13.6f, 20.5f, 20.5f, 3.0f, W);
+            break;
         case Icon::Start:   rect (4, 5, 2.6f, 14, 0.3f, W); tri (19, 5, 19, 19, 8.5f, 12, W); break;
         case Icon::Rewind:  tri (12, 5, 12, 19, 2.5f, 12, W); tri (21.5f, 5, 21.5f, 19, 12, 12, W); break;
         case Icon::Play:    tri (7, 4.5f, 7, 19.5f, 20, 12, W); break;

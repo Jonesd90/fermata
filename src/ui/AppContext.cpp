@@ -512,6 +512,19 @@ void AppContext::deleteWindowAndFile (bool isEdit, const juce::Uuid& id)
     });
 }
 
+bool AppContext::closeProject (bool save)
+{
+    if (engine.isRecording()) { showError ("Recording", "Stop recording first."); return false; }
+    stopPlayback();
+    plugins.closeAllEditors();
+    if (save) saveNow();
+    props.saveIfNeeded();
+    project.projectFile = juce::File();              // from here on nothing is written to it (the windows closing below may still mark changes)
+    if (closeAllWindows) closeAllWindows();
+    juce::MessageManager::callAsync ([this] { startBlankProject(); });       // after the windows are gone (they close in the same queue, just before this)
+    return true;
+}
+
 void AppContext::startBlankProject()
 {
     project.windowFiles.clear(); project.missingWindowRefs.clear();

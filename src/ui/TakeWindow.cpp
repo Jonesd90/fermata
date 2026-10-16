@@ -1153,8 +1153,6 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     editOutButton.onClick = [this] { editMarkOut(); };
     overdubBox.setTooltip ("Pieces sent to the edit are laid OVER it and play together with what is already there");
     overdubBox.onClick = [this] { if (auto* w = def()) { w->overdub = overdubBox.getToggleState(); app.project.changed(); } };
-    editInButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1e6fd9));
-    editOutButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xffe08a00));
     toEditAtButton.setColour (juce::TextButton::buttonColourId, theme::accent);
     overdubBox.setWantsKeyboardFocus (false);
     playheadMode.setTooltip ("Playhead behaviour. Lit: the playhead moves with the time, so after Stop the next Play carries on from where you stopped. "
@@ -1212,6 +1210,12 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     recordButton.setIcon (Icon::Record, "Record [R]"); playButton.setIcon (Icon::Play, "Play / Stop [Space]"); startButton.setIcon (Icon::Start, "Return to start [Home]"); backButton.setIcon (Icon::Rewind, "Rewind 5 seconds");
     fwdButton.setIcon (Icon::Forward, "Forward 5 seconds"); endTransportButton.setIcon (Icon::End, "Go to the end [End]"); bounceButton.setIcon (Icon::Bounce, "Bounce Out");
     pitchButton.setIcon (Icon::Pitch, "Pitch & Pitch curve"); repairButton.setIcon (Icon::Repair, "Repair & DeClick"); undoFixButton.setIcon (Icon::Undo, "Undo fix");
+    editInButton.setIcon (Icon::Mark1, "Mark 1 [1]"); editOutButton.setIcon (Icon::Mark2, "Mark 2 [2]");
+    toEditButton.setIcon (Icon::ToEdit, "To edit [3]"); toEditAtButton.setIcon (Icon::ToPlayhead, "To playhead [4]"); editWindowButton.setIcon (Icon::EditWin, "Edit window");
+    overdubBox.setIcon (Icon::Overdub, "Overdub"); markersToggle.setIcon (Icon::Flag, "Markers");
+    armAllButton.setIcon (Icon::ArmAll, "Arm all"); armNoneButton.setIcon (Icon::ArmNone, "Arm none");
+    importButton.setIcon (Icon::ImportTakes, "Import takes"); exportProcButton.setIcon (Icon::ImportMulti, "Export for Processing"); barSearchButton.setIcon (Icon::Search, "Search for bar");
+    for (auto* t : { &overdubBox, &markersToggle }) { t->setClickingTogglesState (true); t->setColour (juce::TextButton::buttonOnColourId, theme::accent); }
     for (auto* c : std::initializer_list<juce::Component*> { &recordButton, &zoomInButton, &zoomOutButton, &playButton, &playMarkedButton,
                                                               &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &exportProcButton, &undoFixButton, &barSearchButton, &timeLabel, &statusLabel, &markLabel })
         addAndMakeVisible (c);
@@ -1295,11 +1299,11 @@ void TakeWindowComponent::resized()
         { &nameLabel, 45 }, { &nameEditor, 200, grid::btnH, 10 }, { &takeBox, 84, 58, 14 },
         { &recordButton, IW, IH, 6 }, { &timeLabel, 150, 28, 14 },
         { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playMarkedButton }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
-        { &editInButton }, { &editOutButton }, { &toEditButton }, { &toEditAtButton }, { &overdubBox, grid::btnW - 10, grid::btnH, 6 }, { &markersToggle, 80, grid::btnH, 14 },
-        { &editWindowButton }, { &bounceButton, IW, IH, 14 },
+        { &editInButton, IW, IH, 2 }, { &editOutButton, IW, IH, 6 }, { &toEditButton, IW, IH, 2 }, { &toEditAtButton, IW, IH, 2 }, { &overdubBox, IW, IH, 6 }, { &markersToggle, IW, IH, 14 },
+        { &editWindowButton, IW, IH, 2 }, { &bounceButton, IW, IH, 14 },
         { &sendCaption, 120, grid::btnH, 2 }, { &sendBox, 200, grid::btnH, 14 },
-        { &ltcButton, 74, grid::btnH, 14 }, { &armAllButton }, { &armNoneButton, grid::btnW, grid::btnH, 14 },
-        { &importButton }, { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 6 }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, IW, IH, 14 }, { &barSearchButton, grid::btnW + 14, grid::btnH, 14 },
+        { &ltcButton, 74, grid::btnH, 14 }, { &armAllButton, IW, IH, 2 }, { &armNoneButton, IW, IH, 14 },
+        { &importButton, IW, IH, 6 }, { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 6 }, { &exportProcButton, IW, IH, 2 }, { &undoFixButton, IW, IH, 14 }, { &barSearchButton, IW, IH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
     r.removeFromTop (grid::flow (r, items));                           // everything on one line when there is room, otherwise it spills onto more
@@ -1589,11 +1593,12 @@ void TakeWindowComponent::setBarSearch (int bar)
 {
     searchBar = bar;
     if (timeline != nullptr) { timeline->barHighlight = bar; timeline->repaint(); }
-    if (bar <= 0) { barSearchButton.setButtonText ("Search for bar"); barSearchButton.setToggleState (false, juce::dontSendNotification); return; }
+    if (bar <= 0) { barSearchButton.setIcon (Icon::Search, "Search for bar"); barSearchButton.setToggleState (false, juce::dontSendNotification); return; }
     int n = 0;
     if (auto* w = app.project.findTakeWindow (windowId))
         for (auto& g : w->groups) if (barsContain (g.barIn, g.barOut, bar)) ++n;
-    barSearchButton.setButtonText ("Bar " + juce::String (bar) + ": " + juce::String (n) + (n == 1 ? " take" : " takes"));
+    barSearchButton.setIcon (Icon::Search, "Bar " + juce::String (bar) + ": " + juce::String (n) + (n == 1 ? " take" : " takes") + " (click to clear)");
+    app.setNotice ("Bar " + juce::String (bar) + ": " + juce::String (n) + (n == 1 ? " take has it" : " takes have it") + " (framed in blue-green). Click the magnifying glass again to clear.");
     barSearchButton.setToggleState (true, juce::dontSendNotification);
 }
 

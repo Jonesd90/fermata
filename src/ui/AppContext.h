@@ -250,6 +250,10 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     void rebuildPreampDriver();
     bool newProject (const juce::File& projectFile);
     bool openProject (const juce::File& projectFile);
+    /** Project > Close: the project's windows close and Fermata goes back to its start panel (New / Open). save: write it first; otherwise nothing more is
+        written (what was saved automatically as you worked stays). False if it cannot close now (recording). */
+    bool closeProject (bool save);
+    std::function<void()> closeAllWindows;            // (set by the application) closes every project window
     void saveNow();
     bool skipFinalSave = false;                       // "Quit without saving": the last save when closing is left out
     void restoreLastProject();

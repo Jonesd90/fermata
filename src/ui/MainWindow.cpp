@@ -579,6 +579,7 @@ void MainComponent::peaksUpdated()
 void MainComponent::timerCallback()
 {
     if (startPanel != nullptr && app.hasProject()) startPanel.reset();           // a project was chosen
+    else if (startPanel == nullptr && ! app.hasProject()) showStartPanel();      // the project was closed (Project > Close)
     // The menu bar (with the Pre-Rec / C-R / P-B squares) is always there, in front of the other Fermata windows (not other programs), and goes with the main window when it is minimised.
     if (menuStrip != nullptr && getPeer() != nullptr && ! getPeer()->isMinimised() && ! menuStrip->isVisible()) menuStrip->setVisible (true);
     flagPre.set (app.sessionMode()); flagCr.set (app.crMicOpen()); flagPb.set (app.tbPlaybackOn());
@@ -641,6 +642,7 @@ void MainComponent::showProjectMenu()
     m.addItem (3, "Save");
     m.addItem (6, "Save as...");
     m.addItem (7, "Create copy of entire project...");
+    m.addItem (10, "Close", app.hasProject());
     m.addSeparator();
     m.addItem (4, "Show project folder");
     m.addItem (5, "Rename project...");
@@ -652,6 +654,7 @@ void MainComponent::showProjectMenu()
     {
         if (r == 8) { app.redrawWaveforms (app.audioFilesOfWindow (workKey)); return; }
         if (r == 9) { fixtools::importAaf (app, this); return; }
+        if (r == 10) { closeProjectDialog(); return; }
         if (r == 1) newProjectDialog();
         else if (r == 2) openProjectDialog();
         else if (r == 3) app.saveNow();
@@ -671,6 +674,23 @@ void MainComponent::showProjectMenu()
             }));
         }
     });
+}
+
+void MainComponent::closeProjectDialog()
+{
+    if (! app.hasProject()) return;
+    if (app.engine.isRecording()) { showError ("Recording", "Stop recording first."); return; }
+    juce::Component::SafePointer<MainComponent> safe (this);
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon).withTitle ("Close project")
+                                      .withMessage ("Do you want to save \"" + app.project.name + "\" before closing it?\n\n"
+                                                    "(The project is also saved automatically as you work; \"Close without saving\" skips only this last save.) Fermata stays open, ready for a new or another project.")
+                                      .withButton ("Save and close").withButton ("Close without saving").withButton ("Cancel"),
+                                  [safe] (int r)
+                                  {
+                                      if (safe == nullptr) return;
+                                      if (r == 1) safe->app.closeProject (true);
+                                      else if (r == 2) safe->app.closeProject (false);
+                                  });
 }
 
 void MainComponent::newProjectDialog()

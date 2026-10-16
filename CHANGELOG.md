@@ -6,6 +6,11 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.55.0
+- **Take window: picture buttons.** Mark 1 (a blue M1), Mark 2 (an orange M2), To edit (an arrow into a stave), To playhead (an arrow and a play sign), Overdub (a blue band with a narrower one inside), Markers (a flag), Edit window (a stave with a treble clef), Arm all (a red flexed arm), Arm none (a skinny green arm), Import takes (a shipping container and a clipboard), Export for Processing (the Edit window's multitrack import picture) and Search for bar (a magnifying glass). Hover over any of them for its name and key. Overdub and Markers light up when on. The bar search result now shows in the status line and in the magnifying glass's tooltip.
+- **Project > Close.** Closes the project without closing Fermata. It asks "Save and close", "Close without saving" or "Cancel"; then every project window closes and the start panel (New project / Open / Open the last project) comes back.
+- **Repair / ReTouch / De-click window: Gain.** Draw a box round a resonance, a ring or anything in one spot, press **G** (or the Gain button) and choose from silence (-inf) to +18 dB. Only the sound inside the box changes, fading in and out smoothly at its edges. It is a fix like any other: Play to listen, Undo to take it off, Write back to keep it. The last value used is remembered.
+
 ## 2.54.1
 - **Attenuate a stray consonant: the edges now ease out instead of cutting off.** Before, the sound stopped dead where the box started (most clearly after a long main consonant, e.g. the late s in "Multiple s"), and could step back up where it ended. Now:
   - From the start of the box, whatever was sounding just before it (the main consonant, its echo in the room) **dies away** to the background in a straight line in dB, like a natural decay. This takes 40 % of the box (12 to 80 ms).

@@ -115,6 +115,7 @@ public:
         ctx->lastWorkWindowKey = [this] { return lastWorkWindowKey(); };
         ctx->showTrim = [this] (const juce::Uuid& e, const juce::Uuid& r, bool atEnd) { openTrim (e, r, atEnd); };
         ctx->closeWindowByKey = [this] (const juce::String& key) { closeWindowLater (key); };
+        ctx->closeAllWindows = [this] { juce::MessageManager::callAsync ([this] { windows.clear(); }); };
         ctx->closeTrim = [this] (const juce::Uuid& e) { closeWindowLater ("trim:" + e.toString()); };
         ctx->showDesign = [this] { openDesign(); };
         ctx->showBridge = [this] { toggleBridge(); };

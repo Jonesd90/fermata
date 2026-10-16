@@ -215,6 +215,7 @@ private:
     void rebuildAuditionBar();
     void showEditsMenu();
     void newProjectDialog();
+    void closeProjectDialog();
     void openProjectDialog();
     void showStartPanel();
     std::unique_ptr<juce::Component> startPanel;           // the "where do you want to save your project?" screen, until a project is chosen

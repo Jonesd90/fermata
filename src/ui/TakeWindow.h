@@ -57,15 +57,15 @@ private:
     juce::ComboBox sendBox;
     void fillSendBox();
     bool updatingSendBox = false;
-    juce::TextButton armAllButton { "Arm all" }, armNoneButton { "Arm none" };
+    IconButton armAllButton { "Arm all" }, armNoneButton { "Arm none" };
     juce::TextButton ltcButton { juce::String::fromUTF8 ("\xE2\x96\xB6 LTC") };       // the triangle: shows / hides the LTC track
     IconButton recordButton { "REC  [R]" }, playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, bounceButton { "Bounce Out..." },
                pitchButton { "Pitch..." }, repairButton { "Repair & DeClick..." }, undoFixButton { "Undo fix" };
-    juce::TextButton zoomInButton { "+" }, zoomOutButton { "-" }, playMarkedButton { "Play marked" },
-                     editInButton { "Mark 1 [1]" }, editOutButton { "Mark 2 [2]" },
-                     toEditButton { "To edit [3]" }, toEditAtButton { "To playhead [4]" }, editWindowButton { "Edit window" },
-                     importButton { "Import takes..." }, exportProcButton { "Export for Processing..." }, barSearchButton { "Search for bar" };
-    juce::ToggleButton overdubBox { "Overdub" }, markersToggle { "Markers" };
+    juce::TextButton zoomInButton { "+" }, zoomOutButton { "-" }, playMarkedButton { "Play marked" };
+    IconButton editInButton { "Mark 1 [1]" }, editOutButton { "Mark 2 [2]" },
+               toEditButton { "To edit [3]" }, toEditAtButton { "To playhead [4]" }, editWindowButton { "Edit window" },
+               importButton { "Import takes..." }, exportProcButton { "Export for Processing..." }, barSearchButton { "Search for bar" };
+    IconButton overdubBox { "Overdub" }, markersToggle { "Markers" };         // (toggles)
     LoopButton loopToggle;
     PlayheadModeButton playheadMode;
     RainbowButton waveColourBtn;

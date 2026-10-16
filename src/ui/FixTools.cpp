@@ -1516,6 +1516,10 @@ public:
         ticker.owner = this; ticker.startTimerHz (30);
         if (ctx.hold) ctx.hold (true);
         previewBtn.onClick = [this] { preview (false); };
+        gainBtn.onClick = [this] { openGain(); };
+        gainBtn.setTooltip ("Gain: makes the sound inside the box louder or quieter (from silence up to +18 dB), and nothing else: for a resonance, a ring or a note in one spot that should stand out less, or more. "
+                            "Draw the box round it and press G. The gain fades in and out smoothly at the box's edges.");
+        addAndMakeVisible (gainBtn); gainBtn.setWantsKeyboardFocus (false);
         declickBtn.onClick = [this] { preview (true); };
         compareBtn.onClick = [this] { toggleCompare(); };
         revertBtn.onClick = [this] { revert(); };
@@ -1621,6 +1625,7 @@ public:
         revertBtn.setBounds (rowC.removeFromRight (90)); rowC.removeFromRight (8);
         compareBtn.setBounds (rowC.removeFromRight (150)); rowC.removeFromRight (8);
         previewBtn.setBounds (rowC.removeFromRight (120)); rowC.removeFromRight (8);
+        gainBtn.setBounds (rowC.removeFromRight (90)); rowC.removeFromRight (8);
         declickBtn.setBounds (rowC.removeFromRight (120)); rowC.removeFromRight (14);
         sensCap.setBounds (rowC.removeFromLeft (110)); sens.setBounds (rowC.removeFromLeft (260));
         playBtn.setBounds (rowT.removeFromLeft (90)); rowT.removeFromLeft (6);
@@ -1650,6 +1655,11 @@ protected:
         if ((k.getTextCharacter() == 'r' || k.getTextCharacter() == 'R') && ! k.getModifiers().isAnyModifierKeyDown())      // R: do the fix with the settings as they are
         {
             if (previewBtn.isEnabled()) preview (false);
+            return true;
+        }
+        if ((k.getTextCharacter() == 'g' || k.getTextCharacter() == 'G') && ! k.getModifiers().isAnyModifierKeyDown())      // G: change the gain of the box
+        {
+            if (gainBtn.isEnabled()) openGain();
             return true;
         }
         if ((k.getTextCharacter() == 'd' || k.getTextCharacter() == 'D') && ! k.getModifiers().isAnyModifierKeyDown())
@@ -1774,7 +1784,7 @@ private:
                            + (committed.empty() ? juce::String() : juce::String ("      ") + juce::String ((int) committed.size()) + " fix(es) made"), juce::dontSendNotification);
         const bool ready = scanned && ! running;
         playBtn.setEnabled (ready); stopBtn.setEnabled (ready); loopBtn.setEnabled (ready); hearBox.setEnabled (ready);
-        previewBtn.setEnabled (ready && view.hasSelection()); declickBtn.setEnabled (ready);
+        previewBtn.setEnabled (ready && view.hasSelection()); declickBtn.setEnabled (ready); gainBtn.setEnabled (ready && view.hasSelection());
         finishBtn.setEnabled (ready && (haveRepair() || ctx.pairWritten != nullptr));
         revertBtn.setEnabled (ready && ! history.empty());
         compareBtn.setEnabled (ready && ! history.empty());
@@ -1796,11 +1806,54 @@ private:
             spec.repair.direction = spec.repair.consonant ? RepairDirection::LeftRight : (RepairDirection) (dirBox.getSelectedId() - 1);
             spec.repair.contextPct = surround.getValue();
             spec.repair.weighting = weight.getValue() / 100.0;
+            if (gainNext) { spec.repair.mode = RepairMode::Gain; spec.repair.gainDb = gainNextDb; spec.repair.strength = 1.0; spec.repair.consonant = false; }
         }
         else { spec.kind = FixSpec::Kind::Declick; spec.sensitivity = sens.getValue(); }
         return spec;
     }
     double seconds() const { return (double) ctx.length / ctx.rate; }
+    /** The Gain pop-up: a slider from silence to +18 dB for the box; Apply makes it a fix like ReTouch (Undo takes it off). */
+    void openGain()
+    {
+        if (! scanned || running || ! view.hasSelection()) return;
+        struct GainPop : public juce::Component
+        {
+            juce::Slider sl; juce::TextButton apply { "Apply" }, cancel { "Cancel" }; juce::Label cap;
+            std::function<void (double)> onApply;
+            GainPop (double start)
+            {
+                cap.setText ("Gain of the box", juce::dontSendNotification); cap.setColour (juce::Label::textColourId, theme::text); addAndMakeVisible (cap);
+                sl.setSliderStyle (juce::Slider::LinearHorizontal); sl.setRange (-60.0, 18.0, 0.1); sl.setValue (start, juce::dontSendNotification);
+                sl.setTextBoxStyle (juce::Slider::TextBoxRight, false, 74, 22); sl.setDoubleClickReturnValue (true, 0.0);
+                sl.textFromValueFunction = [] (double v) { return v <= -59.95 ? juce::String ("-inf dB") : (v > 0.0 ? "+" : "") + juce::String (v, 1) + " dB"; };
+                sl.valueFromTextFunction = [] (const juce::String& t) { return t.containsIgnoreCase ("inf") ? -60.0 : t.retainCharacters ("-+0123456789.").getDoubleValue(); };
+                sl.setSkewFactorFromMidPoint (-6.0);
+                addAndMakeVisible (sl); addAndMakeVisible (apply); addAndMakeVisible (cancel);
+                apply.setColour (juce::TextButton::buttonColourId, theme::accent);
+                apply.onClick = [this] { const double v = sl.getValue(); auto cb = onApply; if (auto* box = findParentComponentOfClass<juce::CallOutBox>()) box->dismiss(); if (cb) cb (v); };
+                cancel.onClick = [this] { if (auto* box = findParentComponentOfClass<juce::CallOutBox>()) box->dismiss(); };
+                setSize (380, 92);
+            }
+            void resized() override
+            {
+                auto r = getLocalBounds().reduced (8);
+                cap.setBounds (r.removeFromTop (20)); sl.setBounds (r.removeFromTop (28)); r.removeFromTop (6);
+                cancel.setBounds (r.removeFromRight (80)); r.removeFromRight (6); apply.setBounds (r.removeFromRight (80));
+            }
+        };
+        auto pop = std::make_unique<GainPop> (uiPrefs().getDoubleValue (prefKey ("gainDb"), -6.0));
+        juce::Component::SafePointer<RepairDialog> self (this);
+        pop->onApply = [self] (double db)
+        {
+            if (self == nullptr) return;
+            uiPrefs().setValue (self->prefKey ("gainDb"), db);
+            if (std::abs (db) < 0.05) { self->status.setText ("Gain 0 dB: nothing to change.", juce::dontSendNotification); return; }
+            self->gainNext = true; self->gainNextDb = db <= -59.95 ? -200.0 : db;
+            self->preview (false);
+            self->gainNext = false;
+        };
+        juce::CallOutBox::launchAsynchronously (std::move (pop), gainBtn.getScreenBounds(), nullptr);
+    }
     void preview (bool declick)
     {
         if (! scanned || running || origTracks == nullptr) return;
@@ -1867,6 +1920,8 @@ private:
                     juce::String lostNote;
                     for (auto& l : out->fix.lost)
                         lostNote << "Digital dropout at " << juce::String ((double) (self->pvT0 + l.at) / self->ctx.rate, 3) << " s: " << l.count << " samples were missing on every track; put back. ";
+                    if (out->fix.kind == FixSpec::Kind::Patch && out->fix.repair.mode == RepairMode::Gain)
+                        lostNote << "Gain " << (out->fix.repair.gainDb <= -120.0 ? juce::String ("-inf") : (out->fix.repair.gainDb > 0 ? "+" : "") + juce::String (out->fix.repair.gainDb, 1)) << " dB on the box. ";
                     if (out->fix.kind == FixSpec::Kind::Patch && out->fix.repair.consonant)
                     {
                         const auto& r = out->fix.repair;
@@ -2011,6 +2066,8 @@ private:
     std::vector<RepairOp> committed;                               // the changes accepted so far (in order)
     std::shared_ptr<std::vector<std::vector<float>>> pvTracks;     // the audio with the previewed change in it
     juce::TextButton previewBtn { "ReTouch" }, declickBtn { "De-click" }, compareBtn { "Show before" }, revertBtn { "Undo" }, finishBtn { "Write back to file" }, close { "Cancel" };
+    juce::TextButton gainBtn { "Gain [G]" };
+    bool gainNext = false; double gainNextDb = 0.0;                // the next fix is a gain change of the box (set by the Gain pop-up)
     struct Step { std::shared_ptr<std::vector<std::vector<float>>> tracks; std::shared_ptr<MergedSpectrogram> spec; };
     std::vector<Step> history;                                     // the state before each fix, for Undo
     bool scanned = false, previewValid = false, showingAfter = false;
