@@ -1,4 +1,5 @@
 #pragma once
+#include "LostSamples.h"
 #include <cstdlib>
 #include "Dsp.h"
 #include <functional>
@@ -575,119 +576,6 @@ public:
         return n;
     }
 
-    /** Steps: the signal jumps by a lot in ONE sample and does not come back (a level shift), followed by an offset that fades away exponentially (a thump of a few hundred hertz and a
-        millisecond or so long: the response of a high-pass in the chain to the step). A click finder mends the jump itself but leaves that tail, which is where the click lives below 2 kHz.
-        The tail is  A * exp(-t / tau)  with A the size of the jump; tau (0.03 to 10 ms) is found by trying many values against the sound whitened by a model of the music just before the step,
-        and tail and jump are taken off together (up or down: the sign of the jump decides). It is only done when it makes the whitened sound clearly smoother and A is the size of the jump.
-        The jump has to be inside [t0,t1); its tail is taken off wherever it runs (up to 25 ms, even past t1: the area says WHERE TO LOOK for clicks, not how far one click reaches). Where the
-        sound ends before the tail does, the tail is faded out instead of cut. With less than the usual amount of sound before the step the model is made from what there is (at least 20 ms). */
-    static int mendSteps (std::vector<float>& x, long t0, long t1, double sensitivity, double sr, std::vector<std::pair<long, long>>* found)
-    {
-        const long L = (long) x.size();
-        const int p = juce::jlimit (32, 96, (int) (sr / 1500.0));
-        const long Wmax = (long) (0.025 * sr), Wmin = (long) (0.005 * sr), leadMax = 400;
-        const long preMax = juce::jmax (8L * p, (long) (0.0625 * sr)), preMin = juce::jmax (8L * p, (long) (0.02 * sr));
-        const double thr = juce::jmax (6.0, 20.0 - 1.4 * sensitivity);
-        const long blk = juce::jmax (64L, (long) (0.004 * sr));
-        t1 = juce::jmin (t1, L);
-        const long a0 = juce::jmax (preMin + p + 8, t0), a1 = juce::jmin (t1, L - Wmin - 2);      // the candidate sample n: a model before it, room for the tail after it (past t1 if need be)
-        if (a1 - a0 < 8) return 0;
-        // the usual size of a second difference, block by block (a middle value, so loud events do not count), looking a little way beyond the area as well
-        const long S0 = juce::jmax (2L, a0 - 4 * blk), S1 = juce::jmin (L, a1 + 4 * blk), nb = (S1 - S0) / blk + 1;
-        std::vector<double> sg ((size_t) nb), sgm ((size_t) nb);
-        for (long b = 0; b < nb; ++b)
-        {
-            std::vector<double> v; for (long n = S0 + b * blk; n < juce::jmin (S1, S0 + (b + 1) * blk); ++n) v.push_back (std::abs ((double) x[(size_t) n] - 2.0 * (double) x[(size_t) n - 1] + (double) x[(size_t) n - 2]));
-            if (v.empty()) { sg[(size_t) b] = 1.0e-12; continue; }
-            auto mid = v.begin() + (long) v.size() / 2; std::nth_element (v.begin(), mid, v.end()); sg[(size_t) b] = *mid / 0.6745 + 1.0e-12;
-        }
-        for (long b = 0; b < nb; ++b) { std::vector<double> v; for (long k = juce::jmax (0L, b - 4); k <= juce::jmin (nb - 1, b + 4); ++k) v.push_back (sg[(size_t) k]); auto mid = v.begin() + (long) v.size() / 2; std::nth_element (v.begin(), mid, v.end()); sgm[(size_t) b] = *mid; }
-        int fixed = 0;
-        for (long n = a0; n < a1; ++n)
-        {
-            const double dprev = (double) x[(size_t) n - 1] - (double) x[(size_t) n - 2], d = (double) x[(size_t) n] - (double) x[(size_t) n - 1], dn = (double) x[(size_t) n + 1] - (double) x[(size_t) n];
-            const double jump = d - dprev;                                        // how far the sample is from where the trend would have put it
-            const double sig = sgm[(size_t) ((n - S0) / blk)];
-            if (std::abs (jump) < thr * sig || std::abs (jump) < 2.0e-4) continue;
-            if (std::abs (dn - dprev) > 0.6 * std::abs (jump)) continue;           // a spike comes straight back; a step does not
-            auto silent = [&] (long q) { return std::abs (x[(size_t) q]) <= 3.0e-7f; };
-            if ((silent (n) && silent (n + 1) && silent (n + 2)) || (silent (n - 1) && silent (n - 2) && silent (n - 3))) continue;      // the edge of a run of digital silence (a dropout) is no level step: mendDropouts rebuilds those
-            // the model of the music before the step
-            const long pre = juce::jmin (preMax, n - (long) p - 8);
-            std::vector<double> R ((size_t) p + 1, 0.0), seg;
-            const long m0 = n - pre, m1 = n - 4;
-            for (long i = m0; i < m1; ++i) seg.push_back ((double) x[(size_t) i] * (0.5 - 0.5 * std::cos (2.0 * juce::MathConstants<double>::pi * (double) (i - m0 + 0.5) / (double) (m1 - m0))));
-            for (int k = 0; k <= p; ++k) { double acc = 0; for (size_t i = (size_t) k; i < seg.size(); ++i) acc += seg[i] * seg[i - (size_t) k]; R[(size_t) k] = acc; }
-            R[0] = R[0] * 1.00001 + 1.0e-18;
-            const auto A = levinson (R, p);
-            const long lo = juce::jmax ((long) p, n - leadMax), hi = juce::jmin (n + Wmax, L), len = hi - lo;
-            auto whiten = [&] (const std::vector<double>& s, long count)                         // s covers [from - p, from + count)
-            {
-                std::vector<double> e ((size_t) count);
-                for (long i = 0; i < count; ++i) { double acc = 0; for (int j = 0; j <= p; ++j) acc += A[(size_t) j] * s[(size_t) (i + p - j)]; e[(size_t) i] = acc; }
-                return e;
-            };
-            std::vector<double> sy ((size_t) (len + p)); for (long i = 0; i < len + p; ++i) sy[(size_t) i] = (double) x[(size_t) (lo - p + i)];
-            const double sgn = jump > 0 ? 1.0 : -1.0;
-            auto ys = whiten (sy, len); for (auto& v : ys) v *= sgn;                             // the whitened sound, turned so that the jump is positive
-            // the usual size of the whitened sound just before the step (what the model leaves of the music)
-            double sigE2 = 0, rmsE2 = 0;
-            {
-                std::vector<double> sp ((size_t) (m1 - 8 - m0)); for (long i = 0; i < (long) sp.size(); ++i) sp[(size_t) i] = (double) x[(size_t) (m0 + i)];
-                const auto ep = whiten (sp, (long) sp.size() - p);
-                std::vector<double> mags; for (double v : ep) { mags.push_back (std::abs (v)); rmsE2 += v * v; }
-                rmsE2 = rmsE2 / (double) juce::jmax (1, (int) ep.size()) + 1.0e-18;
-                auto mid = mags.begin() + (long) mags.size() / 2; std::nth_element (mags.begin(), mid, mags.end()); sigE2 = std::pow (*mid / 0.6745, 2.0) + 1.0e-18;
-            }
-            const long no = n - lo, nt = hi - n;                                                 // the step's place in ys, and how many samples the tail has
-            if (std::abs (ys[(size_t) no] - std::abs (jump)) > 0.25 * std::abs (jump) + 3.0 * sig) continue;      // a real step is the same size in the plain sound and in the whitened sound; an outlier of busy sound is not
-            double eb = 0; for (double v : ys) eb += v * v;
-            // the whitened tail for a given tau is a simple recursion (the model is a short filter): b[0] = 1, b[m] = r * b[m-1] + A[m] (m <= p), r = exp(-1/tau)
-            std::vector<double> b ((size_t) nt);
-            auto score = [&] (double tau, double& amp)
-            {
-                const double r = std::exp (-1.0 / tau); double bb = 0, by = 0, prev = 0;
-                for (long m = 0; m < nt; ++m) { const double v = (m == 0 ? 0.0 : r * prev) + (m <= p ? A[(size_t) m] : 0.0); b[(size_t) m] = v; prev = v; bb += v * v; by += v * ys[(size_t) (no + m)]; }
-                amp = bb > 0 ? by / bb : 0.0;
-                return by > 0 && bb > 0 ? by * by / bb : 0.0;                                  // the energy of the whitened sound that this tail explains
-            };
-            const double tauMin = 1.5, tauMax = juce::jmin (0.010 * sr, (double) nt / 3.0);
-            const int G = 160;
-            std::vector<double> taus ((size_t) G), amps ((size_t) G), scores ((size_t) G);
-            int bi = 0;
-            for (int g = 0; g < G; ++g)
-            {
-                taus[(size_t) g] = tauMin * std::pow (tauMax / tauMin, (double) g / (double) (G - 1));
-                scores[(size_t) g] = score (taus[(size_t) g], amps[(size_t) g]);
-                if (scores[(size_t) g] > scores[(size_t) bi]) bi = g;
-            }
-            const double bestScore = scores[(size_t) bi], bestAmp = amps[(size_t) bi], bestTau = taus[(size_t) bi];
-            const double ea = eb - bestScore, innov = ys[(size_t) no];
-            if (bestScore > 0 && bestAmp >= 0.7 * innov && bestAmp <= 1.3 * innov && (ea < 0.5 * eb || ea < 5.0 * (double) len * rmsE2) && eb - ea > 1000.0 * sigE2)      // (a clear gain, and what is left no more than the music itself would leave)
-            {
-                // How fast the tail fades is often not pinned down by the sound (a slow tail hardly shows once the sound is whitened: loud bass hides it), so the tail taken off is the AVERAGE
-                // over all the values of tau, each weighted by how well it explains the sound: a sharp answer where there is one, a cautious in-between one where there is not. A slow tail that
-                // was guessed wrong would put a thump of its own where there was none, while a fast one guessed wrong costs little, so the weights also lean towards the short ones (1 / sqrt(tau)):
-                // what is certain is taken off, what is not is left (tried on clicks laid into real music: about a third as many mends that came out worse than leaving the click, and nearly as good where the answer is clear).
-                const double var = juce::jmax (sigE2, ea / (double) len);
-                std::vector<double> w ((size_t) G); double wsum = 0;
-                for (int g = 0; g < G; ++g) { w[(size_t) g] = scores[(size_t) g] > 0 ? std::exp (juce::jmax (-60.0, (scores[(size_t) g] - bestScore) / (2.0 * var))) / std::sqrt (taus[(size_t) g]) : 0.0; wsum += w[(size_t) g]; }
-                std::vector<double> cur ((size_t) G), rr ((size_t) G);
-                for (int g = 0; g < G; ++g) { w[(size_t) g] /= wsum; cur[(size_t) g] = w[(size_t) g] * amps[(size_t) g]; rr[(size_t) g] = std::exp (-1.0 / taus[(size_t) g]); }
-                // the tail runs to the end of the window and is faded out over the last part of it instead of being cut (over a third where the sound itself ends before the window does)
-                const long fadeLen = juce::jmax (16L, (hi < n + Wmax) ? nt / 3 : nt / 5);
-                for (long i = n; i < hi; ++i)
-                {
-                    double f = 0; for (int g = 0; g < G; ++g) { f += cur[(size_t) g]; cur[(size_t) g] *= rr[(size_t) g]; }
-                    if (fadeLen > 0 && i >= hi - fadeLen) f *= 0.5 + 0.5 * std::cos (juce::MathConstants<double>::pi * (double) (i - (hi - fadeLen)) / (double) fadeLen);
-                    x[(size_t) i] = (float) ((double) x[(size_t) i] - sgn * f);
-                }
-                ++fixed; if (found) found->push_back ({ n, n + 1 });
-            }
-        }
-        return fixed;
-    }
-
     /** One pass of the click finder over [t0,t1). Returns how many gaps were mended.
         The sound is whitened block by block (a linear-prediction model of each stretch, so loud and quiet passages are judged by their own standard); a click is either a sample that jumps
         out of the residual, or a short stretch whose residual ENERGY is well above normal (a crackle whose single samples are not extreme). A gap is not mended when the sound after it is much
@@ -832,17 +720,27 @@ public:
     }
 
     /** Finds clicks in [t0,t1) (samples of x) and mends each one. 'sensitivity' 1..10 (10 = finds the faintest clicks). Returns how many were mended.
-        Several passes, so what a first mend uncovers is found too. If the stretch is short (30 ms or less) it is taken to BE the click and is mended as a whole. */
-    static int declick (std::vector<float>& x, long t0, long t1, double sensitivity, std::vector<std::pair<long, long>>* found = nullptr, double sampleRate = 48000.0)
+        Several passes, so what a first mend uncovers is found too. If the stretch is short (30 ms or less) it is taken to BE the click and is mended as a whole.
+        Lost samples (a digital jump where a block of samples went missing, see LostSamples) are put back first, with this track alone deciding how many are missing;
+        'lostDone' >= 0 says the caller has already done that (on all the tracks together) and how many it put back in this stretch. */
+    static int declick (std::vector<float>& x, long t0, long t1, double sensitivity, std::vector<std::pair<long, long>>* found = nullptr, double sampleRate = 48000.0, int lostDone = -1)
     {
         const long L = (long) x.size();
         t0 = juce::jlimit (0L, L, t0); t1 = juce::jlimit (0L, L, t1);
         if (t1 - t0 < 4) return 0;
+        int total = 0;
+        if (lostDone < 0)
+        {
+            const auto sp = LostSamples::find ({ &x }, t0, t1, sensitivity, sampleRate);
+            lostDone = LostSamples::mendAll (x, sp, sampleRate, 0, L);
+            if (found) for (auto& s : sp) found->push_back ({ s.at, s.at + 1 });
+        }
+        total += lostDone;
         if (t1 - t0 <= (long) (0.03 * sampleRate))                         // a short area chosen by the user: mend all of it
         {
-            if (int total = mendSteps (x, t0, t1, sensitivity, sampleRate, found))                      // (a level step with its fading tail is taken off as it is: nothing is invented)
+            if (lostDone > 0)                                               // (the jump of lost samples is mended by putting them back: what is left of a click in the area is mended the usual way)
             {
-                for (int pass = 0; pass < 3; ++pass)                                                     // and what is left of the click in the area is mended the usual way
+                for (int pass = 0; pass < 3; ++pass)
                 {
                     const int n = declickPass (x, t0, t1, sensitivity, found, sampleRate, false);
                     total += n;
@@ -853,9 +751,8 @@ public:
             if (interpolate (x, t0, t1, (int) juce::jlimit (40L, 128L, (t1 - t0) / 4))) { if (found) found->push_back ({ t0, t1 }); return 1; }
             return 0;
         }
-        if (t1 - t0 < 256) return 0;
-        int total = mendDropouts (x, t0, t1, sampleRate, found);                         // runs of digital silence first: what is left of their edges is then no click
-        total += mendSteps (x, t0, t1, sensitivity, sampleRate, found);                  // then level shifts with a fading tail (the part of such a click below 2 kHz)
+        if (t1 - t0 < 256) return total;
+        total += mendDropouts (x, t0, t1, sampleRate, found);                // runs of digital silence: what is left of their edges is then no click
         for (int pass = 0; pass < 3; ++pass)
         {
             const int n = declickPass (x, t0, t1, sensitivity, found, sampleRate, pass > 0);

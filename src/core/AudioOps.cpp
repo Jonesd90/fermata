@@ -136,28 +136,47 @@ bool spliceFile (juce::AudioFormatManager& fm, const juce::File& src, const juce
     return true;
 }
 
-/** A box small enough to be round 'the click itself' (250 ms or less) that reaches down into the bass: a step-type click inside it has its fading thump taken off before the box is treated
-    (turning the box down, or rebuilding it, cannot do that: the thump goes on after the box, and the sound around the box has it too). Not when the strength is 0: nothing is to be changed. */
-static bool boxHoldsStepClick (const FixSpec& spec, double sr, long a, long b)
+/** A box small enough to be round 'the click itself' (250 ms or less) that reaches down into the bass: lost samples inside it are put back before the box is treated (turning the
+    box down, or rebuilding it, cannot do that: the music on the two sides of the jump no longer lines up in time, which is the low half of the click). Not when the strength
+    is 0: nothing is to be changed. */
+bool boxRoundClick (const FixSpec& spec, double sr, long a, long b)
 {
     return spec.kind == FixSpec::Kind::Patch && spec.repair.strength > 0.0 && spec.f0 <= 1000.0 && b - a <= (long) (0.25 * sr);
 }
 
-/** How far past the end of its range a fix can change the audio: a de-click takes the whole fading tail off a step-type click, which can run on for 25 ms after the click. */
-static juce::int64 reachAfter (const FixSpec& spec, double sr, juce::int64 s0, juce::int64 s1)
+bool findsLost (const FixSpec& spec, double sr, juce::int64 s0, juce::int64 s1)
 {
-    const bool tails = spec.kind == FixSpec::Kind::Declick || boxHoldsStepClick (spec, sr, 0, (long) (s1 - s0));
-    return tails ? (juce::int64) std::ceil (0.026 * sr) : 0;
+    return spec.kind == FixSpec::Kind::Declick || boxRoundClick (spec, sr, 0, (long) (s1 - s0));
+}
+
+juce::int64 lostReach (double sr) { return (juce::int64) std::ceil (0.5 * sr) + 64; }
+
+std::vector<FixSpec::Lost> findLost (const std::vector<std::vector<float>>& tracks, double sr, long s0, long s1, double sensitivity)
+{
+    std::vector<const std::vector<float>*> tp; for (auto& t : tracks) tp.push_back (&t);
+    std::vector<FixSpec::Lost> out;
+    for (auto& f : LostSamples::find (tp, s0, s1, sensitivity, sr)) out.push_back ({ (juce::int64) f.at - s0, f.lost });
+    return out;
 }
 
 void applyFix (std::vector<std::vector<float>>& chans, double sr, long s0, long s1, const FixSpec& spec, long xfade)
 {
-    if (spec.kind == FixSpec::Kind::Patch)                                       // (a jump with a fading thump behind it, in every channel on its own: the thump is not music, so no channel's balance is touched)
-        for (auto& x : chans)
-        {
-            const long L = (long) x.size(); const long a = juce::jlimit (0L, L, s0), b = juce::jlimit (0L, L, s1);
-            if (b - a >= 2 && boxHoldsStepClick (spec, sr, a, b)) SpectralRepair::mendSteps (x, a, b, spec.sensitivity, sr, nullptr);
-        }
+    int lostDone = -1;
+    if (! chans.empty() && findsLost (spec, sr, s0, s1))
+    {
+        // lost samples first: one event on every channel (and every track), put back the same way everywhere
+        const long L = (long) chans[0].size(); const long a = juce::jlimit (0L, L, s0), b = juce::jlimit (0L, L, s1);
+        std::vector<LostSamples::Splice> sp;
+        if (spec.lostKnown) { for (auto& l : spec.lost) { const auto at = (juce::int64) s0 + l.at; if (at > 8 && at < (juce::int64) L - 8) sp.push_back ({ (long) at, l.count }); } }
+        else if (b - a >= 4) { std::vector<const std::vector<float>*> tp; for (auto& c : chans) tp.push_back (&c); sp = LostSamples::find (tp, a, b, spec.sensitivity, sr); }
+        const auto reach = lostReach (sr);
+        const long lim0 = (long) juce::jlimit ((juce::int64) 0, (juce::int64) L, juce::jmax ((juce::int64) s0 + spec.lostLo, (juce::int64) s0 - reach)),
+                   lim1 = (long) juce::jlimit ((juce::int64) 0, (juce::int64) L, juce::jmin ((juce::int64) s0 + spec.lostHi, (juce::int64) s1 + reach));
+        lostDone = 0;
+        for (auto& x : chans) lostDone = juce::jmax (lostDone, LostSamples::mendAll (x, sp, sr, lim0, lim1));
+        // a box round a click that turned out to be lost samples: putting them back WAS the repair (the box is clean now; rebuilding it again would only blur the sound)
+        if (spec.kind == FixSpec::Kind::Patch && ! sp.empty()) return;
+    }
     if (spec.kind == FixSpec::Kind::Patch && spec.repair.mode == RepairMode::Attenuate && spec.repair.linkChannels && chans.size() > 1)
     {
         std::vector<std::vector<float>*> xs; for (auto& c : chans) xs.push_back (&c);
@@ -197,7 +216,7 @@ void applyFix (std::vector<std::vector<float>>& chans, double sr, long s0, long 
                 break;
             }
             case FixSpec::Kind::Patch: SpectralRepair::repair (x, sr, a, b, spec.f0, spec.f1, spec.repair); break;
-            case FixSpec::Kind::Declick: SpectralRepair::declick (x, a, b, spec.sensitivity, nullptr, sr); break;
+            case FixSpec::Kind::Declick: SpectralRepair::declick (x, a, b, spec.sensitivity, nullptr, sr, juce::jmax (0, lostDone)); break;
             case FixSpec::Kind::Reharmonise: break;        // (made by the Re-HarmoniSer window, not here)
         }
     }
@@ -226,7 +245,8 @@ juce::File fixWholeFile (juce::AudioFormatManager& fm, const juce::File& source,
     {
         op.s0 = juce::jlimit ((juce::int64) 0, len, op.s0); op.s1 = juce::jlimit ((juce::int64) 0, len, op.s1);
         if (op.s1 <= op.s0) continue;
-        lo = juce::jmin (lo, op.s0); hi = juce::jmax (hi, juce::jmin (len, op.s1 + reachAfter (op.spec, sr, op.s0, op.s1))); margin = juce::jmax (margin, marginFor (op.spec, sr, 8.0, 1.0));
+        const auto reach = findsLost (op.spec, sr, op.s0, op.s1) ? lostReach (sr) : 0;            // (the time squeeze that puts lost samples back reaches past the part)
+        lo = juce::jmin (lo, juce::jmax ((juce::int64) 0, op.s0 - reach)); hi = juce::jmax (hi, juce::jmin (len, op.s1 + reach)); margin = juce::jmax (margin, marginFor (op.spec, sr, 8.0, 1.0));
         ops.push_back (op);
     }
     if (ops.empty()) { lo = hi = 0; }

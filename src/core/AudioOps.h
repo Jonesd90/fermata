@@ -17,6 +17,13 @@ struct FixSpec
     RepairSide side = RepairSide::Both;     // (old) Patch: which clean audio is used
     RepairParams repair;                    // Patch: strength, direction, surrounding length, before / after weighting
     double sensitivity = 6.0;               // Declick: 1 .. 10
+    /** Lost samples (a digital jump where a block of samples went missing): where they are and how many, found on ALL the tracks together by the repair window (one event,
+        the same on every track, so every file must be mended in exactly the same way). 'at' counts from the start of the fixed part (s0). Without them (lostKnown false)
+        each call looks for itself, on the channels it is given. */
+    struct Lost { juce::int64 at = 0; int count = 0; };
+    std::vector<Lost> lost;
+    bool lostKnown = false;
+    juce::int64 lostLo = -(juce::int64 (1) << 40), lostHi = juce::int64 (1) << 40;     // how far the time squeeze that puts them back may reach (samples from s0): the piece that is put in
     juce::String shortName() const
     {
         if (kind == Kind::Pitch && useCurve) return "pitch curve";
@@ -81,8 +88,16 @@ juce::String checkReplacement (juce::AudioFormatManager&, const juce::File& file
 bool spliceFile (juce::AudioFormatManager&, const juce::File& source, const juce::File& replacement, juce::int64 s0, juce::int64 s1, const juce::File& dest, double crossfadeSeconds, juce::String& error);
 
 /** Applies a fix to the samples [s0, s1) of every channel (the rest of the buffer is context and is not changed, apart from the cross-fade at the edges and, for a de-click or a repair box of
-    250 ms or less that reaches below 1 kHz, up to 25 ms after s1: the fading tail of a step-type click found inside [s0, s1) is taken off wherever it runs). */
+    250 ms or less that reaches below 1 kHz: lost samples found inside [s0, s1) are put back, and the time squeeze that keeps the length reaches up to lostReach() each side). */
 void applyFix (std::vector<std::vector<float>>& channels, double sampleRate, long s0, long s1, const FixSpec&, long crossfade);
+
+/** A ReTouch box round 'the click itself' (250 ms or less) that reaches down below 1 kHz, with a strength above 0: lost samples inside it are put back before the box is treated. */
+bool boxRoundClick (const FixSpec&, double sampleRate, long s0, long s1);
+/** Whether this fix looks for lost samples (a de-click, or a box round a click), and how far from [s0, s1) it can then change the audio (the time squeeze). */
+bool findsLost (const FixSpec&, double sampleRate, juce::int64 s0, juce::int64 s1);
+juce::int64 lostReach (double sampleRate);
+/** The lost samples in [s0, s1) of all these tracks together (for FixSpec::lost: 'at' from s0). */
+std::vector<FixSpec::Lost> findLost (const std::vector<std::vector<float>>& tracks, double sampleRate, long s0, long s1, double sensitivity);
 
 /** One change: a fix applied to the samples [s0, s1) (in samples of the take, or of the loaded area where a caller says so). */
 struct FixOp { FixSpec spec; juce::int64 s0 = 0, s1 = 0; };

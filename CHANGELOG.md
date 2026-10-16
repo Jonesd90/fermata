@@ -6,6 +6,13 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.51.0
+- De-click and ReTouch now mend **digital dropouts where samples went missing** (a dropped recorder or network buffer, not filled with silence). This is what the clicks in "0115" (1.334 s) and "Click01" (1.927 s) are: 128 samples missing at the same sample on every track, so the music after the jump simply carries on from 1.3 ms later. The jump is found on all the tracks together; the number of missing samples is measured from all of them (prediction of the sound across the gap); the samples are rebuilt from both sides, with the fine texture (air, hiss) of the recording kept; and the second around the click is squeezed back to its original length (about 2 cents for half a second each side: inaudible). Files keep their length, every track is mended in exactly the same way, and nothing outside that second changes.
+- The old "step with a fading tail" mend is gone: it took off a tail that was not there and so ADDED a low thump. That is why the low half of these clicks stayed.
+- A ReTouch box round such a click puts the missing samples back and then leaves the box alone (it is clean). In the Edit window the time squeeze stays inside the piece that is put in.
+- The status line of the repair window says what was found ("Digital dropout at 1.334 s: 130 samples were missing on every track; put back").
+- Acoustic clicks (a noise in the room, with its reverb) are not affected: De-click still takes the click itself, ReTouch / Attenuate over the tail takes the reverb down.
+
 ## 2.50.0
 - The Edit window's top row now uses pictures for the last nine word buttons: Export for Processing (container, arrow, clipboard), Multitrack import (lines, arrow, container), Markers (yellow highlighter), Feedback markers (highlighter and the shouting head), Slip left / Slip right (arrow and an upturned banana skin), Shuffle (two playing cards), Insert flag (arrow on a flag) and Next goes at end (arrow to a double bar line). Hover any of them for its name and explanation; the on/off ones light up when on.
 

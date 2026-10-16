@@ -1631,73 +1631,110 @@ int main()
             std::vector<float> q ((size_t) (2 * sr), 0.0f); auto q2 = q;
             CHECK (SpectralRepair::declick (q2, 1000, (long) q2.size() - 1000, 6, nullptr, sr) == 0 && q2 == q);
         }
-        // declick: a level step with a fading offset behind it (the low-frequency part of a click) is taken off with the jump
+        // lost samples: a block of samples missing from the recording (a dropped buffer). The sound jumps in one sample and goes on from a little later; the samples are put
+        // back (rebuilt from both sides) and the time around is squeezed back to the original length, so the track keeps its length and is untouched outside that second
         {
-            auto ref = tone; juce::Random rnd (31); for (auto& v : ref) v += 0.004f * (rnd.nextFloat() * 2.0f - 1.0f);
-            auto x = ref; const size_t n0 = 100000;
-            for (size_t i = n0; i < n0 + 3000; ++i) x[i] += 0.1f * (float) std::exp (-(double) (i - n0) / (0.0008 * sr));
-            auto y = x; const int n = SpectralRepair::declick (y, 80000, 120000, 6, nullptr, sr);
-            auto errOf = [&] (const std::vector<float>& v) { double e = 0; for (size_t i = n0 - 10; i < n0 + 2400; ++i) e += std::pow (ref[i] - v[i], 2.0); return e; };
-            CHECK (n >= 1 && errOf (y) < errOf (x) * 0.05);
-            for (size_t i = 0; i < 99000; ++i) if (y[i] != ref[i]) { CHECK (false); break; }
-        }
-        // declick: steps going DOWN, short tails, a short area chosen by hand that ends long before the tail does, and music without a click in it
-        {
-            auto ref = tone; juce::Random rnd (32); for (auto& v : ref) v += 0.004f * (rnd.nextFloat() * 2.0f - 1.0f);
+            juce::Random rnd (31);
+            auto ref = tone; for (auto& v : ref) v += 0.004f * (rnd.nextFloat() * 2.0f - 1.0f);
             const size_t n0 = 100000;
-            auto makeX = [&] (float jump, double tauMs) { auto x = ref; for (size_t i = n0; i < n0 + 3000; ++i) x[i] += jump * (float) std::exp (-(double) (i - n0) / (tauMs * 0.001 * sr)); return x; };
-            auto errOf = [&] (const std::vector<float>& v, size_t a, size_t b) { double e = 0; for (size_t i = a; i < b; ++i) e += std::pow (ref[i] - v[i], 2.0); return e; };
-            for (auto cfg : { std::pair<float, double> { -0.1f, 0.8 }, { -0.1f, 2.5 }, { 0.1f, 5.0 }, { 0.08f, 0.15 }, { -0.08f, 0.3 } })
+            auto splice = [] (const std::vector<float>& v, size_t at, size_t k) { std::vector<float> o (v.begin(), v.begin() + (long) at); o.insert (o.end(), v.begin() + (long) (at + k), v.end()); o.resize (v.size(), 0.0f); return o; };
+            auto d2At = [] (const std::vector<float>& v, size_t n) { return std::abs ((double) v[n] - 2.0 * v[n - 1] + v[n - 2]); };
+            auto maxD2 = [&] (const std::vector<float>& v, size_t a, size_t b) { double m = 0; for (size_t n = a; n < b; ++n) m = juce::jmax (m, d2At (v, n)); return m; };
+            // how closely v[a,b) matches ref at its best lag 0..maxLag (the squeeze moves the sound by up to the number of lost samples): 0 = exactly
+            auto alignErr = [&] (const std::vector<float>& v, size_t a, size_t b, int maxLag)
             {
-                auto x = makeX (cfg.first, cfg.second); auto y = x;
-                const int n = SpectralRepair::declick (y, 80000, 120000, 6, nullptr, sr);
-                CHECK (n >= 1 && errOf (y, n0 - 10, n0 + 2400) < errOf (x, n0 - 10, n0 + 2400) * 0.1);
-                for (size_t i = 0; i < 99000; ++i) if (y[i] != ref[i]) { CHECK (false); break; }
+                double best = 1e30, e0 = 0; for (size_t i = a; i < b; ++i) e0 += (double) ref[i] * ref[i];
+                for (int lag = 0; lag <= maxLag; ++lag) { double e = 0; for (size_t i = a; i < b; ++i) e += std::pow ((double) v[i] - ref[i + (size_t) lag], 2.0); best = juce::jmin (best, e); }
+                return best / e0;
+            };
+            const double usual = maxD2 (ref, 50000, 60000);
+            {   // one track: found, the number of lost samples is right, no jump is left, the sound around lines up again, and nothing outside the squeeze is touched
+                const auto x = splice (ref, n0, 64);
+                const auto sp = LostSamples::find ({ &x }, 80000, 120000, 6, sr);
+                CHECK (sp.size() == 1 && sp[0].at == (long) n0 && std::abs (sp[0].lost - 64) <= 3);
+                auto y = x; const int n = SpectralRepair::declick (y, 80000, 120000, 6, nullptr, sr);
+                CHECK (n >= 1);
+                CHECK (d2At (x, n0) > 10 * usual && maxD2 (y, n0 - 300, n0 + 300) < 2.0 * usual);
+                CHECK (alignErr (y, n0 - 400, n0 + 400, 70) < 0.02);
+                const size_t W = (size_t) (0.5 * sr) + 80;
+                for (size_t i = 0; i < n0 - W; ++i) if (y[i] != x[i]) { CHECK (false); break; }
+                for (size_t i = n0 + W; i < x.size(); ++i) if (y[i] != x[i]) { CHECK (false); break; }
+                auto y2 = x; SpectralRepair::declick (y2, 80000, 120000, 6, nullptr, sr); CHECK (y2 == y);          // the same every time (the preview and the written file agree)
+                auto z = x; SpectralRepair::declick (z, (long) n0 - 200, (long) n0 + 240, 6, nullptr, sr);          // a short area marked by hand round the jump
+                CHECK (maxD2 (z, n0 - 300, n0 + 300) < 2.0 * usual && alignErr (z, n0 - 400, n0 + 400, 70) < 0.02);
             }
-            {   // the area (9 ms) ends long before the tail (1.5 ms: gone after about 10 ms, 25 ms is the longest it is followed): the whole tail still comes off, and only that
-                auto x = makeX (-0.1f, 1.5); auto y = x;
-                const int n = SpectralRepair::declick (y, (long) n0 - 200, (long) n0 + 240, 6, nullptr, sr);
-                CHECK (n >= 1 && errOf (y, n0 - 10, n0 + 2000) < errOf (x, n0 - 10, n0 + 2000) * 0.1);
-                for (size_t i = 0; i < n0 - 200; ++i) if (y[i] != ref[i]) { CHECK (false); break; }
-                for (size_t i = n0 + 1250; i < ref.size(); ++i) if (y[i] != x[i]) { CHECK (false); break; }
+            {   // several tracks: one event at the same sample everywhere, the number lost judged on all of them; a track too quiet to show the jump is mended the same way
+                std::vector<std::vector<float>> tr;
+                for (int t = 0; t < 4; ++t)
+                {
+                    std::vector<float> v (ref.size());
+                    const float g = t == 3 ? 0.01f : 0.3f + 0.2f * (float) t;
+                    for (size_t i = 0; i < v.size(); ++i) v[i] = g * (float) (std::sin (2.0 * dsp::kPi * 440.0 * (double) i / sr + t) + 0.6 * std::sin (2.0 * dsp::kPi * 660.0 * (double) i / sr + 2 * t)) + 0.003f * (rnd.nextFloat() * 2.0f - 1.0f);
+                    tr.push_back (splice (v, n0, 96));
+                }
+                std::vector<const std::vector<float>*> tp; for (auto& t : tr) tp.push_back (&t);
+                const auto sp = LostSamples::find (tp, 80000, 120000, 6, sr);
+                CHECK (sp.size() == 1 && sp[0].at == (long) n0 && std::abs (sp[0].lost - 96) <= 3);
+                const auto found = audioops::findLost (tr, sr, 80000, 120000, 6);
+                CHECK (found.size() == 1 && found[0].at == (juce::int64) n0 - 80000);
+                FixSpec dc; dc.kind = FixSpec::Kind::Declick; dc.lost = found; dc.lostKnown = true;
+                for (auto& t : tr) { std::vector<std::vector<float>> ch { t }; audioops::applyFix (ch, sr, 80000, 120000, dc, (long) (0.02 * sr)); CHECK (maxD2 (ch[0], n0 - 300, n0 + 300) < 2.0 * maxD2 (t, 50000, 60000)); t = ch[0]; }
             }
-            {   // music with no click in it: no step is found, nothing changes
-                auto y = ref; CHECK (SpectralRepair::mendSteps (y, 80000, 120000, 6, sr, nullptr) == 0 && y == ref);
-            }
-            {   // the two edges of a dropout (a run of digital silence) are not level steps: they are left for the dropout mender
+            {   // music with no jump in it: nothing is found and nothing changes; nor at the two edges of a run of digital silence (that is a dropout of another kind)
+                CHECK (LostSamples::find ({ &ref }, 80000, 120000, 6, sr).empty());
                 auto x = ref; for (size_t i = 0; i < 128; ++i) x[n0 + i] = 0.0f;
-                auto y = x; CHECK (SpectralRepair::mendSteps (y, 80000, 120000, 6, sr, nullptr) == 0 && y == x);
+                CHECK (LostSamples::find ({ &x }, 80000, 120000, 6, sr).empty());
+                // an acoustic click (smoothed by the converter, with a reverb tail) is no lost-sample jump either: it is left to the ordinary click finder
+                auto ac = ref; for (int i = -40; i < 4000; ++i) { const double t = (double) i; const double s = i < 0 ? 0.0 : std::exp (-t / 600.0) * 0.05 * (rnd.nextFloat() * 2.0f - 1.0f); const double imp = 0.4 * std::exp (-(t * t) / 8.0); ac[n0 + (size_t) (i + 40)] += (float) (s + imp); }
+                CHECK (LostSamples::find ({ &ac }, 80000, 120000, 6, sr).empty());
             }
-            // ReTouch with a box round the click (turning the box down, or rebuilding it, leaves the jump and the thump behind it: the step is taken off first), narrow or wide, one channel or a linked pair
+            {   // the squeeze stays inside the range it is allowed (the piece put into an edit); with too little room the jump is only smoothed
+                const auto x = splice (ref, n0, 64);
+                std::vector<std::vector<float>> ch { x };
+                FixSpec dc; dc.kind = FixSpec::Kind::Declick; dc.lostLo = -(juce::int64) (0.1 * sr); dc.lostHi = (juce::int64) (0.1 * sr);
+                audioops::applyFix (ch, sr, (long) n0, (long) n0 + 10, dc, (long) (0.02 * sr));
+                CHECK (maxD2 (ch[0], n0 - 300, n0 + 300) < 2.0 * usual && alignErr (ch[0], n0 - 400, n0 + 400, 70) < 0.02);
+                for (size_t i = 0; i < x.size(); ++i) if ((i < n0 - (size_t) (0.1 * sr) || i >= n0 + (size_t) (0.1 * sr)) && ch[0][i] != x[i]) { CHECK (false); break; }
+                std::vector<std::vector<float>> c2 { x };
+                dc.lostLo = -200; dc.lostHi = 200;
+                audioops::applyFix (c2, sr, (long) n0, (long) n0 + 10, dc, (long) (0.02 * sr));
+                CHECK (d2At (c2[0], n0) < 0.5 * d2At (x, n0));
+                for (size_t i = 0; i < x.size(); ++i) if ((i < n0 - 200 || i >= n0 + 200) && c2[0][i] != x[i]) { CHECK (false); break; }
+            }
+            // ReTouch with a box round the jump, narrow or wide, either method, one channel or a linked pair: the lost samples are put back first (turning the box down or
+            // rebuilding it cannot line the two sides up again)
             for (auto mode : { RepairMode::Attenuate, RepairMode::Replace })
                 for (long halfWide : { 200L, 1500L, 5000L })
                 {
-                    auto x = makeX (-0.1f, 1.5); std::vector<std::vector<float>> ch { x };
+                    const auto x = splice (ref, n0, 64); std::vector<std::vector<float>> ch { x };
                     FixSpec spec; spec.kind = FixSpec::Kind::Patch; spec.f0 = 0.0; spec.f1 = 24000.0; spec.repair.mode = mode;
                     audioops::applyFix (ch, sr, (long) n0 - halfWide, (long) n0 + halfWide + 40, spec, (long) (0.02 * sr));
-                    CHECK (errOf (ch[0], n0 - 10, n0 + 2000) < errOf (x, n0 - 10, n0 + 2000) * 0.25);
-                    for (size_t i = 0; i < n0 - (size_t) halfWide - 6000; ++i) if (ch[0][i] != ref[i]) { CHECK (false); break; }
-                    for (size_t i = n0 + (size_t) halfWide + 6000; i < ref.size(); ++i) if (ch[0][i] != x[i]) { CHECK (false); break; }
+                    CHECK (maxD2 (ch[0], n0 - 300, n0 + 300) < 3.0 * usual);
+                    CHECK (alignErr (ch[0], n0 - 400, n0 + 400, 70) < 0.05);
+                    const size_t W = (size_t) (0.5 * sr) + 80;
+                    for (size_t i = 0; i < n0 - W - 6000; ++i) if (ch[0][i] != x[i]) { CHECK (false); break; }
+                    for (size_t i = n0 + W + 6000; i < x.size(); ++i) if (ch[0][i] != x[i]) { CHECK (false); break; }
                 }
-            {   // strength 0 changes nothing, the click included
-                auto x = makeX (-0.1f, 1.5); std::vector<std::vector<float>> ch { x };
+            {   // strength 0 changes nothing, the jump included
+                const auto x = splice (ref, n0, 64); std::vector<std::vector<float>> ch { x };
                 FixSpec spec; spec.kind = FixSpec::Kind::Patch; spec.f0 = 0.0; spec.f1 = 24000.0; spec.repair.strength = 0.0;
                 audioops::applyFix (ch, sr, (long) n0 - 200, (long) n0 + 240, spec, (long) (0.02 * sr));
                 CHECK (ch[0] == x);
             }
             {   // a box that stays above the bass (a hiss or crackle repair) is left to the box repair alone
-                auto x = makeX (-0.1f, 1.5); std::vector<std::vector<float>> ch { x };
+                const auto x = splice (ref, n0, 64); std::vector<std::vector<float>> ch { x };
                 FixSpec spec; spec.kind = FixSpec::Kind::Patch; spec.f0 = 4000.0; spec.f1 = 24000.0; spec.repair.mode = RepairMode::Replace;
                 audioops::applyFix (ch, sr, (long) n0 - 200, (long) n0 + 240, spec, (long) (0.02 * sr));
                 for (size_t i = n0 + 400; i < ref.size(); ++i) if (ch[0][i] != x[i]) { CHECK (false); break; }
             }
-            {   // a linked stereo pair (the same click in both, the second one softer): both lose it
-                auto x = makeX (-0.1f, 1.5); auto x2 = ref; for (size_t i = n0; i < n0 + 3000; ++i) x2[i] += -0.05f * (float) std::exp (-(double) (i - n0) / (0.0015 * sr));
-                std::vector<std::vector<float>> ch { x, x2 };
+            {   // a linked stereo pair (the same lost samples in both, the second one softer): both are mended, the same way
+                auto r2 = ref; for (auto& v : r2) v *= 0.5f;
+                std::vector<std::vector<float>> ch { splice (ref, n0, 64), splice (r2, n0, 64) };
                 FixSpec spec; spec.kind = FixSpec::Kind::Patch; spec.f0 = 0.0; spec.f1 = 24000.0; spec.repair.mode = RepairMode::Attenuate; spec.repair.linkChannels = true;
                 audioops::applyFix (ch, sr, (long) n0 - 200, (long) n0 + 240, spec, (long) (0.02 * sr));
-                CHECK (errOf (ch[0], n0 - 10, n0 + 2000) < errOf (x, n0 - 10, n0 + 2000) * 0.25);
-                CHECK (errOf (ch[1], n0 - 10, n0 + 2000) < errOf (x2, n0 - 10, n0 + 2000) * 0.25);
+                CHECK (maxD2 (ch[0], n0 - 300, n0 + 300) < 3.0 * usual && maxD2 (ch[1], n0 - 300, n0 + 300) < 1.5 * usual);
+                double e = 0; for (size_t i = n0 - 3000; i < n0 + 3000; ++i) e = juce::jmax (e, (double) std::abs (ch[1][i] - 0.5f * ch[0][i]));
+                CHECK (e < 0.01);
             }
         }
         // spectrogram: two low notes 13 Hz apart are told apart with the bass layer (and are not with the short window alone); a click stays sharp in time
@@ -1950,28 +1987,33 @@ int main()
             const auto pr = audioops::fixPiece (fm, orig, 0, (juce::int64) (1 * sr), (juce::int64) (2 * sr), (juce::int64) (1 * sr), (juce::int64) (2 * sr), spec, d3, err);
             CHECK (pr.ok && pr.from == (juce::int64) sr && pr.to == (juce::int64) (2 * sr));
             std::unique_ptr<juce::AudioFormatReader> c3 (fm.createReaderFor (d3)); CHECK (c3 != nullptr && c3->lengthInSamples == (juce::int64) sr);
-            // a de-click of a short part takes the whole fading tail of a step-type click off, also where it runs on past the end of the part (the new file holds it)
+            // a de-click of a short part round lost samples: the new file holds the whole time squeeze (half a second each side), is just as long, and is the same outside it
             {
                 auto base = tone; juce::Random rn (33); for (auto& v : base) v += 0.004f * (rn.nextFloat() * 2.0f - 1.0f);
-                auto x = base; const size_t n0 = 100000;
-                for (size_t i = n0; i < n0 + 3000; ++i) x[i] += -0.1f * (float) std::exp (-(double) (i - n0) / (0.0015 * sr));
+                const size_t n0 = 100000;
+                std::vector<float> x (base.begin(), base.begin() + (long) n0); x.insert (x.end(), base.begin() + (long) n0 + 64, base.end()); x.resize (base.size(), 0.0f);
+                auto d2At = [] (const std::vector<float>& v, size_t n) { return std::abs ((double) v[n] - 2.0 * v[n - 1] + v[n - 2]); };
+                double usual = 0; for (size_t n = 50000; n < 60000; ++n) usual = juce::jmax (usual, d2At (x, n));
                 const auto cf = tmp.getChildFile ("clicksrc.wav"), cd = tmp.getChildFile ("clicksrc (declick).wav");
                 CHECK (audioops::writeWav (cf, { x }, sr));
+                std::unique_ptr<juce::AudioFormatReader> rsrc (fm.createReaderFor (cf));
+                std::vector<std::vector<float>> xs; if (rsrc) audioops::readRange (*rsrc, 0, rsrc->lengthInSamples, xs);
                 FixSpec dc; dc.kind = FixSpec::Kind::Declick; dc.sensitivity = 6.0;
                 juce::String er2;
                 const auto made2 = audioops::fixWholeFile (fm, cf, (juce::int64) n0 - 200, (juce::int64) n0 + 240, dc, cd, er2);
                 CHECK (made2 == cd && er2.isEmpty());
                 std::unique_ptr<juce::AudioFormatReader> rb (fm.createReaderFor (cd));
                 std::vector<std::vector<float>> cb2;
-                if (rb) { audioops::readRange (*rb, 0, rb->lengthInSamples, cb2); }
-                if (! cb2.empty())
+                if (rb) { CHECK (rb->lengthInSamples == (juce::int64) x.size()); audioops::readRange (*rb, 0, rb->lengthInSamples, cb2); }
+                if (! cb2.empty() && ! xs.empty())
                 {
-                    auto errOf2 = [&] (const std::vector<float>& v, size_t a, size_t b) { double e = 0; for (size_t i = a; i < b; ++i) e += std::pow (base[i] - v[i], 2.0); return e; };
-                    CHECK (errOf2 (cb2[0], n0 - 10, n0 + 2000) < errOf2 (x, n0 - 10, n0 + 2000) * 0.1);
-                    double before = 0; for (size_t i = 0; i < n0 - 200; ++i) before = juce::jmax (before, (double) std::abs (cb2[0][i] - x[i]));
-                    CHECK (before < 1.0e-5);                                                               // before the part: the same (24-bit rounding only)
+                    double m = 0; for (size_t n = n0 - 300; n < n0 + 300; ++n) m = juce::jmax (m, d2At (cb2[0], n));
+                    CHECK (d2At (xs[0], n0) > 10 * usual && m < 2.0 * usual);
+                    const size_t W = (size_t) (0.5 * sr) + 80;
+                    double out = 0; for (size_t i = 0; i < x.size(); ++i) if (i < n0 - W || i >= n0 + W) out = juce::jmax (out, (double) std::abs (cb2[0][i] - xs[0][i]));
+                    CHECK (out < 1.0e-5);                                                               // outside the squeeze: the same (24-bit rounding only)
                 }
-                // and so does a repair box (the default method) round the click
+                // and so does a repair box (the default method) round the jump
                 const auto cr = tmp.getChildFile ("clicksrc (retouch).wav");
                 FixSpec rt; rt.kind = FixSpec::Kind::Patch; rt.f0 = 0.0; rt.f1 = 24000.0;
                 const auto made3 = audioops::fixWholeFile (fm, cf, (juce::int64) n0 - 200, (juce::int64) n0 + 240, rt, cr, er2);
@@ -1981,10 +2023,8 @@ int main()
                 if (rc) { audioops::readRange (*rc, 0, rc->lengthInSamples, cb3); }
                 if (! cb3.empty())
                 {
-                    auto errOf3 = [&] (const std::vector<float>& v, size_t a, size_t b) { double e = 0; for (size_t i = a; i < b; ++i) e += std::pow (base[i] - v[i], 2.0); return e; };
-                    CHECK (errOf3 (cb3[0], n0 - 10, n0 + 2000) < errOf3 (x, n0 - 10, n0 + 2000) * 0.25);
-                    double before = 0; for (size_t i = 0; i < n0 - 200; ++i) before = juce::jmax (before, (double) std::abs (cb3[0][i] - x[i]));
-                    CHECK (before < 1.0e-5);
+                    double m = 0; for (size_t n = n0 - 300; n < n0 + 300; ++n) m = juce::jmax (m, d2At (cb3[0], n));
+                    CHECK (m < 3.0 * usual);
                 }
             }
         }

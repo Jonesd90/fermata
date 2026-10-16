@@ -1516,8 +1516,8 @@ public:
         close.onClick = [this] { if (running) job.requestCancel(); else closeDialogOf (this); };
         previewBtn.setColour (juce::TextButton::buttonColourId, theme::accent); declickBtn.setColour (juce::TextButton::buttonColourId, theme::accent);
         finishBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1f7a46));
-        declickBtn.setTooltip ("Finds and mends the clicks in the time span of the box (or everywhere if there is no box; the pitch range of the box is ignored) and shows the result. Set how many it finds with Click sensitivity. Same rules as ReTouch: nothing is written yet, Play to listen, Undo if it did not work.");
-        previewBtn.setTooltip ("ReTouch: rebuilds or turns down the box you drew from its surroundings and shows the result. (A small box round a click that reaches down into the bass also takes off the sudden jump and the low thump behind it; Click sensitivity sets how readily that is found.) It does not play, and nothing is written to the files yet: press Play to listen, and Undo if it did not work. You can then draw a box round another problem and press ReTouch or De-click again: the earlier fixes stay.");
+        declickBtn.setTooltip ("Finds and mends the clicks in the time span of the box (or everywhere if there is no box; the pitch range of the box is ignored) and shows the result. Set how many it finds with Click sensitivity. A digital dropout (a block of samples that went missing: the sound jumps in one sample on every track at once) is mended by putting the missing samples back, on every track in the same way. Same rules as ReTouch: nothing is written yet, Play to listen, Undo if it did not work.");
+        previewBtn.setTooltip ("ReTouch: rebuilds or turns down the box you drew from its surroundings and shows the result. (A small box round a click that reaches down into the bass: if the click is a digital dropout, the samples that went missing are put back first, on every track in the same way, and then the box is left alone; Click sensitivity decides how readily such a dropout is found.) It does not play, and nothing is written to the files yet: press Play to listen, and Undo if it did not work. You can then draw a box round another problem and press ReTouch or De-click again: the earlier fixes stay.");
         finishBtn.setTooltip ("Writes all the fixes into the files (everything between the marks is rendered again in one go). The Undo command of the window brings the original back afterwards.");
         close.setTooltip ("Closes the window and puts everything back as it was (nothing is kept).");
         revertBtn.setTooltip ("Takes the last fix off again. Press it again to take off the one before.");
@@ -1777,7 +1777,7 @@ private:
         if (view.hasSelection()) { t0 = (juce::int64) std::llround (view.selT0() * ctx.rate); t1 = (juce::int64) std::llround (view.selT1() * ctx.rate); }
         if (! declick)
         {
-            spec.kind = FixSpec::Kind::Patch; spec.f0 = view.selF0(); spec.f1 = view.selF1(); spec.sensitivity = sens.getValue();         // (the click sensitivity also decides how readily a step-type click in a small box is found)
+            spec.kind = FixSpec::Kind::Patch; spec.f0 = view.selF0(); spec.f1 = view.selF1(); spec.sensitivity = sens.getValue();         // (the click sensitivity also decides how readily lost samples (a digital dropout) in a small box are found)
             spec.repair.mode = methodBox.getSelectedId() == 1 ? RepairMode::Attenuate : RepairMode::Replace;
             spec.repair.bands = bandsBox.getSelectedId(); spec.repair.multiRes = multiBtn.getToggleState(); spec.repair.linkChannels = linkBtn.getToggleState();
             spec.repair.strength = strength.getValue() / 100.0;
@@ -1796,7 +1796,7 @@ private:
         juce::int64 t0 = 0, t1 = 0; const auto spec = buildSpec (t0, t1, declick);
         pvSpec = spec; pvT0 = t0; pvT1 = t1;
         auto src = origTracks; const double rate = ctx.rate;
-        struct Out { MergedSpectrogram spec; std::shared_ptr<std::vector<std::vector<float>>> tracks; };
+        struct Out { MergedSpectrogram spec; std::shared_ptr<std::vector<std::vector<float>>> tracks; FixSpec fix; };
         auto out = std::make_shared<Out>();
         status.setText ("Fixing...", juce::dontSendNotification);
         previewBtn.setEnabled (false); declickBtn.setEnabled (false); finishBtn.setEnabled (false); revertBtn.setEnabled (false); compareBtn.setEnabled (false);
@@ -1805,12 +1805,23 @@ private:
         runJob ([src, out, spec, t0, t1, rate, detailN] (AudioJob& j) -> juce::String
                 {
                     auto tracks = std::make_shared<std::vector<std::vector<float>>> (*src);       // from the last accepted state
+                    // lost samples (a digital jump where a block of samples went missing) are one event on every track: they are found on all the tracks together, and the
+                    // list goes with the fix, so the files are written with exactly the same mend
+                    auto fix = spec;
+                    if (audioops::findsLost (spec, rate, t0, t1) && ! tracks->empty())
+                    {
+                        const long L = (long) (*tracks)[0].size();
+                        fix.lost = audioops::findLost (*tracks, rate, (long) juce::jlimit ((juce::int64) 0, (juce::int64) L, t0), (long) juce::jlimit ((juce::int64) 0, (juce::int64) L, t1), spec.sensitivity);
+                        for (auto& l : fix.lost) l.at += juce::jlimit ((juce::int64) 0, (juce::int64) L, t0) - t0;          // (from t0 itself)
+                        fix.lostKnown = true;
+                    }
+                    out->fix = fix;
                     for (size_t i = 0; i < tracks->size(); ++i)
                     {
                         if (j.cancelled()) return "Cancelled.";
                         j.setProgress ((float) i / (float) tracks->size());
                         std::vector<std::vector<float>> ch; ch.push_back (std::move ((*tracks)[i]));
-                        audioops::applyFix (ch, rate, (long) t0, (long) t1, spec, (long) (0.02 * rate));
+                        audioops::applyFix (ch, rate, (long) t0, (long) t1, fix, (long) (0.02 * rate));
                         (*tracks)[i] = std::move (ch[0]);
                     }
                     out->spec = SpectralRepair::spectrogram (*tracks, rate, 1600, detailN);
@@ -1823,6 +1834,7 @@ private:
                     if (err.isNotEmpty()) { self->status.setText (err, juce::dontSendNotification); self->refreshControls(); return; }
                     // the fix is kept straight away (it stays temporary until "Write back to file"); Undo takes it off again
                     self->history.push_back ({ self->origTracks, self->origSpec });
+                    self->pvSpec = out->fix;                                             // (with the lost samples found on all the tracks)
                     self->committed.push_back (RepairOp { self->pvSpec, self->pvT0, self->pvT1 });
                     self->origTracks = out->tracks;
                     self->origSpec = std::make_shared<MergedSpectrogram> (out->spec);
@@ -1831,7 +1843,10 @@ private:
                     self->dropPendingPrepared();
                     self->changedWhileRunning = false;
                     self->hearBox.setSelectedId (2, juce::dontSendNotification);
-                    self->status.setText ("Fix " + juce::String ((int) self->committed.size()) + " done (not written yet). Press Play to listen to it. If it worked, draw a box round the next problem and press ReTouch or De-click again, or press Write back to file. If not, press Undo and try again.", juce::dontSendNotification);
+                    juce::String lostNote;
+                    for (auto& l : out->fix.lost)
+                        lostNote << "Digital dropout at " << juce::String ((double) (self->pvT0 + l.at) / self->ctx.rate, 3) << " s: " << l.count << " samples were missing on every track; put back. ";
+                    self->status.setText (lostNote + "Fix " + juce::String ((int) self->committed.size()) + " done (not written yet). Press Play to listen to it. If it worked, draw a box round the next problem and press ReTouch or De-click again, or press Write back to file. If not, press Undo and try again.", juce::dontSendNotification);
                     self->refreshControls();
                 });
     }
@@ -2949,17 +2964,30 @@ static void openRepair (AppContext& app, const juce::Uuid& eid, juce::Component*
             juce::int64 lo = r0, hi = r1;
             if (ss.on) { ss.span (r, from, to, lo, hi); lo = juce::jmax (lo, prevHi); if (hi > lo) prevHi = hi; }
             if (hi - lo < 2) continue;
+            const auto a = r.srcIn + (r0 - r.startSample), b = r.srcIn + (r1 - r.startSample);
             std::vector<audioops::FixOp> mine;
             for (auto& o : ops)
             {
                 const auto i0 = juce::jmax (lo, from + o.t0), i1 = juce::jmin (hi, from + o.t1);
                 if (i1 - i0 < 2) continue;
                 if (o.t1 - o.t0 > shortest && i1 - i0 <= shortest) continue;           // a sliver of a bigger search is not taken for 'the click itself'
-                mine.push_back (audioops::FixOp { o.spec, r.srcIn + (i0 - r.startSample), r.srcIn + (i1 - r.startSample) });
+                const auto s0 = r.srcIn + (i0 - r.startSample);
+                auto sp = o.spec;
+                if (sp.lostKnown)
+                {
+                    // the lost samples found on all the tracks: those in this piece, counted from its own start; the time squeeze that puts them back stays inside the piece
+                    // that is put in (35 ms clear of its ends: the joins there cross-fade with the untouched take, which must have the same timing)
+                    std::vector<FixSpec::Lost> keep;
+                    for (auto l : sp.lost) { const auto atEdit = from + o.t0 + l.at; if (atEdit >= i0 && atEdit < i1) { l.at = atEdit - i0; keep.push_back (l); } }
+                    sp.lost = keep;
+                    const auto xf = (juce::int64) (0.035 * rate);
+                    sp.lostLo = (a + xf) - s0; sp.lostHi = (b - xf) - s0;
+                }
+                mine.push_back (audioops::FixOp { sp, s0, r.srcIn + (i1 - r.startSample) });
             }
             if (mine.empty()) continue;
             if (r1 <= r0) continue;
-            RegionJob rj; const auto a = r.srcIn + (r0 - r.startSample), b = r.srcIn + (r1 - r.startSample);
+            RegionJob rj;
             const auto fa = juce::jmin (a, r.srcIn + (lo - r.startSample)), fb = juce::jmax (b, r.srcIn + (hi - r.startSample));
             prepRegionJob (fixFolder, r, rj, a, b, fa - h, fb + h, fa, fb, ops.back().spec, only);
             rj.ops = mine;
