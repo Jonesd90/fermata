@@ -58,7 +58,7 @@ private:
     juce::TextEditor nameEditor;
     juce::TextButton playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, trimButton { "Trim Window [T]" }, deleteButton { "Delete piece" },
                      leftButton { "Move earlier" }, rightButton { "Move later" }, endButton { "Next goes at end" },
-                     zoomInButton { "+" }, zoomOutButton { "-" }, bounceButton { "Bounce Out..." }, mixerButton { "Edit Mixer" }, ltcButton { juce::String::fromUTF8 ("\xE2\x96\xB6 LTC") }, automationButton { "Automation" },
+                     zoomInButton { "+" }, zoomOutButton { "-" }, bounceButton { "Bounce Out..." }, mixerButton { "Edit Mixer" }, ltcButton { juce::String::fromUTF8 ("\xE2\x96\xB6 LTC") }, automationButton { "Automation" }, busViewButton { "Buses / VCAs" },
                      pitchButton { "Pitch..." }, pitchCurveButton { "Pitch curve..." }, repairButton { "Spectral Repair..." }, declickButton { "De-Click..." }, reharmoniserButton { "ReHarmoniSer..." }, exportProcButton { "Export for Processing..." }, undoFixButton { "Undo fix" }, tracksButton { "Tracks..." }, importButton { "Import..." }, feedbackButton { "Feedback..." };
     juce::ToggleButton slipLeftToggle { "Slip Left" }, slipRightToggle { "Slip Right" }, shuffleToggle { "Shuffle" }, insertFlagToggle { "Insert flag" }, markersToggle { "Markers" }, feedbackToggle { "Feedback markers" };
     LoopButton loopToggle;

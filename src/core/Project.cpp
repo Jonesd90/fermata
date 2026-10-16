@@ -161,6 +161,8 @@ var busToVar (const BusState& s, const juce::Uuid& busId, bool inserts, bool wit
 {
     var o = obj();
     put (o, "bus", busId.toString()); put (o, "gainDb", s.gainDb.get()); put (o, "mute", s.mute.get()); put (o, "solo", s.solo.get());
+    if (s.inGainDb.get() != 0.0f) put (o, "inGainDb", s.inGainDb.get());
+    if (s.pan.get() != 0.0f) put (o, "pan", s.pan.get());
     if (withOutput) put (o, "outFirst", s.outFirst.load());
     put (o, "outOn", s.outOn.get()); put (o, "outDest", s.outDest.toString());
     if (const auto vm = s.vcaMask.load(); vm != 0) put (o, "vcaMask", (juce::int64) vm);
@@ -169,10 +171,12 @@ var busToVar (const BusState& s, const juce::Uuid& busId, bool inserts, bool wit
     return o;
 }
 
-void busFromVar (BusState& s, const var& v, const InsertFactory& factory, double sr, int block, bool inserts, bool withOutput, bool faders = true, bool sendLevels = true)
+void busFromVar (BusState& s, const var& v, const InsertFactory& factory, double sr, int block, bool inserts, bool withOutput, bool faders = true, bool sendLevels = true, bool pan = true)
 {
+    if (pan) s.pan.set (v.hasProperty ("pan") ? (float) (double) v["pan"] : 0.0f);
     if (faders)
     {
+        s.inGainDb.set (v.hasProperty ("inGainDb") ? (float) (double) v["inGainDb"] : 0.0f);
         s.gainDb.set ((float) (double) v["gainDb"]); s.mute.set ((bool) v["mute"]); s.solo.set ((bool) v["solo"]);
         if (withOutput && v.hasProperty ("outFirst")) s.outFirst.store ((int) v["outFirst"]);
         s.outOn.set (v.hasProperty ("outOn") ? (bool) v["outOn"] : false);
@@ -789,7 +793,7 @@ void Project::applyMix (MixerState& to, const var& snap, double sampleRate, int 
             const juce::Uuid id (fv["bus"].toString());
             BusState* f = nullptr;
             for (auto& p : to.busPool) if (p->busId == id) f = p.get();
-            if (f != nullptr) busFromVar (*f, fv, insertFactory, sampleRate, maxBlock, withInserts, false, parts.faders, parts.sends);
+            if (f != nullptr) busFromVar (*f, fv, insertFactory, sampleRate, maxBlock, withInserts, false, parts.faders, parts.sends, parts.pan);
         }
     if (parts.faders) vcaStatesFromVar (to, snap["vcaStates"]);
     markDirty();

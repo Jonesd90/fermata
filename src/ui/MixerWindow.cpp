@@ -1047,6 +1047,26 @@ public:
             solo->setTooltip ("Solo this bus (this mixer only): everything that feeds it stays open, the rest is silenced");
             solo->onClick = [this] { st.solo.set (solo->getToggleState()); app.project.markDirty(); };
         }
+        if (! external)                                                            // an Int Bus has a pan (balance of its stereo pair) like a track
+        {
+            styleCaption (panLabel, "PAN"); addAndMakeVisible (panLabel);
+            styleField (panValue, 9.5f); addAndMakeVisible (panValue);
+            panSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+            panSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+            panSlider.setRange (-1.0, 1.0, 0.01);
+            panSlider.getProperties().set ("pan", true);
+            panSlider.setDoubleClickReturnValue (true, 0.0, juce::ModifierKeys::ctrlModifier);
+            panSlider.onDoubleClick = [this]
+            {
+                valueentry::ask (panSlider, "Balance (L30, C, R45 ...)", ChannelStrip::panText ((float) panSlider.getValue()), [this] (const juce::String& t)
+                { double pv = 0.0; if (valueentry::parsePan (t, pv)) panSlider.setValue (pv, juce::sendNotificationSync); });
+            };
+            panSlider.setValue (st.pan.get(), juce::dontSendNotification);
+            panValue.setText (ChannelStrip::panText (st.pan.get()), juce::dontSendNotification);
+            panSlider.setTooltip ("Balance of this bus's stereo pair: moving it turns the opposite side down. Double-click to type a position (Ctrl + click centres). Automatable.");
+            panSlider.onValueChange = [this] { st.pan.set ((float) panSlider.getValue()); panValue.setText (ChannelStrip::panText ((float) panSlider.getValue()), juce::dontSendNotification); app.project.markDirty(); };
+            addAndMakeVisible (panSlider);
+        }
         if (external)
         {
             outBox.addItem ("(nowhere)", 1);
@@ -1100,6 +1120,7 @@ public:
     void tick() override
     {
         if (! fader.isBeingDragged()) fader.setDb (st.gainDb.get());
+        if (! external && ! panSlider.isMouseButtonDown() && std::abs (panSlider.getValue() - st.pan.get()) > 0.0001) { panSlider.setValue (st.pan.get(), juce::dontSendNotification); panValue.setText (ChannelStrip::panText (st.pan.get()), juce::dontSendNotification); }
         fader.pushPeaks (st.meterL.take(), st.meterR.take(), st.rmsL.get(), st.rmsR.get());
     }
     void resetPeaks() override { fader.resetPeaks(); }
@@ -1113,7 +1134,16 @@ public:
         wells.push_back (faderArea.expanded (2, 0));
         r.removeFromBottom (3);
         auto ms = r.removeFromBottom (kMSH);
-        r.removeFromBottom (4 + 2 * kPanRowH);
+        r.removeFromBottom (4);
+        auto panArea = r.removeFromBottom (2 * kPanRowH);
+        if (! external)
+        {
+            auto row = panArea.removeFromTop (kPanRowH);
+            auto head = row.removeFromTop (14);
+            panLabel.setBounds (head.removeFromLeft (head.getWidth() / 2));
+            panValue.setBounds (head.removeFromRight (36).reduced (0, 1));
+            panSlider.setBounds (row);
+        }
         mute->setBounds (ms.removeFromLeft (ms.getWidth() / 2).reduced (1, 0));
         if (solo != nullptr) solo->setBounds (ms.reduced (1, 0));
         fader.setBounds (faderArea);
@@ -1162,6 +1192,7 @@ private:
     InfoNote note; juce::ComboBox outBox;
     juce::OwnedArray<SendDial> dials; juce::TextButton toTrackButton;
     juce::OwnedArray<juce::TextButton> toggles; juce::TextButton *mute = nullptr, *solo = nullptr;
+    juce::Label panLabel, panValue; valueentry::TypedSlider panSlider;
 };
 
 /** Which audio tracks and Int Buses a VCA controls in one mixer: a tick box for each. Opens from the strip's Assign button; every tick takes effect at once. */

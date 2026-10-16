@@ -1617,6 +1617,20 @@ int main()
             auto z = x; SpectralRepair::declick (z, 99990, 100330, 5, nullptr, sr);               // marked by hand
             CHECK (errOf (z) < before * 0.1);
         }
+        // declick: a dropout (a run of digital silence in the middle of sound) is rebuilt, not just its edges smoothed
+        {
+            auto x = tone; auto ref = x;
+            for (size_t i = 0; i < 128; ++i) x[100000 + i] = 0.0f;
+            auto y = x; const int n = SpectralRepair::declick (y, 80000, 120000, 6, nullptr, sr);
+            double e0 = 0, e1 = 0, rm = 0, rr = 0;
+            for (size_t i = 99990; i < 100140; ++i) { e0 += std::pow (ref[i] - x[i], 2.0); e1 += std::pow (ref[i] - y[i], 2.0); }
+            for (size_t i = 100000; i < 100128; ++i) { rm += (double) y[i] * y[i]; rr += (double) ref[i] * ref[i]; }
+            CHECK (n >= 1 && e1 < e0 * 0.1 && rm > 0.5 * rr);
+            for (size_t i = 0; i < 99000; ++i) if (y[i] != ref[i]) { CHECK (false); break; }
+            // quiet silence between notes (nothing around it) is left alone
+            std::vector<float> q ((size_t) (2 * sr), 0.0f); auto q2 = q;
+            CHECK (SpectralRepair::declick (q2, 1000, (long) q2.size() - 1000, 6, nullptr, sr) == 0 && q2 == q);
+        }
         // spectrogram: two low notes 13 Hz apart are told apart with the bass layer (and are not with the short window alone); a click stays sharp in time
         {
             std::vector<float> x ((size_t) (6 * sr), 0.0f);
@@ -2814,6 +2828,18 @@ int main()
         lane.pts.push_back (AutoPoint()); lane.pts.back().value = -9.0f;
         auto plan = automationPlanFor (vp, ed, true, vp.mixers.front()->id);
         CHECK (plan != nullptr && plan->items.size() == 1 && plan->items[0].target == &pm.vcas[1].gainDb);
+        // an Int Bus has the lanes of a track: gain, fader, pan (saved too) and sends
+        pm.busFor (ib)->inGainDb.set (-3.0f); pm.busFor (ib)->pan.set (0.5f);
+        ed.lanes.clear();
+        for (const char* prm : { "gain", "fader", "pan" }) { auto& l = ed.addLane (ib, prm, vp.mixers.front()->id); l.pts.push_back (AutoPoint()); l.pts.back().value = 0.0f; }
+        auto plan2 = automationPlanFor (vp, ed, true, vp.mixers.front()->id);
+        CHECK (plan2 != nullptr && plan2->items.size() == 3);
+        if (plan2 != nullptr && plan2->items.size() == 3)
+            CHECK (plan2->items[0].target == &pm.busFor (ib)->inGainDb && plan2->items[1].target == &pm.busFor (ib)->gainDb && plan2->items[2].target == &pm.busFor (ib)->pan);
+        vp.projectFile = tmp.getChildFile ("vcatest2.fermata");
+        CHECK (vp.save (er));
+        Project vr; CHECK (vr.load (vp.projectFile, er));
+        CHECK (std::abs (vr.mixers.front()->busFor (ib)->inGainDb.get() + 3.0f) < 1.0e-4f && std::abs (vr.mixers.front()->busFor (ib)->pan.get() - 0.5f) < 1.0e-4f);
     }
     SECTION ("fade curves are separate for the two ends of a region");
     {

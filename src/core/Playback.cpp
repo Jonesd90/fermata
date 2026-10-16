@@ -261,6 +261,22 @@ std::shared_ptr<AutomationPlan> automationPlanFor (Project& p, const EditDef& e,
             plan->items.push_back (std::move (vi));
             continue;
         }
+        if (const auto* bd = p.findBus (lane.trackId); bd != nullptr && ! bd->external && m != nullptr)        // an Int Bus has the same lanes as a track: gain, fader, pan, sends, plug-ins
+        {
+            auto* bs = m->busFor (lane.trackId);
+            AutomationPlan::Item bi; bi.lane = lane;
+            if (lane.param == autoparam::fader) bi.target = &bs->gainDb;
+            else if (lane.param == autoparam::gain) bi.target = &bs->inGainDb;
+            else if (lane.param == autoparam::pan) bi.target = &bs->pan;
+            else if (autoparam::isSend (lane.param)) { if (auto* sd = bs->sends.find (autoparam::sendDest (lane.param))) bi.target = &sd->gainDb; }
+            else if (int slot = 0, idx = 0; autoparam::parsePlugin (lane.param, slot, idx) && slot < kNumSlots)
+            {
+                auto& sl = bs->slots[slot];
+                if (auto* proc = sl.getProcessorUnsafe(); proc != nullptr && idx < proc->numParams() && proc->paramAutomatable (idx)) { bi.slot = &sl; bi.paramIndex = idx; }
+            }
+            if (bi.target != nullptr || bi.slot != nullptr) plan->items.push_back (std::move (bi));
+            continue;
+        }
         const auto* t = p.findTrack (lane.trackId);
         if (m == nullptr || t == nullptr) continue;
         auto* strip = m->stripFor (lane.trackId);

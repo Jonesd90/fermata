@@ -58,9 +58,19 @@ public:
     const std::vector<TrackDef>& rowTracks() const
     {
         rowsCache.clear();
+        if (busView)                      // the other view: one row for every Int Bus and every VCA, each with its automation lane (and no audio)
+        {
+            for (auto& b : app.project.buses)
+                if (! b.external) { TrackDef t; t.id = b.id; t.name = b.name; t.format = TrackFormat::Mono; rowsCache.push_back (t); }     // (Mono: a bus's pan is a single position, like a mono track's)
+            for (auto& v : app.project.vcas) { TrackDef t; t.id = v.id; t.name = "VCA " + v.label(); t.format = TrackFormat::Stereo; rowsCache.push_back (t); }
+            return rowsCache;
+        }
         if (auto* e = edit()) for (auto* t : app.project.editTracks (*e)) rowsCache.push_back (*t);
         return rowsCache;
     }
+    bool busView = false;                 // true: the rows are the Int Buses and VCAs (automation only), not the audio tracks
+    bool lanesOn (const EditDef& e) const { return busView || e.automationOn; }
+    void setBusView (bool on) { busView = on; selectedRegion = juce::Uuid::null(); selectedRegions.clear(); updateSize(); repaint(); }
     mutable std::vector<TrackDef> rowsCache;
     juce::Uuid clipMoveRegion, clipMoveTrack; int clipMoveToRow = -1;   // Shift + drag: one track's clip of a piece moves to another track, staying at the same time
     int rowDragFrom = -1, rowDragTo = -1;       // dragging a track's name up or down to move the track (the edit's order only)
@@ -405,9 +415,9 @@ public:
             if (e->fixOut >= 0) { g.setColour (juce::Colour (0xffe08a00)); g.fillRect (xOf (e->fixOut) - 1, 0, 2, rowsEnd); g.drawText ("2", xOf (e->fixOut) - 34, 16, 30, 14, juce::Justification::right); }
         }
 
-        if (e->automationOn)
+        if (lanesOn (*e))
             for (size_t i = 0; i < tracks.size(); ++i) paintLane (g, *e, (int) i, top + (int) i * rowH);
-        if (e->automationOn && autoDragIndex >= 0)                                    // the value of the point being set or moved, in a little box beside it
+        if (lanesOn (*e) && autoDragIndex >= 0)                                    // the value of the point being set or moved, in a little box beside it
             if (auto* L = e->findLane (autoDragLane); L != nullptr && juce::isPositiveAndBelow (autoDragIndex, (int) L->pts.size()))
             {
                 const auto& pt = L->pts[(size_t) autoDragIndex];
@@ -435,7 +445,7 @@ public:
             g.setColour (tc); g.fillRect (r.removeFromLeft (6));
             g.setColour (tc.darker (0.3f).withAlpha (0.8f)); g.fillRect (sx, top + (int) i * rowH + rowH - 1, kNameW, 1);
             g.setColour (theme::text); g.setFont (14.0f);
-            if (e->automationOn)
+            if (lanesOn (*e))
             {
                 auto nameArea = r.reduced (8, 0);
                 auto bottom = nameArea.removeFromBottom (juce::jmin (20, nameArea.getHeight() / 2 + 2));
@@ -456,7 +466,7 @@ public:
                 g.drawFittedText (tracks[i].name, r.reduced (8, 2).withTrimmedRight (8).withTrimmedLeft (rowH >= 40 ? 0 : 42).withTrimmedTop (rowH >= 40 ? 20 : 0).withTrimmedBottom (rowH >= 40 ? 10 : 0), juce::Justification::centredLeft, 2, 1.0f);
                 paintStripBits (g, tracks[i].id, sx, rowTop, rowH >= 40);
             }
-            if (e->automationOn) paintStripBits (g, tracks[i].id, sx, top + (int) i * rowH, false);
+            if (lanesOn (*e)) paintStripBits (g, tracks[i].id, sx, top + (int) i * rowH, false);
         }
         if (e->showMarkers) markerui::paintFlags (g, e->markers, [this] (double s) { return xOf (s); }, sx + kNameW, getHeight(), markers.draggedId());
         if (e->showFeedback && ! e->feedback.empty()) feedbackui::paintFlags (g, e->feedback, [this] (double s) { return xOf (s); }, markerui::kStripH, sx + kNameW, getHeight(), selectedFeedback);
@@ -526,15 +536,15 @@ public:
                 if (juce::isPositiveAndBelow (row, (int) rowTracks().size()))
                 {
                     const int rowTop = kRulerH + kLaneH + row * rowH;
-                    if (auto* st = stripOf (rowTracks()[(size_t) row].id))
+                    if (const auto ms = msOf (rowTracks()[(size_t) row].id); ms.mute != nullptr)
                     {
-                        if (muteRect (sxv, rowTop).expanded (1).contains (e.getPosition())) { st->mute.set (! st->mute.get()); app.project.markDirty(); repaint(); return; }
-                        if (soloRect (sxv, rowTop).expanded (1).contains (e.getPosition())) { st->solo.set (! st->solo.get()); app.project.markDirty(); repaint(); return; }
+                        if (muteRect (sxv, rowTop).expanded (1).contains (e.getPosition())) { ms.mute->set (! ms.mute->get()); app.project.markDirty(); repaint(); return; }
+                        if (soloRect (sxv, rowTop).expanded (1).contains (e.getPosition())) { ms.solo->set (! ms.solo->get()); app.project.markDirty(); repaint(); return; }
                     }
                 }
             }
         }
-        if (ed->automationOn && automationMouseDown (e, *ed)) return;
+        if (lanesOn (*ed) && automationMouseDown (e, *ed)) return;
         if (e.mods.isPopupMenu() && e.x >= viewport.getViewPositionX() && e.x < viewport.getViewPositionX() + kNameW && e.y >= kRulerH + kLaneH)   // right-click on a track name: its colour
         {
             const int row = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
@@ -546,6 +556,7 @@ public:
             }
             return;
         }
+        if (busView && e.y >= kRulerH + kLaneH) return;                    // the bus / VCA view has no audio to select or move, and its rows keep their order
         if (! e.mods.isPopupMenu() && e.x >= viewport.getViewPositionX() && e.x < viewport.getViewPositionX() + kNameW && e.y >= kRulerH + kLaneH)   // a track's name: drag it to another row
         {
             const int row = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
@@ -933,11 +944,27 @@ private:
         auto* m = mixerFor (juce::Uuid::null());
         return m != nullptr ? m->stripFor (trackId) : nullptr;
     }
+    /** The mute / solo flags and meter values of a row: an audio track's strip, an Int Bus's strip, or a VCA (which has no meter). */
+    struct MsRef { Flag* mute = nullptr; Flag* solo = nullptr; Param* pkL = nullptr; Param* pkR = nullptr; bool pkTake = false; };
+    MsRef msOf (const juce::Uuid& id) const
+    {
+        MsRef r;
+        auto* m = mixerFor (juce::Uuid::null());
+        if (m == nullptr) return r;
+        switch (app.project.kindOf (id))
+        {
+            case NodeKind::Track:  { auto* s = m->stripFor (id); r = { &s->mute, &s->solo, &s->livePkL, &s->livePkR, true }; break; }
+            case NodeKind::IntBus: { auto* b = m->busFor (id); r = { &b->mute, &b->solo, &b->meterL, &b->meterR, false }; break; }      // (the mixer's own meter value is only read here, never reset)
+            case NodeKind::Vca:    if (auto* v = app.project.findVca (id)) { auto& s = m->vcas[juce::jlimit (0, kMaxVcas - 1, v->number - 1)]; r = { &s.mute, &s.solo, nullptr, nullptr, false }; } break;
+            default: break;
+        }
+        return r;
+    }
     /** Mute / Solo buttons (the same flags as on the linked mixer) and a small horizontal meter. */
     void paintStripBits (juce::Graphics& g, const juce::Uuid& trackId, int sx, int rowTop, bool withMeter)
     {
-        auto* st = stripOf (trackId);
-        if (st == nullptr) return;
+        const auto st = msOf (trackId);
+        if (st.mute == nullptr) return;
         auto drawBtn = [&] (juce::Rectangle<int> r, const char* t, bool on, juce::Colour c)
         {
             g.setColour (on ? c : juce::Colour (0xff2a2f36)); g.fillRoundedRectangle (r.toFloat(), 3.0f);
@@ -945,8 +972,8 @@ private:
             g.setColour (on ? juce::Colours::black : theme::text); g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
             g.drawText (t, r, juce::Justification::centred, false);
         };
-        drawBtn (muteRect (sx, rowTop), "M", st->mute.get(), juce::Colour (0xffe05a3a));
-        drawBtn (soloRect (sx, rowTop), "S", st->solo.get(), juce::Colour (0xfff2c200));
+        drawBtn (muteRect (sx, rowTop), "M", st.mute->get(), juce::Colour (0xffe05a3a));
+        drawBtn (soloRect (sx, rowTop), "S", st.solo->get(), juce::Colour (0xfff2c200));
         if (! withMeter) return;
         auto mr = juce::Rectangle<float> ((float) sx + 12.0f, (float) (rowTop + rowH - 11), (float) kNameW - 24.0f, 6.0f);
         g.setColour (juce::Colour (0xff15181c)); g.fillRoundedRectangle (mr, 2.0f);
@@ -966,7 +993,7 @@ private:
         {
             auto& v = shownLevel[t.id.toString()];
             float target = 0.0f;
-            if (auto* st = stripOf (t.id)) { const float pk = juce::jmax (st->livePkL.take(), st->livePkR.take()); if (running) target = pk; }     // the peak since the last look: as quick as the mixer's meters
+            if (const auto st = msOf (t.id); st.pkL != nullptr) { const float pk = st.pkTake ? juce::jmax (st.pkL->take(), st.pkR->take()) : juce::jmax (st.pkL->get(), st.pkR->get()); if (running) target = pk; }     // the peak since the last look: as quick as the mixer's meters
             v = juce::jmax (target, v * 0.86f);
             if (v < 1.0e-4f) v = 0.0f; else moving = true;
         }
@@ -1001,9 +1028,14 @@ private:
         if (autoparam::parsePlugin (param, slot, idx))
         {
             if (auto* m = mixerFor (mixerId))
-                if (auto* st = m->stripFor (trackId); st != nullptr && slot < kNumSlots)
-                    if (auto* pr = st->slots[slot].getProcessorUnsafe())
+            {
+                InsertSlot* sls = nullptr;
+                if (app.project.kindOf (trackId) == NodeKind::Track) sls = m->stripFor (trackId)->slots;
+                else if (app.project.kindOf (trackId) == NodeKind::IntBus) sls = m->busFor (trackId)->slots;
+                if (sls != nullptr && slot < kNumSlots)
+                    if (auto* pr = sls[slot].getProcessorUnsafe())
                         return pr->getName() + ": " + pr->paramName (idx);
+            }
             return "Plug-in " + juce::String (slot + 1) + " (empty)";
         }
         return "Fader";
@@ -1177,23 +1209,27 @@ private:
         auto& s = selOf (t.id);
         juce::PopupMenu m, mixers;
         m.addSectionHeader ("Automate");
-        m.addItem (3, "Gain (into the mixer, before the inserts and fader)", true, s.param == autoparam::gain);
-        m.addItem (1, "Fader (through the mixer, after the inserts)", true, s.param == autoparam::fader);
-        m.addItem (2, "Pan" + juce::String (t.channelCount() == 1 ? "" : " (mono tracks only)"), t.channelCount() == 1, s.param == autoparam::pan);
+        const auto kind = app.project.kindOf (t.id);
+        const bool isVca = kind == NodeKind::Vca;
+        if (! isVca) m.addItem (3, "Gain (into the mixer, before the inserts and fader)", true, s.param == autoparam::gain);
+        m.addItem (1, isVca ? "Fader (adds to the faders of everything it controls)" : "Fader (through the mixer, after the inserts)", true, s.param == autoparam::fader);
+        if (! isVca) m.addItem (2, kind == NodeKind::IntBus ? juce::String ("Pan") : "Pan" + juce::String (t.channelCount() == 1 ? "" : " (mono tracks only)"), t.channelCount() == 1, s.param == autoparam::pan);
         // bus / track sends the strip really has (in the mixer chosen below), and the automatable parameters of its plug-ins
         std::vector<juce::String> keys;
         juce::PopupMenu sends, plugins;
-        if (auto* mx = mixerFor (s.mixer))
-            if (auto* st = mx->stripFor (t.id))
+        if (auto* mx = mixerFor (s.mixer); mx != nullptr && ! isVca)
+        {
+            SendList* sendList = kind == NodeKind::IntBus ? &mx->busFor (t.id)->sends : &mx->stripFor (t.id)->sends;
+            InsertSlot* slotArr = kind == NodeKind::IntBus ? mx->busFor (t.id)->slots : mx->stripFor (t.id)->slots;
             {
-                for (auto& sd : st->sends.pool)
+                for (auto& sd : sendList->pool)
                 {
                     keys.push_back (autoparam::send (sd->dest));
                     sends.addItem (1000 + (int) keys.size() - 1, nodeName (sd->dest), true, s.param == keys.back());
                 }
                 for (int sl = 0; sl < kNumSlots; ++sl)
                 {
-                    auto* pr = st->slots[sl].getProcessorUnsafe();
+                    auto* pr = slotArr[sl].getProcessorUnsafe();
                     if (pr == nullptr) continue;
                     juce::PopupMenu one, page; int inPage = 0, pageStart = 0;
                     auto flush = [&]
@@ -1214,6 +1250,7 @@ private:
                     if (total > 0) plugins.addSubMenu ("Insert " + juce::String (sl + 1) + ": " + pr->getName(), one);
                 }
             }
+        }
         m.addSubMenu ("Bus sends", sends, sends.getNumItems() > 0);
         m.addSubMenu ("Plug-in parameters", plugins, plugins.getNumItems() > 0);
         m.addSeparator();
@@ -1500,6 +1537,11 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
                                  "The points stay on the same music when the edit changes. Plays from this window and is part of Bounce Out. Restart playback to hear changes.");
     automationButton.setToggleState (edit() != nullptr && edit()->automationOn, juce::dontSendNotification);
     automationButton.onClick = [this] { if (auto* e = edit()) { e->automationOn = automationButton.getToggleState(); app.project.changed(); timeline->repaint(); } };
+    busViewButton.setClickingTogglesState (true);
+    busViewButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff7a5bc4));
+    busViewButton.setTooltip ("Switch the rows between the audio tracks and the Int Buses and VCAs. In the bus view every Int Bus and every VCA has its own automation lane: "
+                              "Gain, Fader and Pan for the buses (plus sends and plug-in parameters), Fader for the VCAs. Use the label on the left of a row to choose what it shows.");
+    busViewButton.onClick = [this] { timeline->setBusView (busViewButton.getToggleState()); };
     pitchButton.setTooltip ("Pitch correction: shifts the audio between marks 1 and 2 on every track, by semitones and / or cents. Can also process extra audio at each end (up to 9 s) so the edit points can be moved outward later");
     // With no 1 / 2 flags set, a piece that was selected whole (Ctrl + click) is loaded in full into the process window.
     auto withWholePiece = [this] (std::function<void()> run)
@@ -1556,7 +1598,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     timeline->slipLeft = app.trimSlipLeft; timeline->slipRight = app.trimSlipRight;
     slipLeftToggle.onClick  = [this] { timeline->slipLeft = slipLeftToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
     slipRightToggle.onClick = [this] { timeline->slipRight = slipRightToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
-    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &ltcButton, &automationButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &reharmoniserButton, &exportProcButton, &undoFixButton,
+    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &ltcButton, &automationButton, &busViewButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &reharmoniserButton, &exportProcButton, &undoFixButton,
                                                           &slipLeftToggle, &slipRightToggle, &shuffleToggle, &insertFlagToggle })
     {
         addAndMakeVisible (b);
@@ -1598,7 +1640,7 @@ void EditWindowComponent::resized()
         { &trimButton }, { &deleteButton, grid::btnW, grid::btnH, 14 },
         { &leftButton }, { &rightButton }, { &endButton, grid::btnW, grid::btnH, 14 },
         { &bounceButton }, { &mixerButton, grid::btnW, grid::btnH, 6 }, { &ltcButton, 74, grid::btnH, 14 },
-        { &automationButton, grid::btnW, grid::btnH, 14 },
+        { &automationButton, grid::btnW, grid::btnH, 2 }, { &busViewButton, grid::btnW + 20, grid::btnH, 14 },
         { &pitchButton }, { &pitchCurveButton, grid::btnW + 24 }, { &repairButton, grid::btnW + 30 }, { &declickButton }, { &reharmoniserButton, grid::btnW + 24 }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, grid::btnW, grid::btnH, 14 },
         { &tracksButton }, { &importButton, grid::btnW, grid::btnH, 14 }, { &feedbackButton, grid::btnW, grid::btnH, 8 }, { &markersToggle, 80 }, { &feedbackToggle, 140, grid::btnH, 14 },
         { &slipLeftToggle, 95 }, { &slipRightToggle, 105 }, { &shuffleToggle, 90 }, { &insertFlagToggle, 100, grid::btnH, 14 },

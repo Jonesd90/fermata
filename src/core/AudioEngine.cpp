@@ -768,7 +768,16 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             if (nd.receives) { mp.pre.copyFrom (0, 0, nd.incoming, 0, 0, n); mp.pre.copyFrom (1, 0, nd.incoming, 1, 0, n); }
             else mp.pre.clear (0, n);
             juce::AudioBuffer<float> view (mp.pre.getArrayOfWritePointers(), 2, n);
+            {   // the bus's input gain (automatable "gain"): before the inserts and the fader
+                const float gIn = dbToGain (b->inGainDb.get());
+                if (gIn != 1.0f || b->lastIn != 1.0f) { view.applyGainRamp (0, n, b->lastIn, gIn); b->lastIn = gIn; }
+            }
             for (auto& slot : b->slots) slot.process (view);
+            if (const float pn = juce::jlimit (-1.0f, 1.0f, b->pan.get()); pn != 0.0f)          // balance: the side away from the pan is turned down (cos), the other stays
+            {
+                const float k = std::cos (std::abs (pn) * juce::MathConstants<float>::halfPi);
+                juce::FloatVectorOperations::multiply (pn > 0.0f ? L : R, k, n);
+            }
             audible = ! b->mute.get();
             faderGain = dbToGain (b->gainDb.get());
             if (const auto vm = b->vcaMask.load (std::memory_order_relaxed); vm != 0 && mp.mixer != nullptr) faderGain *= mp.mixer->vcaGain (vm);

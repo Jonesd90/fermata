@@ -516,6 +516,65 @@ public:
         return std::sqrt (e / (double) (b - a));
     }
 
+    /** Mends the gap [g0,g1): the missing sound is predicted from both sides; a mend that came out too quiet (a hole) is redone by predicting from each side and blending. */
+    static bool mendGap (std::vector<float>& x, long g0, long g1)
+    {
+        const long m = g1 - g0;
+        const std::vector<float> keep (x.begin() + g0, x.begin() + g1);
+        if (! interpolate (x, g0, g1, (int) juce::jlimit (48L, 160L, m / 3))) return false;
+        if (m > 48)
+        {
+            const double rr = 0.5 * (rmsRange (x, g0 - 128, g0) + rmsRange (x, g1, g1 + 128)), rg = rmsRange (x, g0, g1);
+            if (rr > 1.0e-7 && rg < 0.55 * rr)
+                if (! extrapolateBlend (x, g0, g1, (int) juce::jlimit (32L, 128L, m / 2))) std::copy (keep.begin(), keep.end(), x.begin() + g0);
+        }
+        if (m >= 24)                                    // a prediction from both sides tends to be a little weak in the middle of a gap: bring it up to the level around it (smoothly, so the edges stay joined)
+        {
+            const long w = juce::jmax (128L, 3 * m);                       // (long windows: a short one of a low note gives a level that depends on where in its cycle it is)
+            const double rb = rmsRange (x, g0 - w, g0), ra = rmsRange (x, g1, g1 + w), rg = rmsRange (x, g0, g1);
+            const double target = std::sqrt (juce::jmax (1.0e-12, rb) * juce::jmax (1.0e-12, ra));
+            if (rb > 1.0e-6 && ra > 1.0e-6 && rg > 1.0e-9 && rg < 0.6 * target)
+            {
+                const double k = juce::jmin (2.0, target / rg);
+                for (long n = 0; n < m; ++n)
+                {
+                    const double w = std::sin (juce::MathConstants<double>::pi * ((double) n + 0.5) / (double) m);
+                    x[(size_t) (g0 + n)] = (float) ((double) x[(size_t) (g0 + n)] * (1.0 + (k - 1.0) * w * w));
+                }
+            }
+        }
+        return true;
+    }
+
+    /** Dropouts: a run of digital silence (exact zeros) in the middle of sound, such as a converter or a file-writing glitch leaves. A click finder sees only the jump at each end of it, so the
+        silence itself used to stay. The run (and one sample each side, which a dropout often half-covers) is rebuilt from the sound before and after it. Quiet passages and real silence are left alone:
+        the sound next to the run must be louder than about -94 dBFS (-70 for runs under 8 samples) on BOTH sides. */
+    static int mendDropouts (std::vector<float>& x, long t0, long t1, double sr, std::vector<std::pair<long, long>>* found)
+    {
+        const long L = (long) x.size();
+        const long maxRun = juce::jmin (1500L, (long) (sr * 0.02));
+        const float tol = 3.0e-7f;
+        int n = 0;
+        for (long i = juce::jmax (1L, t0); i < juce::jmin (L - 1, t1);)
+        {
+            if (std::abs (x[(size_t) i]) > tol) { ++i; continue; }
+            long j = i; while (j < L && std::abs (x[(size_t) j]) <= tol) ++j;
+            const long run = j - i;
+            if (run >= 3 && run <= maxRun && i > 64 && j + 64 < L)
+            {
+                auto level = [&] (long a, long b) { double s2 = 0; for (long k = a; k < b; ++k) s2 += std::abs (x[(size_t) k]); return s2 / (double) (b - a); };
+                const double need = run >= 8 ? 2.0e-5 : 3.0e-4;                       // a long run of exact zeros in sound above about -94 dBFS is a dropout; a very short one must sit in louder sound
+                if (level (i - 48, i) > need && level (j, j + 48) > need)
+                {
+                    const long g0 = i - 1, g1 = j + 1;
+                    if (mendGap (x, g0, g1)) { ++n; if (found) found->push_back ({ g0, g1 }); }
+                }
+            }
+            i = j + 1;
+        }
+        return n;
+    }
+
     /** One pass of the click finder over [t0,t1). Returns how many gaps were mended.
         The sound is whitened block by block (a linear-prediction model of each stretch, so loud and quiet passages are judged by their own standard); a click is either a sample that jumps
         out of the residual, or a short stretch whose residual ENERGY is well above normal (a crackle whose single samples are not extreme). A gap is not mended when the sound after it is much
@@ -653,16 +712,7 @@ public:
                 const double rb = resRms (g.first - ref, g.first - 1), ra = resRms (g.second + p, g.second + p + ref);
                 if (rb > 0.0 && ra > 0.0 && (ra > 2.5 * rb || rb > 2.5 * ra)) continue;
             }
-            const std::vector<float> keep (x.begin() + g.first, x.begin() + g.second);
-            if (! interpolate (x, g.first, g.second, (int) juce::jlimit (48L, 160L, m / 3))) continue;
-            if (m > 48)                                                             // a mend that came out too quiet (a hole) is redone from both sides
-            {
-                const double rr = 0.5 * (rmsRange (x, g.first - 128, g.first) + rmsRange (x, g.second, g.second + 128)), rg = rmsRange (x, g.first, g.second);
-                if (rr > 1.0e-7 && rg < 0.55 * rr)
-                {
-                    if (! extrapolateBlend (x, g.first, g.second, (int) juce::jlimit (32L, 128L, m / 2))) std::copy (keep.begin(), keep.end(), x.begin() + g.first);
-                }
-            }
+            if (! mendGap (x, g.first, g.second)) continue;
             ++mended; if (found) found->push_back (g);
         }
         return mended;
@@ -681,7 +731,7 @@ public:
             return 0;
         }
         if (t1 - t0 < 256) return 0;
-        int total = 0;
+        int total = mendDropouts (x, t0, t1, sampleRate, found);                 // runs of digital silence first: what is left of their edges is then no click
         for (int pass = 0; pass < 3; ++pass)
         {
             const int n = declickPass (x, t0, t1, sensitivity, found, sampleRate, pass > 0);

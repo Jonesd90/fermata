@@ -200,6 +200,9 @@ struct StripState
 struct BusState
 {
     juce::Uuid busId;
+    Param inGainDb { 0.0f };          // the level going into the bus, before its inserts and fader (automatable "gain")
+    Param pan { 0.0f };               // balance of the bus's stereo pair: -1 (left) .. +1 (right); 0 = untouched (automatable "pan")
+    float lastIn = 1.0f;              // audio thread only
     Param gainDb { 0.0f };
     Flag  mute, solo;                 // solo: Int Bus only (soloing a bus keeps everything that feeds it open)
     std::atomic<int> outFirst { -1 }; // Ext Bus only: first driver output of its stereo pair (-1 = goes nowhere)

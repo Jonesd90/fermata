@@ -113,6 +113,26 @@ juce::String masterRenderFingerprint (const Project& cp, const EditDef& e, const
                 if (l.pts.empty()) continue;
                 const bool theirs = l.mixerId.isNull() ? (m == p.mixerOfEdit (e.id) || (p.mixerOfEdit (e.id) == nullptr && m == p.mixers.front().get())) : l.mixerId == m->id;
                 if (! theirs) continue;
+                if (auto* vs = mv["vcaStates"].getArray())                              // a VCA's fader lane (the lane's trackId is the VCA's id)
+                    if (const auto* vd = p.findVca (l.trackId); vd != nullptr && l.param == autoparam::fader)
+                        for (auto& vo : *vs) if ((int) vo["number"] == vd->number) removeKeys (vo, { "gainDb" });
+                if (auto* bst = mv["busStates"].getArray())                             // an Int Bus's lanes
+                    for (auto& sv : *bst)
+                    {
+                        if (sv["bus"].toString() != l.trackId.toString()) continue;
+                        if (l.param == autoparam::fader) removeKeys (sv, { "gainDb" });
+                        else if (l.param == autoparam::pan) removeKeys (sv, { "pan" });
+                        else if (l.param == autoparam::gain) removeKeys (sv, { "inGainDb" });
+                        else if (autoparam::isSend (l.param))
+                        {
+                            if (auto* sl = sv["sendList"].getArray())
+                                for (auto& so : *sl) if (so["dest"].toString() == autoparam::sendDest (l.param).toString()) removeKeys (so, { "gainDb" });
+                        }
+                        else if (int slot = 0, idx = 0; autoparam::parsePlugin (l.param, slot, idx))
+                        {
+                            if (auto* sl = sv["slots"].getArray()) if (slot < sl->size()) removeKeys (sl->getReference (slot), { "state" });
+                        }
+                    }
                 if (auto* strips = mv["strips"].getArray())
                     for (auto& sv : *strips)
                     {
