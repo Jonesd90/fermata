@@ -23,7 +23,8 @@ struct BounceSettings
     juce::Uuid automationEdit;               // the edit whose automation is applied while bouncing (null = none)
     juce::Uuid mixerId;                      // the mixer whose settings are used (normally the processing mixer)
     std::vector<juce::Uuid> sources;         // the post-fader signal of these audio tracks / Int Buses / Ext Buses. Every one chosen is written to its own stereo file.
-    bool addOutputName = true;               // file names end with " - <output name>" (always done when there is more than one output)
+    std::vector<juce::Uuid> sourcesPre;      // the same, taken BEFORE the fader (after inserts and pan, not affected by mute / solo): files are named "... - <name> (before fader)"
+    bool addOutputName = true;              // file names end with " - <output name>" (always done when there is more than one output)
     bool floatFiles = false;                 // write 32-bit float files (no clipping, no rounding): used for the intermediate files of the Mastering window
     bool normalise = false;
     float peakDb = -0.1f;                    // the loudest sample ends up at this level (dBFS)

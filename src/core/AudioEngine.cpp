@@ -172,6 +172,8 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
                 const auto id = nd->kind == NodeKind::Track ? nd->strip->trackId : nd->bus->busId;
                 const auto it = std::find (offlineTaps.begin(), offlineTaps.end(), id);
                 nd->tapIdx = it != offlineTaps.end() ? idxOf[(size_t) (it - offlineTaps.begin())] : -1;
+                const auto ip = std::find (offlinePreTaps.begin(), offlinePreTaps.end(), id);
+                nd->tapPreIdx = ip != offlinePreTaps.end() ? (int) offlineTaps.size() + (int) (ip - offlinePreTaps.begin()) : -1;
             }
         }
         // ---- delay compensation: every path through the mixer is made equally long, so a plug-in that holds the sound back (look-ahead,
@@ -197,8 +199,12 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
             for (auto& nd : mp->order) if (nd->kind == NodeKind::ExtBus) nd->outDelay.init (longest - nd->outLat, 2);
             mp->latency = longest;
             int tapLongest = 0;
-            for (auto& nd : mp->order) if (nd->tapIdx >= 0) tapLongest = juce::jmax (tapLongest, nd->outLat);
-            for (auto& nd : mp->order) if (nd->tapIdx >= 0) nd->tapDelay.init (tapLongest - nd->outLat, 2);
+            for (auto& nd : mp->order) if (nd->tapIdx >= 0 || nd->tapPreIdx >= 0) tapLongest = juce::jmax (tapLongest, nd->outLat);
+            for (auto& nd : mp->order)
+            {
+                if (nd->tapIdx >= 0)    nd->tapDelay.init (tapLongest - nd->outLat, 2);
+                if (nd->tapPreIdx >= 0) nd->tapDelayPre.init (tapLongest - nd->outLat, 2);
+            }
             mp->tapLatency = tapLongest;
         }
         mp->chanBuf.setSize (kMaxTrackChannels, maxBlock);
@@ -332,9 +338,9 @@ bool AudioEngine::waitForAudioThread()
     return blockCounter.load() >= c0 + 2 || ! running.load();
 }
 
-void AudioEngine::setOfflineTarget (const juce::Uuid& mixerId, std::vector<juce::Uuid> tapIds)
+void AudioEngine::setOfflineTarget (const juce::Uuid& mixerId, std::vector<juce::Uuid> tapIds, std::vector<juce::Uuid> preFaderIds)
 {
-    offlineMixerId = mixerId; offlineTaps = std::move (tapIds);
+    offlineMixerId = mixerId; offlineTaps = std::move (tapIds); offlinePreTaps = std::move (preFaderIds);
 }
 
 void AudioEngine::renderOffline (const std::vector<juce::AudioBuffer<float>>& trackAudio, int n, std::vector<juce::AudioBuffer<float>>& captures)
@@ -656,7 +662,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
         mp.wasPlaying = playing;
         for (auto& nd : mp.order)
         {
-            nd->srcDelay.clear(); nd->outDelay.clear(); nd->tapDelay.clear();
+            nd->srcDelay.clear(); nd->outDelay.clear(); nd->tapDelay.clear(); nd->tapDelayPre.clear();
             for (auto& sp : nd->sends) sp.delay.clear();
         }
     }
@@ -782,6 +788,19 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             faderGain = dbToGain (b->gainDb.get());
             if (const auto vm = b->vcaMask.load (std::memory_order_relaxed); vm != 0 && mp.mixer != nullptr) faderGain *= mp.mixer->vcaGain (vm);
             lastGain = &b->lastGain; lastPre = &b->lastPre; meterL = &b->meterL; meterR = &b->meterR;
+        }
+
+        if (nd.tapPreIdx >= 0 && captureBufs != nullptr && nd.tapPreIdx < (int) captureBufs->size())   // offline render: the same channel taken before its fader
+        {
+            const juce::AudioBuffer<float>* capSrc = &mp.pre;
+            if (nd.tapDelayPre.len > 0)
+            {
+                for (int c = 0; c < 2; ++c) mp.sendTmp.copyFrom (c, 0, mp.pre, c, 0, n);
+                float* chp[2] = { mp.sendTmp.getWritePointer (0), mp.sendTmp.getWritePointer (1) };
+                nd.tapDelayPre.run (chp, 2, n);
+                capSrc = &mp.sendTmp;
+            }
+            for (int c = 0; c < 2; ++c) (*captureBufs)[(size_t) nd.tapPreIdx].addFrom (c, 0, *capSrc, c, 0, n);
         }
 
         // the fader: post = pre * gain (smoothed)

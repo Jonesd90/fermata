@@ -9,11 +9,11 @@ Bouncer::Bouncer (const Project& live, const BounceSettings& s) : settings (s)
     bool haveMixer = false;
     for (auto& m : live.mixers) haveMixer = haveMixer || m->id == s.mixerId;
     if (! haveMixer) { prepareError = "The mixer to bounce through no longer exists."; return; }
-    if (s.sources.empty()) { prepareError = "Choose at least one output to bounce (an Ext bus, an Int bus or an audio track)."; return; }
+    if (s.sources.empty() && s.sourcesPre.empty()) { prepareError = "Choose at least one output to bounce (an Ext bus, an Int bus or an audio track)."; return; }
     if (s.items.empty()) { prepareError = "Nothing to bounce."; return; }
     shadow = live.cloneForRender (s.sampleRate, kBlock);
     engine = std::make_unique<AudioEngine> (*shadow);
-    engine->setOfflineTarget (s.mixerId, s.sources);
+    engine->setOfflineTarget (s.mixerId, s.sources, s.sourcesPre);
     engine->prepare (s.sampleRate, kBlock);
 }
 
@@ -26,7 +26,7 @@ juce::File Bouncer::uniqueFile (const juce::String& name) const
 
 juce::String Bouncer::fileName (const BounceItem& it, const juce::String& outputName, bool several) const
 {
-    return (several || settings.addOutputName) ? it.name + " - " + outputName : it.name;
+    return (several || settings.addOutputName || outputName.endsWith ("(before fader)")) ?it.name + " - " + outputName : it.name;
 }
 
 BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bool>* cancel)
@@ -64,6 +64,7 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
     // the outputs: the chosen channels, in the order given (matches the engine's capture order)
     std::vector<juce::String> outNames;
     for (auto& id : settings.sources) outNames.push_back (shadow->nodeName (id));
+    for (auto& id : settings.sourcesPre) outNames.push_back (shadow->nodeName (id) + " (before fader)");       // (captured after the post-fader ones, as the engine orders them)
     const int numOut = (int) outNames.size();
     const bool several = numOut > 1;
     std::vector<juce::AudioBuffer<float>> captures;
@@ -100,7 +101,7 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
             bool have = false;                                   // a piece may have a mixer of its own (an Edit's mixer); if it is gone, the chosen mixer is used
             for (auto& m : shadow->mixers) have = have || m->id == it.mixerId;
             if (have && ! it.mixerId.isNull()) renderedMixer = it.mixerId;
-            engine->setOfflineTarget (renderedMixer, settings.sources);
+            engine->setOfflineTarget (renderedMixer, settings.sources, settings.sourcesPre);
         }
         autoPlan = planForEdit (it.automationEdit.isNull() ? settings.automationEdit : it.automationEdit, renderedMixer);
 

@@ -62,7 +62,7 @@ private:
     IconButton recordButton { "REC  [R]" }, playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, bounceButton { "Bounce Out..." },
                pitchButton { "Pitch..." }, repairButton { "Repair & DeClick..." }, undoFixButton { "Undo fix" };
     juce::TextButton zoomInButton { "+" }, zoomOutButton { "-" }, playMarkedButton { "Play marked" },
-                     editInButton { "Edit IN [1]" }, editOutButton { "Edit OUT [2]" },
+                     editInButton { "Mark 1 [1]" }, editOutButton { "Mark 2 [2]" },
                      toEditButton { "To edit [3]" }, toEditAtButton { "To playhead [4]" }, editWindowButton { "Edit window" },
                      importButton { "Import takes..." }, exportProcButton { "Export for Processing..." }, barSearchButton { "Search for bar" };
     juce::ToggleButton overdubBox { "Overdub" }, markersToggle { "Markers" };

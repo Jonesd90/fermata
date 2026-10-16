@@ -33,7 +33,6 @@ private:
     void placeFromTakeWindow();
     void deleteSelected();
     void moveSelected (int delta);
-    void setMark (bool in);
     void setFixMark (bool in);
     void markWholeSelected();
     void openBounce();

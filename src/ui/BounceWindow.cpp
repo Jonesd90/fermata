@@ -6,31 +6,52 @@ namespace td
 class BounceSourceList : public juce::Component
 {
 public:
-    struct Item { juce::Uuid id; bool isMain = false; juce::ToggleButton* box = nullptr; NodeKind kind = NodeKind::None; };
+    struct Item { juce::Uuid id; bool isMain = false; juce::ToggleButton* box = nullptr; NodeKind kind = NodeKind::None; juce::ToggleButton* pre = nullptr; };
     explicit BounceSourceList (const Project& p)
     {
         heading ("Ext buses (the mixer's outputs, after their faders)");
         for (auto& b : p.buses) if (b.external) addEntry (b.id, false, NodeKind::ExtBus, b.name, true);
-        heading ("Int buses");
-        for (auto& b : p.buses) if (! b.external) addEntry (b.id, false, NodeKind::IntBus, b.name, false);
-        heading ("Audio tracks (after their faders)");
-        for (auto& t : p.tracks) addEntry (t.id, false, NodeKind::Track, t.name, false);
+        heading ("Int buses (after their faders; tick \"before fader\" for the signal ahead of the fader)");
+        for (auto& b : p.buses) if (! b.external) addEntry (b.id, false, NodeKind::IntBus, b.name, false, true);
+        heading ("Audio tracks (after their faders; tick \"before fader\" for the signal ahead of the fader)");
+        for (auto& t : p.tracks) addEntry (t.id, false, NodeKind::Track, t.name, false, true);
         setSize (400, rows * kRow);
     }
     void resized() override
     {
         int y = 0;
         for (auto* c : order) { c->setBounds (0, y, getWidth(), kRow); y += kRow; }
+        for (auto& it : items)
+            if (it.pre != nullptr)
+            {
+                auto b = it.box->getBounds();
+                it.pre->setBounds (b.removeFromRight (kPreW));
+                it.box->setBounds (b);
+            }
         setSize (getWidth(), juce::jmax (getHeight(), rows * kRow));
     }
-    void select (std::function<bool (const Item&)> pred) { for (auto& it : items) it.box->setToggleState (pred (it), juce::dontSendNotification); }
+    void select (std::function<bool (const Item&)> pred, bool pre = false)
+    {
+        for (auto& it : items)
+        {
+            if (pre) { if (it.pre != nullptr) it.pre->setToggleState (pred (it), juce::dontSendNotification); }
+            else     { it.box->setToggleState (pred (it), juce::dontSendNotification); }
+        }
+    }
+    /** The ticked "before fader" boxes. */
+    std::vector<juce::Uuid> chosenPre() const
+    {
+        std::vector<juce::Uuid> v;
+        for (auto& it : items) if (it.pre != nullptr && it.pre->getToggleState()) v.push_back (it.id);
+        return v;
+    }
     std::vector<juce::Uuid> chosen() const
     {
         std::vector<juce::Uuid> v;
         for (auto& it : items) if (! it.isMain && it.box->getToggleState()) v.push_back (it.id);
         return v;
     }
-    static constexpr int kRow = 22;
+    static constexpr int kRow = 22, kPreW = 120;
 private:
     void heading (const juce::String& t)
     {
@@ -38,12 +59,19 @@ private:
         l->setFont (juce::FontOptions (12.0f, juce::Font::bold)); l->setColour (juce::Label::textColourId, theme::dimText);
         addAndMakeVisible (l); order.add (l); ++rows;
     }
-    void addEntry (const juce::Uuid& id, bool isMain, NodeKind k, const juce::String& text, bool on)
+    void addEntry (const juce::Uuid& id, bool isMain, NodeKind k, const juce::String& text, bool on, bool withPre = false)
     {
         auto* b = boxes.add (new juce::ToggleButton (text));
         b->setToggleState (on, juce::dontSendNotification);
         addAndMakeVisible (b); order.add (b); ++rows;
-        items.push_back ({ id, isMain, b, k });
+        juce::ToggleButton* pb = nullptr;
+        if (withPre)
+        {
+            pb = boxes.add (new juce::ToggleButton ("before fader"));
+            pb->setTooltip ("Also make a file of this signal taken BEFORE its fader (after its plug-ins and pan; mute and solo do not affect it). The file name ends with '(before fader)'.");
+            addAndMakeVisible (pb);
+        }
+        items.push_back ({ id, isMain, b, k, pb });
     }
     int rows = 0;
     std::vector<Item> items;
@@ -64,7 +92,7 @@ BounceComponent::BounceComponent (AppContext& a, const BounceContext& c)
     title.setFont (juce::FontOptions (16.0f, juce::Font::bold));
     cap (rangeCaption, "What to bounce:", true);
     fullButton.setButtonText (isEdit ? "Full Track (first to last audio of the edit)" : "Whole take");
-    ioButton.setButtonText ("Between the I/O flags (set with I and O, or with 1 and 2)");
+    ioButton.setButtonText ("Between marks 1 and 2 (press P to mark a whole selected piece or take)");
     selectedButton.setButtonText (isEdit ? "Selected pieces (click a piece in the edit, Ctrl + click for more)"
                                          : "Selected takes (click a take, Ctrl + click for more)");
     allTakesButton.setButtonText ("All takes as individual files (every take of this window, one file each - e.g. to send for listening)");
@@ -99,11 +127,13 @@ BounceComponent::BounceComponent (AppContext& a, const BounceContext& c)
     sourcesViewport.setViewedComponent (sources.get(), false);
     sourcesViewport.setScrollBarsShown (true, false);
     addAndMakeVisible (sourcesViewport);
-    for (auto* b : { &allExt, &allInt, &allTracks, &clearAll }) addAndMakeVisible (b);
+    for (auto* b : { &allExt, &allInt, &allTracks, &allPre, &clearAll }) addAndMakeVisible (b);
     allTracks.onClick = [this] { sources->select ([] (const BounceSourceList::Item& it) { return it.kind == NodeKind::Track; }); };
     allInt.onClick    = [this] { sources->select ([] (const BounceSourceList::Item& it) { return it.kind == NodeKind::IntBus; }); };
     allExt.onClick    = [this] { sources->select ([] (const BounceSourceList::Item& it) { return it.kind == NodeKind::ExtBus; }); };
-    clearAll.onClick  = [this] { sources->select ([] (const BounceSourceList::Item&) { return false; }); };
+    allPre.onClick    = [this] { sources->select ([] (const BounceSourceList::Item& it) { return it.kind == NodeKind::Track; }, true); };
+    allPre.setTooltip ("Ticks 'before fader' on every audio track (use Clear to untick everything).");
+    clearAll.onClick  = [this] { sources->select ([] (const BounceSourceList::Item&) { return false; }); sources->select ([] (const BounceSourceList::Item&) { return false; }, true); };
 
     auto* st = app.props.getUserSettings();
     normToggle.setToggleState (st != nullptr && st->getBoolValue ("bounceNormalise", false), juce::dontSendNotification);
@@ -138,13 +168,13 @@ BounceComponent::BounceComponent (AppContext& a, const BounceContext& c)
     bool hasIO = false;
     if (isEdit)
     {
-        if (auto* e = app.project.findEdit (ctx.id)) hasIO = (e->markIn >= 0 && e->markOut > e->markIn) || (e->fixIn >= 0 && e->fixOut > e->fixIn);
+        if (auto* e = app.project.findEdit (ctx.id)) hasIO = e->fixIn >= 0 && e->fixOut > e->fixIn;
     }
     else if (auto* w = app.project.findTakeWindow (ctx.id)) hasIO = (w->findGroup (w->editTake) != nullptr && w->editIn >= 0 && w->editOut > w->editIn);
     ioButton.setEnabled (hasIO);
     selectedButton.setEnabled (! ctx.selected.empty());
     selectedButton.setTooltip (ctx.selected.empty() ? (isEdit ? "Click a piece in the edit window first (Ctrl + click for several)" : "Click a take in the take window first (Ctrl + click for several)") : "");
-    ioButton.setTooltip (hasIO ? "" : isEdit ? "Set an IN and an OUT flag first (keys I and O, or 1 and 2)" : "Set the IN and OUT flags first (keys 1 and 2, or P for a whole take)");
+    ioButton.setTooltip (hasIO ? "" : isEdit ? "Set marks 1 and 2 first (keys 1 and 2, or P for a whole selected piece)" : "Set marks 1 and 2 first (keys 1 and 2, or P for a whole take)");
     if (! ctx.selected.empty()) selectedButton.setToggleState (true, juce::dontSendNotification);
     else fullButton.setToggleState (true, juce::dontSendNotification);
     if (! isEdit && ctx.selected.empty())
@@ -185,7 +215,7 @@ void BounceComponent::resized()
     r.removeFromTop (8);
     sourcesCaption.setBounds (r.removeFromTop (20));
     auto quick = r.removeFromTop (28);
-    for (auto* b : { &allExt, &allInt, &allTracks, &clearAll }) b->setBounds (quick.removeFromLeft (juce::jmax (80, b->getBestWidthForHeight (24) + 8)).reduced (1, 2));
+    for (auto* b : { &allExt, &allInt, &allTracks, &allPre, &clearAll }) b->setBounds (quick.removeFromLeft (juce::jmax (80, b->getBestWidthForHeight (24) + 8)).reduced (1, 2));
     auto lower = r.removeFromBottom (266);
     sourcesViewport.setBounds (r.reduced (0, 2));
     sources->setSize (sourcesViewport.getWidth() - sourcesViewport.getScrollBarThickness(), sources->getHeight());
@@ -244,7 +274,8 @@ bool BounceComponent::buildSettings (BounceSettings& bs, juce::String& error) co
     if (! juce::isPositiveAndBelow (mi, (int) p.mixers.size())) { error = "Choose a mixer."; return false; }
     bs.mixerId = p.mixers[(size_t) mi]->id;
     bs.sources = sources->chosen();
-    if (bs.sources.empty()) { error = p.buses.empty() ? "There is nothing to bounce yet: add an Ext bus (and route tracks to it) in the Project Designer." : "Tick at least one output to bounce (an Ext bus, an Int bus or an audio track)."; return false; }
+    bs.sourcesPre = sources->chosenPre();
+    if (bs.sources.empty() && bs.sourcesPre.empty()) { error = p.buses.empty() ? "There is nothing to bounce yet: add an Ext bus (and route tracks to it) in the Project Designer." : "Tick at least one output to bounce (an Ext bus, an Int bus or an audio track)."; return false; }
     bs.leadSeconds = leadBox.getSelectedId() - 1; bs.tailSeconds = tailBox.getSelectedId() - 1;
     bs.addOutputName = outNameToggle.getToggleState();
     bs.normaliseTogether = togetherToggle.getToggleState();
@@ -265,9 +296,8 @@ bool BounceComponent::buildSettings (BounceSettings& bs, juce::String& error) co
         }
         else if (ioButton.getToggleState())
         {
-            const bool io = e->markIn >= 0 && e->markOut > e->markIn, fix = e->fixIn >= 0 && e->fixOut > e->fixIn;
-            if (! io && ! fix) { error = "Set an IN and an OUT flag first (keys I and O, or 1 and 2, in the edit window)."; return false; }
-            const double a = io ? e->markIn : e->fixIn, b = io ? e->markOut : e->fixOut;           // the I / O flags; if they are not set, the 1 / 2 flags
+            if (! (e->fixIn >= 0 && e->fixOut > e->fixIn)) { error = "Set marks 1 and 2 first (keys 1 and 2 in the edit window, or P for a whole selected piece)."; return false; }
+            const double a = e->fixIn, b = e->fixOut;
             bs.items.push_back ({ base, (juce::int64) std::llround (a * e->sampleRate), (juce::int64) std::llround (b * e->sampleRate) });
         }
         else
@@ -314,7 +344,7 @@ bool BounceComponent::buildSettings (BounceSettings& bs, juce::String& error) co
         else
         {
             const double a = w->editIn, b = w->editOut;
-            if (! ioSet && ! fixSet) { error = "Set the IN and OUT flags in the take first (keys 1 and 2, or P for a whole take)."; return false; }
+            if (! ioSet && ! fixSet) { error = "Set marks 1 and 2 in the take first (keys 1 and 2, or P for a whole take)."; return false; }
             bs.items.push_back ({ base, (juce::int64) std::llround (a * g->sampleRate), (juce::int64) std::llround (b * g->sampleRate) });
         }
     }
@@ -325,7 +355,7 @@ bool BounceComponent::buildSettings (BounceSettings& bs, juce::String& error) co
 
 void BounceComponent::setBusy (bool busy)
 {
-    for (juce::Component* c : std::initializer_list<juce::Component*> { &fullButton, &ioButton, &selectedButton, &allTakesButton, &mixerBox, &allExt, &allInt, &allTracks, &clearAll,
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &fullButton, &ioButton, &selectedButton, &allTakesButton, &mixerBox, &allExt, &allInt, &allTracks, &allPre, &clearAll,
                                                                          &normToggle, &togetherToggle, &outNameToggle, &peakEditor, &nameEditor, &folderEditor, &chooseButton })
         c->setEnabled (! busy);
     bounceButton.setButtonText (busy ? "Cancel" : "Bounce");

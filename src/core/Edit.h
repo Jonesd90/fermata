@@ -235,7 +235,6 @@ struct EditDef
     std::vector<juce::Uuid> trackIds;      // this edit's own track rows, top to bottom. Empty = every project track in the project's order (the default)
     double       playheadSeconds = 0.0;    // the edit window's playhead (where key 4 in a take window places a piece)
     int          insertIndex = -1;         // where the next region goes: -1 = at the end, else before regions[insertIndex]
-    double       markIn = -1.0, markOut = -1.0;   // I / O points on the edit timeline, seconds (-1 = not set); used by Bounce Out
     double       fixIn = -1.0, fixOut = -1.0;     // keys 1 / 2: the part to pitch-correct or repair (seconds on the edit timeline, -1 = not set)
     std::vector<juce::Uuid> fixTracks;            // Alt + drag: only these tracks are marked (empty = every track)
     bool fixUses (const juce::Uuid& track) const { return fixTracks.empty() || std::find (fixTracks.begin(), fixTracks.end(), track) != fixTracks.end(); }

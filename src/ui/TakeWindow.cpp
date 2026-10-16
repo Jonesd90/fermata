@@ -235,7 +235,7 @@ public:
             const int x0 = xOf (grp.startSeconds);
             const int wpx = juce::jmax (4, (int) (len * pixelsPerSecond));
 
-            auto lane = juce::Rectangle<int> (x0, kRulerH + 16, wpx, 20);      // under the row of Edit IN / OUT flags and above the row of In / Out flags
+            auto lane = juce::Rectangle<int> (x0, kRulerH + 16, wpx, 20);      // under the row of marks 1 / 2 flags and above the row of In / Out flags
             const bool picked = isTakeSelected (grp.id);
             g.setColour (live ? juce::Colour (0xffb03030) : (picked ? theme::accent.darker (0.45f) : theme::accent));
             g.fillRect (lane);
@@ -330,8 +330,8 @@ public:
                     g.fillRect (f); g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
                     g.drawText (t, f, juce::Justification::centred);
                 };
-                if (w->editIn >= 0)  flag (w->editIn, cin, "Edit IN", true);
-                if (w->editOut >= 0) flag (w->editOut, cout, "Edit OUT", false);
+                if (w->editIn >= 0)  flag (w->editIn, cin, "Mark 1", true);
+                if (w->editOut >= 0) flag (w->editOut, cout, "Mark 2", false);
             }
             // where this take has been used: a small flag "In 3" where a piece of it starts in the edit and "Out 4" where it ends, numbered like the edit points
             if (auto* usedEdit = app.project.findEdit (w->targetEdit))
@@ -344,7 +344,7 @@ public:
                         const int x = x0 + (int) (sec * pixelsPerSecond);
                         const auto c = isIn ? juce::Colour (0xff1a9c8a) : juce::Colour (0xff8a5cd0);
                         g.setColour (c.withAlpha (0.55f)); g.fillRect (x, y0, 1, y1 - y0);
-                        const int fw = 38; juce::Rectangle<int> f (isIn ? x : x - fw, kRulerH + kLaneH - 13, fw, 11);       // its own row at the bottom of the strip, clear of the Edit IN / OUT flags
+                        const int fw = 38; juce::Rectangle<int> f (isIn ? x : x - fw, kRulerH + kLaneH - 13, fw, 11);       // its own row at the bottom of the strip, clear of mark 1 / 2s
                         g.setColour (c); g.fillRect (f);
                         g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (9.5f, juce::Font::bold));
                         g.drawText ((isIn ? "In " : "Out ") + (number > 0 ? juce::String (number) : juce::String ("fx")), f, juce::Justification::centred);
@@ -448,7 +448,7 @@ public:
         markers.yOffset = hdrShift;
         if (w->showMarkers && markers.mouseDown (e)) return;                                 // the marker strip along the top: right-click for Add Marker / Clear All; drag a marker
         flagDrag = 0;
-        if (! e.mods.isPopupMenu() && (flagDrag = editFlagAt (*w, e.getPosition())) != 0) return;       // grab an Edit IN / OUT flag to move it
+        if (! e.mods.isPopupMenu() && (flagDrag = editFlagAt (*w, e.getPosition())) != 0) return;       // grab an marks 1 / 2 flag to move it
         if (e.mods.isPopupMenu() && e.x >= kNameW)                         // right-click on a part waiting for corrected audio: re-link it
             if (auto* wg = groupAt (e.getPosition()))
                 if (wg->sampleRate > 0)
@@ -680,7 +680,7 @@ public:
         setMouseCursor (juce::MouseCursor::NormalCursor);
     }
 
-    /** Where Edit IN / OUT are set: the live position while recording or playing here, otherwise the playhead. Returns the take and the time inside it. */
+    /** Where marks 1 / 2 are set: the live position while recording or playing here, otherwise the playhead. Returns the take and the time inside it. */
     const TakeGroup* markPoint (double& secondsInTake) const
     {
         auto* w = const_cast<TakeTimeline*> (this)->def();
@@ -1168,7 +1168,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification);
     waveColourBtn.setWantsKeyboardFocus (false);
     addAndMakeVisible (waveColourBtn);
-    loopToggle.setTooltip ("Loop: when lit, Play and Play marked repeat the marked area (the Edit IN / OUT flags [1] [2]) over and over until you press Stop. Key L.");
+    loopToggle.setTooltip ("Loop: when lit, Play and Play marked repeat the marked area (the marks 1 and 2) over and over until you press Stop. Key L.");
     loopToggle.onClick = [this] { loopChanged(); };
     loopToggle.setWantsKeyboardFocus (false);
     addAndMakeVisible (loopToggle);
@@ -1186,7 +1186,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     barSearchButton.setTooltip ("Search for bar: type a bar number and every take here that contains it (from its IN Bar to its OUT Bar, set by right-clicking a take) is framed in blue-green, so you can see which takes have that bar. Click again to clear.");
     barSearchButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff19a08a));
     barSearchButton.onClick = [this] { toggleBarSearch(); };
-    pitchButton.setTooltip ("Two tabs. Pitch curve: draw a line of pitch against time over the part marked with Edit IN [1] and Edit OUT [2] (+100 cents at the top, -100 at the bottom), for a note that drifts flat or sharp; audition it, then accept or revert. Pitch process: shifts the marked part on every track of the take by semitones and / or cents.");
+    pitchButton.setTooltip ("Two tabs. Pitch curve: draw a line of pitch against time over the part marked with mark 1 and mark 2 (+100 cents at the top, -100 at the bottom), for a note that drifts flat or sharp; audition it, then accept or revert. Pitch process: shifts the marked part on every track of the take by semitones and / or cents.");
     // With no 1 / 2 flags set, a take that was selected whole (Ctrl + click) is loaded in full into the process window.
     auto withWholeTake = [this] (std::function<void()> run)
     {
@@ -1201,9 +1201,9 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
         if (temp) if (auto* w2 = def()) { w2->editTake = oldTake; w2->editIn = oldIn; w2->editOut = oldOut; }
     };
     pitchButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::pitchTabsTake (app, windowId, this); }); };
-    repairButton.setTooltip ("Shows the marked part (Edit IN [1] / Edit OUT [2]) of all tracks as one spectrogram; draw a box round a noise (drag its edges to adjust it) and rebuild it from the clean sound next to it, or use De-click to find and mend clicks");
+    repairButton.setTooltip ("Shows the marked part (Mark 1 / Mark 2) of all tracks as one spectrogram; draw a box round a noise (drag its edges to adjust it) and rebuild it from the clean sound next to it, or use De-click to find and mend clicks");
     repairButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::repairTake (app, windowId, this, false); }); };
-    exportProcButton.setTooltip ("Export for Processing: sends the marked part (Edit IN [1] / Edit OUT [2], all tracks) to the Processing Media folder to be corrected in other software (e.g. iZotope RX). Re-link it afterwards with a right-click on the 'Waiting for corrected audio' block");
+    exportProcButton.setTooltip ("Export for Processing: sends the marked part (Mark 1 / Mark 2, all tracks) to the Processing Media folder to be corrected in other software (e.g. iZotope RX). Re-link it afterwards with a right-click on the 'Waiting for corrected audio' block");
     exportProcButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::exportForProcessingTake (app, windowId, this); }); };
     undoFixButton.setTooltip ("Undo the last pitch correction, repair, de-click or export for processing (the original audio files were never touched)");
     undoFixButton.onClick = [this] { fixtools::undoLastFix (app); };
@@ -1311,14 +1311,14 @@ void TakeWindowComponent::resized()
 }
 
 // ----------------------------------------------------------------------------- editing actions
-/** P: with a take selected, the Edit IN and OUT flags (the same ones as keys 1 and 2) go to its very start and end, sample-exact. */
+/** P: with a take selected, marks 1 and 2 go to its very start and end, sample-exact. */
 void TakeWindowComponent::markWholeSelected()
 {
     auto* w = def();
     if (w == nullptr) return;
     const TakeGroup* g = nullptr;
     for (auto& id : timeline->selectedTakes) { g = w->findGroup (id); if (g != nullptr) break; }
-    if (g == nullptr) { showError ("Bounce marks", "Click a take first (in the grey bar above its tracks), then press P to put the IN and OUT flags round all of it."); return; }
+    if (g == nullptr) { showError ("Marks 1 and 2", "Click a take first (in the grey bar above its tracks), then press P to put marks 1 and 2 round all of it."); return; }
     w->editTake = g->id; w->editIn = 0.0; w->editOut = g->lengthSeconds(); w->editTracks.clear();
     app.project.changed();
 }
@@ -1329,7 +1329,7 @@ void TakeWindowComponent::editMarkIn()
     if (w == nullptr) return;
     double sec = 0.0;
     auto* g = timeline->markPoint (sec);
-    if (g == nullptr) { showError ("Edit IN", "Put the playhead inside a take first (click the ruler at the top), or press 1 while a take plays."); return; }
+    if (g == nullptr) { showError ("Mark 1", "Put the playhead inside a take first (click the ruler at the top), or press 1 while a take plays."); return; }
     if (w->editTake != g->id) { w->editTake = g->id; w->editOut = -1.0; }
     w->editIn = sec;
     if (w->editOut >= 0 && w->editOut <= w->editIn) w->editOut = -1.0;
@@ -1342,7 +1342,7 @@ void TakeWindowComponent::editMarkOut()
     if (w == nullptr) return;
     double sec = 0.0;
     auto* g = timeline->markPoint (sec);
-    if (g == nullptr) { showError ("Edit OUT", "Put the playhead inside a take first (click the ruler at the top), or press 2 while a take plays."); return; }
+    if (g == nullptr) { showError ("Mark 2", "Put the playhead inside a take first (click the ruler at the top), or press 2 while a take plays."); return; }
     if (w->editTake != g->id) { w->editTake = g->id; w->editIn = -1.0; }
     w->editOut = sec;
     if (w->editIn >= 0 && w->editIn >= w->editOut) w->editIn = -1.0;
@@ -1400,7 +1400,7 @@ void TakeWindowComponent::togglePlay()
     {
         juce::Uuid lt; double li = 0.0, lo = 0.0;
         if (markedRange (lt, li, lo)) { const auto err = app.playTake (windowId, lt, li, lo, true); if (err.isNotEmpty()) showError ("Play", err); return; }
-        app.setNotice ("Loop is on, but no area is marked (IN and OUT): playing normally.");
+        app.setNotice ("Loop is on, but no area is marked (marks 1 and 2): playing normally.");
     }
     // the whole window plays from the playhead, wherever it is: over a take, in a gap, or after the last take (silent, it just carries on)
     auto err = app.playTakeWindow (windowId, w->playheadSeconds);
@@ -1434,7 +1434,7 @@ void TakeWindowComponent::loopChanged()
     const bool on = loopToggle.getToggleState();
     const bool mine = app.isPlaying() && ! app.engine.isRecording() && app.playInfo.kind == AppContext::PlayInfo::Kind::Take && app.playInfo.windowId == windowId;
     juce::Uuid take; double in = 0.0, out = 0.0;
-    if (on && ! markedRange (take, in, out)) { app.setNotice ("Loop: mark an area first (Edit IN / OUT [1] [2], or [P] for a whole take): the loop plays the area between them."); return; }
+    if (on && ! markedRange (take, in, out)) { app.setNotice ("Loop: mark an area first (marks 1 and 2, or [P] for a whole take): the loop plays the area between them."); return; }
     if (! mine) return;
     if (on) { const auto err = app.playTake (windowId, take, in, out, true); if (err.isNotEmpty()) showError ("Play", err); }
     else app.engine.setPlaybackLooping (false);
@@ -1571,7 +1571,7 @@ void TakeWindowComponent::timerCallback()
         if (overdubBox.getToggleState() != w->overdub) overdubBox.setToggleState (w->overdub, juce::dontSendNotification);
         if (auto* ge = w->findGroup (w->editTake))
         {
-            m = "EDIT " + w->displayName (*ge) + ":  Edit IN " + fmt (w->editIn) + "   Edit OUT " + fmt (w->editOut);
+            m = "EDIT " + w->displayName (*ge) + ":  Mark 1 " + fmt (w->editIn) + "   Mark 2 " + fmt (w->editOut);
             if (w->editIn >= 0 && w->editOut > w->editIn) m += "   (" + juce::String (w->editOut - w->editIn, 2) + " s)";
         }
         else if (auto* gc = w->findGroup (w->cursorTake))

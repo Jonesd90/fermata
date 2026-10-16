@@ -32,7 +32,7 @@ private:
     juce::ComboBox leadBox, tailBox, mixerBox;
     std::unique_ptr<BounceSourceList> sources;
     juce::Viewport sourcesViewport;
-    juce::TextButton allTracks { "All audio tracks" }, allInt { "All Int buses" }, allExt { "All Ext buses" }, clearAll { "Clear" };
+    juce::TextButton allTracks { "All audio tracks" }, allInt { "All Int buses" }, allExt { "All Ext buses" }, allPre { "Tracks before fader" }, clearAll { "Clear" };
     juce::ToggleButton normToggle { "Normalise so the loudest peak is" };
     juce::ToggleButton togetherToggle { "Normalise all the files together (keeps their balance, for stems)" },
                        outNameToggle { "Add the output's name to each file name" };

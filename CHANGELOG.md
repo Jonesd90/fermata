@@ -6,6 +6,15 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.53.0
+- **The I and O flags are gone.** The Edit window no longer has the green IN / red OUT flags or the I and O keys. Everything they did (Bounce Out "between the flags", volume change between the marks) now uses marks 1 and 2 only, as the take window already did. Old projects' I / O points are simply not loaded.
+- **P puts marks 1 and 2 round a selection, sample-exact:** in the take window round the selected take, in the Edit window round the selected piece(s) (before, P set the I / O flags). Key 5 takes marks 1 and 2 away.
+- The take window calls its flags "Mark 1" and "Mark 2" (buttons, flags, status line, messages) instead of "Edit IN / OUT".
+
+## 2.52.0
+- **Bounce Out: "before fader".** Every audio track and Int bus in the list now has a "before fader" tick box next to it. A ticked one makes an extra stereo file of that signal taken after its plug-ins and pan but ahead of its fader, and not affected by mute or solo. The file name ends with "(before fader)". A track can be ticked both ways. New quick button "Tracks before fader"; Clear unticks everything.
+- **Export for Processing: Out stream / In stream choice.** The question for an edit point inside the marks showed no buttons (JUCE message boxes only take three). It is now a proper window with Out stream, In stream, Both and Cancel.
+
 ## 2.51.0
 - De-click and ReTouch now mend **digital dropouts where samples went missing** (a dropped recorder or network buffer, not filled with silence). This is what the clicks in "0115" (1.334 s) and "Click01" (1.927 s) are: 128 samples missing at the same sample on every track, so the music after the jump simply carries on from 1.3 ms later. The jump is found on all the tracks together; the number of missing samples is measured from all of them (prediction of the sound across the gap); the samples are rebuilt from both sides, with the fine texture (air, hiss) of the recording kept; and the second around the click is squeezed back to its original length (about 2 cents for half a second each side: inaudible). Files keep their length, every track is mended in exactly the same way, and nothing outside that second changes.
 - The old "step with a fading tail" mend is gone: it took off a tail that was not there and so ADDED a low thump. That is why the low half of these clicks stayed.

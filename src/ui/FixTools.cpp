@@ -2551,13 +2551,13 @@ static juce::String runRegionJob (RegionJob& j, const FixSpec& spec, AudioJob& j
 // ======================================================================================================== take window: pitch / repair
 static TakeWindowDef* takeWin (AppContext& app, const juce::Uuid& wid) { return app.project.findTakeWindow (wid); }
 
-/** The take and the marked part (seconds in the take) from the take window's Edit IN / OUT marks; null + message if none. */
+/** The take and the marked part (seconds in the take) from the take window's marks 1 / 2 marks; null + message if none. */
 static TakeGroup* markedTake (AppContext& app, TakeWindowDef& w, double& in, double& out, const juce::String& title)
 {
     auto* g = w.findGroup (w.editTake);
     if (g == nullptr || w.editIn < 0.0 || w.editOut <= w.editIn)
     {
-        say (title, "First mark the part with Edit IN [1] and Edit OUT [2] (in one take). To be safe, mark a little more than you need.");
+        say (title, "First mark the part with mark 1 and mark 2 (in one take). To be safe, mark a little more than you need.");
         return nullptr;
     }
     juce::ignoreUnused (app);
@@ -3940,13 +3940,22 @@ void exportForProcessingEdit (AppContext& app, const juce::Uuid& eid, juce::Comp
                     launchDialog (std::make_unique<SimpleJobDialog> ("Exporting '" + name + "'...", work, onSuccess, nullptr), "Export for Processing", parent.getComponent());
                 });
             };
-            juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon).withTitle (title)
-                                              .withMessage ("The marked part has an edit point in it. Which take do you want to send out?\n\n"
-                                                            "OUT stream: the take that plays up to the edit point, from mark 1 until it is completely faded out (or mark 2, whichever comes first).\n"
-                                                            "IN stream: the take that plays from the edit point, from where its fade-in begins (or mark 1) to mark 2.\n\n"
-                                                            "Each is sent at full volume with no fade applied, so the edit and its crossfade stay in place and each take can be corrected on its own. 'Both' sends two separate sets of files.")
-                                              .withButton ("Out stream").withButton ("In stream").withButton ("Both").withButton ("Cancel"),
-                                          [ask, haveOut, haveIn] (int r) { juce::ignoreUnused (haveOut, haveIn); if (r == 1) ask (true, false); else if (r == 2) ask (false, true); else if (r == 3) ask (true, true); });
+            // (built by hand: JUCE's message box only shows up to THREE buttons, so with four none of them appeared)
+            auto* w = new juce::AlertWindow (title,
+                                             "The marked part has an edit point in it. Which take do you want to send out?\n\n"
+                                             "OUT stream: the take that plays up to the edit point, from mark 1 until it is completely faded out (or mark 2, whichever comes first).\n"
+                                             "IN stream: the take that plays from the edit point, from where its fade-in begins (or mark 1) to mark 2.\n\n"
+                                             "Each is sent at full volume with no fade applied, so the edit and its crossfade stay in place and each take can be corrected on its own. 'Both' sends two separate sets of files.",
+                                             juce::MessageBoxIconType::QuestionIcon);
+            w->addButton ("Out stream", 1, juce::KeyPress ('o'));
+            w->addButton ("In stream", 2, juce::KeyPress ('i'));
+            w->addButton ("Both", 3, juce::KeyPress ('b'));
+            w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+            w->enterModalState (true, juce::ModalCallbackFunction::create ([ask, haveOut, haveIn] (int r)
+            {
+                juce::ignoreUnused (haveOut, haveIn);
+                if (r == 1) ask (true, false); else if (r == 2) ask (false, true); else if (r == 3) ask (true, true);
+            }), true);
             return;
         }
     }

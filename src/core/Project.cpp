@@ -921,7 +921,7 @@ var Project::editToVar (const EditDef& eref) const
     const EditDef* e = &eref;
     var o = obj();
     put (o, "id", e->id.toString()); put (o, "name", e->name); put (o, "window", e->windowId.toString());
-    put (o, "rate", e->sampleRate); put (o, "insertIndex", e->insertIndex); put (o, "markIn", e->markIn); put (o, "markOut", e->markOut);
+    put (o, "rate", e->sampleRate); put (o, "insertIndex", e->insertIndex);
     put (o, "fixIn", e->fixIn); put (o, "fixOut", e->fixOut);
     if (! e->fixTracks.empty()) { juce::Array<var> ft; for (auto& t : e->fixTracks) ft.add (t.toString()); put (o, "fixTracks", ft); }
     auto regionToVar = [this] (const EditRegion& r)
@@ -1245,7 +1245,6 @@ bool Project::fromVar (const var& root)
             auto e = std::make_unique<EditDef>();
             e->id = juce::Uuid (v["id"].toString()); e->name = v["name"].toString(); e->windowId = juce::Uuid (v["window"].toString());
             e->sampleRate = (double) v["rate"]; e->insertIndex = (int) v["insertIndex"];
-            if (v.hasProperty ("markIn")) { e->markIn = (double) v["markIn"]; e->markOut = (double) v["markOut"]; }
             if (v.hasProperty ("fixIn")) { e->fixIn = (double) v["fixIn"]; e->fixOut = (double) v["fixOut"]; }
             if (auto* ft = v["fixTracks"].getArray()) for (auto& t : *ft) e->fixTracks.push_back (juce::Uuid (t.toString()));
             auto regionFromVar = [this] (const var& rv)
@@ -1357,7 +1356,7 @@ void restoreEditorial (Project& p, const var& snapshot, const juce::Uuid& liveTa
     {
         if (auto* live = p.findEdit (te->id))
         {
-            te->markIn = live->markIn; te->markOut = live->markOut; te->fixIn = live->fixIn; te->fixOut = live->fixOut; te->fixTracks = live->fixTracks;
+            te->fixIn = live->fixIn; te->fixOut = live->fixOut; te->fixTracks = live->fixTracks;
             te->playheadSeconds = live->playheadSeconds; te->insertIndex = live->insertIndex; te->markers = live->markers; te->feedback = live->feedback; te->showFeedback = live->showFeedback; te->showMarkers = live->showMarkers;
             *live = std::move (*te);
         }

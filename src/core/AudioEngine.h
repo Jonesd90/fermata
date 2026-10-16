@@ -37,7 +37,8 @@ public:
     // --- offline rendering (bounce out). Use on a private engine that belongs to a private copy of the project; no audio device needed. ---
     /** Choose the mixer to render and what to capture from it: the post-fader signal of any audio tracks / Int Buses / Ext Buses
         (their ids). Each one is captured separately, in the order given. Call before prepare(). */
-    void setOfflineTarget (const juce::Uuid& mixerId, std::vector<juce::Uuid> tapIds);
+    void setOfflineTarget (const juce::Uuid& mixerId, std::vector<juce::Uuid> tapIds, std::vector<juce::Uuid> preFaderIds = {});
+    // (preFaderIds: the same channels taken BEFORE their fader, after inserts and pan, not touched by mute / solo. Their captures come after the post-fader ones, in the order given.)
     /** Runs n samples (<= maxBlock) of the chosen mixer with the given audio on its tracks (one buffer per project track) and
         puts each chosen output into its own stereo buffer in 'captures' (one per output, see setOfflineTarget). */
     void renderOffline (const std::vector<juce::AudioBuffer<float>>& trackAudio, int n, std::vector<juce::AudioBuffer<float>>& captures);
@@ -180,6 +181,8 @@ private:
         bool receives = false;                  // other channels send here
         bool isMainOut = false;                 // the mixer's main Ext Bus (what 'talkback playback' takes from the processing mixer)
         int tapIdx = -1;                        // offline render: which capture output its post-fader signal goes to (-1 = none)
+        int tapPreIdx = -1;                     // offline render: which capture output its pre-fader signal goes to (-1 = none)
+        PathDelay tapDelayPre;
         juce::AudioBuffer<float> incoming;      // stereo: the sum of what they send
         // delay compensation (samples): when the signals arrive at this channel, and when they leave it, counted from the sources
         int inLat = 0, outLat = 0;
@@ -271,7 +274,7 @@ private:
     std::atomic<bool> sessionMode { false };
     std::atomic<const MixerState*> auditionMixer { nullptr };
     juce::Uuid offlineMixerId;                       // offline rendering (see setOfflineTarget)
-    std::vector<juce::Uuid> offlineTaps;
+    std::vector<juce::Uuid> offlineTaps, offlinePreTaps;
     std::vector<juce::AudioBuffer<float>>* captureBufs = nullptr;  // only while renderOffline() runs
     std::unique_ptr<PlaybackSession> playSession;   // owned by the message thread
     std::atomic<juce::uint64> blockCounter { 0 };

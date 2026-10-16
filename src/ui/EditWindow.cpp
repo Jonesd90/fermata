@@ -386,17 +386,6 @@ public:
             g.setColour (juce::Colour (0xff6a4cc2)); g.fillRect (x, kRulerTop, 1, kRulerH - kRulerTop);
             juce::Path tri; tri.addTriangle ((float) x - 5, (float) kRulerTop, (float) x + 6, (float) kRulerTop, (float) x, (float) kRulerTop + 9.0f); g.fillPath (tri);
         }
-        if (e->markIn >= 0 || e->markOut >= 0)                      // I / O points (used by Bounce Out)
-        {
-            if (e->markIn >= 0 && e->markOut > e->markIn)
-            {
-                g.setColour (juce::Colour (0x221f7a46)); g.fillRect (xOf (e->markIn), kRulerH, xOf (e->markOut) - xOf (e->markIn), rowsEnd - kRulerH);
-            }
-            g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-            if (e->markIn >= 0)  { g.setColour (juce::Colour (0xff1f7a46)); g.fillRect (xOf (e->markIn), 0, 2, rowsEnd);  g.drawText ("IN",  xOf (e->markIn) + 4, 2, 30, 14, juce::Justification::left); }
-            if (e->markOut >= 0) { g.setColour (juce::Colour (0xffb3261e)); g.fillRect (xOf (e->markOut) - 1, 0, 2, rowsEnd); g.drawText ("OUT", xOf (e->markOut) - 34, 2, 30, 14, juce::Justification::right); }
-        }
-
         if (e->fixIn >= 0 || e->fixOut >= 0)                         // keys 1 / 2: the part to correct or repair
         {
             if (e->fixIn >= 0 && e->fixOut > e->fixIn)
@@ -1359,10 +1348,9 @@ private:
         const bool isOver = ed.isOverdub (rid), hasGains = ! piece->gains.empty();
         juce::PopupMenu m;
         m.addSectionHeader (piece->takeName + (isOver ? "  (overdub)" : ""));
-        // the area between marks 1 and 2 (or the I and O flags), for all tracks or the ones chosen with Alt + drag
+        // the area between marks 1 and 2 for all tracks or the ones chosen with Alt + drag
         juce::int64 rangeFrom = 0, rangeTo = 0;
         if (ed.fixIn >= 0 && ed.fixOut > ed.fixIn) { rangeFrom = (juce::int64) std::llround (ed.fixIn * rate); rangeTo = (juce::int64) std::llround (ed.fixOut * rate); }
-        else if (ed.markIn >= 0 && ed.markOut > ed.markIn) { rangeFrom = (juce::int64) std::llround (ed.markIn * rate); rangeTo = (juce::int64) std::llround (ed.markOut * rate); }
         const bool haveRange = rangeTo > rangeFrom && ! isOver;
         m.addItem (1, "Change volume from here to next edit...");
         m.addItem (7, "Change volume between the 1/2 marks...", haveRange);
@@ -2036,18 +2024,6 @@ void EditWindowComponent::moveSelected (int delta)
     app.project.changed();
 }
 
-/** I / O: the edit's IN / OUT point goes to the playhead (or, when nothing plays, to the cursor). */
-void EditWindowComponent::setMark (bool in)
-{
-    auto* e = edit();
-    if (e == nullptr) return;
-    double t = app.playheadSeconds();
-    if (! (t >= 0 && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId)) t = timeline->cursorSeconds;
-    if (t < 0) { showError (in ? "IN" : "OUT", "Click on the timeline (or play the edit) to say where, then press " + juce::String (in ? "I" : "O") + "."); return; }
-    (in ? e->markIn : e->markOut) = t;
-    app.project.changed();
-}
-
 /** 1 / 2: the part to pitch-correct or repair starts / ends at the playhead (or the cursor when nothing plays). */
 /** A click on any empty part of the window (not a button) lets go of the selected pieces. */
 void EditWindowComponent::mouseDown (const juce::MouseEvent& e)
@@ -2073,7 +2049,7 @@ void EditWindowComponent::setFixMark (bool in)
     app.project.changed();
 }
 
-/** P: with pieces selected, the bounce IN and OUT go to the very start of the first and the very end of the last of them. */
+/** P: with pieces selected, marks 1 and 2 go to the very start of the first and the very end of the last of them (sample-exact). */
 void EditWindowComponent::markWholeSelected()
 {
     auto* e = edit();
@@ -2087,8 +2063,8 @@ void EditWindowComponent::markWholeSelected()
     };
     for (auto& r : e->regions)  take (r);
     for (auto& r : e->overdubs) take (r);
-    if (to < 0) { showError ("Bounce marks", "Click a piece first (or Ctrl + click several), then press P to mark all of it."); return; }
-    e->markIn = from; e->markOut = to;
+    if (to < 0) { showError ("Marks 1 and 2", "Click a piece first (or Ctrl + click several), then press P to put marks 1 and 2 round all of it."); return; }
+    e->fixIn = from; e->fixOut = to;
     app.project.changed();
 }
 
@@ -2109,13 +2085,11 @@ bool EditWindowComponent::keyPressed (const juce::KeyPress& k)
     const auto c = juce::CharacterFunctions::toLowerCase (k.getTextCharacter());
     if (k == juce::KeyPress::homeKey) { goTo (0.0); return true; }
     if (k == juce::KeyPress::endKey)  { goToEnd();  return true; }
-    if (c == 'i') { setMark (true);  return true; }
-    if (c == 'o') { setMark (false); return true; }
     if (c == 'p') { markWholeSelected(); return true; }
     if ((c == '1' || c == '2') && ! k.getModifiers().isAnyModifierKeyDown()) { setFixMark (c == '1'); return true; }
-    if (c == '5' && ! k.getModifiers().isAnyModifierKeyDown())            // 5: take all the flags away (1 / 2 and the I / O points); a piece selected whole is then what the process windows load
+    if (c == '5' && ! k.getModifiers().isAnyModifierKeyDown())            // 5: take the 1 / 2 flags away; a piece selected whole is then what the process windows load
     {
-        if (auto* e = edit()) { e->fixIn = -1.0; e->fixOut = -1.0; e->markIn = -1.0; e->markOut = -1.0; e->fixTracks.clear(); app.project.changed(); }
+        if (auto* e = edit()) { e->fixIn = -1.0; e->fixOut = -1.0; e->fixTracks.clear(); app.project.changed(); }
         return true;
     }
     if (c == '.' || c == '>') { app.changeWaveZoom (1.4f);        return true; }          // . bigger waveforms
@@ -2154,8 +2128,6 @@ void EditWindowComponent::timerCallback()
     if (waveColourBtn.getToggleState() != app.waveColour) { waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification); repaint(); }
     if (auto* e = edit())
         infoLabel.setText (juce::String (takesInEdit (*e)) + (takesInEdit (*e) == 1 ? " Take" : " Takes") + (e->overdubs.empty() ? juce::String() : ", " + juce::String ((int) e->overdubs.size()) + " overdub(s)") + ", " + formatTime (e->lengthSeconds()).substring (3, 8)
-                           + (e->markIn >= 0 ? "   IN " + formatTime (e->markIn).substring (3, 11) : juce::String())
-                           + (e->markOut >= 0 ? "   OUT " + formatTime (e->markOut).substring (3, 11) : juce::String())
                            + (e->fixIn >= 0 ? "   [1] " + formatTime (e->fixIn).substring (3, 11) : juce::String())
                            + (e->fixOut >= 0 ? "   [2] " + formatTime (e->fixOut).substring (3, 11) : juce::String())
                            + (e->regions.size() > 1 ? "   -   click a join and press T (or double-click it) to trim.  Drag a piece to slide it.  Right-click a piece for its volume." : ""), juce::dontSendNotification);

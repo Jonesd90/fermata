@@ -974,6 +974,33 @@ int main()
             for (auto& f : r.files)                                                 // none of them is the sum of the others
                 CHECK (std::abs (readPeak (juce::File (f), ch, len, bits, rate) - 0.5f * 0.70710678f) < 3e-3f);
         }
+        // before fader: the same track taken ahead of its fader (and its mute) as an extra file
+        {
+            auto pre = bs;
+            pre.sources = { violinId }; pre.sourcesPre = { violinId, strings };
+            mixA.stripFor (violinId)->gainDb.set (-6.0206f);
+            {
+                Bouncer b (p, pre);
+                auto r = b.render();
+                CHECK (r.error.isEmpty() && r.files.size() == 3);
+                CHECK (juce::File (r.files[0]).getFileName().contains ("Master - ") && ! juce::File (r.files[0]).getFileName().contains ("before fader"));
+                CHECK (juce::File (r.files[1]).getFileName().contains ("(before fader)") && juce::File (r.files[2]).getFileName().contains ("(before fader)"));
+                const float post = readPeak (juce::File (r.files[0]), ch, len, bits, rate), before = readPeak (juce::File (r.files[1]), ch, len, bits, rate);
+                CHECK (std::abs (before - 0.5f * 0.70710678f) < 3e-3f);               // ahead of the fader: unchanged by it
+                CHECK (std::abs (post - 0.25f * 0.70710678f) < 3e-3f);                // after the fader: half
+            }
+            mixA.stripFor (violinId)->mute.set (true);                               // muted: the post-fader file is silent, the pre-fader one is not
+            {
+                Bouncer b (p, pre);
+                auto r = b.render();
+                CHECK (r.files.size() == 3);
+                CHECK (readPeak (juce::File (r.files[0]), ch, len, bits, rate) < 1e-4f);
+                CHECK (std::abs (readPeak (juce::File (r.files[1]), ch, len, bits, rate) - 0.5f * 0.70710678f) < 3e-3f);
+            }
+            mixA.stripFor (violinId)->mute.set (false); mixA.stripFor (violinId)->gainDb.set (0.0f);
+            pre.sources.clear(); pre.sourcesPre = { violinId };                      // only a before-fader file
+            { Bouncer b (p, pre); CHECK (b.getPrepareError().isEmpty()); auto r = b.render(); CHECK (r.files.size() == 1 && juce::File (r.files[0]).getFileName().contains ("(before fader)")); }
+        }
         // normalised separately every file reaches the level; normalised together only the loudest does, the others keep their balance
         bs.normalise = true; bs.peakDb = -6.0f; bs.normaliseTogether = false;
         {
