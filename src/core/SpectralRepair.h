@@ -29,6 +29,10 @@ struct RepairParams
     RepairDirection direction = RepairDirection::LeftRight;
     double contextPct = 100.0;                          // how much surrounding sound is used, as a % of the box (its length in time, its height in frequency)
     double weighting = 0.5;                             // 0 = only the sound BEFORE the box, 1 = only the sound AFTER it, 0.5 = both equally (cross-fade)
+    bool   consonant = false;                           // Attenuate: a STRAY CONSONANT (an early or late copy of a consonant next to the main one): the box is matched to the side
+                                                        // away from the main consonant (found from all the tracks together while the before / after slider is in the middle)
+    double consonantBefore = -1.0;                      // consonant: how much the sound BEFORE the box is matched (1 = only before, 0 = only after), found by the repair window on
+    int    consonantEdge = 0;                           // all the tracks together, and the edge the main consonant is at (+1 after the box, -1 before it). -1: each call finds it
 };
 
 /** A spectrogram of several tracks merged into one picture (the loudest track at every point), in dB.
@@ -201,13 +205,98 @@ public:
     {
         if (p.strength <= 0.0 || t1 <= t0 || xs.empty()) return;
         int baseN = 256; while (baseN < 2 * p.bands && baseN < 16384) baseN <<= 1;
+        Sides sides;                                                            // consonant mode: the side to match and the edge the main consonant is at (the same for every channel)
+
+        if (p.consonant)
+        {
+            double wl = 0.5; int edge = 0;
+            if (std::abs (p.weighting - 0.5) >= 0.04)                           // the slider moved from the middle: the side it says
+            {
+                wl = juce::jlimit (0.0, 1.0, 1.0 - p.weighting); edge = wl > 0.65 ? 1 : (wl < 0.35 ? -1 : 0);
+            }
+            else if (p.consonantBefore >= 0.0) { wl = juce::jlimit (0.0, 1.0, p.consonantBefore); edge = p.consonantEdge; }     // found on all the tracks by the window
+            else
+            {
+                std::vector<const std::vector<float>*> cs; for (auto* x : xs) cs.push_back (x);
+                const auto d = consonantSides (cs, sr, t0, t1, f0, f1); wl = d.first; edge = d.second;
+            }
+            sides = { wl, edge };
+        }
+        const auto* sw = p.consonant ? &sides : nullptr;
         if (p.multiRes)
         {
-            attenuatePass (xs, sr, baseN * 2, 0.0, 400.0, t0, t1, f0, f1, p);
-            attenuatePass (xs, sr, baseN, 400.0, 3000.0, t0, t1, f0, f1, p);
-            attenuatePass (xs, sr, juce::jmax (256, baseN / 4), 3000.0, 1.0e9, t0, t1, f0, f1, p);
+            attenuatePass (xs, sr, baseN * 2, 0.0, 400.0, t0, t1, f0, f1, p, sw);
+            attenuatePass (xs, sr, baseN, 400.0, 3000.0, t0, t1, f0, f1, p, sw);
+            attenuatePass (xs, sr, juce::jmax (256, baseN / 4), 3000.0, 1.0e9, t0, t1, f0, f1, p, sw);
         }
-        else attenuatePass (xs, sr, baseN, 0.0, 1.0e9, t0, t1, f0, f1, p);
+        else attenuatePass (xs, sr, baseN, 0.0, 1.0e9, t0, t1, f0, f1, p, sw);
+    }
+
+    /** For a box round a stray consonant: which side of the box holds the MAIN consonant, judged on all the tracks together (the box is one choice for all of them:
+        the main consonant is either just after it or just before it). Each track is measured in the top of the box's pitch range, where consonants are noise and
+        sung vowels hardly reach: the 25 ms right next to each edge (a burst such as t or d shows there), and the quieter half of each side (a long s or sh fills its side).
+        Returns { how much the sound BEFORE the box is to be matched (1 = only before: the main consonant is after the box, 0 = only after), the edge the main
+        consonant is at (+1 after the box, -1 before it, 0 not clear: then both sides are blended) }. Silent tracks have no say. */
+    struct Sides { double wLeft = 0.5; int fade = 0; };
+    static std::pair<double, int> consonantSides (const std::vector<const std::vector<float>*>& tracks, double sr, long t0, long t1, double f0, double f1)
+    {
+        const int N = juce::jmax (256, (int) std::lround (sr * 0.0053 / 128.0) * 128);    // ~5 ms
+        const int H = N / 4, bins = N / 2 + 1; const double hz = sr / (double) N;
+        double lo = juce::jmax (f0, sideHz), hi = juce::jmin (f1, 16000.0);
+        if (hi - lo < 1000.0) { lo = f0; hi = juce::jmin (f1, sr * 0.49); }
+        const int c0 = juce::jlimit (1, bins - 1, (int) std::ceil (lo / hz)), c1 = juce::jlimit (c0, bins - 1, (int) std::floor (hi / hz));
+        const long span = (long) (bgSeconds * sr), nearSpan = (long) (nearSeconds * sr);
+        const dsp::FFT fft (N); const auto win = dsp::hann (N);
+        std::vector<std::complex<double>> buf ((size_t) N);
+        auto frames = [&] (const std::vector<float>& x, long a, long b)              // the top-band power of every frame lying wholly in [a, b), in time order
+        {
+            std::vector<double> v;
+            a = juce::jmax (0L, a); b = juce::jmin ((long) x.size(), b);
+            for (long s = a; s + N <= b; s += H)
+            {
+                for (int i = 0; i < N; ++i) buf[(size_t) i] = (double) x[(size_t) (s + i)] * win[(size_t) i];
+                fft.forward (buf);
+                double e = 0.0; for (int k = c0; k <= c1; ++k) e += std::norm (buf[(size_t) k]);
+                v.push_back (e);
+            }
+            return v;
+        };
+        auto measure = [&] (std::vector<double> v, bool before, double& quiet, double& near)  // the mean just next to the edge, and the mean of the quieter half
+        {
+            if (v.empty()) return false;
+            const int nn = juce::jmax (1, (int) (nearSpan / H));
+            double s = 0.0; int k = 0;
+            for (int i = 0; i < juce::jmin (nn, (int) v.size()); ++i) { s += before ? v[v.size() - 1 - (size_t) i] : v[(size_t) i]; ++k; }
+            near = s / juce::jmax (1, k);
+            std::sort (v.begin(), v.end());
+            const int use = juce::jmax (1, (int) std::ceil (bgPart * (double) v.size()));
+            s = 0.0; for (int i = 0; i < use; ++i) s += v[(size_t) i];
+            quiet = s / use;
+            return true;
+        };
+        double vote = 0.0, dqSum = 0.0; int n = 0; bool onlyBefore = true, onlyAfter = true;
+        for (auto* t : tracks)
+        {
+            if (t == nullptr || t->empty()) continue;
+            double pk = 0.0;
+            for (long i = juce::jmax (0L, t0 - span); i < juce::jmin ((long) t->size(), t1 + span); ++i) pk = juce::jmax (pk, (double) std::abs ((*t)[(size_t) i]));
+            if (pk < 1.0e-6) continue;                                                  // (digital silence)
+            double qL = 0, nL = 0, qR = 0, nR = 0;
+            const bool hl = measure (frames (*t, t0 - span, t0), true, qL, nL), hr = measure (frames (*t, t1, t1 + span), false, qR, nR);
+            onlyBefore = onlyBefore && hl && ! hr; onlyAfter = onlyAfter && hr && ! hl;
+            if (! hl || ! hr) continue;
+            const double dQ = 10.0 * std::log10 ((qR + 1.0e-30) / (qL + 1.0e-30)), dN = 10.0 * std::log10 ((nR + 1.0e-30) / (nL + 1.0e-30));   // > 0: the sound after the box is noisier up top
+            double v;                                                                   // > 0: this track says the main consonant is after the box
+            if ((dQ > 0.0) == (dN > 0.0)) v = (dQ > 0.0 ? 1.0 : -1.0) * juce::jmin (1.0, juce::jmax (std::abs (dQ), std::abs (dN)) / nearDb);
+            else if (std::abs (dQ) > nearDb) v = dQ > 0.0 ? 1.0 : -1.0;             // a long consonant fills one side: it wins
+            else v = (dN > 0.0 ? 1.0 : -1.0) * juce::jmin (1.0, std::abs (dN) / nearDb);
+            vote += v; dqSum += dQ; ++n;
+        }
+        if (n == 0) return onlyBefore ? std::make_pair (1.0, 0) : (onlyAfter ? std::make_pair (0.0, 0) : std::make_pair (0.5, 0));     // only one side to go by
+        const double V = vote / n;
+        if (V >= 0.25) return { 1.0, 1 };
+        if (V <= -0.25) return { 0.0, -1 };
+        return { juce::jlimit (0.0, 1.0, 0.5 + (dqSum / n) / sideDb), 0 };
     }
 
 private:
@@ -223,7 +312,16 @@ private:
         h ^= h >> 15; h *= 0x2c1b3c6du; h ^= h >> 12; h *= 0x297a2d39u; h ^= h >> 15;
         return (double) (h & 0xffffff) / 16777216.0;
     }
-    static void attenuatePass (std::vector<std::vector<float>*>& xs, double sr, int N, double bandLo, double bandHi, long t0, long t1, double f0, double f1, const RepairParams& p)
+    // consonant mode (tuned on choir recordings with early / late s, sh, t and d):
+    static constexpr double bgSeconds = 0.15;       // how far each side is searched for the background (s)
+    static constexpr double bgPart = 0.5;           // the quieter half of those frames is the background (a consonant next to the box is louder and is left out)
+    static constexpr double bgMargin = 1.5;         // what stays within this much (power, +1.8 dB) of the background is left alone
+    static constexpr double sideHz = 4500.0;        // the sides are compared above this pitch (consonants are noise up there, sung vowels hardly reach it)
+    static constexpr double sideDb = 6.0;           // a difference of half this (dB) or more decides the side outright; less: the two sides are blended
+    static constexpr double nearSeconds = 0.025, nearDb = 3.0;   // the main consonant's edge: the louder of the two 25 ms next to the box, by 3 dB or more
+    static constexpr double edgeFadePart = 0.15, edgeFadeMin = 0.008, edgeFadeMax = 0.03;   // the gain comes in over 15 % of the box (8 to 30 ms) at the edge next to the main consonant
+    static void attenuatePass (std::vector<std::vector<float>*>& xs, double sr, int N, double bandLo, double bandHi, long t0, long t1, double f0, double f1, const RepairParams& p,
+                               const Sides* sides = nullptr)
     {
         const int nch = (int) xs.size(); if (nch < 1) return;
         const long L = (long) xs[0]->size();
@@ -234,7 +332,8 @@ private:
         const int b0 = juce::jlimit (0, bins - 1, (int) std::floor (lo / hzPerBin)), b1 = juce::jlimit (0, bins - 1, (int) std::ceil (hi / hzPerBin));
         if (b1 <= b0) return;
         const long gap = t1 - t0;
-        const long ctx = juce::jlimit ((long) 4 * N, (long) (10.0 * sr), (long) (juce::jlimit (5.0, 1000.0, p.contextPct) / 100.0 * (double) gap));
+        long ctx = juce::jlimit ((long) 4 * N, (long) (10.0 * sr), (long) (juce::jlimit (5.0, 1000.0, p.contextPct) / 100.0 * (double) gap));
+        if (p.consonant) ctx = juce::jmax (ctx, (long) (bgSeconds * sr) + (long) N);
         const long S = juce::jmax (0L, t0 - ctx - 2L * N), E = juce::jmin (L, t1 + ctx + 2L * N);
         if (E - S < 2L * N) return;
         const long F = (E - S - N) / H + 1;
@@ -277,7 +376,7 @@ private:
             // (so a harmonic that is dying away keeps dying away at its own rate and joins up with itself on the other side); 'spread' is how much the sound at that pitch varies around its line
             // (a tonal line hardly varies: nothing is added to it; noise varies: it keeps its natural scatter)
             std::vector<float> lvL, lvR, spL, spR;
-            if (horizontal)
+            if (horizontal && ! p.consonant)
             {
                 lvL.assign ((size_t) bins, 0.0f); lvR.assign ((size_t) bins, 0.0f); spL.assign ((size_t) bins, 0.0f); spR.assign ((size_t) bins, 0.0f);
                 const int K = juce::jmax (6, (int) (0.06 * sr / (double) H));
@@ -309,6 +408,83 @@ private:
                 }
             }
             auto& Gc = G[(size_t) c];
+            if (p.consonant)
+            {
+                // CONSONANT mode: the background on each side is the power, per bin, of the quieter frames near the box (a consonant next to the box is louder in this band and
+                // is left out); the side chosen by consonantSides is the target. The level in the box is measured smoothed (a few bins, three frames) and only
+                // turned down where it stands above the target, by one smooth gain: the fine grain of the sound stays (a box with no consonant in it is left as it is: no hole),
+                // and the singers' vowels that carry on through the box keep their level (they are there on the side that is matched)
+                const int w = juce::jmax (1, (int) std::lround (150.0 / hzPerBin));
+                const int K = juce::jmax (8, (int) (bgSeconds * sr / (double) H));
+                std::vector<double> bgL ((size_t) bins, -1.0), bgR ((size_t) bins, -1.0);
+                for (int side = 0; side < 2; ++side)
+                {
+                    const auto& fr = side == 0 ? left : right; if (side == 0 ? ! haveL : ! haveR) continue;
+                    const int n = (int) fr.size(), k = juce::jmin (K, n);
+                    std::vector<std::pair<double, long>> en;
+                    for (int i = 0; i < k; ++i)
+                    {
+                        const long f = side == 0 ? fr[(size_t) (n - 1 - i)] : fr[(size_t) i];
+                        double e = 0.0; for (int b = b0; b <= b1; ++b) e += std::norm (Xc[(size_t) f][(size_t) b]);
+                        en.push_back ({ e, f });
+                    }
+                    std::sort (en.begin(), en.end());
+                    const int use = juce::jmax (juce::jmin (4, k), (int) std::ceil (bgPart * (double) k));
+                    auto& bg = side == 0 ? bgL : bgR;
+                    for (int b = b0; b <= b1; ++b)
+                    {
+                        double pw = 0.0; int cnt = 0;
+                        for (int i = 0; i < use; ++i)
+                            for (int db = -w; db <= w; ++db) { const int bb = b + db; if (bb < 0 || bb >= bins) continue; pw += std::norm (Xc[(size_t) en[(size_t) i].second][(size_t) bb]); ++cnt; }
+                        bg[(size_t) b] = pw / juce::jmax (1, cnt);
+                    }
+                }
+                const double wLeft = sides != nullptr ? sides->wLeft : 0.5;
+                // the edge of the box next to the main consonant: the gain comes in over a few ms there, so the stray consonant fades into the kept one (no step)
+                const double fadeLen = juce::jmin (juce::jlimit (edgeFadeMin, edgeFadeMax, edgeFadePart * (double) gap / sr) * sr, 0.3 * (double) gap);
+                const int fadeSide = sides != nullptr ? sides->fade : 0;                    // 1: the main consonant is after the box, -1: before it
+                for (size_t hi2 = 0; hi2 < hit.size(); ++hi2)
+                {
+                    const long f = hit[hi2], s = S + f * H;
+                    double inGap = 0.0;
+                    for (long n = juce::jmax (s, t0); n < juce::jmin (s + N, t1); ++n) inGap += win[(size_t) (n - s)] * win[(size_t) (n - s)];
+                    double wf = juce::jlimit (0.0, 1.0, inGap / winEnergy * 1.6);
+                    if (fadeSide != 0 && fadeLen > 1.0)
+                    {
+                        const double centre = (double) s + 0.5 * (double) N;
+                        const double dist = fadeSide > 0 ? (double) t1 - centre : centre - (double) t0;
+                        const double u = juce::jlimit (0.0, 1.0, dist / fadeLen);
+                        wf *= u * u * (3.0 - 2.0 * u);
+                    }
+                    if (wf <= 0.0) continue;
+                    for (int b = b0; b <= b1; ++b)
+                    {
+                        double tgt;                                                                 // log of the background power to match
+                        if (bgL[(size_t) b] > 0.0 && bgR[(size_t) b] > 0.0)
+                            tgt = wLeft * std::log (bgL[(size_t) b] + 1.0e-30) + (1.0 - wLeft) * std::log (bgR[(size_t) b] + 1.0e-30);
+                        else if (bgL[(size_t) b] > 0.0 || bgR[(size_t) b] > 0.0) tgt = std::log ((bgL[(size_t) b] > 0.0 ? bgL[(size_t) b] : bgR[(size_t) b]) + 1.0e-30);
+                        else continue;
+                        double pw = 0.0; int cnt = 0;
+                        for (long df = -1; df <= 1; ++df)
+                        {
+                            const long ff = f + df; if (ff < 0 || ff >= F) continue;
+                            for (int db = -w; db <= w; ++db) { const int bb = b + db; if (bb < 0 || bb >= bins) continue; pw += std::norm (Xc[(size_t) ff][(size_t) bb]); ++cnt; }
+                        }
+                        pw /= juce::jmax (1, cnt);
+                        const double lg = 0.5 * (tgt + std::log (bgMargin) - std::log (pw + 1.0e-30));       // log of the amplitude gain
+                        if (lg >= 0.0) continue;
+                        double wb = 1.0;
+                        const double hz = (double) b * hzPerBin;
+                        if (b - b0 < 3) wb = juce::jmin (wb, (double) (b - b0 + 1) / 4.0);
+                        if (b1 - b < 3) wb = juce::jmin (wb, (double) (b1 - b + 1) / 4.0);
+                        if (hz < f0 || hz > f1) wb *= 0.5;
+                        if (bandLo > 0.0) wb *= smoothStepLog (hz, bandLo);
+                        if (bandHi < 1.0e8) wb *= 1.0 - smoothStepLog (hz, bandHi);
+                        Gc[hi2][(size_t) b] = (float) (lg * wf * wb * strength);
+                    }
+                }
+            }
+            else
             for (size_t hi2 = 0; hi2 < hit.size(); ++hi2)
             {
                 const long f = hit[hi2], s = S + f * H;

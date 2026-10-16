@@ -6,6 +6,14 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.54.0
+- **ReTouch: Attenuate a stray consonant.** A new method in the ReTouch window for tidying doubled or messy consonants (an early "sh", a late "s", a second "d", a breathy "t") to one. Draw the box round the early or late copy only, from about 2 kHz (1.5 kHz for sh) to the top, and press ReTouch.
+  - Plain Attenuate takes the sound next to the box as "normal". Next to a stray consonant that is the main consonant, so only about half of the stray copy came off. The new method matches every track to the side AWAY from the main consonant: the vowel before an early copy, the sound after a late one.
+  - Which side holds the main consonant is worked out once on all the tracks together (shown in the status line). Move Before / After off the middle to choose the side yourself.
+  - The background on that side is taken from its quieter frames (up to 150 ms), so a consonant there does not count. Only what stands above it is turned down, by a smooth gain: vowels that carry on through the box keep their level, a box with nothing in it is left alone, and the box fades into the main consonant over 8 to 30 ms.
+  - Tuned on five choir recordings (early sh, messy t, multiple s, two double-d examples). Across their 15 tracks it left less than half as much of the stray consonant as plain Attenuate, and pulled far less below the surrounding level.
+- Plain Attenuate and Replace are unchanged.
+
 ## 2.53.0
 - **The I and O flags are gone.** The Edit window no longer has the green IN / red OUT flags or the I and O keys. Everything they did (Bounce Out "between the flags", volume change between the marks) now uses marks 1 and 2 only, as the take window already did. Old projects' I / O points are simply not loaded.
 - **P puts marks 1 and 2 round a selection, sample-exact:** in the take window round the selected take, in the Edit window round the selected piece(s) (before, P set the I / O flags). Key 5 takes marks 1 and 2 away.

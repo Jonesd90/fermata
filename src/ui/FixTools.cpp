@@ -1466,10 +1466,16 @@ public:
         slider (sens, 1, 10, 1, 6, ""); slider (strength, 0, 100, 1, 80, " %"); slider (surround, 10, 400, 5, 100, " %"); slider (weight, 0, 100, 1, 50, " %");
         strength.setTooltip ("How much of the repair replaces the original sound inside the box. 100 % is a full repair; less keeps some of the original.");
         surround.setTooltip ("How much of the sound around the box is used, as a percentage of the box: its length in time (left and right) and its height in pitch (up and down).");
-        weight.setTooltip ("0 uses only the sound before the box, 100 only the sound after it, 50 uses both equally (a cross-fade). Applies to left and right.");
+        weight.setTooltip ("0 uses only the sound before the box, 100 only the sound after it, 50 uses both equally (a cross-fade). Applies to left and right.\n"
+                           "Attenuate a stray consonant: leave it at 50 and Fermata finds, for every track, the side away from the main consonant; move it to choose a side yourself.");
         methodBox.addItem ("Attenuate (turns the noise down to match its surroundings)", 1); methodBox.addItem ("Replace (rebuilds the box from the surroundings)", 2);
+        methodBox.addItem ("Attenuate a stray consonant (an early / late s, sh, t, d)", 3);
         methodBox.setSelectedId (1, juce::dontSendNotification);
-        methodBox.setTooltip ("Attenuate keeps the music that is under the noise and only turns down what sticks out above the surrounding sound: the best for a click, a pencil drop or a stray consonant over a held note. Replace throws the box away and builds new sound from the surroundings: for gaps and loud, wide damage.");
+        methodBox.setTooltip ("Attenuate keeps the music that is under the noise and only turns down what sticks out above the surrounding sound: the best for a click, a pencil drop or a cough over a held note. Replace throws the box away and builds new sound from the surroundings: for gaps and loud, wide damage.\n\n"
+                               "Attenuate a stray consonant: for tidying a doubled or messy consonant to one. Draw the box round the EARLY or LATE copy only (from where the stray one starts up to where the main one starts, "
+                               "or from where the main one ends to where the stray one stops), from about 2 kHz (1.5 kHz for sh) to the top. Each track is matched to the side of the box AWAY from the main consonant "
+                               "(the vowel before an early copy, the sound after a late one), so the main consonant next to the box does not count as 'normal' sound and the stray copy comes right down; "
+                               "vowels that carry on through the box keep their level, and the box fades into the main consonant over a few ms. Use 100 % strength.");
         for (int b : { 128, 256, 512, 1024, 2048, 4096 }) bandsBox.addItem ("Bands: " + juce::String (b), b);
         bandsBox.setSelectedId (1024, juce::dontSendNotification);
         bandsBox.setTooltip ("How finely the sound is split into pitches for Attenuate. More bands follow steady notes more exactly; fewer bands are sharper in time (clicks). 1024 suits most things.");
@@ -1655,8 +1661,9 @@ protected:
     }
 private:
     bool patchMode() const { return true; }      // one window for both: ReTouch and De-click share the picture, the box and the list of fixes
-    void updateSurround() { const bool lr = dirBox.getSelectedId() != 2; view.setSurround (patchMode() && scanned, surround.getValue(), dirBox.getSelectedId() - 1, lr ? weight.getValue() / 100.0 : 0.5); }
-    bool lookingAcross() const { return dirBox.getSelectedId() != 2; }
+    void updateSurround() { const bool lr = dirBox.getSelectedId() != 2; view.setSurround (patchMode() && scanned && ! consonantMethod(), surround.getValue(), dirBox.getSelectedId() - 1, lr ? weight.getValue() / 100.0 : 0.5); }
+    bool consonantMethod() const { return methodBox.getSelectedId() == 3; }
+    bool lookingAcross() const { return dirBox.getSelectedId() != 2 || consonantMethod(); }
     /** The changes that make up the repaired sound: everything accepted so far, plus the change being previewed. */
     std::vector<RepairOp> currentOps() const
     {
@@ -1750,8 +1757,11 @@ private:
     {
         const bool p = patchMode();
         updateSurround();
-        const bool att = p && methodBox.getSelectedId() == 1;
-        for (auto* c : std::initializer_list<juce::Component*> { &dirBox, &dirCap, &strength, &strengthCap, &surround, &surroundCap, &methodBox }) c->setVisible (p);
+        const bool cons = consonantMethod();
+        const bool att = p && (methodBox.getSelectedId() == 1 || cons);
+        for (auto* c : std::initializer_list<juce::Component*> { &strength, &strengthCap, &methodBox }) c->setVisible (p);
+        for (auto* c : std::initializer_list<juce::Component*> { &dirBox, &dirCap, &surround, &surroundCap }) c->setVisible (p && ! cons);      // a stray consonant: always the sound before / after, its own search length
+        weightCap.setText (cons ? "Before <-> After (50 = auto)" : "Before  <->  After", juce::dontSendNotification);
         bandsBox.setVisible (att); multiBtn.setVisible (att); linkBtn.setVisible (att);
         weight.setVisible (p && lookingAcross()); weightCap.setVisible (p && lookingAcross());
         sens.setVisible (true); sensCap.setVisible (true);
@@ -1778,10 +1788,11 @@ private:
         if (! declick)
         {
             spec.kind = FixSpec::Kind::Patch; spec.f0 = view.selF0(); spec.f1 = view.selF1(); spec.sensitivity = sens.getValue();         // (the click sensitivity also decides how readily lost samples (a digital dropout) in a small box are found)
-            spec.repair.mode = methodBox.getSelectedId() == 1 ? RepairMode::Attenuate : RepairMode::Replace;
+            spec.repair.mode = methodBox.getSelectedId() == 2 ? RepairMode::Replace : RepairMode::Attenuate;
+            spec.repair.consonant = consonantMethod();
             spec.repair.bands = bandsBox.getSelectedId(); spec.repair.multiRes = multiBtn.getToggleState(); spec.repair.linkChannels = linkBtn.getToggleState();
             spec.repair.strength = strength.getValue() / 100.0;
-            spec.repair.direction = (RepairDirection) (dirBox.getSelectedId() - 1);
+            spec.repair.direction = spec.repair.consonant ? RepairDirection::LeftRight : (RepairDirection) (dirBox.getSelectedId() - 1);
             spec.repair.contextPct = surround.getValue();
             spec.repair.weighting = weight.getValue() / 100.0;
         }
@@ -1815,6 +1826,15 @@ private:
                         for (auto& l : fix.lost) l.at += juce::jlimit ((juce::int64) 0, (juce::int64) L, t0) - t0;          // (from t0 itself)
                         fix.lostKnown = true;
                     }
+                    // a stray consonant: which side of the box the main consonant is on is ONE answer for all the tracks (found on all of them together); it goes with
+                    // the fix so the files are written the same way
+                    if (fix.kind == FixSpec::Kind::Patch && fix.repair.mode == RepairMode::Attenuate && fix.repair.consonant && std::abs (fix.repair.weighting - 0.5) < 0.04 && ! tracks->empty())
+                    {
+                        const long L = (long) (*tracks)[0].size();
+                        std::vector<const std::vector<float>*> tp; for (auto& t : *tracks) tp.push_back (&t);
+                        const auto d = SpectralRepair::consonantSides (tp, rate, (long) juce::jlimit ((juce::int64) 0, (juce::int64) L, t0), (long) juce::jlimit ((juce::int64) 0, (juce::int64) L, t1), fix.f0, fix.f1);
+                        fix.repair.consonantBefore = d.first; fix.repair.consonantEdge = d.second;
+                    }
                     out->fix = fix;
                     for (size_t i = 0; i < tracks->size(); ++i)
                     {
@@ -1846,6 +1866,14 @@ private:
                     juce::String lostNote;
                     for (auto& l : out->fix.lost)
                         lostNote << "Digital dropout at " << juce::String ((double) (self->pvT0 + l.at) / self->ctx.rate, 3) << " s: " << l.count << " samples were missing on every track; put back. ";
+                    if (out->fix.kind == FixSpec::Kind::Patch && out->fix.repair.consonant)
+                    {
+                        const auto& r = out->fix.repair;
+                        if (r.consonantBefore < 0.0) lostNote << "Stray consonant: matched to the side you chose with Before / After. ";
+                        else if (r.consonantEdge > 0) lostNote << "Stray consonant: the main one is just AFTER the box, so every track was matched to the sound before it. ";
+                        else if (r.consonantEdge < 0) lostNote << "Stray consonant: the main one is just BEFORE the box, so every track was matched to the sound after it. ";
+                        else lostNote << "Stray consonant: no main consonant right next to the box, so both sides were used (" << juce::roundToInt (r.consonantBefore * 100.0) << " % before). ";
+                    }
                     self->status.setText (lostNote + "Fix " + juce::String ((int) self->committed.size()) + " done (not written yet). Press Play to listen to it. If it worked, draw a box round the next problem and press ReTouch or De-click again, or press Write back to file. If not, press Undo and try again.", juce::dontSendNotification);
                     self->refreshControls();
                 });

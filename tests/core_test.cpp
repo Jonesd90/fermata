@@ -1910,6 +1910,96 @@ int main()
             CHECK (e < 0.01 * ref);
             CHECK (ch[0] != Lc);                                                            // and something was done
         }
+        // Attenuate a stray consonant: an early copy of a consonant (over the end of a sung vowel, right before the main one) and a late copy (after the main one, over the
+        // start of the next vowel) come down to the level the track has without them; the vowels keep their level; nothing outside the box changes; plain Attenuate, which
+        // takes the main consonant next to the box as 'normal' sound, leaves much more of them
+        {
+            const size_t L = (size_t) (3 * sr);
+            std::vector<double> hiss (262144, 0.0); juce::Random rnd (77);
+            for (size_t n = 0; n < L; ++n) hiss[n] = rnd.nextFloat() * 2.0 - 1.0;
+            {   // the noise of a consonant: 3 - 12 kHz
+                dsp::FFT big (262144); std::vector<std::complex<double>> b (262144);
+                for (size_t n = 0; n < b.size(); ++n) b[n] = hiss[n];
+                big.forward (b);
+                for (size_t k = 0; k < b.size(); ++k) { const double hz = (double) juce::jmin (k, b.size() - k) * sr / (double) b.size(); if (hz < 3000.0 || hz > 12000.0) b[k] = 0.0; }
+                big.inverse (b);
+                double e = 0; for (size_t n = 0; n < L; ++n) e += b[n].real() * b[n].real();
+                const double g = 0.05 / std::sqrt (e / (double) L);
+                for (size_t n = 0; n < L; ++n) hiss[n] = b[n].real() * g;
+            }
+            auto vowel = [&] (std::vector<float>& v, double f0, double a, double b)
+            {
+                for (size_t n = (size_t) (a * sr); n < (size_t) (b * sr) && n < v.size(); ++n)
+                {
+                    const double t = (double) n / sr; double s = 0;
+                    for (int k = 1; k * f0 < 5000.0; ++k) s += 0.25 / std::pow ((double) k, 1.5) * std::sin (2.0 * dsp::kPi * k * f0 * t + 0.7 * k);     // a sung vowel: little above 4 - 5 kHz
+                    v[n] += (float) s;
+                }
+            };
+            auto bandDb = [&] (const std::vector<float>& v, long a, long b, double lo, double hi)
+            {
+                const int N = 1024; dsp::FFT f (N); const auto w = dsp::hann (N); std::vector<std::complex<double>> buf ((size_t) N);
+                double e = 0; int frames = 0;
+                for (long s = a; s + N <= b; s += N / 4)
+                {
+                    for (int i = 0; i < N; ++i) buf[(size_t) i] = (double) v[(size_t) (s + i)] * w[(size_t) i];
+                    f.forward (buf);
+                    for (int k = (int) (lo * N / sr); k <= (int) (hi * N / sr); ++k) e += std::norm (buf[(size_t) k]);
+                    ++frames;
+                }
+                return 10.0 * std::log10 (e / juce::jmax (1, frames) + 1e-30);
+            };
+            std::vector<float> clean (L, 0.0f);
+            juce::Random rr (78); for (auto& s : clean) s = 0.002f * (rr.nextFloat() * 2.0f - 1.0f);         // the room
+            vowel (clean, 220.0, 0.0, 1.50); vowel (clean, 247.0, 1.78, 3.0);
+            for (size_t n = (size_t) (1.50 * sr); n < (size_t) (1.72 * sr); ++n) clean[n] += (float) hiss[n];                    // the main consonant
+            auto messy = clean;
+            for (size_t n = (size_t) (1.25 * sr); n < (size_t) (1.50 * sr); ++n) messy[n] += (float) (0.5 * hiss[n + 30000]);     // an early copy (a singer who came in early)
+            for (size_t n = (size_t) (1.80 * sr); n < (size_t) (2.00 * sr); ++n) messy[n] += (float) (0.5 * hiss[n + 50000]);     // a late copy, over the start of the next vowel
+            struct Box { double a, b; } boxes[] = { { 1.23, 1.50 }, { 1.73, 2.02 } };
+            for (auto bx : boxes)
+            {
+                const long t0 = (long) (bx.a * sr), t1 = (long) (bx.b * sr), m0 = t0 + (long) (0.012 * sr), m1 = t1 - (long) (0.012 * sr);
+                RepairParams p; p.mode = RepairMode::Attenuate; p.strength = 1.0; p.consonant = true;
+                auto y = messy; SpectralRepair::repair (y, sr, t0, t1, 2000.0, 24000.0, p);
+                RepairParams q = p; q.consonant = false;
+                auto z = messy; SpectralRepair::repair (z, sr, t0, t1, 2000.0, 24000.0, q);
+                RepairParams w = p; w.weighting = bx.a < 1.4 ? 1.0 : 0.0;                    // made to match the WRONG side (the main consonant)
+                auto u = messy; SpectralRepair::repair (u, sr, t0, t1, 2000.0, 24000.0, w);
+                const double cl = bandDb (clean, m0, m1, 4000, 12000), me = bandDb (messy, m0, m1, 4000, 12000), co = bandDb (y, m0, m1, 4000, 12000);
+                const double pl = bandDb (z, m0, m1, 4000, 12000), wr = bandDb (u, m0, m1, 4000, 12000);
+                std::printf ("  stray consonant %.2f-%.2f s: 4-12 kHz clean %.1f, messy %.1f, consonant mode %.1f, plain attenuate %.1f, wrong side %.1f dB\n", bx.a, bx.b, cl, me, co, pl, wr);
+                CHECK (me > cl + 8.0);                                                       // the stray copy really sticks out
+                CHECK (co < cl + 2.5 && co > cl - 4.0);                                      // and is now down to the track's own level (no hole)
+                CHECK (pl > co + 2.0);                                                       // plain Attenuate leaves much more
+                CHECK (wr > co + 3.0);                                                       // the side the box is matched to matters
+                const double vc = bandDb (clean, m0, m1, 1800, 2700), vy = bandDb (y, m0, m1, 1800, 2700);
+                CHECK (std::abs (vy - vc) < 2.0);                                            // the vowel's harmonics in the box keep their level
+                for (long n = 0; n < t0 - 8192; ++n) if (y[(size_t) n] != messy[(size_t) n]) { CHECK (false); break; }
+                for (long n = t1 + 8192; n < (long) L; ++n) if (y[(size_t) n] != messy[(size_t) n]) { CHECK (false); break; }
+                auto s0 = messy; RepairParams p0 = p; p0.strength = 0.0; SpectralRepair::repair (s0, sr, t0, t1, 2000.0, 24000.0, p0);
+                CHECK (s0 == messy);
+            }
+            // the side of the main consonant, judged on several tracks together (the repair window does this once for all of them): after an early box, before a late one
+            {
+                auto quiet = messy; for (auto& v : quiet) v *= 0.3f;
+                std::vector<float> silent (L, 0.0f);
+                const std::vector<const std::vector<float>*> trs { &messy, &quiet, &clean, &silent };
+                const auto e = SpectralRepair::consonantSides (trs, sr, (long) (1.23 * sr), (long) (1.50 * sr), 2000.0, 24000.0);
+                const auto l = SpectralRepair::consonantSides (trs, sr, (long) (1.73 * sr), (long) (2.02 * sr), 2000.0, 24000.0);
+                CHECK (e.first > 0.99 && e.second == 1);
+                CHECK (l.first < 0.01 && l.second == -1);
+                // and a box with the same sound on both sides (a stray consonant in the middle of a vowel): both sides, no edge
+                auto mid = clean; for (size_t n = (size_t) (0.60 * sr); n < (size_t) (0.75 * sr); ++n) mid[n] += (float) hiss[n];
+                const auto m = SpectralRepair::consonantSides ({ &mid }, sr, (long) (0.58 * sr), (long) (0.77 * sr), 2000.0, 24000.0);
+                CHECK (m.second == 0 && m.first > 0.2 && m.first < 0.8);
+            }
+            // the main consonant itself, outside the boxes, is untouched
+            const double mainBefore = bandDb (messy, (long) (1.52 * sr), (long) (1.70 * sr), 4000, 12000);
+            auto both = messy; RepairParams p; p.mode = RepairMode::Attenuate; p.strength = 1.0; p.consonant = true;
+            for (auto bx : boxes) SpectralRepair::repair (both, sr, (long) (bx.a * sr), (long) (bx.b * sr), 2000.0, 24000.0, p);
+            CHECK (std::abs (bandDb (both, (long) (1.52 * sr), (long) (1.70 * sr), 4000, 12000) - mainBefore) < 0.5);
+        }
         // the sharp picture: a steady tone is a thin line, a click a thin column
         {
             std::vector<float> t ((size_t) (2 * sr)); for (size_t n = 0; n < t.size(); ++n) t[n] = 0.3f * (float) std::sin (2 * dsp::kPi * 1000.0 * (double) n / sr);
