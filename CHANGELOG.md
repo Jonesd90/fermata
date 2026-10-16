@@ -6,6 +6,13 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.54.1
+- **Attenuate a stray consonant: the edges now ease out instead of cutting off.** Before, the sound stopped dead where the box started (most clearly after a long main consonant, e.g. the late s in "Multiple s"), and could step back up where it ended. Now:
+  - From the start of the box, whatever was sounding just before it (the main consonant, its echo in the room) **dies away** to the background in a straight line in dB, like a natural decay. This takes 40 % of the box (12 to 80 ms).
+  - Towards the end of the box the level **rises to meet** the sound that actually follows it, over 25 % of the box (10 to 40 ms), so there is no step back up.
+  - Only the shape at the two ends changed: the middle of the box is matched to the clean side as before. A stray copy sitting very close to the main consonant may keep a little of its start; the rest still comes off.
+- Tip: if the stray consonant (or its echo in the room mics) carries on past where you end the box, the box now rises to meet it rather than leaving a step. So draw the box over all of the stray copy and a little past it on the clean side: that side is left alone anyway.
+
 ## 2.54.0
 - **ReTouch: Attenuate a stray consonant.** A new method in the ReTouch window for tidying doubled or messy consonants (an early "sh", a late "s", a second "d", a breathy "t") to one. Draw the box round the early or late copy only, from about 2 kHz (1.5 kHz for sh) to the top, and press ReTouch.
   - Plain Attenuate takes the sound next to the box as "normal". Next to a stray consonant that is the main consonant, so only about half of the stray copy came off. The new method matches every track to the side AWAY from the main consonant: the vowel before an early copy, the sound after a late one.

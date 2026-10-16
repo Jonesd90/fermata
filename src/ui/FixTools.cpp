@@ -1475,7 +1475,8 @@ public:
                                "Attenuate a stray consonant: for tidying a doubled or messy consonant to one. Draw the box round the EARLY or LATE copy only (from where the stray one starts up to where the main one starts, "
                                "or from where the main one ends to where the stray one stops), from about 2 kHz (1.5 kHz for sh) to the top. Each track is matched to the side of the box AWAY from the main consonant "
                                "(the vowel before an early copy, the sound after a late one), so the main consonant next to the box does not count as 'normal' sound and the stray copy comes right down; "
-                               "vowels that carry on through the box keep their level, and the box fades into the main consonant over a few ms. Use 100 % strength.");
+                               "vowels that carry on through the box keep their level. The sound just before the box dies away naturally into it and the box rises to meet the sound after it, so there are no hard edges: "
+                               "cover all of the stray copy and a little past it on the clean side. Use 100 % strength.");
         for (int b : { 128, 256, 512, 1024, 2048, 4096 }) bandsBox.addItem ("Bands: " + juce::String (b), b);
         bandsBox.setSelectedId (1024, juce::dontSendNotification);
         bandsBox.setTooltip ("How finely the sound is split into pitches for Attenuate. More bands follow steady notes more exactly; fewer bands are sharper in time (clicks). 1024 suits most things.");

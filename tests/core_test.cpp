@@ -1971,7 +1971,7 @@ int main()
                 std::printf ("  stray consonant %.2f-%.2f s: 4-12 kHz clean %.1f, messy %.1f, consonant mode %.1f, plain attenuate %.1f, wrong side %.1f dB\n", bx.a, bx.b, cl, me, co, pl, wr);
                 CHECK (me > cl + 8.0);                                                       // the stray copy really sticks out
                 CHECK (co < cl + 2.5 && co > cl - 4.0);                                      // and is now down to the track's own level (no hole)
-                CHECK (pl > co + 2.0);                                                       // plain Attenuate leaves much more
+                CHECK (pl > co + 1.5);                                                       // plain Attenuate leaves more
                 CHECK (wr > co + 3.0);                                                       // the side the box is matched to matters
                 const double vc = bandDb (clean, m0, m1, 1800, 2700), vy = bandDb (y, m0, m1, 1800, 2700);
                 CHECK (std::abs (vy - vc) < 2.0);                                            // the vowel's harmonics in the box keep their level
@@ -1993,6 +1993,23 @@ int main()
                 auto mid = clean; for (size_t n = (size_t) (0.60 * sr); n < (size_t) (0.75 * sr); ++n) mid[n] += (float) hiss[n];
                 const auto m = SpectralRepair::consonantSides ({ &mid }, sr, (long) (0.58 * sr), (long) (0.77 * sr), 2000.0, 24000.0);
                 CHECK (m.second == 0 && m.first > 0.2 && m.first < 0.8);
+            }
+            // a late copy right after a long main consonant: the main one DIES AWAY into the box (no sudden stop), and the box joins the sound after it without a step
+            {
+                std::vector<float> v (L, 0.0f); juce::Random r3 (79); for (auto& s : v) s = 0.002f * (r3.nextFloat() * 2.0f - 1.0f);
+                for (size_t n = (size_t) (0.80 * sr); n < (size_t) (1.25 * sr); ++n) v[n] += (float) hiss[n];                 // the main consonant
+                for (size_t n = (size_t) (1.25 * sr); n < (size_t) (1.45 * sr); ++n) v[n] += (float) (0.5 * hiss[n + 40000]); // a singer who went on too long
+                const long t0 = (long) (1.25 * sr), t1 = (long) (1.47 * sr), win = 1024 + 32;                 // (one analysis frame per window)
+                RepairParams p; p.mode = RepairMode::Attenuate; p.strength = 1.0; p.consonant = true;
+                auto y = v; SpectralRepair::repair (y, sr, t0, t1, 2000.0, 24000.0, p);
+                const double pre = bandDb (y, t0 - win, t0, 4000, 12000);
+                const double s0 = bandDb (y, t0, t0 + win, 4000, 12000), s1 = bandDb (y, t0 + 2 * win, t0 + 3 * win, 4000, 12000), s2 = bandDb (y, t0 + 6 * win, t0 + 7 * win, 4000, 12000);
+                const double endIn = bandDb (y, t1 - win, t1, 4000, 12000), after = bandDb (y, t1, t1 + win, 4000, 12000), orig = bandDb (v, t0 + 3 * win, t1 - 2 * win, 4000, 12000);
+                std::printf ("  decay into the box: before %.1f, box start %.1f, +43 ms %.1f, +128 ms %.1f, box end %.1f, after %.1f (was %.1f) dB\n", pre, s0, s1, s2, endIn, after, orig);
+                CHECK (s0 > s1 + 1.0 && s1 > s2 + 1.0);                                        // it fades ...
+                CHECK (s0 > s2 + 6.0 && s0 < pre + 1.0);                                       // ... from the main consonant's level, not a sudden drop
+                CHECK (s2 < orig - 10.0);                                                      // and the late copy is gone further in
+                CHECK (std::abs (endIn - after) < 4.0);                                        // no step where the box ends
             }
             // the main consonant itself, outside the boxes, is untouched
             const double mainBefore = bandDb (messy, (long) (1.52 * sr), (long) (1.70 * sr), 4000, 12000);

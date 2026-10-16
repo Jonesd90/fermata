@@ -319,7 +319,9 @@ private:
     static constexpr double sideHz = 4500.0;        // the sides are compared above this pitch (consonants are noise up there, sung vowels hardly reach it)
     static constexpr double sideDb = 6.0;           // a difference of half this (dB) or more decides the side outright; less: the two sides are blended
     static constexpr double nearSeconds = 0.025, nearDb = 3.0;   // the main consonant's edge: the louder of the two 25 ms next to the box, by 3 dB or more
-    static constexpr double edgeFadePart = 0.15, edgeFadeMin = 0.008, edgeFadeMax = 0.03;   // the gain comes in over 15 % of the box (8 to 30 ms) at the edge next to the main consonant
+    static constexpr double edgeSeconds = 0.010;    // the level just outside each edge of the box is measured over this long
+    static constexpr double decayPart = 0.4, decayMin = 0.012, decayMax = 0.08;     // at the start of the box the sound dies away over 40 % of it (12 to 80 ms) ...
+    static constexpr double onsetPart = 0.25, onsetMin = 0.010, onsetMax = 0.04;    // ... and at its end the sound after it is met over 25 % (10 to 40 ms)
     static void attenuatePass (std::vector<std::vector<float>*>& xs, double sr, int N, double bandLo, double bandHi, long t0, long t1, double f0, double f1, const RepairParams& p,
                                const Sides* sides = nullptr)
     {
@@ -440,23 +442,46 @@ private:
                     }
                 }
                 const double wLeft = sides != nullptr ? sides->wLeft : 0.5;
-                // the edge of the box next to the main consonant: the gain comes in over a few ms there, so the stray consonant fades into the kept one (no step)
-                const double fadeLen = juce::jmin (juce::jlimit (edgeFadeMin, edgeFadeMax, edgeFadePart * (double) gap / sr) * sr, 0.3 * (double) gap);
-                const int fadeSide = sides != nullptr ? sides->fade : 0;                    // 1: the main consonant is after the box, -1: before it
+                // the level just outside each edge (per bin, smoothed like the level in the box): where the main consonant ends (or starts), and where the sound on the
+                // clean side carries on
+                std::vector<double> edL ((size_t) bins, -1.0), edR ((size_t) bins, -1.0);
+                {
+                    const int kE = juce::jmax (1, (int) std::lround (edgeSeconds * sr / (double) H));
+                    for (int side = 0; side < 2; ++side)
+                    {
+                        const auto& fr = side == 0 ? left : right; if (fr.empty()) continue;
+                        const int n = (int) fr.size(), k = juce::jmin (kE, n);
+                        auto& ed = side == 0 ? edL : edR;
+                        for (int b = b0; b <= b1; ++b)
+                        {
+                            double pw = 0.0; int cnt = 0;
+                            for (int i = 0; i < k; ++i)
+                            {
+                                const long f = side == 0 ? fr[(size_t) (n - 1 - i)] : fr[(size_t) i];
+                                for (int db = -w; db <= w; ++db) { const int bb = b + db; if (bb < 0 || bb >= bins) continue; pw += std::norm (Xc[(size_t) f][(size_t) bb]); ++cnt; }
+                            }
+                            ed[(size_t) b] = pw / juce::jmax (1, cnt);
+                        }
+                    }
+                }
+                // the shape of the target over the box (all in dB, i.e. log power): the background of the clean side in the middle. From the start of the box the sound
+                // that was going on (e.g. the main consonant before a late copy) DIES AWAY to that background in a straight line in dB, like a natural decay, rather
+                // than stopping dead; towards the end of the box the target rises to meet the sound that actually follows, so there is no step back up where the box ends
+                const double gapS = (double) gap / sr;
+                const double tDecay = juce::jlimit (decayMin, decayMax, decayPart * gapS) * sr, tOnset = juce::jlimit (onsetMin, onsetMax, onsetPart * gapS) * sr;
                 for (size_t hi2 = 0; hi2 < hit.size(); ++hi2)
                 {
                     const long f = hit[hi2], s = S + f * H;
                     double inGap = 0.0;
                     for (long n = juce::jmax (s, t0); n < juce::jmin (s + N, t1); ++n) inGap += win[(size_t) (n - s)] * win[(size_t) (n - s)];
-                    double wf = juce::jlimit (0.0, 1.0, inGap / winEnergy * 1.6);
-                    if (fadeSide != 0 && fadeLen > 1.0)
-                    {
-                        const double centre = (double) s + 0.5 * (double) N;
-                        const double dist = fadeSide > 0 ? (double) t1 - centre : centre - (double) t0;
-                        const double u = juce::jlimit (0.0, 1.0, dist / fadeLen);
-                        wf *= u * u * (3.0 - 2.0 * u);
-                    }
+                    const double wf = juce::jlimit (0.0, 1.0, inGap / winEnergy * 1.6);
                     if (wf <= 0.0) continue;
+                    const double centre = (double) s + 0.5 * (double) N;
+                    const double dL = juce::jmax (0.0, centre - (double) t0), dR = juce::jmax (0.0, (double) t1 - centre);     // how far into the box from each edge
+                    // how much each edge's own level still counts here (1 at the edge, 0 once its ramp is over)
+                    // (the sound before the box dies away into it; the sound after it is met by a quicker rise, as a consonant starts faster than it fades)
+                    auto ramp = [] (double d, double len) { return len <= 1.0 ? 0.0 : 1.0 - juce::jlimit (0.0, 1.0, d / len); };
+                    const double kL = ramp (dL, tDecay), kR = ramp (dR, tOnset);
                     for (int b = b0; b <= b1; ++b)
                     {
                         double tgt;                                                                 // log of the background power to match
@@ -464,6 +489,8 @@ private:
                             tgt = wLeft * std::log (bgL[(size_t) b] + 1.0e-30) + (1.0 - wLeft) * std::log (bgR[(size_t) b] + 1.0e-30);
                         else if (bgL[(size_t) b] > 0.0 || bgR[(size_t) b] > 0.0) tgt = std::log ((bgL[(size_t) b] > 0.0 ? bgL[(size_t) b] : bgR[(size_t) b]) + 1.0e-30);
                         else continue;
+                        if (edL[(size_t) b] > 0.0 && kL > 0.0) tgt = juce::jmax (tgt, tgt + kL * (std::log (edL[(size_t) b] + 1.0e-30) - tgt));
+                        if (edR[(size_t) b] > 0.0 && kR > 0.0) tgt = juce::jmax (tgt, tgt + kR * (std::log (edR[(size_t) b] + 1.0e-30) - tgt));
                         double pw = 0.0; int cnt = 0;
                         for (long df = -1; df <= 1; ++df)
                         {
