@@ -59,11 +59,12 @@ private:
     bool updatingSendBox = false;
     juce::TextButton armAllButton { "Arm all" }, armNoneButton { "Arm none" };
     juce::TextButton ltcButton { juce::String::fromUTF8 ("\xE2\x96\xB6 LTC") };       // the triangle: shows / hides the LTC track
-    juce::TextButton recordButton { "REC  [R]" }, zoomInButton { "+" }, zoomOutButton { "-" },
-                     playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, playMarkedButton { "Play marked" },
+    IconButton recordButton { "REC  [R]" }, playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, bounceButton { "Bounce Out..." },
+               pitchButton { "Pitch..." }, repairButton { "Repair & DeClick..." }, undoFixButton { "Undo fix" };
+    juce::TextButton zoomInButton { "+" }, zoomOutButton { "-" }, playMarkedButton { "Play marked" },
                      editInButton { "Edit IN [1]" }, editOutButton { "Edit OUT [2]" },
-                     toEditButton { "To edit [3]" }, toEditAtButton { "To playhead [4]" }, editWindowButton { "Edit window" }, bounceButton { "Bounce Out..." },
-                     importButton { "Import takes..." }, pitchButton { "Pitch..." }, pitchCurveButton { "Pitch curve..." }, repairButton { "Spectral Repair..." }, declickButton { "De-Click..." }, exportProcButton { "Export for Processing..." }, undoFixButton { "Undo fix" }, barSearchButton { "Search for bar" };
+                     toEditButton { "To edit [3]" }, toEditAtButton { "To playhead [4]" }, editWindowButton { "Edit window" },
+                     importButton { "Import takes..." }, exportProcButton { "Export for Processing..." }, barSearchButton { "Search for bar" };
     juce::ToggleButton overdubBox { "Overdub" }, markersToggle { "Markers" };
     LoopButton loopToggle;
     PlayheadModeButton playheadMode;

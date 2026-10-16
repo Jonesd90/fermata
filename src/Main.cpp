@@ -95,7 +95,7 @@ public:
         juce::SystemStats::setApplicationCrashHandler (crashHandler);
         lookAndFeel.reset (new FermataLookAndFeel());
         juce::LookAndFeel::setDefaultLookAndFeel (lookAndFeel.get());
-        tooltips = std::make_unique<juce::TooltipWindow> (nullptr, 500);        // without this no tooltip would ever show
+        tooltips = std::make_unique<juce::TooltipWindow> (nullptr, 900);        // without this no tooltip would ever show
         ctx = std::make_unique<AppContext>();
         installThemeSwitch();                                                    // the sun / moon buttons switch the whole program
         themeSaveHook() = [this] (bool dark)

@@ -6,6 +6,13 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.48.0
+- **Picture buttons in the Edit and Take windows.** The row of grey rectangles is replaced by small symbols: the classic transport set (return to start, rewind, play / stop, forward, go to end, record), Trim Window (a T with scissors and a needle and thread), Bounce Out (a bouncing ball), Pitch (a straight line with a wavy red one through it), Repair & DeClick (a plaster), ReHarmoniSer (three lines converging to one), Tracks (a plus), Feedback (a shouting head), Edit Mixer (faders), Move earlier / Move later (an alarm clock with a left / right arrow), Delete piece (a red "no" sign), Undo fix (a backwards arrow), Automation (a yellow line with dots) and Buses / VCAs (a bus). Resting the mouse on any of them for about a second shows its name (and the longer explanation under it). All tooltips now wait about a second.
+- **One Pitch button.** It opens one window with two tabs: Pitch curve first, then Pitch process (semitones / cents). (When the marked part contains an edit point, so the two streams are open, the Pitch process tab says it is not offered there; the curve works in each stream as before.)
+- **Spectral Repair and De-click are one button, "Repair & DeClick".** It opens the same combined window as before.
+- **Edit window keys:** with marks 1 and 2 set, Enter opens Repair & DeClick and H opens the ReHarmoniSer for that part.
+- **Main window: preamp controls only where they work.** The gain slider and the MIC / 48V / polarity / low cut / pad / Z HI / BOOST buttons appear only on inputs fed by a Merging Hapi, MT48 or Anubis that Fermata is connected to (through the MADPanel driver). Inputs on any other ASIO driver or preamp show just the driver name, second name, meter, monitor and CR.
+
 ## 2.47.0
 - **De-click now removes the low-frequency part of a step-type click.** Some clicks are a sudden level jump followed by a fading offset (a thump of a few hundred hertz lasting a millisecond or two, which is what a high-pass in the chain makes of a step). De-click used to repair the jump and the bright part but left that thump, which is where the click lived below 2 kHz. It now finds the jump, fits the fading tail against a model of the music just before it, and takes the whole thing off. It only acts when the result is clearly smoother and the tail matches the size of the jump, so normal material is left alone.
 - Take-window automation lanes were dropped (Edit window only).

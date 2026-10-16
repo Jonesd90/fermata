@@ -794,6 +794,159 @@ public:
     }
 };
 
+/** The little pictures on the buttons of the edit and take windows. Each is drawn from a 24 x 24 grid so it stays sharp at any size. */
+enum class Icon { Start, Rewind, Play, Stop, Forward, End, Record, Trim, Bounce, Pitch, Repair, Reharm, Tracks, Feedback, Mixer, Earlier, Later, Delete, Undo, Automation, Buses };
+
+inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area)
+{
+    using juce::Colour; using P = juce::Path;
+    const Colour W = theme::text, Rd (0xffe5484d), Bl (0xff6fb3ff), Ye (0xffe8b923), Dk (0xff2d3340);
+    const float sc = juce::jmin (area.getWidth(), area.getHeight()) / 24.0f;
+    g.saveState();
+    g.addTransform (juce::AffineTransform::scale (sc).translated (area.getCentreX() - 12.0f * sc, area.getCentreY() - 12.0f * sc));
+    const auto round = [] (float w) { return juce::PathStrokeType (w, juce::PathStrokeType::curved, juce::PathStrokeType::rounded); };
+    auto fill = [&] (const P& p, Colour c) { g.setColour (c); g.fillPath (p); };
+    auto stroke = [&] (const P& p, float w, Colour c) { g.setColour (c); g.strokePath (p, round (w)); };
+    auto seg = [&] (float x1, float y1, float x2, float y2, float w, Colour c) { P p; p.startNewSubPath (x1, y1); p.lineTo (x2, y2); stroke (p, w, c); };
+    auto tri = [&] (float a, float b, float c2, float d, float e, float f, Colour c) { P p; p.addTriangle (a, b, c2, d, e, f); fill (p, c); };
+    auto rect = [&] (float x, float y, float w, float h, float r, Colour c) { P p; p.addRoundedRectangle (x, y, w, h, r); fill (p, c); };
+    auto clock = [&] (float cx, float cy, float r)
+    {
+        g.setColour (Dk); g.fillEllipse (cx - r, cy - r, 2 * r, 2 * r);
+        g.setColour (W); g.drawEllipse (cx - r, cy - r, 2 * r, 2 * r, 1.5f);
+        P h; h.startNewSubPath (cx, cy - 3.6f); h.lineTo (cx, cy); h.lineTo (cx + 2.6f, cy + 1.6f); stroke (h, 1.3f, W);
+        P bl; bl.addCentredArc (cx - 4.8f, cy - 5.8f, 2.6f, 2.6f, 0, -2.6f, 0.2f, true); stroke (bl, 1.6f, W);
+        P br; br.addCentredArc (cx + 4.8f, cy - 5.8f, 2.6f, 2.6f, 0, -0.2f, 2.6f, true); stroke (br, 1.6f, W);
+        seg (cx - 4.5f, cy + 6.0f, cx - 6.1f, cy + 8.2f, 1.4f, W); seg (cx + 4.5f, cy + 6.0f, cx + 6.1f, cy + 8.2f, 1.4f, W);
+    };
+    switch (ic)
+    {
+        case Icon::Start:   rect (4, 5, 2.6f, 14, 0.3f, W); tri (19, 5, 19, 19, 8.5f, 12, W); break;
+        case Icon::Rewind:  tri (12, 5, 12, 19, 2.5f, 12, W); tri (21.5f, 5, 21.5f, 19, 12, 12, W); break;
+        case Icon::Play:    tri (7, 4.5f, 7, 19.5f, 20, 12, W); break;
+        case Icon::Stop:    rect (6, 6, 12, 12, 1, W); break;
+        case Icon::Forward: tri (2.5f, 5, 2.5f, 19, 12, 12, W); tri (12, 5, 12, 19, 21.5f, 12, W); break;
+        case Icon::End:     rect (17.4f, 5, 2.6f, 14, 0.3f, W); tri (5, 5, 5, 19, 15.5f, 12, W); break;
+        case Icon::Record:  g.setColour (Rd); g.fillEllipse (5, 5, 14, 14); break;
+        case Icon::Trim:
+        {
+            seg (3, 3.5f, 14, 3.5f, 2.2f, W); seg (8.5f, 3.5f, 8.5f, 9.5f, 2.2f, W);
+            g.setColour (W); g.drawEllipse (3.6f, 17.6f, 4.0f, 4.0f, 1.3f); g.drawEllipse (9.4f, 17.6f, 4.0f, 4.0f, 1.3f);
+            seg (6.6f, 17.9f, 12.5f, 10.5f, 1.3f, W); seg (10.4f, 17.9f, 4.5f, 10.5f, 1.3f, W);
+            seg (21, 4, 15.5f, 20.5f, 1.3f, Ye);
+            P th; th.startNewSubPath (20, 8.5f); th.cubicTo (17, 10, 22.5f, 11.5f, 19, 13.3f); th.cubicTo (16.5f, 14.8f, 21, 15.8f, 17.6f, 17.7f); stroke (th, 1.0f, Bl);
+            break;
+        }
+        case Icon::Bounce:
+        {
+            g.setColour (juce::Colours::white.withAlpha (0.13f)); g.fillEllipse (7, 19.7f, 10, 2.6f);
+            g.setColour (Rd); g.fillEllipse (5, 4, 14, 14);
+            P s1; s1.startNewSubPath (5.4f, 8.8f); s1.cubicTo (9, 9.8f, 15, 9.8f, 18.6f, 8.8f); stroke (s1, 1.0f, juce::Colours::white.withAlpha (0.85f));
+            P s2; s2.startNewSubPath (5.2f, 13.4f); s2.cubicTo (9, 12.4f, 15, 12.4f, 18.8f, 13.4f); stroke (s2, 1.0f, juce::Colours::white.withAlpha (0.85f));
+            seg (3, 4.5f, 5, 6, 1, W); seg (2.5f, 9, 4.7f, 9.3f, 1, W); seg (21, 4.5f, 19, 6, 1, W);
+            break;
+        }
+        case Icon::Pitch:
+        {
+            seg (2, 12, 22, 12, 1.6f, W);
+            P w; w.startNewSubPath (2, 15); w.cubicTo (4.5f, 7, 6.5f, 7, 8, 13); w.cubicTo (9.5f, 19, 11.5f, 21, 14, 14.5f); w.cubicTo (16.5f, 8, 17, 5.5f, 22, 8.5f); stroke (w, 2.0f, Rd);
+            break;
+        }
+        case Icon::Repair:
+        {
+            g.saveState(); g.addTransform (juce::AffineTransform::rotation (-0.698f, 12, 12));
+            rect (2, 7.5f, 20, 9, 4.5f, Colour (0xffe8c9a0)); g.setColour (Colour (0xfff3e2c7)); g.fillRect (8.0f, 7.5f, 8.0f, 9.0f);
+            g.setColour (Colour (0xffc9a577)); for (auto d : { std::pair<float, float> { 10.5f, 10 }, { 13.5f, 10 }, { 12, 12 }, { 10.5f, 14 }, { 13.5f, 14 } }) g.fillEllipse (d.first - 0.7f, d.second - 0.7f, 1.4f, 1.4f);
+            g.setColour (Colour (0xffb58d5c)); g.drawRoundedRectangle (2, 7.5f, 20, 9, 4.5f, 0.8f);
+            g.restoreState();
+            break;
+        }
+        case Icon::Reharm:
+        {
+            P a; a.startNewSubPath (3, 5); a.lineTo (9.5f, 5); a.lineTo (13.5f, 12); stroke (a, 1.8f, W);
+            seg (3, 12, 13.5f, 12, 1.8f, W);
+            P b; b.startNewSubPath (3, 19); b.lineTo (9.5f, 19); b.lineTo (13.5f, 12); stroke (b, 1.8f, W);
+            seg (13.5f, 12, 20.5f, 12, 2.6f, Bl); g.setColour (Bl); g.fillEllipse (11.8f, 10.3f, 3.4f, 3.4f);
+            break;
+        }
+        case Icon::Tracks:  seg (12, 4, 12, 20, 3, W); seg (4, 12, 20, 12, 3, W); break;
+        case Icon::Feedback:
+        {
+            P h; h.startNewSubPath (10, 3.5f); h.cubicTo (6.7f, 3.5f, 4.6f, 5.8f, 4.6f, 8.7f); h.cubicTo (4.6f, 9.9f, 5, 10.7f, 5.4f, 11.5f); h.cubicTo (4.9f, 12.3f, 5.1f, 13, 5.7f, 13.3f);
+            h.cubicTo (5.3f, 14.1f, 5.7f, 14.7f, 6.4f, 14.9f); h.cubicTo (6.4f, 15.9f, 7.1f, 16.5f, 8.1f, 16.6f); h.lineTo (8.1f, 19); h.lineTo (13.5f, 19); h.lineTo (13.5f, 16.5f);
+            h.cubicTo (15.5f, 15.8f, 16.5f, 14.5f, 16.5f, 12.5f); h.lineTo (16.5f, 8.7f); h.cubicTo (16.5f, 5.8f, 14.1f, 3.5f, 10, 3.5f); h.closeSubPath();
+            fill (h, Colour (0xffe0b894)); g.setColour (Colour (0xff9c7a5c)); g.strokePath (h, juce::PathStrokeType (0.6f));
+            const Colour br (0xff6a4a30);
+            seg (12.4f, 8.3f, 14.6f, 7.5f, 0.9f, br); seg (12.6f, 9.5f, 14.8f, 9.7f, 0.9f, br); seg (7.6f, 8.2f, 9.6f, 9, 0.9f, br); seg (7.8f, 10.2f, 9.4f, 10.2f, 0.9f, br);
+            g.setColour (Colour (0xff3a1f1f)); g.fillEllipse (10.4f, 12.1f, 2.8f, 3.8f);
+            seg (17, 9.5f, 21, 8, 1.4f, Ye); seg (17.5f, 12.3f, 21.7f, 12.3f, 1.4f, Ye); seg (17, 15, 21, 16.5f, 1.4f, Ye);
+            break;
+        }
+        case Icon::Mixer:
+        {
+            for (float x : { 6.0f, 12.0f, 18.0f }) seg (x, 3.5f, x, 20.5f, 1.6f, W.withAlpha (0.55f));
+            for (auto k : { std::pair<float, float> { 3.2f, 14 }, { 9.2f, 6.5f }, { 15.2f, 10.5f } }) { rect (k.first, k.second, 5.6f, 3.2f, 0.8f, Bl); g.setColour (Colour (0xff1b1e24)); g.drawRoundedRectangle (k.first, k.second, 5.6f, 3.2f, 0.8f, 0.6f); }
+            break;
+        }
+        case Icon::Earlier: clock (14.5f, 12.5f, 6); seg (8.5f, 17, 2, 17, 2, Rd); { P hd; hd.startNewSubPath (4.8f, 14.3f); hd.lineTo (2, 17); hd.lineTo (4.8f, 19.7f); stroke (hd, 2, Rd); } break;
+        case Icon::Later:   clock (9.5f, 12.5f, 6);  seg (15.5f, 17, 22, 17, 2, Bl); { P hd; hd.startNewSubPath (19.2f, 14.3f); hd.lineTo (22, 17); hd.lineTo (19.2f, 19.7f); stroke (hd, 2, Bl); } break;
+        case Icon::Delete:  g.setColour (Rd); g.drawEllipse (3.8f, 3.8f, 16.4f, 16.4f, 2.6f); seg (6.2f, 17.8f, 17.8f, 6.2f, 2.6f, Rd); break;
+        case Icon::Undo:
+        {
+            P h; h.startNewSubPath (8.5f, 4.5f); h.lineTo (3.5f, 9.5f); h.lineTo (8.5f, 14.5f); stroke (h, 2.2f, W);
+            P b; b.startNewSubPath (3.8f, 9.5f); b.lineTo (13.5f, 9.5f); b.addCentredArc (13.5f, 15, 5.5f, 5.5f, 0, 0, juce::MathConstants<float>::pi, false); b.lineTo (8.5f, 20.5f); stroke (b, 2.2f, W);
+            break;
+        }
+        case Icon::Automation:
+        {
+            P l; l.startNewSubPath (2.5f, 16); l.lineTo (8, 6.5f); l.lineTo (13, 15.5f); l.lineTo (17, 8.5f); l.lineTo (21.5f, 14.5f); stroke (l, 1.8f, Ye);
+            for (auto d : { std::pair<float, float> { 2.8f, 16 }, { 8, 6.5f }, { 13, 15.5f }, { 17, 8.5f }, { 21.2f, 14.5f } })
+            { g.setColour (juce::Colours::white); g.fillEllipse (d.first - 1.7f, d.second - 1.7f, 3.4f, 3.4f); g.setColour (Ye); g.drawEllipse (d.first - 1.7f, d.second - 1.7f, 3.4f, 3.4f, 1.3f); }
+            break;
+        }
+        case Icon::Buses:
+        {
+            rect (1.8f, 5, 20.4f, 12.5f, 2.4f, Ye);
+            const Colour k (0xff1b1e24);
+            rect (3.6f, 7, 3.6f, 3.6f, 0.5f, k); rect (8.2f, 7, 3.6f, 3.6f, 0.5f, k); rect (12.8f, 7, 3.6f, 3.6f, 0.5f, k); rect (17.4f, 7, 3.0f, 5.8f, 0.5f, k);
+            g.setColour (k.withAlpha (0.35f)); g.fillRect (1.8f, 13.2f, 20.4f, 1.2f);
+            for (float x : { 7.0f, 17.0f }) { g.setColour (Dk); g.fillEllipse (x - 2.2f, 16.0f, 4.4f, 4.4f); g.setColour (W); g.drawEllipse (x - 2.2f, 16.0f, 4.4f, 4.4f, 1.2f); }
+            break;
+        }
+    }
+    g.restoreState();
+}
+
+/** A button that shows a picture instead of words. The name of the button (and its longer explanation) appears when the mouse rests on it. Colours: buttonColourId / buttonOnColourId as for any TextButton. */
+class IconButton : public juce::TextButton
+{
+public:
+    using juce::TextButton::TextButton;
+    void setIcon (Icon i, const juce::String& name) { icon = i; label = name; repaint(); }
+    juce::String getTooltip() override
+    {
+        const auto t = juce::TextButton::getTooltip();
+        return label.isEmpty() ? t : (t.isEmpty() ? label : label + "\n" + t);
+    }
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        auto b = getLocalBounds().toFloat().reduced (0.5f);
+        const bool on = getToggleState();
+        const auto base = findColour (on ? juce::TextButton::buttonOnColourId : juce::TextButton::buttonColourId);
+        g.setColour (down ? base.brighter (0.2f) : over ? base.brighter (0.1f) : base); g.fillRoundedRectangle (b, 4.0f);
+        g.setColour (on ? base.brighter (0.4f) : theme::border); g.drawRoundedRectangle (b, 4.0f, 1.0f);
+        auto ic = icon;
+        const auto txt = getButtonText();
+        if ((ic == Icon::Play || ic == Icon::Record) && (txt.startsWithIgnoreCase ("stop"))) ic = Icon::Stop;
+        const bool dim = ! isEnabled();
+        if (dim) g.beginTransparencyLayer (0.4f);
+        drawIcon (g, ic, b.reduced (3.0f, 2.0f));
+        if (dim) g.endTransparencyLayer();
+    }
+private:
+    Icon icon = Icon::Play; juce::String label;
+};
+
 /** The scroll bars (and the viewport) must never take the keyboard: after using one, the arrow keys still control the zoom / track heights of the window,
     not the scroll bar. Whenever a bar is moved, the keyboard goes back to the timeline. */
 struct KeepKeysOnTimeline : private juce::ScrollBar::Listener

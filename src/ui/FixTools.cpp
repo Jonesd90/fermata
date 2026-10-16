@@ -44,6 +44,71 @@ struct BoundsKeeper : juce::ComponentListener
     }
 };
 
+/** The Pitch window: two tabs, Pitch curve (first) and Pitch process. The curve page is the whole tool as it always was; the process page is the little semitone / cents dialog. */
+class PitchTabs : public juce::Component
+{
+public:
+    PitchTabs (std::unique_ptr<juce::Component> curve, std::unique_ptr<juce::Component> process)
+    {
+        pages[0] = std::move (curve); pages[1] = std::move (process);
+        natural1 = { pages[1]->getWidth(), pages[1]->getHeight() };
+        const char* names[] = { "Pitch curve", "Pitch process" };
+        for (int i = 0; i < 2; ++i)
+        {
+            addChildComponent (*pages[(size_t) i]);
+            auto& t = tabs[i]; t.setButtonText (names[i]); t.setClickingTogglesState (true); t.setRadioGroupId (7311); t.setWantsKeyboardFocus (false);
+            t.setColour (juce::TextButton::buttonOnColourId, theme::accent);
+            t.onClick = [this, i] { show (i); };
+            addAndMakeVisible (t);
+        }
+        setWantsKeyboardFocus (true);
+        setSize (juce::jmax (pages[0]->getWidth(), natural1.x), pages[0]->getHeight() + kHead);
+        show (0);
+    }
+    bool keyPressed (const juce::KeyPress& k) override { return pages[(size_t) cur]->keyPressed (k); }
+    void resized() override
+    {
+        auto r = getLocalBounds(); auto head = r.removeFromTop (kHead).reduced (6, 4);
+        tabs[0].setBounds (head.removeFromLeft (130)); head.removeFromLeft (4); tabs[1].setBounds (head.removeFromLeft (130));
+        pages[0]->setBounds (r);
+        pages[1]->setBounds (juce::Rectangle<int> (natural1.x, natural1.y).withCentre ({ r.getCentreX(), r.getY() + natural1.y / 2 + 12 }));
+    }
+    void paint (juce::Graphics& g) override { g.fillAll (theme::window); }
+private:
+    static constexpr int kHead = 34;
+    void show (int i)
+    {
+        cur = i; tabs[i].setToggleState (true, juce::dontSendNotification);
+        for (int k = 0; k < 2; ++k) pages[(size_t) k]->setVisible (k == i);
+        if (i == 0) pages[0]->grabKeyboardFocus();
+    }
+    std::unique_ptr<juce::Component> pages[2]; juce::TextButton tabs[2]; juce::Point<int> natural1; int cur = 0;
+};
+
+/** A page that only says why it is not available. */
+class NotePage : public juce::Component
+{
+public:
+    explicit NotePage (const juce::String& t) : text (t) { setSize (470, 150); }
+    void paint (juce::Graphics& g) override { g.setColour (theme::text); g.setFont (juce::FontOptions (14.0f)); g.drawFittedText (text, getLocalBounds().reduced (20), juce::Justification::centred, 6); }
+private:
+    juce::String text;
+};
+
+/** Set while pitchEdit / pitchTake are called only to MAKE the Pitch process page (they put it here instead of opening a window of its own). */
+static bool gMakeProcessPage = false;
+static std::unique_ptr<juce::Component> gProcessPage;
+/** The curve page, with the process page beside it as a second tab when there is one (and a note in its place when the two streams of an edit point are open). */
+static std::unique_ptr<juce::Component> withPitchTabs (std::unique_ptr<juce::Component> curve, bool streams)
+{
+    if (gProcessPage == nullptr) return curve;
+    std::unique_ptr<juce::Component> proc;
+    if (! streams) { proc = std::move (gProcessPage); gProcessPage.reset(); }
+    else proc = std::make_unique<NotePage> ("Pitch process works on the whole marked part at once, so it is not offered while the part contains an edit point (the two streams). "
+                                                  "Draw the pitch line in each stream here, or mark a part without the edit point to use Pitch process.");        // (the page stays in gProcessPage for the second stream)
+    return std::make_unique<PitchTabs> (std::move (curve), std::move (proc));
+}
+
 static void launchDialog (std::unique_ptr<juce::Component> content, const juce::String& title, juce::Component* around, bool resizable = false)
 {
     juce::DialogWindow::LaunchOptions o;
@@ -2524,6 +2589,7 @@ void pitchTake (AppContext& app, const juce::Uuid& wid, juce::Component* parent)
         setUndoForTake (app, wid, gid, old, "pitch correction");
         app.project.changed();
     };
+    if (gMakeProcessPage) { gProcessPage = std::make_unique<PitchDialog> (std::move (c)); return; }
     launchDialog (std::make_unique<PitchDialog> (std::move (c)), "Pitch correction", parent);
 }
 
@@ -2681,7 +2747,16 @@ void pitchCurveTake (AppContext& app, const juce::Uuid& wid, juce::Component* pa
     };
     c.stop = [&app] { app.stopPlayback(); };
     c.hold = [&app] (bool on) { app.undoHold += on ? 1 : -1; };
-    launchDialog (std::make_unique<CurveDialog> (std::move (c)), "Pitch curve", parent, true);
+    launchDialog (withPitchTabs (std::make_unique<CurveDialog> (std::move (c)), false), "Pitch", parent, true);
+}
+
+/** The Pitch button of the take window: Pitch curve first, Pitch process on the second tab. */
+void pitchTabsTake (AppContext& app, const juce::Uuid& wid, juce::Component* parent)
+{
+    gProcessPage.reset(); gMakeProcessPage = true; pitchTake (app, wid, parent); gMakeProcessPage = false;
+    if (gProcessPage == nullptr) return;                                   // (a message was shown: nothing is marked)
+    pitchCurveTake (app, wid, parent);
+    gProcessPage.reset();
 }
 
 // ======================================================================================================== edit window: pitch / repair
@@ -2732,6 +2807,7 @@ void pitchEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent)
         setUndoForEdit (app, eid, old, "pitch correction");
         app.project.changed();
     };
+    if (gMakeProcessPage) { gProcessPage = std::make_unique<PitchDialog> (std::move (c)); return; }
     launchDialog (std::make_unique<PitchDialog> (std::move (c)), "Pitch correction", parent);
 }
 
@@ -3501,9 +3577,18 @@ static void openPitchCurve (AppContext& app, const juce::Uuid& eid, juce::Compon
     };
     c.stop = [&app] { app.stopPlayback(); };
     c.hold = [&app] (bool on) { app.undoHold += on ? 1 : -1; };
-    auto dlg = std::make_unique<CurveDialog> (std::move (c));
-    if (pair != nullptr) launchStream (pair, slot, std::move (dlg), "Pitch curve - " + ss.label, parent);
-    else launchDialog (std::move (dlg), "Pitch curve", parent, true);
+    auto dlg = withPitchTabs (std::make_unique<CurveDialog> (std::move (c)), pair != nullptr);
+    if (pair != nullptr) launchStream (pair, slot, std::move (dlg), "Pitch - " + ss.label, parent);
+    else launchDialog (std::move (dlg), "Pitch", parent, true);
+}
+
+/** The Pitch button of the edit window: Pitch curve first, Pitch process on the second tab. */
+void pitchTabsEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent)
+{
+    gProcessPage.reset(); gMakeProcessPage = true; pitchEdit (app, eid, parent); gMakeProcessPage = false;
+    if (gProcessPage == nullptr) return;                                   // (a message was shown: nothing is marked)
+    pitchCurveEdit (app, eid, parent);
+    gProcessPage.reset();
 }
 
 void undoLastFix (AppContext& app)

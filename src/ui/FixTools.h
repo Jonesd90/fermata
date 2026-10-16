@@ -20,11 +20,14 @@ void relinkTake (AppContext&, const juce::Uuid& windowId, const juce::Uuid& take
 void repairTake (AppContext&, const juce::Uuid& takeWindowId, juce::Component* parent, bool declick = false);
 /** Draw a line of pitch against time over the marked part, audition it, then accept or revert. */
 void pitchCurveTake (AppContext&, const juce::Uuid& takeWindowId, juce::Component* parent);
+/** The Pitch button: one window, Pitch curve on the first tab and Pitch process (semitones / cents) on the second. */
+void pitchTabsTake (AppContext&, const juce::Uuid& takeWindowId, juce::Component* parent);
 
 // ---- Edit window ----
 void pitchEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
 void repairEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent, bool declick = false);
 void pitchCurveEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
+void pitchTabsEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
 /** Re-HarmoniSer: retunes individual out-of-tune notes in the marked part of all tracks, every track in the same way. */
 void reharmoniserEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
 

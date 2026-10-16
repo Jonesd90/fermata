@@ -62,6 +62,8 @@ public:
     virtual bool isConnected() const = 0;
     /** Push settings for a physical input (0-based). Returns true if the hardware accepted them. */
     virtual bool apply (int inputIndex, const PreampSettings&) = 0;
+    /** True if the hardware behind this driver input (0-based) has preamps that this driver can control (a Merging Hapi, MT48 or Anubis); any other input has none of the preamp controls. */
+    virtual bool controls (int inputIndex) const { (void) inputIndex; return false; }
 };
 
 class NullPreampDriver : public PreampDriver

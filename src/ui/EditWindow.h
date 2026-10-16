@@ -56,10 +56,11 @@ private:
     juce::Uuid editId;
     juce::Label nameCaption, infoLabel;
     juce::TextEditor nameEditor;
-    juce::TextButton playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, trimButton { "Trim Window [T]" }, deleteButton { "Delete piece" },
-                     leftButton { "Move earlier" }, rightButton { "Move later" }, endButton { "Next goes at end" },
-                     zoomInButton { "+" }, zoomOutButton { "-" }, bounceButton { "Bounce Out..." }, mixerButton { "Edit Mixer" }, ltcButton { juce::String::fromUTF8 ("\xE2\x96\xB6 LTC") }, automationButton { "Automation" }, busViewButton { "Buses / VCAs" },
-                     pitchButton { "Pitch..." }, pitchCurveButton { "Pitch curve..." }, repairButton { "Spectral Repair..." }, declickButton { "De-Click..." }, reharmoniserButton { "ReHarmoniSer..." }, exportProcButton { "Export for Processing..." }, undoFixButton { "Undo fix" }, tracksButton { "Tracks..." }, importButton { "Import..." }, feedbackButton { "Feedback..." };
+    IconButton playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, trimButton { "Trim Window [T]" }, deleteButton { "Delete piece" },
+               leftButton { "Move earlier" }, rightButton { "Move later" }, bounceButton { "Bounce Out..." }, mixerButton { "Edit Mixer" }, automationButton { "Automation" }, busViewButton { "Buses / VCAs" },
+               pitchButton { "Pitch..." }, repairButton { "Repair & DeClick..." }, reharmoniserButton { "ReHarmoniSer..." }, undoFixButton { "Undo fix" }, tracksButton { "Tracks..." }, feedbackButton { "Feedback..." };
+    juce::TextButton endButton { "Next goes at end" }, zoomInButton { "+" }, zoomOutButton { "-" }, ltcButton { juce::String::fromUTF8 ("\xE2\x96\xB6 LTC") },
+                     exportProcButton { "Export for Processing..." }, importButton { "Import..." };
     juce::ToggleButton slipLeftToggle { "Slip Left" }, slipRightToggle { "Slip Right" }, shuffleToggle { "Shuffle" }, insertFlagToggle { "Insert flag" }, markersToggle { "Markers" }, feedbackToggle { "Feedback markers" };
     LoopButton loopToggle;
     PlayheadModeButton playheadMode;

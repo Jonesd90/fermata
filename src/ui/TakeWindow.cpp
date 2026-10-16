@@ -1186,7 +1186,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     barSearchButton.setTooltip ("Search for bar: type a bar number and every take here that contains it (from its IN Bar to its OUT Bar, set by right-clicking a take) is framed in blue-green, so you can see which takes have that bar. Click again to clear.");
     barSearchButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff19a08a));
     barSearchButton.onClick = [this] { toggleBarSearch(); };
-    pitchButton.setTooltip ("Pitch correction: shifts the part marked with Edit IN [1] and Edit OUT [2] on every track of the take, by semitones and / or cents");
+    pitchButton.setTooltip ("Two tabs. Pitch curve: draw a line of pitch against time over the part marked with Edit IN [1] and Edit OUT [2] (+100 cents at the top, -100 at the bottom), for a note that drifts flat or sharp; audition it, then accept or revert. Pitch process: shifts the marked part on every track of the take by semitones and / or cents.");
     // With no 1 / 2 flags set, a take that was selected whole (Ctrl + click) is loaded in full into the process window.
     auto withWholeTake = [this] (std::function<void()> run)
     {
@@ -1200,24 +1200,23 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
         run();
         if (temp) if (auto* w2 = def()) { w2->editTake = oldTake; w2->editIn = oldIn; w2->editOut = oldOut; }
     };
-    pitchButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::pitchTake (app, windowId, this); }); };
-    pitchCurveButton.setTooltip ("Pitch curve: draw a line of pitch against time over the marked part (+100 cents at the top, -100 at the bottom), for a note that drifts flat or sharp; audition it, then accept or revert");
-    pitchCurveButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::pitchCurveTake (app, windowId, this); }); };
-    repairButton.setTooltip ("Spectral Repair: shows the marked part (Edit IN [1] / Edit OUT [2]) of all tracks as one spectrogram; draw a box round a noise (drag its edges to adjust it) and rebuild it from the clean sound next to it");
+    pitchButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::pitchTabsTake (app, windowId, this); }); };
+    repairButton.setTooltip ("Shows the marked part (Edit IN [1] / Edit OUT [2]) of all tracks as one spectrogram; draw a box round a noise (drag its edges to adjust it) and rebuild it from the clean sound next to it, or use De-click to find and mend clicks");
     repairButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::repairTake (app, windowId, this, false); }); };
-    declickButton.setTooltip ("De-Click: the same window as Spectral Repair, but it finds and mends clicks (the spectrogram helps you see them)");
-    declickButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::repairTake (app, windowId, this, true); }); };
     exportProcButton.setTooltip ("Export for Processing: sends the marked part (Edit IN [1] / Edit OUT [2], all tracks) to the Processing Media folder to be corrected in other software (e.g. iZotope RX). Re-link it afterwards with a right-click on the 'Waiting for corrected audio' block");
     exportProcButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::exportForProcessingTake (app, windowId, this); }); };
     undoFixButton.setTooltip ("Undo the last pitch correction, repair, de-click or export for processing (the original audio files were never touched)");
     undoFixButton.onClick = [this] { fixtools::undoLastFix (app); };
     bounceButton.setTooltip ("Make a master file of the marked take (or the marked part of it) through the processing mixer");
     toEditButton.setColour (juce::TextButton::buttonColourId, theme::accent);
+    recordButton.setIcon (Icon::Record, "Record [R]"); playButton.setIcon (Icon::Play, "Play / Stop [Space]"); startButton.setIcon (Icon::Start, "Return to start [Home]"); backButton.setIcon (Icon::Rewind, "Rewind 5 seconds");
+    fwdButton.setIcon (Icon::Forward, "Forward 5 seconds"); endTransportButton.setIcon (Icon::End, "Go to the end [End]"); bounceButton.setIcon (Icon::Bounce, "Bounce Out");
+    pitchButton.setIcon (Icon::Pitch, "Pitch & Pitch curve"); repairButton.setIcon (Icon::Repair, "Repair & DeClick"); undoFixButton.setIcon (Icon::Undo, "Undo fix");
     for (auto* c : std::initializer_list<juce::Component*> { &recordButton, &zoomInButton, &zoomOutButton, &playButton, &playMarkedButton,
-                                                              &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &exportProcButton, &undoFixButton, &barSearchButton, &timeLabel, &statusLabel, &markLabel })
+                                                              &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &exportProcButton, &undoFixButton, &barSearchButton, &timeLabel, &statusLabel, &markLabel })
         addAndMakeVisible (c);
     for (auto* b : std::initializer_list<juce::Button*> { &recordButton, &zoomInButton, &zoomOutButton, &playButton, &playMarkedButton,
-                                                          &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &exportProcButton, &undoFixButton, &barSearchButton })
+                                                          &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &exportProcButton, &undoFixButton, &barSearchButton })
         b->setWantsKeyboardFocus (false);       // keep the keyboard shortcuts working after a button click
     timeLabel.setFont (juce::FontOptions (20.0f, juce::Font::bold));
     statusLabel.setColour (juce::Label::textColourId, theme::warn);
@@ -1290,16 +1289,17 @@ void TakeWindowComponent::resized()
 {
     auto r = getLocalBounds().reduced (6);
     using grid::FlowItem;
+    constexpr int IW = 34, IH = 26;                               // the picture buttons
     const std::vector<FlowItem> items
     {
         { &nameLabel, 45 }, { &nameEditor, 200, grid::btnH, 10 }, { &takeBox, 84, 58, 14 },
-        { &recordButton, grid::btnW, grid::btnH, 6 }, { &timeLabel, 150, 28, 14 },
-        { &startButton, 40, grid::btnH, 2 }, { &backButton, 40, grid::btnH, 2 }, { &playButton }, { &fwdButton, 40, grid::btnH, 2 }, { &endTransportButton, 40, grid::btnH, 6 }, { &playMarkedButton }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
+        { &recordButton, IW, IH, 6 }, { &timeLabel, 150, 28, 14 },
+        { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playMarkedButton }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
         { &editInButton }, { &editOutButton }, { &toEditButton }, { &toEditAtButton }, { &overdubBox, grid::btnW - 10, grid::btnH, 6 }, { &markersToggle, 80, grid::btnH, 14 },
-        { &editWindowButton }, { &bounceButton, grid::btnW, grid::btnH, 14 },
+        { &editWindowButton }, { &bounceButton, IW, IH, 14 },
         { &sendCaption, 120, grid::btnH, 2 }, { &sendBox, 200, grid::btnH, 14 },
         { &ltcButton, 74, grid::btnH, 14 }, { &armAllButton }, { &armNoneButton, grid::btnW, grid::btnH, 14 },
-        { &importButton }, { &pitchButton }, { &pitchCurveButton, grid::btnW + 24 }, { &repairButton, grid::btnW + 30 }, { &declickButton }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, grid::btnW, grid::btnH, 14 }, { &barSearchButton, grid::btnW + 14, grid::btnH, 14 },
+        { &importButton }, { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 6 }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, IW, IH, 14 }, { &barSearchButton, grid::btnW + 14, grid::btnH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
     r.removeFromTop (grid::flow (r, items));                           // everything on one line when there is room, otherwise it spills onto more

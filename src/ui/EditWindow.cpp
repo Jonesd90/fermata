@@ -1542,7 +1542,6 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     busViewButton.setTooltip ("Switch the rows between the audio tracks and the Int Buses and VCAs. In the bus view every Int Bus and every VCA has its own automation lane: "
                               "Gain, Fader and Pan for the buses (plus sends and plug-in parameters), Fader for the VCAs. Use the label on the left of a row to choose what it shows.");
     busViewButton.onClick = [this] { timeline->setBusView (busViewButton.getToggleState()); };
-    pitchButton.setTooltip ("Pitch correction: shifts the audio between marks 1 and 2 on every track, by semitones and / or cents. Can also process extra audio at each end (up to 9 s) so the edit points can be moved outward later");
     // With no 1 / 2 flags set, a piece that was selected whole (Ctrl + click) is loaded in full into the process window.
     auto withWholePiece = [this] (std::function<void()> run)
     {
@@ -1556,13 +1555,11 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
         run();
         if (temp) if (auto* e2 = edit()) { e2->fixIn = -1.0; e2->fixOut = -1.0; }
     };
-    pitchButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::pitchEdit (app, editId, this); }); };
-    pitchCurveButton.setTooltip ("Pitch curve: draw a line of pitch against time between marks 1 and 2 (+100 cents at the top, -100 at the bottom), for a note that drifts flat or sharp; audition it, then accept or revert");
-    pitchCurveButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::pitchCurveEdit (app, editId, this); }); };
-    repairButton.setTooltip ("Spectral Repair: shows the audio between marks 1 and 2 of all tracks as one spectrogram; draw a box round a noise (drag its edges to adjust it) and rebuild it from the clean sound next to it");
+    pitchButton.setTooltip ("Two tabs. Pitch curve: draw a line of pitch against time between marks 1 and 2 (+100 cents at the top, -100 at the bottom), for a note that drifts flat or sharp; audition it, then accept or revert. "
+                            "Pitch process: shifts the audio between the marks by semitones and / or cents (it can also process extra audio at each end, up to 9 s, so the edit points can be moved outward later).");
+    pitchButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::pitchTabsEdit (app, editId, this); }); };
+    repairButton.setTooltip ("Shows the audio between marks 1 and 2 of all tracks as one spectrogram. Draw a box round a noise (drag its edges to adjust it) and rebuild it from the clean sound next to it, or use De-click to find and mend clicks. Key: Enter, with marks 1 and 2 set.");
     repairButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::repairEdit (app, editId, this, false); }); };
-    declickButton.setTooltip ("De-Click: the same window as Spectral Repair, but it finds and mends clicks (the spectrogram helps you see them)");
-    declickButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::repairEdit (app, editId, this, true); }); };
     reharmoniserButton.setTooltip ("ReHarmoniSer: retunes single out-of-tune notes in the audio between marks 1 and 2 of all tracks, every track in exactly the same way; check it by ear, then Write back to clip");
     reharmoniserButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::reharmoniserEdit (app, editId, this); }); };
     exportProcButton.setTooltip ("Export for Processing: sends the part between marks 1 and 2 (all tracks) to the Processing Media folder to be corrected in other software (e.g. iZotope RX). Re-link it afterwards with a right-click on the 'Waiting for corrected audio' block");
@@ -1598,13 +1595,19 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     timeline->slipLeft = app.trimSlipLeft; timeline->slipRight = app.trimSlipRight;
     slipLeftToggle.onClick  = [this] { timeline->slipLeft = slipLeftToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
     slipRightToggle.onClick = [this] { timeline->slipRight = slipRightToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
-    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &ltcButton, &automationButton, &busViewButton, &pitchButton, &pitchCurveButton, &repairButton, &declickButton, &reharmoniserButton, &exportProcButton, &undoFixButton,
+    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &ltcButton, &automationButton, &busViewButton, &pitchButton, &repairButton, &reharmoniserButton, &exportProcButton, &undoFixButton,
                                                           &slipLeftToggle, &slipRightToggle, &shuffleToggle, &insertFlagToggle })
     {
         addAndMakeVisible (b);
         b->setWantsKeyboardFocus (false);
     }
     trimButton.setColour (juce::TextButton::buttonColourId, theme::accent);
+    playButton.setIcon (Icon::Play, "Play / Stop [Space]"); startButton.setIcon (Icon::Start, "Return to start [Home]"); backButton.setIcon (Icon::Rewind, "Rewind 5 seconds");
+    fwdButton.setIcon (Icon::Forward, "Forward 5 seconds"); endTransportButton.setIcon (Icon::End, "Go to the end [End]");
+    trimButton.setIcon (Icon::Trim, "Trim Window [T]"); deleteButton.setIcon (Icon::Delete, "Delete piece"); leftButton.setIcon (Icon::Earlier, "Move earlier"); rightButton.setIcon (Icon::Later, "Move later");
+    bounceButton.setIcon (Icon::Bounce, "Bounce Out"); mixerButton.setIcon (Icon::Mixer, "Edit Mixer"); automationButton.setIcon (Icon::Automation, "Automation"); busViewButton.setIcon (Icon::Buses, "Buses / VCAs");
+    pitchButton.setIcon (Icon::Pitch, "Pitch & Pitch curve"); repairButton.setIcon (Icon::Repair, "Repair & DeClick [Enter]"); reharmoniserButton.setIcon (Icon::Reharm, "ReHarmoniSer [H]");
+    undoFixButton.setIcon (Icon::Undo, "Undo fix"); tracksButton.setIcon (Icon::Tracks, "Tracks"); feedbackButton.setIcon (Icon::Feedback, "Feedback");
     playheadMode.setTooltip ("Playhead behaviour. Lit: the playhead moves with the time, so after Stop the next Play carries on from where you stopped. "
                              "Off: it jumps back to where playback began. (The same setting in every window.)");
     playheadMode.onClick = [this] { app.setPlayheadFollows (! app.playheadFollows); };
@@ -1633,16 +1636,17 @@ void EditWindowComponent::resized()
 {
     auto r = getLocalBounds().reduced (6);
     using grid::FlowItem;
+    constexpr int IW = 34, IH = 26;                               // the picture buttons
     const std::vector<FlowItem> items
     {
         { &nameCaption, 45 }, { &nameEditor, 240, grid::btnH, 14 },
-        { &startButton, 40, grid::btnH, 2 }, { &backButton, 40, grid::btnH, 2 }, { &playButton }, { &fwdButton, 40, grid::btnH, 2 }, { &endTransportButton, 40, grid::btnH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
-        { &trimButton }, { &deleteButton, grid::btnW, grid::btnH, 14 },
-        { &leftButton }, { &rightButton }, { &endButton, grid::btnW, grid::btnH, 14 },
-        { &bounceButton }, { &mixerButton, grid::btnW, grid::btnH, 6 }, { &ltcButton, 74, grid::btnH, 14 },
-        { &automationButton, grid::btnW, grid::btnH, 2 }, { &busViewButton, grid::btnW + 20, grid::btnH, 14 },
-        { &pitchButton }, { &pitchCurveButton, grid::btnW + 24 }, { &repairButton, grid::btnW + 30 }, { &declickButton }, { &reharmoniserButton, grid::btnW + 24 }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, grid::btnW, grid::btnH, 14 },
-        { &tracksButton }, { &importButton, grid::btnW, grid::btnH, 14 }, { &feedbackButton, grid::btnW, grid::btnH, 8 }, { &markersToggle, 80 }, { &feedbackToggle, 140, grid::btnH, 14 },
+        { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
+        { &trimButton, IW, IH, 2 }, { &deleteButton, IW, IH, 14 },
+        { &leftButton, IW, IH, 2 }, { &rightButton, IW, IH, 6 }, { &endButton, grid::btnW, grid::btnH, 14 },
+        { &bounceButton, IW, IH, 2 }, { &mixerButton, IW, IH, 6 }, { &ltcButton, 74, grid::btnH, 14 },
+        { &automationButton, IW, IH, 2 }, { &busViewButton, IW, IH, 14 },
+        { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 2 }, { &reharmoniserButton, IW, IH, 10 }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, IW, IH, 14 },
+        { &tracksButton, IW, IH, 2 }, { &importButton, grid::btnW, grid::btnH, 14 }, { &feedbackButton, IW, IH, 8 }, { &markersToggle, 80 }, { &feedbackToggle, 140, grid::btnH, 14 },
         { &slipLeftToggle, 95 }, { &slipRightToggle, 105 }, { &shuffleToggle, 90 }, { &insertFlagToggle, 100, grid::btnH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
@@ -2119,6 +2123,13 @@ bool EditWindowComponent::keyPressed (const juce::KeyPress& k)
     if (c == 'c' && ! k.getModifiers().isAnyModifierKeyDown()) { timeline->centreOnPlayhead(); return true; }
     if (c == 'l' && ! k.getModifiers().isAnyModifierKeyDown()) { loopToggle.setToggleState (! loopToggle.getToggleState(), juce::dontSendNotification); loopChanged(); return true; }
     if (c == 't') { trimSelected(); return true; }
+    if (k == juce::KeyPress::returnKey || c == 'h')              // Enter: Repair & DeClick; H: ReHarmoniSer: both for the part between marks 1 and 2
+    {
+        auto* e = edit();
+        if (e == nullptr || e->fixIn < 0.0 || e->fixOut <= e->fixIn) return false;
+        if (k == juce::KeyPress::returnKey) repairButton.onClick(); else reharmoniserButton.onClick();
+        return true;
+    }
     if (c == 'r' && ! k.getModifiers().isAnyModifierKeyDown()) { buttSelected(); return true; }
     if (c == '4' && ! k.getModifiers().isAnyModifierKeyDown()) { placeFromTakeWindow(); return true; }     // same as key 4 in a take window
     if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) { deleteSelected(); return true; }

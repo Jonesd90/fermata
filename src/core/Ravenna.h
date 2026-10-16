@@ -115,6 +115,7 @@ public:
     juce::String getName() const override;
     bool isConnected() const override;
     bool apply (int inputIndex, const PreampSettings&) override;
+    bool controls (int inputIndex) const override { Dev* d = nullptr; int ch = 0; return locate (inputIndex, d, ch); }
 
     struct Info { juce::String name, host, status; bool connected = false; int channels = 0; int firstInput = 0; int patched = 0; };   // channels = with a preamp the device lets us control; patched = inputs ANEMAN sends to the ASIO device
     std::vector<Info> info() const;

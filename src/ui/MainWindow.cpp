@@ -69,6 +69,7 @@ public:
         zhi = make ("Z HI", "High input impedance (the device's Z in switch)", theme::accent);
         boost = make ("BOOST", "Boost: the mic preamp's extra-gain setting (Hapi: Mic / Boost). Sent to the device as its 'lift' switch.", theme::accent);
         refreshFromModel();
+        checkPreampShown();
     }
 
     void refreshFromModel()
@@ -94,7 +95,7 @@ public:
             mic->setEnabled (true);
             mic->setTooltip ("Mic / Line: lit = LINE input, off = MIC input");
         }
-        for (auto* b : { v48, pad, boost, zhi }) b->setVisible (! lo);
+        for (auto* b : { v48, pad, boost, zhi }) b->setVisible (preampShown && ! lo);
         v48->setToggleState (in.preamp.phantom, juce::dontSendNotification);
         pol->setToggleState (in.preamp.polarity, juce::dontSendNotification);
         lc->setToggleState (in.preamp.lowCut, juce::dontSendNotification);
@@ -107,6 +108,7 @@ public:
 
     void tick (const std::vector<float>& inPk)
     {
+        checkPreampShown();
         meter.setLevel (juce::isPositiveAndBelow (idx, (int) inPk.size()) ? inPk[(size_t) idx] : 0.0f);
         const auto fed = tracksOnInput();
         const bool any = ! fed.empty();
@@ -130,10 +132,13 @@ public:
         r.removeFromLeft (6);
         meter.setBounds (r.removeFromLeft (84).reduced (0, 6));
         r.removeFromLeft (6);
-        gain.setBounds (r.removeFromLeft (190));
-        r.removeFromLeft (4);
-        for (auto* b : { mic, v48, pol, lc, pad, zhi, boost }) b->setBounds (r.removeFromLeft (b == mic ? 48 : b == boost ? 58 : b == zhi ? 46 : 40).reduced (1, 0));
-        r.removeFromLeft (10);
+        if (preampShown)                                           // the preamp controls only exist for Merging Hapi / MT48 / Anubis inputs (through the MADPanel driver)
+        {
+            gain.setBounds (r.removeFromLeft (190));
+            r.removeFromLeft (4);
+            for (auto* b : { mic, v48, pol, lc, pad, zhi, boost }) b->setBounds (r.removeFromLeft (b == mic ? 48 : b == boost ? 58 : b == zhi ? 46 : 40).reduced (1, 0));
+            r.removeFromLeft (10);
+        }
         for (auto* b : monButtons) b->setBounds (r.removeFromLeft (b->getButtonText().length() > 1 ? 38 : 30).reduced (1, 0));
         r.removeFromLeft (10);
         crButton.setBounds (r.removeFromLeft (36).reduced (1, 0));
@@ -172,7 +177,15 @@ private:
         app.project.setPreamp (idx, s);
     }
 
-    AppContext& app; int idx; bool updating = false;
+    bool hasPreamp() const { return app.project.preampDriver != nullptr && app.project.preampDriver->controls (idx); }
+    void checkPreampShown()
+    {
+        const bool hw = hasPreamp(); if (hw == preampShown) return;
+        preampShown = hw; gain.setVisible (hw); for (auto* b : { mic, v48, pol, lc, pad, zhi, boost }) b->setVisible (hw);
+        refreshFromModel(); resized();
+    }
+
+    AppContext& app; int idx; bool updating = false, preampShown = true;
     juce::Label number, driver; juce::TextEditor alias; LevelMeter meter { false }; juce::Slider gain;
     juce::OwnedArray<juce::TextButton> buttons, monButtons;
     juce::TextButton crButton { "CR" };
