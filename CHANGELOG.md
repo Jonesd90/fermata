@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.47.0
+- **De-click now removes the low-frequency part of a step-type click.** Some clicks are a sudden level jump followed by a fading offset (a thump of a few hundred hertz lasting a millisecond or two, which is what a high-pass in the chain makes of a step). De-click used to repair the jump and the bright part but left that thump, which is where the click lived below 2 kHz. It now finds the jump, fits the fading tail against a model of the music just before it, and takes the whole thing off. It only acts when the result is clearly smoother and the tail matches the size of the jump, so normal material is left alone.
+- Take-window automation lanes were dropped (Edit window only).
+
 ## 2.46.1
 - **ReHarmoniSer Out / In windows: an untouched stream can be written back.** Pressing Write back to clip on a stream where nothing was changed now simply means "leave this stream as it is": its window closes and the other stream goes into the edit. (It used to say "Nothing has been changed yet. Press Cancel to close.", and there was no way to finish without changing both streams.)
 

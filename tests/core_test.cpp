@@ -1631,6 +1631,16 @@ int main()
             std::vector<float> q ((size_t) (2 * sr), 0.0f); auto q2 = q;
             CHECK (SpectralRepair::declick (q2, 1000, (long) q2.size() - 1000, 6, nullptr, sr) == 0 && q2 == q);
         }
+        // declick: a level step with a fading offset behind it (the low-frequency part of a click) is taken off with the jump
+        {
+            auto ref = tone; juce::Random rnd (31); for (auto& v : ref) v += 0.004f * (rnd.nextFloat() * 2.0f - 1.0f);
+            auto x = ref; const size_t n0 = 100000;
+            for (size_t i = n0; i < n0 + 3000; ++i) x[i] += 0.1f * (float) std::exp (-(double) (i - n0) / (0.0008 * sr));
+            auto y = x; const int n = SpectralRepair::declick (y, 80000, 120000, 6, nullptr, sr);
+            auto errOf = [&] (const std::vector<float>& v) { double e = 0; for (size_t i = n0 - 10; i < n0 + 2400; ++i) e += std::pow (ref[i] - v[i], 2.0); return e; };
+            CHECK (n >= 1 && errOf (y) < errOf (x) * 0.05);
+            for (size_t i = 0; i < 99000; ++i) if (y[i] != ref[i]) { CHECK (false); break; }
+        }
         // spectrogram: two low notes 13 Hz apart are told apart with the bass layer (and are not with the short window alone); a click stays sharp in time
         {
             std::vector<float> x ((size_t) (6 * sr), 0.0f);

@@ -575,6 +575,125 @@ public:
         return n;
     }
 
+    /** Non-negative least squares for a handful of columns (Lawson-Hanson on the normal equations): the amplitudes of the decaying tails can only be positive. */
+    static std::vector<double> nnlsSmall (const std::vector<std::vector<double>>& cols, const std::vector<double>& y)
+    {
+        const int K = (int) cols.size(); const size_t R = y.size();
+        std::vector<std::vector<double>> G ((size_t) K, std::vector<double> ((size_t) K, 0.0));
+        std::vector<double> h ((size_t) K, 0.0), x ((size_t) K, 0.0);
+        for (int i = 0; i < K; ++i)
+        {
+            for (size_t r = 0; r < R; ++r) h[(size_t) i] += cols[(size_t) i][r] * y[r];
+            for (int j = i; j < K; ++j) { double acc = 0; for (size_t r = 0; r < R; ++r) acc += cols[(size_t) i][r] * cols[(size_t) j][r]; G[(size_t) i][(size_t) j] = G[(size_t) j][(size_t) i] = acc; }
+        }
+        std::vector<char> inP ((size_t) K, 0);
+        auto solveP = [&] (std::vector<double>& s)
+        {
+            std::vector<int> idx; for (int i = 0; i < K; ++i) if (inP[(size_t) i]) idx.push_back (i);
+            const int n = (int) idx.size(); s.assign ((size_t) K, 0.0);
+            std::vector<std::vector<double>> M ((size_t) n, std::vector<double> ((size_t) n + 1));
+            double tr = 0; for (int i = 0; i < n; ++i) tr += G[(size_t) idx[(size_t) i]][(size_t) idx[(size_t) i]];
+            for (int i = 0; i < n; ++i) { for (int j = 0; j < n; ++j) M[(size_t) i][(size_t) j] = G[(size_t) idx[(size_t) i]][(size_t) idx[(size_t) j]] + (i == j ? 1.0e-9 * tr : 0.0); M[(size_t) i][(size_t) n] = h[(size_t) idx[(size_t) i]]; }
+            for (int c = 0; c < n; ++c)
+            {
+                int piv = c; for (int r = c + 1; r < n; ++r) if (std::abs (M[(size_t) r][(size_t) c]) > std::abs (M[(size_t) piv][(size_t) c])) piv = r;
+                std::swap (M[(size_t) c], M[(size_t) piv]);
+                if (std::abs (M[(size_t) c][(size_t) c]) < 1.0e-300) continue;
+                for (int r = c + 1; r < n; ++r) { const double f = M[(size_t) r][(size_t) c] / M[(size_t) c][(size_t) c]; for (int k = c; k <= n; ++k) M[(size_t) r][(size_t) k] -= f * M[(size_t) c][(size_t) k]; }
+            }
+            for (int r = n - 1; r >= 0; --r) { double acc = M[(size_t) r][(size_t) n]; for (int k = r + 1; k < n; ++k) acc -= M[(size_t) r][(size_t) k] * s[(size_t) idx[(size_t) k]]; s[(size_t) idx[(size_t) r]] = std::abs (M[(size_t) r][(size_t) r]) > 1.0e-300 ? acc / M[(size_t) r][(size_t) r] : 0.0; }
+        };
+        for (int iter = 0; iter < 4 * K; ++iter)
+        {
+            std::vector<double> w ((size_t) K); int best = -1; double bw = 1.0e-12 * (1.0 + std::abs (h[0]));
+            for (int i = 0; i < K; ++i) { double acc = h[(size_t) i]; for (int j = 0; j < K; ++j) acc -= G[(size_t) i][(size_t) j] * x[(size_t) j]; w[(size_t) i] = acc; if (! inP[(size_t) i] && acc > bw) { bw = acc; best = i; } }
+            if (best < 0) break;
+            inP[(size_t) best] = 1;
+            for (int inner = 0; inner < 4 * K; ++inner)
+            {
+                std::vector<double> sv; solveP (sv);
+                bool allPos = true; for (int i = 0; i < K; ++i) if (inP[(size_t) i] && sv[(size_t) i] <= 0.0) allPos = false;
+                if (allPos) { x = sv; break; }
+                double alpha = 1.0; for (int i = 0; i < K; ++i) if (inP[(size_t) i] && sv[(size_t) i] <= 0.0) { const double d = x[(size_t) i] - sv[(size_t) i]; if (d > 0) alpha = std::min (alpha, x[(size_t) i] / d); }
+                for (int i = 0; i < K; ++i) x[(size_t) i] += alpha * (sv[(size_t) i] - x[(size_t) i]);
+                for (int i = 0; i < K; ++i) if (inP[(size_t) i] && x[(size_t) i] <= 1.0e-12) { inP[(size_t) i] = 0; x[(size_t) i] = 0.0; }
+            }
+        }
+        return x;
+    }
+
+    /** Steps: the signal jumps by a lot in ONE sample and does not come back (a level shift), followed by a fading offset (a thump of a few hundred hertz, a millisecond or so long: what a
+        high-pass in the chain makes of a sudden step). A click finder mends the jump itself but leaves that tail, which is where the click lives below 2 kHz. The tail is fitted as a sum of
+        decaying exponentials (0.05 to 6.4 ms) against the sound whitened by a model of the music just before the step, and taken off together with the jump. It is only done when it makes the
+        whitened sound clearly smoother and the tail adds up to about the size of the jump. */
+    static int mendSteps (std::vector<float>& x, long t0, long t1, double sensitivity, double sr, std::vector<std::pair<long, long>>* found)
+    {
+        const long L = (long) x.size();
+        const int p = juce::jlimit (32, 96, (int) (sr / 1500.0));
+        const long W = (long) (0.025 * sr), pre = juce::jmax (8L * p, (long) (0.0625 * sr)), lead = 400;
+        const double thr = juce::jmax (6.0, 20.0 - 1.4 * sensitivity);
+        const long blk = juce::jmax (64L, (long) (0.004 * sr));
+        const long a0 = juce::jmax (pre + 8, t0), a1 = juce::jmin (L - W - 4, t1);
+        if (a1 - a0 < 4 * blk) return 0;
+        // the usual size of a first difference, block by block (a middle value, so loud events do not count)
+        const long nb = (a1 - a0) / blk + 1;
+        std::vector<double> sg ((size_t) nb), sgm ((size_t) nb);
+        for (long b = 0; b < nb; ++b)
+        {
+            std::vector<double> v; for (long n = a0 + b * blk; n < juce::jmin (a1, a0 + (b + 1) * blk); ++n) v.push_back (std::abs ((double) x[(size_t) n] - 2.0 * (double) x[(size_t) n - 1] + (double) x[(size_t) n - 2]));
+            if (v.empty()) { sg[(size_t) b] = 1.0e-12; continue; }
+            auto mid = v.begin() + (long) v.size() / 2; std::nth_element (v.begin(), mid, v.end()); sg[(size_t) b] = *mid / 0.6745 + 1.0e-12;
+        }
+        for (long b = 0; b < nb; ++b) { std::vector<double> v; for (long k = juce::jmax (0L, b - 4); k <= juce::jmin (nb - 1, b + 4); ++k) v.push_back (sg[(size_t) k]); auto mid = v.begin() + (long) v.size() / 2; std::nth_element (v.begin(), mid, v.end()); sgm[(size_t) b] = *mid; }
+        const double taus[] = { 0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4 };
+        int fixed = 0;
+        for (long n = a0; n < a1;)
+        {
+            const double d = (double) x[(size_t) n] - (double) x[(size_t) n - 1], dn = (double) x[(size_t) n + 1] - (double) x[(size_t) n];
+            const double sig = sgm[(size_t) ((n - a0) / blk)];
+            const double d2 = (double) x[(size_t) n] - 2.0 * (double) x[(size_t) n - 1] + (double) x[(size_t) n - 2];
+            if (std::abs (d2) < thr * sig || std::abs (d) < 2.0e-4 || std::abs (dn) > 0.35 * std::abs (d)) { ++n; continue; }
+            // the model of the music before the step
+            std::vector<double> R ((size_t) p + 1, 0.0), seg;
+            const long m0 = n - pre, m1 = n - 4;
+            for (long i = m0; i < m1; ++i) seg.push_back ((double) x[(size_t) i] * (0.5 - 0.5 * std::cos (2.0 * juce::MathConstants<double>::pi * (double) (i - m0 + 0.5) / (double) (m1 - m0))));
+            for (int k = 0; k <= p; ++k) { double acc = 0; for (size_t i = (size_t) k; i < seg.size(); ++i) acc += seg[i] * seg[i - (size_t) k]; R[(size_t) k] = acc; }
+            R[0] = R[0] * 1.00001 + 1.0e-18;
+            const auto A = levinson (R, p);
+            const long lo = n - lead, hi = n + W, len = hi - lo;
+            auto whiten = [&] (const std::vector<double>& s)               // s covers [lo - p, hi)
+            {
+                std::vector<double> e ((size_t) len);
+                for (long i = 0; i < len; ++i) { double acc = 0; for (int j = 0; j <= p; ++j) acc += A[(size_t) j] * s[(size_t) (i + p - j)]; e[(size_t) i] = acc; }
+                return e;
+            };
+            std::vector<double> sy ((size_t) (len + p)); for (long i = 0; i < len + p; ++i) sy[(size_t) i] = (double) x[(size_t) (lo - p + i)];
+            auto e = whiten (sy);
+            const double sgn = d > 0 ? 1.0 : -1.0;
+            std::vector<std::vector<double>> cols;
+            for (double tms : taus)
+            {
+                std::vector<double> b ((size_t) (len + p), 0.0); const double tau = tms * sr / 1000.0;
+                for (long i = n; i < hi; ++i) b[(size_t) (i - lo + p)] = std::exp (-(double) (i - n) / tau);
+                auto bw = whiten (b); for (auto& v : bw) v *= sgn;
+                cols.push_back (std::move (bw));
+            }
+            std::vector<double> ys (e); for (auto& v : ys) v *= sgn;
+            const auto c = nnlsSmall (cols, ys);
+            double sum = 0; for (double v : c) sum += v;
+            double eb = 0, ea = 0;
+            for (long i = 0; i < len; ++i) { double f = 0; for (size_t k = 0; k < c.size(); ++k) f += c[k] * cols[k][(size_t) i]; eb += ys[(size_t) i] * ys[(size_t) i]; ea += (ys[(size_t) i] - f) * (ys[(size_t) i] - f); }
+            if (sum >= 0.5 * std::abs (d) && sum <= 1.6 * std::abs (d) && ea < 0.5 * eb)
+            {
+                for (long i = n; i < hi; ++i) { double f = 0; for (size_t k = 0; k < c.size(); ++k) f += c[k] * std::exp (-(double) (i - n) / (taus[k] * sr / 1000.0)); x[(size_t) i] = (float) ((double) x[(size_t) i] - sgn * f); }
+                ++fixed; if (found) found->push_back ({ n, n + 1 });
+                n += W / 4;
+            }
+            else ++n;
+        }
+        return fixed;
+    }
+
     /** One pass of the click finder over [t0,t1). Returns how many gaps were mended.
         The sound is whitened block by block (a linear-prediction model of each stretch, so loud and quiet passages are judged by their own standard); a click is either a sample that jumps
         out of the residual, or a short stretch whose residual ENERGY is well above normal (a crackle whose single samples are not extreme). A gap is not mended when the sound after it is much
@@ -731,7 +850,8 @@ public:
             return 0;
         }
         if (t1 - t0 < 256) return 0;
-        int total = mendDropouts (x, t0, t1, sampleRate, found);                 // runs of digital silence first: what is left of their edges is then no click
+        int total = mendDropouts (x, t0, t1, sampleRate, found);
+        total += mendSteps (x, t0, t1, sensitivity, sampleRate, found);                 // then level shifts with a fading tail (the part of such a click below 2 kHz)                 // runs of digital silence first: what is left of their edges is then no click
         for (int pass = 0; pass < 3; ++pass)
         {
             const int n = declickPass (x, t0, t1, sensitivity, found, sampleRate, pass > 0);
