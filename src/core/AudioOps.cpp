@@ -136,8 +136,28 @@ bool spliceFile (juce::AudioFormatManager& fm, const juce::File& src, const juce
     return true;
 }
 
+/** A box small enough to be round 'the click itself' (250 ms or less) that reaches down into the bass: a step-type click inside it has its fading thump taken off before the box is treated
+    (turning the box down, or rebuilding it, cannot do that: the thump goes on after the box, and the sound around the box has it too). Not when the strength is 0: nothing is to be changed. */
+static bool boxHoldsStepClick (const FixSpec& spec, double sr, long a, long b)
+{
+    return spec.kind == FixSpec::Kind::Patch && spec.repair.strength > 0.0 && spec.f0 <= 1000.0 && b - a <= (long) (0.25 * sr);
+}
+
+/** How far past the end of its range a fix can change the audio: a de-click takes the whole fading tail off a step-type click, which can run on for 25 ms after the click. */
+static juce::int64 reachAfter (const FixSpec& spec, double sr, juce::int64 s0, juce::int64 s1)
+{
+    const bool tails = spec.kind == FixSpec::Kind::Declick || boxHoldsStepClick (spec, sr, 0, (long) (s1 - s0));
+    return tails ? (juce::int64) std::ceil (0.026 * sr) : 0;
+}
+
 void applyFix (std::vector<std::vector<float>>& chans, double sr, long s0, long s1, const FixSpec& spec, long xfade)
 {
+    if (spec.kind == FixSpec::Kind::Patch)                                       // (a jump with a fading thump behind it, in every channel on its own: the thump is not music, so no channel's balance is touched)
+        for (auto& x : chans)
+        {
+            const long L = (long) x.size(); const long a = juce::jlimit (0L, L, s0), b = juce::jlimit (0L, L, s1);
+            if (b - a >= 2 && boxHoldsStepClick (spec, sr, a, b)) SpectralRepair::mendSteps (x, a, b, spec.sensitivity, sr, nullptr);
+        }
     if (spec.kind == FixSpec::Kind::Patch && spec.repair.mode == RepairMode::Attenuate && spec.repair.linkChannels && chans.size() > 1)
     {
         std::vector<std::vector<float>*> xs; for (auto& c : chans) xs.push_back (&c);
@@ -176,7 +196,7 @@ void applyFix (std::vector<std::vector<float>>& chans, double sr, long s0, long 
                 }
                 break;
             }
-            case FixSpec::Kind::Patch:   SpectralRepair::repair (x, sr, a, b, spec.f0, spec.f1, spec.repair); break;
+            case FixSpec::Kind::Patch: SpectralRepair::repair (x, sr, a, b, spec.f0, spec.f1, spec.repair); break;
             case FixSpec::Kind::Declick: SpectralRepair::declick (x, a, b, spec.sensitivity, nullptr, sr); break;
             case FixSpec::Kind::Reharmonise: break;        // (made by the Re-HarmoniSer window, not here)
         }
@@ -206,7 +226,7 @@ juce::File fixWholeFile (juce::AudioFormatManager& fm, const juce::File& source,
     {
         op.s0 = juce::jlimit ((juce::int64) 0, len, op.s0); op.s1 = juce::jlimit ((juce::int64) 0, len, op.s1);
         if (op.s1 <= op.s0) continue;
-        lo = juce::jmin (lo, op.s0); hi = juce::jmax (hi, op.s1); margin = juce::jmax (margin, marginFor (op.spec, sr, 8.0, 1.0));
+        lo = juce::jmin (lo, op.s0); hi = juce::jmax (hi, juce::jmin (len, op.s1 + reachAfter (op.spec, sr, op.s0, op.s1))); margin = juce::jmax (margin, marginFor (op.spec, sr, 8.0, 1.0));
         ops.push_back (op);
     }
     if (ops.empty()) { lo = hi = 0; }

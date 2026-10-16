@@ -80,7 +80,8 @@ juce::String checkReplacement (juce::AudioFormatManager&, const juce::File& file
 /** A new file as long as 'source' in which [s0, s1) comes from 'replacement' (whose sample 0 is the sample s0), with a short linear crossfade inside the range at both ends. */
 bool spliceFile (juce::AudioFormatManager&, const juce::File& source, const juce::File& replacement, juce::int64 s0, juce::int64 s1, const juce::File& dest, double crossfadeSeconds, juce::String& error);
 
-/** Applies a fix to the samples [s0, s1) of every channel (the rest of the buffer is context and is not changed, apart from the cross-fade at the edges). */
+/** Applies a fix to the samples [s0, s1) of every channel (the rest of the buffer is context and is not changed, apart from the cross-fade at the edges and, for a de-click or a repair box of
+    250 ms or less that reaches below 1 kHz, up to 25 ms after s1: the fading tail of a step-type click found inside [s0, s1) is taken off wherever it runs). */
 void applyFix (std::vector<std::vector<float>>& channels, double sampleRate, long s0, long s1, const FixSpec&, long crossfade);
 
 /** One change: a fix applied to the samples [s0, s1) (in samples of the take, or of the loaded area where a caller says so). */

@@ -1517,7 +1517,7 @@ public:
         previewBtn.setColour (juce::TextButton::buttonColourId, theme::accent); declickBtn.setColour (juce::TextButton::buttonColourId, theme::accent);
         finishBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1f7a46));
         declickBtn.setTooltip ("Finds and mends the clicks in the time span of the box (or everywhere if there is no box; the pitch range of the box is ignored) and shows the result. Set how many it finds with Click sensitivity. Same rules as ReTouch: nothing is written yet, Play to listen, Undo if it did not work.");
-        previewBtn.setTooltip ("ReTouch: rebuilds or turns down the box you drew from its surroundings and shows the result. It does not play, and nothing is written to the files yet: press Play to listen, and Undo if it did not work. You can then draw a box round another problem and press ReTouch or De-click again: the earlier fixes stay.");
+        previewBtn.setTooltip ("ReTouch: rebuilds or turns down the box you drew from its surroundings and shows the result. (A small box round a click that reaches down into the bass also takes off the sudden jump and the low thump behind it; Click sensitivity sets how readily that is found.) It does not play, and nothing is written to the files yet: press Play to listen, and Undo if it did not work. You can then draw a box round another problem and press ReTouch or De-click again: the earlier fixes stay.");
         finishBtn.setTooltip ("Writes all the fixes into the files (everything between the marks is rendered again in one go). The Undo command of the window brings the original back afterwards.");
         close.setTooltip ("Closes the window and puts everything back as it was (nothing is kept).");
         revertBtn.setTooltip ("Takes the last fix off again. Press it again to take off the one before.");
@@ -1777,7 +1777,7 @@ private:
         if (view.hasSelection()) { t0 = (juce::int64) std::llround (view.selT0() * ctx.rate); t1 = (juce::int64) std::llround (view.selT1() * ctx.rate); }
         if (! declick)
         {
-            spec.kind = FixSpec::Kind::Patch; spec.f0 = view.selF0(); spec.f1 = view.selF1();
+            spec.kind = FixSpec::Kind::Patch; spec.f0 = view.selF0(); spec.f1 = view.selF1(); spec.sensitivity = sens.getValue();         // (the click sensitivity also decides how readily a step-type click in a small box is found)
             spec.repair.mode = methodBox.getSelectedId() == 1 ? RepairMode::Attenuate : RepairMode::Replace;
             spec.repair.bands = bandsBox.getSelectedId(); spec.repair.multiRes = multiBtn.getToggleState(); spec.repair.linkChannels = linkBtn.getToggleState();
             spec.repair.strength = strength.getValue() / 100.0;

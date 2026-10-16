@@ -795,7 +795,8 @@ public:
 };
 
 /** The little pictures on the buttons of the edit and take windows. Each is drawn from a 24 x 24 grid so it stays sharp at any size. */
-enum class Icon { Start, Rewind, Play, Stop, Forward, End, Record, Trim, Bounce, Pitch, Repair, Reharm, Tracks, Feedback, Mixer, Earlier, Later, Delete, Undo, Automation, Buses };
+enum class Icon { Start, Rewind, Play, Stop, Forward, End, Record, Trim, Bounce, Pitch, Repair, Reharm, Tracks, Feedback, Mixer, Earlier, Later, Delete, Undo, Automation, Buses,
+                  ExportProc, ImportMulti, Markers, FeedbackMarkers, SlipLeft, SlipRight, Shuffle, InsertFlag, NextAtEnd };
 
 inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area)
 {
@@ -818,6 +819,63 @@ inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area)
         P bl; bl.addCentredArc (cx - 4.8f, cy - 5.8f, 2.6f, 2.6f, 0, -2.6f, 0.2f, true); stroke (bl, 1.6f, W);
         P br; br.addCentredArc (cx + 4.8f, cy - 5.8f, 2.6f, 2.6f, 0, -0.2f, 2.6f, true); stroke (br, 1.6f, W);
         seg (cx - 4.5f, cy + 6.0f, cx - 6.1f, cy + 8.2f, 1.4f, W); seg (cx + 4.5f, cy + 6.0f, cx + 6.1f, cy + 8.2f, 1.4f, W);
+    };
+    auto shout = [&]
+    {
+        P h; h.startNewSubPath (10, 3.5f); h.cubicTo (6.7f, 3.5f, 4.6f, 5.8f, 4.6f, 8.7f); h.cubicTo (4.6f, 9.9f, 5, 10.7f, 5.4f, 11.5f); h.cubicTo (4.9f, 12.3f, 5.1f, 13, 5.7f, 13.3f);
+            h.cubicTo (5.3f, 14.1f, 5.7f, 14.7f, 6.4f, 14.9f); h.cubicTo (6.4f, 15.9f, 7.1f, 16.5f, 8.1f, 16.6f); h.lineTo (8.1f, 19); h.lineTo (13.5f, 19); h.lineTo (13.5f, 16.5f);
+            h.cubicTo (15.5f, 15.8f, 16.5f, 14.5f, 16.5f, 12.5f); h.lineTo (16.5f, 8.7f); h.cubicTo (16.5f, 5.8f, 14.1f, 3.5f, 10, 3.5f); h.closeSubPath();
+            fill (h, Colour (0xffe0b894)); g.setColour (Colour (0xff9c7a5c)); g.strokePath (h, juce::PathStrokeType (0.6f));
+            const Colour br (0xff6a4a30);
+            seg (12.4f, 8.3f, 14.6f, 7.5f, 0.9f, br); seg (12.6f, 9.5f, 14.8f, 9.7f, 0.9f, br); seg (7.6f, 8.2f, 9.6f, 9, 0.9f, br); seg (7.8f, 10.2f, 9.4f, 10.2f, 0.9f, br);
+            g.setColour (Colour (0xff3a1f1f)); g.fillEllipse (10.4f, 12.1f, 2.8f, 3.8f);
+            seg (17, 9.5f, 21, 8, 1.4f, Ye); seg (17.5f, 12.3f, 21.7f, 12.3f, 1.4f, Ye); seg (17, 15, 21, 16.5f, 1.4f, Ye);
+    };
+    auto arrowH = [&] (float x1, float x2, float y, Colour c, float sw)
+    {
+        const float d = x2 > x1 ? 1.0f : -1.0f;
+        P p; p.startNewSubPath (x1, y); p.lineTo (x2, y); p.startNewSubPath (x2 - d * 2.8f, y - 2.8f); p.lineTo (x2, y); p.lineTo (x2 - d * 2.8f, y + 2.8f); stroke (p, sw, c);
+    };
+    auto container = [&] (float x, float y, float w, float h)
+    {
+        const Colour ed (0xff8f3a24);
+        P r; r.addRoundedRectangle (x, y, w, h, 1.0f); fill (r, Colour (0xffd9623f)); g.setColour (ed); g.strokePath (r, juce::PathStrokeType (0.7f));
+        for (int i = 1; i <= 4; ++i) { const float xx = x + (float) i * w / 5.0f; seg (xx, y + 1.2f, xx, y + h - 1.2f, 0.9f, ed); }
+        g.setColour (ed); g.fillRect (x, y + h - 1.4f, w, 1.4f);
+    };
+    auto clipboard = [&] (float x, float y, float w, float h)
+    {
+        P r; r.addRoundedRectangle (x, y + 1.2f, w, h - 1.2f, 1.2f); fill (r, Dk); g.setColour (W); g.strokePath (r, juce::PathStrokeType (1.3f));
+        rect (x + w / 2 - 1.9f, y, 3.8f, 2.6f, 0.8f, W);
+        seg (x + 1.6f, y + 5.2f, x + w - 1.6f, y + 5.2f, 1.0f, W); seg (x + 1.6f, y + 7.6f, x + w - 1.6f, y + 7.6f, 1.0f, W); seg (x + 1.6f, y + 10.0f, x + w - 3.4f, y + 10.0f, 1.0f, W);
+    };
+    auto highlighter = [&] (const juce::AffineTransform& tr)
+    {
+        g.saveState(); g.addTransform (tr);
+        g.saveState(); g.addTransform (juce::AffineTransform::rotation (juce::degreesToRadians (40.0f), 12.0f, 11.0f));
+        rect (8.6f, 1.5f, 6.8f, 4, 1, W);
+        { P b; b.addRectangle (8.6f, 5.5f, 6.8f, 9.0f); fill (b, Ye); }
+        { P t; t.addQuadrilateral (8.6f, 14.5f, 15.4f, 14.5f, 13.9f, 18.5f, 10.1f, 18.5f); fill (t, Colour (0xfff4dc6a)); }
+        { P n; n.addQuadrilateral (10.6f, 18.5f, 13.4f, 18.5f, 12.9f, 20.5f, 11.1f, 20.5f); fill (n, Colour (0xff1b1e24)); }
+        g.restoreState();
+        seg (3, 21.6f, 14, 21.6f, 2.6f, Ye.withAlpha (0.85f));
+        g.restoreState();
+    };
+    auto peel = [&] (float ox, float oy)
+    {
+        const Colour E (0xffa9811a), C (0xfff6e7a8);
+        g.saveState(); g.addTransform (juce::AffineTransform::translation (ox, oy));
+        auto flap = [&] (const P& pp, Colour c, bool edge) { fill (pp, c); if (edge) { g.setColour (E); g.strokePath (pp, juce::PathStrokeType (0.7f)); } };
+        auto cb = [&] (float x0, float y0, float a1, float b1, float a2, float b2, float x1, float y1, float a3, float b3, float a4, float b4, float x2, float y2)
+        { P q; q.startNewSubPath (x0, y0); q.cubicTo (a1, b1, a2, b2, x1, y1); q.cubicTo (a3, b3, a4, b4, x2, y2); q.closeSubPath(); return q; };
+        flap (cb (7.5f, 7.5f, 4, 6.2f, 0.8f, 8.6f, 0.6f, 14.4f, 3.4f, 12.6f, 5.8f, 12.2f, 7.5f, 11.8f), Ye, true);
+        flap (cb (7.5f, 8, 4.5f, 7.4f, 2.4f, 9.4f, 2, 12.6f, 4.2f, 11.4f, 5.9f, 11, 7.5f, 10.8f), C, false);
+        flap (cb (7.5f, 7.5f, 11, 6.2f, 14.2f, 8.6f, 14.4f, 14.4f, 11.6f, 12.6f, 9.2f, 12.2f, 7.5f, 11.8f), Ye, true);
+        flap (cb (7.5f, 8, 10.5f, 7.4f, 12.6f, 9.4f, 13, 12.6f, 10.8f, 11.4f, 9.1f, 11, 7.5f, 10.8f), C, false);
+        flap (cb (5.2f, 11, 5.4f, 15, 6.6f, 18.6f, 7.5f, 19.8f, 8.4f, 18.6f, 9.6f, 15, 9.8f, 11), Ye, true);
+        flap (cb (6.6f, 11.4f, 6.8f, 14.6f, 7.2f, 16.6f, 7.5f, 17.4f, 7.8f, 16.6f, 8.2f, 14.6f, 8.4f, 11.4f), C, false);
+        seg (7.5f, 7.6f, 7.5f, 3.6f, 1.9f, Colour (0xff6a4a30));
+        g.restoreState();
     };
     switch (ic)
     {
@@ -870,18 +928,41 @@ inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area)
             break;
         }
         case Icon::Tracks:  seg (12, 4, 12, 20, 3, W); seg (4, 12, 20, 12, 3, W); break;
-        case Icon::Feedback:
+        case Icon::Feedback: shout(); break;
+        case Icon::ExportProc: container (1, 7, 9, 10); arrowH (11, 15.4f, 12, W, 2); clipboard (16.3f, 5, 7, 13); break;
+        case Icon::ImportMulti:
+            for (float y : { 7.5f, 12.0f, 16.5f }) seg (1.5f, y, 8.5f, y, 2, W);
+            arrowH (13.4f, 9.6f, 12, W, 2); container (14.8f, 7, 8.2f, 10); break;
+        case Icon::Markers: highlighter ({}); break;
+        case Icon::FeedbackMarkers:
+            highlighter (juce::AffineTransform::scale (0.82f).translated (-1.5f, 1.0f));
+            g.saveState(); g.addTransform (juce::AffineTransform::scale (0.6f).translated (9.6f, 5.4f)); shout(); g.restoreState(); break;
+        case Icon::SlipLeft:  arrowH (8, 1.6f, 12, Rd, 2); peel (9, 1.6f); break;
+        case Icon::SlipRight: peel (1.4f, 1.6f); arrowH (16.4f, 22.4f, 12, Bl, 2); break;
+        case Icon::Shuffle:
         {
-            P h; h.startNewSubPath (10, 3.5f); h.cubicTo (6.7f, 3.5f, 4.6f, 5.8f, 4.6f, 8.7f); h.cubicTo (4.6f, 9.9f, 5, 10.7f, 5.4f, 11.5f); h.cubicTo (4.9f, 12.3f, 5.1f, 13, 5.7f, 13.3f);
-            h.cubicTo (5.3f, 14.1f, 5.7f, 14.7f, 6.4f, 14.9f); h.cubicTo (6.4f, 15.9f, 7.1f, 16.5f, 8.1f, 16.6f); h.lineTo (8.1f, 19); h.lineTo (13.5f, 19); h.lineTo (13.5f, 16.5f);
-            h.cubicTo (15.5f, 15.8f, 16.5f, 14.5f, 16.5f, 12.5f); h.lineTo (16.5f, 8.7f); h.cubicTo (16.5f, 5.8f, 14.1f, 3.5f, 10, 3.5f); h.closeSubPath();
-            fill (h, Colour (0xffe0b894)); g.setColour (Colour (0xff9c7a5c)); g.strokePath (h, juce::PathStrokeType (0.6f));
-            const Colour br (0xff6a4a30);
-            seg (12.4f, 8.3f, 14.6f, 7.5f, 0.9f, br); seg (12.6f, 9.5f, 14.8f, 9.7f, 0.9f, br); seg (7.6f, 8.2f, 9.6f, 9, 0.9f, br); seg (7.8f, 10.2f, 9.4f, 10.2f, 0.9f, br);
-            g.setColour (Colour (0xff3a1f1f)); g.fillEllipse (10.4f, 12.1f, 2.8f, 3.8f);
-            seg (17, 9.5f, 21, 8, 1.4f, Ye); seg (17.5f, 12.3f, 21.7f, 12.3f, 1.4f, Ye); seg (17, 15, 21, 16.5f, 1.4f, Ye);
+            g.saveState(); g.addTransform (juce::AffineTransform::rotation (juce::degreesToRadians (-14.0f), 9, 13));
+            { P r; r.addRoundedRectangle (3.0f, 5.0f, 10.0f, 14.0f, 1.6f); fill (r, Colour (0xff3d4a66)); g.setColour (W); g.strokePath (r, juce::PathStrokeType (1.0f)); }
+            g.restoreState();
+            g.saveState(); g.addTransform (juce::AffineTransform::rotation (juce::degreesToRadians (8.0f), 14, 12));
+            { P r; r.addRoundedRectangle (8.5f, 4.0f, 10.0f, 14.5f, 1.6f); fill (r, Colour (0xfff2f4f8)); g.setColour (Colour (0xff8a93a3)); g.strokePath (r, juce::PathStrokeType (0.8f)); }
+            { P h; h.startNewSubPath (13.5f, 8.2f); h.cubicTo (12.6f, 6.7f, 10.5f, 7.1f, 10.5f, 8.8f); h.cubicTo (10.5f, 10.3f, 13.5f, 12.4f, 13.5f, 12.4f);
+              h.cubicTo (13.5f, 12.4f, 16.5f, 10.3f, 16.5f, 8.8f); h.cubicTo (16.5f, 7.1f, 14.4f, 6.7f, 13.5f, 8.2f); h.closeSubPath(); fill (h, Rd); }
+            g.restoreState();
             break;
         }
+        case Icon::InsertFlag:
+        {
+            seg (5.5f, 2.5f, 5.5f, 21.5f, 2, W);
+            { P f; f.addTriangle (6.5f, 3.2f, 20, 3.2f, 17, 7.5f); f.addTriangle (6.5f, 3.2f, 17, 7.5f, 6.5f, 11.8f); f.addTriangle (17, 7.5f, 20, 11.8f, 6.5f, 11.8f); fill (f, Rd); }
+            { P a; a.startNewSubPath (12.6f, 4.6f); a.lineTo (12.6f, 9.6f); a.startNewSubPath (10.2f, 7.8f); a.lineTo (12.6f, 10.2f); a.lineTo (15, 7.8f); stroke (a, 1.5f, juce::Colours::white); }
+            break;
+        }
+        case Icon::NextAtEnd:
+            arrowH (2, 13.5f, 12, Bl, 2);
+            for (float y : { 6.0f, 9.0f, 12.0f, 15.0f, 18.0f }) seg (15, y, 22.5f, y, 0.7f, W.withAlpha (0.5f));
+            seg (17, 6, 17, 18, 1.3f, W); { P r; r.addRectangle (19.4f, 6, 2.8f, 12); fill (r, W); }
+            break;
         case Icon::Mixer:
         {
             for (float x : { 6.0f, 12.0f, 18.0f }) seg (x, 3.5f, x, 20.5f, 1.6f, W.withAlpha (0.55f));

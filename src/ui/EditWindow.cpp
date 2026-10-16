@@ -1608,6 +1608,11 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     bounceButton.setIcon (Icon::Bounce, "Bounce Out"); mixerButton.setIcon (Icon::Mixer, "Edit Mixer"); automationButton.setIcon (Icon::Automation, "Automation"); busViewButton.setIcon (Icon::Buses, "Buses / VCAs");
     pitchButton.setIcon (Icon::Pitch, "Pitch & Pitch curve"); repairButton.setIcon (Icon::Repair, "Repair & DeClick [Enter]"); reharmoniserButton.setIcon (Icon::Reharm, "ReHarmoniSer [H]");
     undoFixButton.setIcon (Icon::Undo, "Undo fix"); tracksButton.setIcon (Icon::Tracks, "Tracks"); feedbackButton.setIcon (Icon::Feedback, "Feedback");
+    endButton.setIcon (Icon::NextAtEnd, "Next goes at end"); exportProcButton.setIcon (Icon::ExportProc, "Export for Processing"); importButton.setIcon (Icon::ImportMulti, "Multitrack import");
+    markersToggle.setIcon (Icon::Markers, "Markers"); feedbackToggle.setIcon (Icon::FeedbackMarkers, "Feedback markers");
+    slipLeftToggle.setIcon (Icon::SlipLeft, "Slip Left"); slipRightToggle.setIcon (Icon::SlipRight, "Slip Right"); shuffleToggle.setIcon (Icon::Shuffle, "Shuffle"); insertFlagToggle.setIcon (Icon::InsertFlag, "Insert flag");
+    for (auto* t : { &markersToggle, &feedbackToggle, &slipLeftToggle, &slipRightToggle, &shuffleToggle, &insertFlagToggle })
+    { t->setClickingTogglesState (true); t->setColour (juce::TextButton::buttonOnColourId, theme::accent); }
     playheadMode.setTooltip ("Playhead behaviour. Lit: the playhead moves with the time, so after Stop the next Play carries on from where you stopped. "
                              "Off: it jumps back to where playback began. (The same setting in every window.)");
     playheadMode.onClick = [this] { app.setPlayheadFollows (! app.playheadFollows); };
@@ -1642,12 +1647,12 @@ void EditWindowComponent::resized()
         { &nameCaption, 45 }, { &nameEditor, 240, grid::btnH, 14 },
         { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
         { &trimButton, IW, IH, 2 }, { &deleteButton, IW, IH, 14 },
-        { &leftButton, IW, IH, 2 }, { &rightButton, IW, IH, 6 }, { &endButton, grid::btnW, grid::btnH, 14 },
+        { &leftButton, IW, IH, 2 }, { &rightButton, IW, IH, 6 }, { &endButton, IW, IH, 14 },
         { &bounceButton, IW, IH, 2 }, { &mixerButton, IW, IH, 6 }, { &ltcButton, 74, grid::btnH, 14 },
         { &automationButton, IW, IH, 2 }, { &busViewButton, IW, IH, 14 },
-        { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 2 }, { &reharmoniserButton, IW, IH, 10 }, { &exportProcButton, grid::btnW + 50 }, { &undoFixButton, IW, IH, 14 },
-        { &tracksButton, IW, IH, 2 }, { &importButton, grid::btnW, grid::btnH, 14 }, { &feedbackButton, IW, IH, 8 }, { &markersToggle, 80 }, { &feedbackToggle, 140, grid::btnH, 14 },
-        { &slipLeftToggle, 95 }, { &slipRightToggle, 105 }, { &shuffleToggle, 90 }, { &insertFlagToggle, 100, grid::btnH, 14 },
+        { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 2 }, { &reharmoniserButton, IW, IH, 10 }, { &exportProcButton, IW + 8, IH, 2 }, { &undoFixButton, IW, IH, 14 },
+        { &tracksButton, IW, IH, 2 }, { &importButton, IW + 8, IH, 14 }, { &feedbackButton, IW, IH, 8 }, { &markersToggle, IW, IH, 2 }, { &feedbackToggle, IW + 8, IH, 14 },
+        { &slipLeftToggle, IW + 8, IH, 2 }, { &slipRightToggle, IW + 8, IH, 6 }, { &shuffleToggle, IW, IH, 2 }, { &insertFlagToggle, IW, IH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
     r.removeFromTop (grid::flow (r, items));
