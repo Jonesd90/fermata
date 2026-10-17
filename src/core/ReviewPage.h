@@ -7,7 +7,9 @@ namespace td
 {
 /** The listening copy: ONE .html file that holds the recording itself, a waveform, play / pause / stop, and a form where a listener adds comments
     (each pinned to the time they pressed the button, with an optional bar written as text). It opens with a double-click in any current browser
-    (Windows, Mac, iPhone / iPad, Android) with nothing to install. The listener saves a small .json file and sends it back; Fermata imports it. */
+    (Windows, Mac, iPhone / iPad, Android) with nothing to install. The listener's comments are kept in their browser as they go ("Save my comments");
+    "Export comments for sending back to the sender" makes a small .fmnotes file (JSON inside), named like the page with "listening notes" in place
+    of "listening copy", which Fermata imports. One page can also hold all the pieces (a list of pieces, played one after another like a CD). */
 namespace reviewpage
 {
 struct Spec
@@ -26,8 +28,11 @@ struct Spec
 std::vector<int> computePeaks (const juce::File& file, float gain, int columns, const std::atomic<bool>* cancel = nullptr);
 int peakColumnsFor (double durationSeconds);
 
-/** Writes the page. Returns an error text, or "" when it worked. */
+/** Writes the page for one piece. Returns an error text, or "" when it worked. */
 juce::String write (const juce::File& html, const Spec&, const std::atomic<bool>* cancel = nullptr);
+
+/** Writes ONE page that holds several pieces (in this order), with 'title' at the top. */
+juce::String writeMany (const juce::File& html, const juce::String& title, const juce::String& project, const std::vector<Spec>& pieces, const std::atomic<bool>* cancel = nullptr);
 
 juce::String base64 (const void* data, size_t size);
 } // namespace reviewpage

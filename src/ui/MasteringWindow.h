@@ -117,8 +117,8 @@ private:
     juce::ProgressBar vmProgress;
 
     // ---- the Listening copy page: the same pieces (the list of the Virtual Master), each made into one .html page with its audio inside
-    juce::Label formIntro, formRateCaption, formBitsCaption, formLevelNote, formFolderCaption, formStatus;
-    juce::ComboBox formRateBox, formBitsBox;
+    juce::Label formIntro, formSingleCaption, formRateCaption, formBitsCaption, formLevelNote, formFolderCaption, formStatus;
+    juce::ComboBox formSingleBox, formRateBox, formBitsBox;
     juce::TextEditor formFolderEditor;
     juce::TextButton formChoose { "Choose folder..." }, formExport { "Make listening copies" }, formShow { "Show in folder" };
     juce::ProgressBar formProgress;

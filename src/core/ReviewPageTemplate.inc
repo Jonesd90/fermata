@@ -71,24 +71,47 @@ dialog textarea{width:100%;height:170px;font:12px/1.35 Consolas,monospace}
 #loading{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;z-index:9;font-size:16px}
 #loading .pb{width:260px;height:6px;border-radius:3px;background:var(--line);overflow:hidden}
 #loading .pb i{display:block;height:100%;width:0;background:var(--accent)}
+.leftcol{display:flex;flex-direction:column;gap:12px;min-width:0}
+#tracks{padding:8px 8px 6px;display:none}
+#tracks.on{display:block}
+#tracks h2{font-size:13px;color:var(--dim);margin:2px 6px 6px;font-weight:600}
+#tracklist{max-height:250px;overflow-y:auto}
+.tr{display:grid;grid-template-columns:26px minmax(0,1fr) auto 52px;gap:8px;align-items:center;padding:6px 8px;border-radius:8px;cursor:pointer}
+.tr:hover{background:var(--bg)}
+.tr.cur{background:var(--sel);font-weight:600}
+.tn{color:var(--dim);font-variant-numeric:tabular-nums;text-align:right}
+.tt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.td{color:var(--dim);font-variant-numeric:tabular-nums;font-size:13px;text-align:right;font-weight:400}
+)HTMLX",
+R"HTMLX(.tc{background:var(--flag);color:#fff;border-radius:99px;font-size:11px;padding:0 7px;font-weight:600}
+#nowtitle{display:none;font-weight:600;margin:0 2px 8px;font-size:16px}
+#nowtitle.on{display:block}
+.grp{font-size:13px;font-weight:600;color:var(--dim);margin:12px 4px 2px}
+.grp:first-child{margin-top:2px}
+#export{width:100%;white-space:normal}
+#openlink{color:var(--accent);margin-left:auto;cursor:pointer}
 </style>
 </head>
 <body>
-<div id="loading"><div>Opening the recording&hellip;</div><div class="pb"><i id="lbar"></i></div><div class="sub">Large recordings take a moment. Nothing is sent anywhere: it all happens on this device.</div></div>
+<div id="loading"><div id="ltext">Opening the recording&hellip;</div><div class="pb"><i id="lbar"></i></div><div class="sub">Large recordings take a moment. Nothing is sent anywhere: it all happens on this device.</div></div>
 <header>
   <h1 id="title"></h1>
   <span class="sub" id="subtitle"></span>
   <label class="me">Your name <input id="who" type="text" maxlength="60" placeholder="so they know who wrote it" autocomplete="name"></label>
 </header>
 <main>
+  <div class="leftcol">
+  <section class="card" id="tracks"><h2>The pieces (click one to listen)</h2><div id="tracklist"></div></section>
   <section class="card player">
+    <div id="nowtitle"></div>
     <div id="scroller"><canvas id="view"></canvas></div>
     <div class="bar">
+      <button class="tb" id="prevt" title="The piece before" style="display:none">&#9198;</button>
       <button class="tb" id="play" title="Play / pause (Space)">&#9654;</button>
       <button class="tb" id="stop" title="Stop and go back to the start">&#9632;</button>
-)HTMLX",
-R"HTMLX(      <button class="tb" id="back" title="Back 10 seconds (Left arrow = 5 s)">&#8634; 10</button>
+      <button class="tb" id="back" title="Back 10 seconds (Left arrow = 5 s)">&#8634; 10</button>
       <button class="tb" id="fwd" title="Forward 10 seconds (Right arrow = 5 s)">10 &#8635;</button>
+      <button class="tb" id="nextt" title="The next piece" style="display:none">&#9197;</button>
       <span id="clock">0:00.0 / 0:00</span>
       <span class="sp"></span>
       <label class="zoom" title="Volume">&#128266; <input id="vol" type="range" min="0" max="1" step="0.01" value="1"></label>
@@ -101,6 +124,7 @@ R"HTMLX(      <button class="tb" id="back" title="Back 10 seconds (Left arrow = 
     <div id="status"></div>
     <audio id="audio" preload="auto"></audio>
   </section>
+  </div>
   <aside class="side">
     <div class="card panel" id="composer">
       <h2 id="ctitle">New comment</h2>
@@ -116,8 +140,12 @@ R"HTMLX(      <button class="tb" id="back" title="Back 10 seconds (Left arrow = 
     <div class="card panel">
       <h2>Your comments <span class="count" id="count">0</span></h2>
       <div id="list"></div>
-      <div class="acts"><button class="pri" id="save">Save my comments</button><span class="hint" id="savehint"></span></div>
-      <p class="hint">When you have finished, press <b>Save my comments</b> and send the small file it makes back to whoever sent you this recording.</p>
+      <div class="acts"><button id="save">Save my comments</button><span class="hint" id="savehint"></span></div>
+      <p class="hint">Your comments are saved in this browser as you go, so you can close this page and come back to it later on this computer.</p>
+      <div class="acts"><button class="pri" id="export">Export comments for sending back to the sender</button></div>
+      <div class="acts"><span class="hint" id="exphint"></span><a class="hint" id="openlink" href="#" title="Carry on from comments you exported earlier (on another computer, say)">Open exported comments&hellip;</a></div>
+      <p class="hint">When you have finished, press <b>Export comments for sending back to the sender</b> and send the file it makes (its name ends in .fmnotes) back to whoever sent you this recording.</p>
+      <input type="file" id="openfile" accept=".fmnotes,.json" style="display:none">
     </div>
   </aside>
 </main>
@@ -128,55 +156,125 @@ R"HTMLX(      <button class="tb" id="back" title="Back 10 seconds (Left arrow = 
 'use strict';
 var META=JSON.parse(document.getElementById('meta').textContent);
 function $(i){return document.getElementById(i);}
+/* the pieces: one for a listening copy of one piece, several when all the pieces are in one file */
+var T=(META.tracks&&META.tracks.length)?META.tracks:[{piece:META.piece||'',edit:META.edit||'',offset:META.offset||0,duration:META.duration||1,mime:META.mime||'audio/wav',peaks:META.peaks||[]}];
+var multi=T.length>1;
 var audio=$('audio'),view=$('view'),scroller=$('scroller'),ctx=view.getContext('2d');
-var notes=[],selId=null,draft=null,editing=null,zoom=1,dirty=false,wasPlaying=false,dur=META.duration||1,dpr=window.devicePixelRatio||1;
+var notes=[],selId=null,draft=null,editing=null,zoom=1,dirty=false,stored=true,wasPlaying=false,dpr=window.devicePixelRatio||1;
+var cur=0,dur=T[0].duration||1,pendingSeek=null,autoPlay=false;
 var H=230,RULER=22,FLAGH=20;
 var STORE='fermata-review-'+META.id;
 function lsGet(k){try{return window.localStorage.getItem(k);}catch(e){return null;}}
 function lsSet(k,v){try{window.localStorage.setItem(k,v);}catch(e){}}
 function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
-function fmt(t,tenths){t=Math.max(0,t);var m=Math.floor(t/60),s=t-m*60;var si=Math.floor(s);var r=(m+':'+(si<10?'0':'')+si);if(tenths)r+='.'+Math.floor((s-si)*10);return r;}
+)HTMLX",
+R"HTMLX(function fmt(t,tenths){t=Math.max(0,t);var m=Math.floor(t/60),s=t-m*60;var si=Math.floor(s);var r=(m+':'+(si<10?'0':'')+si);if(tenths)r+='.'+Math.floor((s-si)*10);return r;}
 function parseT(s){s=String(s).trim().replace(',','.');if(!s)return null;var p=s.split(':');var v=0;for(var i=0;i<p.length;i++){var n=parseFloat(p[i]);if(isNaN(n))return null;v=v*60+n;}return v;}
 function rid(){var a='';for(var i=0;i<4;i++)a+=Math.floor(Math.random()*65536).toString(16);return a;}
-function sorted(){return notes.slice().sort(function(a,b){return a.t-b.t;});}
+function sorted(k){return notes.filter(function(n){return k==null||n.k===k;}).sort(function(a,b){return (a.k-b.k)||(a.t-b.t);});}
+function durOf(k){return k===cur?dur:(T[k].duration||1);}
+function loadedHere(){return audio.getAttribute('data-k')===String(cur)&&audio.readyState>=1;}
+function now(){return loadedHere()?(audio.currentTime||0):(pendingSeek||0);}
 
 /* ---------- title ---------- */
-$('title').textContent=META.piece;
-$('subtitle').textContent='Listening copy'+(META.project?' \u00b7 '+META.project:'');
-document.title=META.piece+' - listening copy';
+var title=META.title||T[0].piece;
+$('title').textContent=title;
+$('subtitle').textContent='Listening copy'+(multi?' \u00b7 '+T.length+' pieces':'')+(META.project&&META.project!==title?' \u00b7 '+META.project:'');
+document.title=title+' - listening copy';
+if(multi){$('tracks').classList.add('on');$('nowtitle').classList.add('on');$('prevt').style.display='';$('nextt').style.display='';}
 
-/* ---------- audio ---------- */
+/* ---------- audio: each piece is decoded from the page when it is first needed (the first one straight away, the others in the background) ---------- */
 function setStatus(t,err){var s=$('status');s.textContent=t||'';s.className=err?'err':'';}
-function loadAudio(done){
-  var chs=document.querySelectorAll('script.ch'),parts=[],i=0,n=chs.length;
-  (function step(){
-    if(i>=n){
-      var blob=new Blob(parts,{type:META.mime});parts=null;
-      done(blob);return;
-    }
-    var b=atob(chs[i].textContent.replace(/\s+/g,'')),u=new Uint8Array(b.length);
-    for(var k=0;k<b.length;k++)u[k]=b.charCodeAt(k);
-    parts.push(u);chs[i].textContent='';i++;
-    $('lbar').style.width=(100*i/n)+'%';
-    setTimeout(step,0);
-  })();
+var url=[],parts=[],pos=[],chunks=[],waiters=[],wantNow=-1,decoding=false;
+for(var k0=0;k0<T.length;k0++){url.push(null);parts.push([]);pos.push(0);waiters.push([]);chunks.push([]);}
+function findChunks(){    /* (only once the whole page has been read: the audio comes after this script) */
+  for(var k=0;k<T.length;k++)chunks[k]=document.querySelectorAll('script.ch[data-k="'+k+'"]');
+  if(T.length===1&&!chunks[0].length)chunks[0]=document.querySelectorAll('script.ch');
 }
-function clockUpdate(){$('clock').textContent=fmt(audio.currentTime||0,true)+' / '+fmt(dur);}
-audio.addEventListener('loadedmetadata',function(){if(isFinite(audio.duration)&&audio.duration>0){dur=audio.duration;layout();}clockUpdate();});
+function nextJob(){if(wantNow>=0&&!url[wantNow])return wantNow;for(var k=0;k<T.length;k++)if(!url[k])return k;return -1;}
+function pump(){
+  var k=nextJob();if(k<0){decoding=false;return;}
+  decoding=true;
+  var list=chunks[k];
+  if(pos[k]<list.length){
+    var el=list[pos[k]],b=atob(el.textContent.replace(/\s+/g,'')),u=new Uint8Array(b.length);
+    for(var i=0;i<b.length;i++)u[i]=b.charCodeAt(i);
+    parts[k].push(u);el.textContent='';pos[k]++;
+    if(k===wantNow)$('lbar').style.width=(100*pos[k]/Math.max(1,list.length))+'%';
+  }
+  if(pos[k]>=list.length){
+    url[k]=URL.createObjectURL(new Blob(parts[k],{type:T[k].mime}));parts[k]=null;
+    if(k===wantNow)wantNow=-1;
+    var w=waiters[k];waiters[k]=[];
+    for(var j=0;j<w.length;j++)w[j]();
+  }
+  setTimeout(pump,0);
+}
+function whenReady(k,cb){
+  if(url[k]){cb();return;}
+  waiters[k].push(cb);wantNow=k;
+  $('lbar').style.width=(100*pos[k]/Math.max(1,chunks[k].length))+'%';
+  if(!decoding)pump();
+}
+function selectTrack(k,play,at){
+  if(k<0||k>=T.length)return;
+  var changing=k!==cur;
+  if(changing)audio.pause();
+  cur=k;dur=T[k].duration||1;pendingSeek=at||0;autoPlay=!!play;
+  if(changing){zoom=1;scroller.scrollLeft=0;}
+  layout();renderTracks();renderNow();clockUpdate();
+  if(!url[k]){$('ltext').textContent='Opening '+(multi?(k+1)+'. ':'')+T[k].piece+'\u2026';$('loading').style.display='flex';}
+  whenReady(k,function(){
+    if(cur!==k)return;
+    $('loading').style.display='none';
+    if(audio.getAttribute('data-k')!==String(k)){audio.setAttribute('data-k',String(k));audio.src=url[k];}    /* loadedmetadata then goes to the place and plays */
+    else applyPending();
+  });
+}
+function applyPending(){
+  if(!loadedHere())return;
+  if(pendingSeek!=null){try{audio.currentTime=Math.max(0,Math.min(dur,pendingSeek));}catch(e){}pendingSeek=null;}
+  if(autoPlay){autoPlay=false;var p=audio.play();if(p&&p.catch)p.catch(function(){});}
+  clockUpdate();draw();
+}
+function clockUpdate(){$('clock').textContent=fmt(now(),true)+' / '+fmt(dur);}
+audio.addEventListener('loadedmetadata',function(){if(isFinite(audio.duration)&&audio.duration>0){dur=audio.duration;layout();}applyPending();});
 audio.addEventListener('timeupdate',function(){clockUpdate();draw();});
 audio.addEventListener('play',function(){$('play').innerHTML='&#10074;&#10074;';tick();});
 audio.addEventListener('pause',function(){$('play').innerHTML='&#9654;';draw();});
-audio.addEventListener('ended',function(){$('play').innerHTML='&#9654;';draw();});
-audio.addEventListener('error',function(){setStatus('This browser could not play the recording ('+META.mime+'). Please try another browser, such as Chrome, Edge, Firefox or Safari.',true);});
+audio.addEventListener('ended',function(){
+  if(cur<T.length-1){selectTrack(cur+1,true,0);return;}                 /* like a CD: straight on into the next piece */
+  $('play').innerHTML='&#9654;';draw();
+});
+audio.addEventListener('error',function(){setStatus('This browser could not play the recording ('+T[cur].mime+'). Please try another browser, such as Chrome, Edge, Firefox or Safari.',true);});
 function tick(){if(audio.paused)return;draw();followPlayhead();requestAnimationFrame(tick);}
-function toggle(){if(audio.paused){var p=audio.play();if(p&&p.catch)p.catch(function(){});}else audio.pause();}
-function seek(t){audio.currentTime=Math.max(0,Math.min(dur,t));clockUpdate();draw();}
+function toggle(){
+  if(!loadedHere()){autoPlay=!autoPlay;return;}
+  if(audio.paused){var p=audio.play();if(p&&p.catch)p.catch(function(){});}else audio.pause();
+}
+function seek(t){t=Math.max(0,Math.min(dur,t));if(loadedHere())audio.currentTime=t;else pendingSeek=t;clockUpdate();draw();}
 $('play').onclick=toggle;
-$('stop').onclick=function(){audio.pause();seek(0);scroller.scrollLeft=0;};
-$('back').onclick=function(){seek(audio.currentTime-10);};
-$('fwd').onclick=function(){seek(audio.currentTime+10);};
+$('stop').onclick=function(){audio.pause();autoPlay=false;seek(0);scroller.scrollLeft=0;};
+$('back').onclick=function(){seek(now()-10);};
+$('fwd').onclick=function(){seek(now()+10);};
+$('prevt').onclick=function(){if(now()>3&&loadedHere())seek(0);else selectTrack(cur-1,!audio.paused,0);};
+$('nextt').onclick=function(){selectTrack(cur+1,!audio.paused,0);};
+$('vol').oninput=function(){audio.volume=parseFloat(this.value);};
+
+/* ---------- the list of pieces ---------- */
+function renderTracks(){
+  if(!multi)return;
+  var counts=[],k,h='';for(k=0;k<T.length;k++)counts.push(0);
+  for(var i=0;i<notes.length;i++)if(notes[i].k>=0&&notes[i].k<T.length)counts[notes[i].k]++;
+  for(k=0;k<T.length;k++)
 )HTMLX",
-R"HTMLX($('vol').oninput=function(){audio.volume=parseFloat(this.value);};
+R"HTMLX(    h+='<div class="tr'+(k===cur?' cur':'')+'" data-k="'+k+'"><span class="tn">'+(k+1)+'</span><span class="tt">'+esc(T[k].piece)+'</span>'+
+       (counts[k]?'<span class="tc" title="Your comments on this piece">'+counts[k]+'</span>':'<span></span>')+'<span class="td">'+fmt(T[k].duration||0)+'</span></div>';
+  $('tracklist').innerHTML=h;
+  var c=document.querySelector('.tr.cur');if(c&&c.scrollIntoView){var tl=$('tracklist');if(c.offsetTop<tl.scrollTop||c.offsetTop+c.offsetHeight>tl.scrollTop+tl.clientHeight)tl.scrollTop=c.offsetTop-tl.offsetTop-40;}
+}
+function renderNow(){if(multi)$('nowtitle').innerHTML='<span class="tn">'+(cur+1)+'.</span> '+esc(T[cur].piece);}
+$('tracklist').addEventListener('click',function(e){var r=e.target.closest&&e.target.closest('.tr');if(r)selectTrack(parseInt(r.getAttribute('data-k'),10),!audio.paused||autoPlay,0);});
 
 /* ---------- waveform ---------- */
 var offA=null,offB=null,W=800,pps=1;
@@ -191,11 +289,11 @@ function layout(){
   renderPeaks();draw();
 }
 function renderPeaks(){
-  var P=META.peaks,cols=P.length/2,w=view.width,h=view.height;
+  var P=T[cur].peaks||[],cols=P.length/2,w=view.width,h=view.height;
   function make(col){
     var c=document.createElement('canvas');c.width=w;c.height=h;var g=c.getContext('2d');g.fillStyle=col;
     var top=FLAGH*dpr,bot=h-RULER*dpr,mid=(top+bot)/2,half=(bot-top)/2-2*dpr;
-    for(var x=0;x<w;x++){
+    for(var x=0;x<w&&cols>0;x++){
       var c0=Math.floor(x/w*cols),c1=Math.max(c0+1,Math.floor((x+1)/w*cols)),mn=0,mx=0;
       for(var k=c0;k<c1&&k<cols;k++){if(P[2*k]<mn)mn=P[2*k];if(P[2*k+1]>mx)mx=P[2*k+1];}
       var y0=mid-mx/100*half,y1=mid-mn/100*half;
@@ -210,10 +308,10 @@ function css(n){return getComputedStyle(document.documentElement).getPropertyVal
 function flagRect(n,idx){var x=n.t*pps,w=(String(idx).length>1?30:24);return {x:x,w:w,y:2,h:FLAGH-4};}
 function draw(){
   if(!offA)return;
-  var w=view.width,h=view.height;
+  var w=view.width,h=view.height,t0=now();
   ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,w,h);
   ctx.drawImage(offA,0,0);
-  var px=Math.floor((audio.currentTime||0)*pps*dpr);
+  var px=Math.floor(t0*pps*dpr);
   if(px>0)ctx.drawImage(offB,0,0,px,h,0,0,px,h);
   ctx.scale(dpr,dpr);
   // ruler
@@ -222,8 +320,8 @@ function draw(){
   ctx.fillStyle=css('--dim');ctx.strokeStyle=css('--line');ctx.font='11px system-ui,sans-serif';ctx.textBaseline='middle';ctx.lineWidth=1;
   ctx.beginPath();ctx.moveTo(0,H-RULER+.5);ctx.lineTo(W,H-RULER+.5);ctx.stroke();
   for(var t=0;t<=dur;t+=st){var x=Math.round(t*pps)+.5;ctx.beginPath();ctx.moveTo(x,H-RULER);ctx.lineTo(x,H-RULER+5);ctx.stroke();ctx.fillText(fmt(t),x+3,H-8);}
-  // flags
-  var list=sorted(),flag=css('--flag');
+  // flags (this piece's comments)
+  var list=sorted(cur),flag=css('--flag');
   for(var j=0;j<list.length;j++){
     var n=list[j],r=flagRect(n,j+1),sel=n.id===selId;
     ctx.fillStyle=flag;ctx.globalAlpha=sel?1:.55;ctx.fillRect(Math.round(r.x),FLAGH-2,1.5,H-RULER-FLAGH+2);ctx.globalAlpha=1;
@@ -231,12 +329,12 @@ function draw(){
     ctx.fillStyle=flag;ctx.fill();if(sel){ctx.strokeStyle=css('--ink');ctx.lineWidth=2;ctx.stroke();}
     ctx.fillStyle='#fff';ctx.font='bold 11px system-ui,sans-serif';ctx.textBaseline='middle';ctx.fillText(String(j+1),r.x+6,r.y+r.h/2+.5);
   }
-  if(draft){ctx.strokeStyle=flag;ctx.setLineDash([4,3]);ctx.lineWidth=1.5;var dx=Math.round(draft.t*pps)+.5;ctx.beginPath();ctx.moveTo(dx,2);ctx.lineTo(dx,H-RULER);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle=flag;ctx.fillText('new',dx+4,10);}
+  if(draft&&draft.k===cur){ctx.strokeStyle=flag;ctx.setLineDash([4,3]);ctx.lineWidth=1.5;var dx=Math.round(draft.t*pps)+.5;ctx.beginPath();ctx.moveTo(dx,2);ctx.lineTo(dx,H-RULER);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle=flag;ctx.fillText('new',dx+4,10);}
   // playhead
-  var pxx=Math.round((audio.currentTime||0)*pps)+.5;ctx.strokeStyle=css('--ink');ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(pxx,0);ctx.lineTo(pxx,H-RULER);ctx.stroke();
+  var pxx=Math.round(t0*pps)+.5;ctx.strokeStyle=css('--ink');ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(pxx,0);ctx.lineTo(pxx,H-RULER);ctx.stroke();
 }
 function followPlayhead(){
-  if(zoom<=1.01)return;var x=audio.currentTime*pps,l=scroller.scrollLeft,v=scroller.clientWidth;
+  if(zoom<=1.01)return;var x=now()*pps,l=scroller.scrollLeft,v=scroller.clientWidth;
   if(x>l+v-40||x<l)scroller.scrollLeft=Math.max(0,x-60);
 }
 function setZoom(z,aroundT){
@@ -251,7 +349,7 @@ window.addEventListener('resize',function(){if(offA)layout();});
 /* pointer: click = move; flag = select (drag moves it, mouse only) */
 var drag=null;
 function xy(e){var r=view.getBoundingClientRect();return {x:e.clientX-r.left,y:e.clientY-r.top};}
-function flagAt(p){var l=sorted();for(var i=l.length-1;i>=0;i--){var r=flagRect(l[i],i+1);if(p.x>=r.x-3&&p.x<=r.x+r.w&&p.y>=0&&p.y<=FLAGH)return l[i];}return null;}
+function flagAt(p){var l=sorted(cur);for(var i=l.length-1;i>=0;i--){var r=flagRect(l[i],i+1);if(p.x>=r.x-3&&p.x<=r.x+r.w&&p.y>=0&&p.y<=FLAGH)return l[i];}return null;}
 view.addEventListener('pointerdown',function(e){
   var p=xy(e),f=flagAt(p);
   drag={f:f,x0:p.x,moved:false,touch:e.pointerType==='touch',t0:f?f.t:0};
@@ -265,42 +363,49 @@ view.addEventListener('pointermove',function(e){
 });
 view.addEventListener('pointerup',function(e){
   if(!drag)return;var p=xy(e),d=drag;drag=null;
-  if(d.moved){persist();renderList();return;}
+)HTMLX",
+R"HTMLX(  if(d.moved){persist();renderList();return;}
   if(Math.abs(p.x-d.x0)>6)return;
   if(d.f){selId=d.f.id;seek(d.f.t);renderList();scrollToNote(d.f.id);}
   else seek(p.x/pps);
 });
 view.addEventListener('pointercancel',function(){drag=null;});
 
-/* ---------- comments ---------- */
-function persist(){dirty=true;lsSet(STORE,JSON.stringify({who:$('who').value,notes:notes}));updateHint();}
-function updateHint(){$('savehint').textContent=notes.length?(dirty?'Not saved to a file yet':'Saved'):'';}
+/* ---------- comments: kept in this browser as they are made ---------- */
+function store(){var v=JSON.stringify({who:$('who').value,notes:notes,exported:!dirty});lsSet(STORE,v);return lsGet(STORE)===v;}
+function persist(){dirty=true;stored=store();updateHints();}
+function updateHints(){
+  $('savehint').textContent=notes.length?(stored?'Saved on this computer':'This browser is not keeping them: export them to be safe'):'';
+  $('exphint').textContent=notes.length?(dirty?'Not exported since your last change':'Exported'):'';
+}
 function renderList(){
-  var l=sorted(),el=$('list');$('count').textContent=l.length;
-  if(!l.length){el.innerHTML='<div class="empty">Nothing yet. Press <b>Add a comment here</b> when you hear something you want to mention.</div>';draw();updateHint();return;}
-  var h='';
+  var l=sorted(null),el=$('list');$('count').textContent=l.length;renderTracks();
+  if(!l.length){el.innerHTML='<div class="empty">Nothing yet. Press <b>Add a comment here</b> when you hear something you want to mention.</div>';draw();updateHints();return;}
+  var h='',lastK=-1,num=0;
   for(var i=0;i<l.length;i++){var n=l[i];
-)HTMLX",
-R"HTMLX(    h+='<div class="note'+(n.id===selId?' sel':'')+'" data-id="'+n.id+'"><div class="badge">'+(i+1)+'</div><div>'+
+    if(n.k!==lastK){lastK=n.k;num=0;if(multi)h+='<div class="grp">'+(n.k+1)+'. '+esc(T[n.k].piece)+'</div>';}
+    num++;
+    h+='<div class="note'+(n.id===selId?' sel':'')+'" data-id="'+n.id+'"><div class="badge">'+num+'</div><div>'+
       '<div class="meta"><a data-go="'+n.id+'">'+fmt(n.t,true)+'</a>'+(n.bar?'<span class="bartag">'+esc(n.bar)+'</span>':'')+'<span class="nact"><button class="ghost" data-edit="'+n.id+'">Edit</button><button class="ghost" data-del="'+n.id+'">Delete</button></span></div>'+
       '<div class="txt">'+esc(n.text)+'</div></div></div>';}
-  el.innerHTML=h;draw();updateHint();
+  el.innerHTML=h;draw();updateHints();
 }
 function scrollToNote(id){var e=document.querySelector('.note[data-id="'+id+'"]');if(e&&e.scrollIntoView)e.scrollIntoView({block:'nearest',behavior:'smooth'});}
+function goTo(n){selId=n.id;if(n.k!==cur)selectTrack(n.k,false,Math.max(0,n.t-2));else seek(Math.max(0,n.t-2));renderList();var sl=n.t*pps-scroller.clientWidth/2;if(zoom>1)scroller.scrollLeft=Math.max(0,sl);}
 $('list').addEventListener('click',function(e){
   var t=e.target,id=t.getAttribute('data-go')||t.getAttribute('data-edit')||t.getAttribute('data-del');
   if(!id){var c=t.closest&&t.closest('.note');if(c){selId=c.getAttribute('data-id');renderList();}return;}
   var n=notes.filter(function(x){return x.id===id;})[0];if(!n)return;
-  if(t.getAttribute('data-go')){selId=id;seek(Math.max(0,n.t-2));renderList();var sl=n.t*pps-scroller.clientWidth/2;if(zoom>1)scroller.scrollLeft=Math.max(0,sl);}
+  if(t.getAttribute('data-go')){goTo(n);}
   else if(t.getAttribute('data-edit')){openComposer(n);}
   else if(t.getAttribute('data-del')){if(confirm('Delete this comment?')){notes=notes.filter(function(x){return x.id!==id;});persist();renderList();}}
 });
 function openComposer(existing){
   editing=existing||null;
-  if(!existing){wasPlaying=!audio.paused;if(wasPlaying&&$('pausetype').checked)audio.pause();draft={t:audio.currentTime||0};}
-  else{draft={t:existing.t};wasPlaying=false;}
+  if(!existing){wasPlaying=!audio.paused;if(wasPlaying&&$('pausetype').checked)audio.pause();draft={k:cur,t:now()};}
+  else{if(existing.k!==cur)selectTrack(existing.k,false,existing.t);draft={k:existing.k,t:existing.t};wasPlaying=false;}
   draft.orig=draft.t;draft.txt=fmt(draft.t,true);
-  $('ctitle').textContent=existing?'Change this comment':'New comment';
+  $('ctitle').textContent=(existing?'Change this comment':'New comment')+(multi?' ('+(draft.k+1)+'. '+T[draft.k].piece+')':'');
   $('csave').textContent=existing?'Save changes':'Add comment';
   $('ctime').value=draft.txt;$('cbar').value=existing?existing.bar:'';$('ctext').value=existing?existing.text:'';
   $('composer').classList.add('on');draw();
@@ -312,44 +417,90 @@ function closeComposer(resume){
   wasPlaying=false;
 }
 $('addbtn').onclick=function(){openComposer(null);};
-$('ctime').addEventListener('input',function(){var t=parseT(this.value);if(t!==null&&draft){draft.t=Math.max(0,Math.min(dur,t));draw();}});
+$('ctime').addEventListener('input',function(){var t=parseT(this.value);if(t!==null&&draft){draft.t=Math.max(0,Math.min(durOf(draft.k),t));draw();}});
 $('ccancel').onclick=function(){closeComposer(true);};
 $('csave').onclick=function(){
   var text=$('ctext').value.trim();if(!text){$('ctext').focus();return;}
-  var t=($('ctime').value===draft.txt)?draft.orig:parseT($('ctime').value);if(t===null)t=draft.t;t=Math.max(0,Math.min(dur,t));
+  var t=($('ctime').value===draft.txt)?draft.orig:parseT($('ctime').value);if(t===null)t=draft.t;t=Math.max(0,Math.min(durOf(draft.k),t));
   if(editing){editing.t=t;editing.bar=$('cbar').value.trim();editing.text=text;selId=editing.id;}
-  else{var n={id:rid(),t:t,bar:$('cbar').value.trim(),text:text,at:new Date().toISOString()};notes.push(n);selId=n.id;}
+  else{var n={id:rid(),k:draft.k,t:t,bar:$('cbar').value.trim(),text:text,at:new Date().toISOString()};notes.push(n);selId=n.id;}
   persist();renderList();closeComposer(true);
 };
 $('who').addEventListener('input',function(){lsSet('fermata-review-name',this.value);persist();});
 
-/* ---------- saving ---------- */
+/* ---------- Save (in this browser) and Export (the file that goes back to the sender) ---------- */
+$('save').onclick=function(){
+  stored=store();updateHints();
+  if(stored)setStatus('Saved. You can close this page and carry on later: your comments will be here when you open this file again on this computer (in this browser).');
+  else setStatus('This browser would not keep your comments (is it a private window?). Press "Export comments for sending back to the sender" to keep them in a file.',true);
+};
 function payload(){
   var who=$('who').value.trim();
-  return JSON.stringify({fermata:'feedback',v:1,id:META.id,edit:META.edit,piece:META.piece,offset:META.offset,duration:dur,
-    notes:sorted().map(function(n){return {id:n.id,t:Math.round(n.t*1000)/1000,bar:n.bar,text:n.text,who:who,at:n.at};})},null,1);
+  function list(k){return sorted(k).map(function(n){return {id:n.id,t:Math.round(n.t*1000)/1000,bar:n.bar,text:n.text,who:who,at:n.at};});}
+  var o={fermata:'feedback',v:2,id:META.id,name:META.name||'',title:title,who:who};
+  if(!multi){o.edit=T[0].edit;o.piece=T[0].piece;o.offset=T[0].offset;o.duration=durOf(0);o.notes=list(0);}
+  else o.pieces=T.map(function(tr,k){return {k:k,edit:tr.edit,piece:tr.piece,offset:tr.offset,duration:tr.duration,notes:list(k)};});
+  return JSON.stringify(o,null,1);
 }
 function safeName(s){return String(s).replace(/[\\\/:*?"<>|]+/g,' ').replace(/\s+/g,' ').trim();}
-$('save').onclick=function(){
-  if(!notes.length){setStatus('There are no comments to save yet.');return;}
-  var who=$('who').value.trim(),json=payload(),name=safeName(META.piece)+' - comments'+(who?' - '+safeName(who):'')+'.json';
+function notesName(){
+  var base=safeName(META.name||(title+' - listening copy'));
+  base=/listening copy$/i.test(base)?base.replace(/listening copy$/i,'listening notes'):base+' - listening notes';
+)HTMLX",
+R"HTMLX(  return base+'.fmnotes';
+}
+$('export').onclick=function(){
+  if(!notes.length){setStatus('There are no comments to export yet.');return;}
+  var json=payload(),name=notesName();
   try{
-    var blob=new Blob([json],{type:'application/json'}),a=document.createElement('a');
+    var blob=new Blob([json],{type:'application/octet-stream'}),a=document.createElement('a');
     a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();
     setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},4000);
-    dirty=false;updateHint();setStatus('Saved as "'+name+'". Now send that file back to whoever sent you this recording.');
+    dirty=false;stored=store();updateHints();
+    setStatus('Exported as "'+name+'". Now send that file back to whoever sent you this recording (attach it to an email, for example).');
   }catch(e){$('dtext').value=json;$('dlg').showModal();}
 };
 $('dcopy').onclick=function(){var t=$('dtext');t.select();try{document.execCommand('copy');}catch(e){}};
 $('dclose').onclick=function(){$('dlg').close();};
-window.addEventListener('beforeunload',function(e){if(dirty&&notes.length){e.preventDefault();e.returnValue='';}});
+/* carry on from an exported file (on another computer, or after the browser forgot them) */
+$('openlink').onclick=function(e){e.preventDefault();$('openfile').value='';$('openfile').click();};
+$('openfile').addEventListener('change',function(){
+  var f=this.files&&this.files[0];if(!f)return;
+  var rd=new FileReader();
+  rd.onload=function(){
+    var o=null;try{o=JSON.parse(String(rd.result).replace(/^\ufeff/,''));}catch(e){o=null;}
+    if(!o||o.fermata!=='feedback'){setStatus('"'+f.name+'" is not a comments file from a Fermata listening copy.',true);return;}
+    var groups=o.pieces||[{k:0,edit:o.edit,piece:o.piece,notes:o.notes}],same=o.id===META.id,added=0,skipped=0,who='';
+    for(var g=0;g<groups.length;g++){
+      var gr=groups[g]||{},k=-1,i;
+      for(i=0;i<T.length&&k<0;i++)if(gr.edit&&T[i].edit===gr.edit)k=i;
+      for(i=0;i<T.length&&k<0;i++)if(gr.piece&&T[i].piece===gr.piece)k=i;
+      if(k<0&&same&&typeof gr.k==='number'&&gr.k>=0&&gr.k<T.length)k=gr.k;
+      var ns=gr.notes||[];
+      if(k<0){skipped+=ns.length;continue;}
+      for(i=0;i<ns.length;i++){
+        var n=ns[i];if(!n||!n.text)continue;
+        if(!who&&n.who)who=n.who;
+        var t=Math.max(0,Math.min(T[k].duration||1e9,Number(n.t)||0)),id=n.id||rid(),ex=notes.filter(function(x){return x.id===id;})[0];
+        if(ex){ex.k=k;ex.t=t;ex.bar=n.bar||'';ex.text=String(n.text);}
+        else notes.push({id:id,k:k,t:t,bar:n.bar||'',text:String(n.text),at:n.at||''});
+        added++;
+      }
+    }
+    if(!added){setStatus(skipped?'Those comments are for a different recording'+((o.title||o.piece)?' ("'+(o.title||o.piece)+'")':'')+', so they were not loaded.':'"'+f.name+'" has no comments in it.',true);return;}
+    if(!$('who').value.trim()&&(o.who||who)){$('who').value=o.who||who;lsSet('fermata-review-name',$('who').value);}
+    persist();renderList();
+    setStatus('Loaded '+added+' comment'+(added===1?'':'s')+' from "'+f.name+'".'+(skipped?' '+skipped+' belong to another recording and were left out.':''));
+  };
+  rd.readAsText(f);
+});
 
 /* ---------- keys ---------- */
 document.addEventListener('keydown',function(e){
   var tg=e.target&&e.target.tagName;if(tg==='INPUT'||tg==='TEXTAREA'||e.ctrlKey||e.metaKey||e.altKey)return;
   if(e.key===' '){e.preventDefault();toggle();}
-  else if(e.key==='ArrowLeft'){e.preventDefault();seek(audio.currentTime-5);}
-  else if(e.key==='ArrowRight'){e.preventDefault();seek(audio.currentTime+5);}
+  else if(e.key==='ArrowLeft'){e.preventDefault();seek(now()-5);}
+  else if(e.key==='ArrowRight'){e.preventDefault();seek(now()+5);}
   else if(e.key==='c'||e.key==='C'){e.preventDefault();if(!$('composer').classList.contains('on'))openComposer(null);}
   else if(e.key==='Escape'&&$('composer').classList.contains('on'))closeComposer(true);
 });
@@ -357,14 +508,17 @@ $('ctext').addEventListener('keydown',function(e){if(e.key==='Enter'&&(e.ctrlKey
 
 /* ---------- start ---------- */
 function start(){
+  findChunks();
   $('who').value=lsGet('fermata-review-name')||'';
-  var s=lsGet(STORE);if(s){try{var o=JSON.parse(s);if(o&&o.notes){notes=o.notes;if(o.who&&!$('who').value)$('who').value=o.who;dirty=notes.length>0;}}catch(e){}}
-  layout();renderList();clockUpdate();
-  loadAudio(function(blob){
-    audio.src=URL.createObjectURL(blob);
-    $('loading').style.display='none';layout();
-    setStatus(notes.length?'Your earlier comments on this recording were restored.':'');
-  });
+  var s=lsGet(STORE);
+  if(s){try{var o=JSON.parse(s);if(o&&o.notes){
+    notes=o.notes.filter(function(n){return n&&n.text;});
+    for(var i=0;i<notes.length;i++){if(typeof notes[i].k!=='number'||notes[i].k<0||notes[i].k>=T.length)notes[i].k=0;}
+    if(o.who&&!$('who').value)$('who').value=o.who;
+    dirty=notes.length>0&&o.exported!==true;}}catch(e){}}
+  renderNow();renderList();clockUpdate();
+  selectTrack(0,false,0);
+  whenReady(0,function(){setStatus(notes.length?'Your earlier comments on this recording were restored.':'');});
 }
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start);else start();
 })();

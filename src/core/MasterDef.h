@@ -47,6 +47,7 @@ struct MasterExportSettings
     double       formRate = 0.0;                // 0 = the sample rate of the edits (MP3: 48 kHz at most)
     int          formBits = 24;                 // 16 or 24 (WAV / FLAC)
     juce::String formFolder;                    // where the listening copies go (empty = the project's Mastered Audio / Listening copies folder)
+    bool         formSingle = false;            // false = one listening copy per piece; true = all the pieces in ONE file (a list of pieces, played one after another)
     juce::String folder;
     MasterTags   album;               // album, albumArtist, genre, year, comment, copyright: the defaults for every file
 };

@@ -619,13 +619,18 @@ MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (pr
     formInfo.setMinimumHorizontalScale (1.0f); formInfo.setJustificationType (juce::Justification::topLeft);
     addChildComponent (formInfo);
     addChildComponent (formAudioBox);
-    cap (formIntro, "Fermata makes ONE .html file per piece with the recording inside it. Send it to a listener: they double-click it, see the waveform, play it, and press a button "
-                    "to add comments (with an optional bar) at the time they hear something. They save a small file and send it back; import it in the edit window (Feedback button) and "
-                    "the comments appear as flags on the timeline. It works in any current browser on Windows, Mac, iPhone / iPad and Android. No audio files are exported here: "
-                    "the audio is inside each page.");
+    cap (formIntro, "Fermata makes an .html file with the recording inside it: one per piece, or one with all the pieces. Send it to a listener: they double-click it, see the waveform, "
+                    "play it, and press a button to add comments (with an optional bar) at the time they hear something. Their comments are kept in their browser, so they can close it and "
+                    "carry on later. When they have finished they press \"Export comments for sending back to the sender\" and send you the small .fmnotes file it makes; import it in the "
+                    "edit window (Feedback button) and the comments appear as flags on the timeline (on each piece's own edit). It works in any current browser. No audio files are "
+                    "exported here: the audio is inside the page.");
     formIntro.setJustificationType (juce::Justification::topLeft); formIntro.setMinimumHorizontalScale (1.0f);
-    cap (formRateCaption, "Sample rate"); cap (formBitsCaption, "Bit depth"); cap (formLevelNote, ""); cap (formFolderCaption, "Folder"); cap (formStatus, "");
+    cap (formSingleCaption, "Files"); cap (formRateCaption, "Sample rate"); cap (formBitsCaption, "Bit depth"); cap (formLevelNote, ""); cap (formFolderCaption, "Folder"); cap (formStatus, "");
     formLevelNote.setJustificationType (juce::Justification::topLeft); formStatus.setJustificationType (juce::Justification::topLeft);
+    formSingleBox.addItem ("One file for each piece", 1); formSingleBox.addItem ("All the pieces in one file", 2);
+    formSingleBox.setTooltip ("All the pieces in one file: the listener sees a list of the pieces and can play straight through, like a CD. The file is named after the album title "
+                              "(Virtual Master tab), or the project when there is none. Comments on each piece come back to that piece's edit.");
+    formSingleBox.onChange = [this] { if (updating) return; def().vm.formSingle = formSingleBox.getSelectedId() == 2; touched(); refreshFormatControls(); };
     formRateBox.addItem ("The edits' own rate", 1); formRateBox.addItem ("44.1 kHz", 2); formRateBox.addItem ("48 kHz", 3);
     formBitsBox.addItem ("16 bit", 1); formBitsBox.addItem ("24 bit", 2);
     formRateBox.onChange = [this] { if (updating) return; const double r[] = { 0.0, 44100.0, 48000.0 }; def().vm.formRate = r[juce::jlimit (0, 2, formRateBox.getSelectedId() - 1)]; touched(); refreshFormatControls(); };
@@ -635,7 +640,7 @@ MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (pr
     formExport.setColour (juce::TextButton::buttonColourId, theme::accent);
     formExport.onClick = [this] { startFormExport(); };
     formShow.onClick = [this] { if (lastOutput.exists()) lastOutput.revealToUser(); };
-    for (juce::Component* c : std::initializer_list<juce::Component*> { &formRateBox, &formBitsBox, &formFolderEditor, &formChoose, &formExport, &formShow, &formProgress }) addChildComponent (c);
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &formSingleBox, &formRateBox, &formBitsBox, &formFolderEditor, &formChoose, &formExport, &formShow, &formProgress }) addChildComponent (c);
     formAudioBox.addItem ("WAV (no loss)", 1); formAudioBox.addItem ("FLAC (lossless, about half the size)", 2); formAudioBox.addItem ("MP3 (small, needs LAME)", 3);
     feedbackToggle.setTooltip ("Besides the audio file, Fermata makes ONE .html file per track with the recording inside it. Send it to a listener: they double-click it, "
                                "see the waveform, play it, and press a button to add comments (with an optional bar) at the time they hear something. They save a small file and send it back; "
@@ -1056,6 +1061,7 @@ void MasteringComponent::refreshFormatControls()
     numberToggle.setToggleState (vm.numberFiles, juce::dontSendNotification);
     feedbackToggle.setToggleState (vm.feedbackForm, juce::dontSendNotification);
     formAudioBox.setSelectedId (vm.formAudio + 1, juce::dontSendNotification);
+    formSingleBox.setSelectedId (vm.formSingle ? 2 : 1, juce::dontSendNotification);
     formRateBox.setSelectedId (vm.formRate >= 47999.0 || (vm.formAudio == 2 && vm.formRate <= 0.0) ? 3 : vm.formRate >= 44099.0 ? 2 : 1, juce::dontSendNotification);
     formRateBox.setItemEnabled (1, vm.formAudio != 2);                                    // MP3: 48 kHz at most
     formBitsBox.setSelectedId (vm.formBits == 16 ? 1 : 2, juce::dontSendNotification);
@@ -1069,6 +1075,12 @@ void MasteringComponent::refreshFormatControls()
         if (rate <= 0.0) { rate = 48000.0; for (auto& it : def().items) if (it.include) if (auto* e = app.project.findEdit (it.editId)) if (e->sampleRate > 0.0) { rate = e->sampleRate; break; } }
         const double bytesPerMin = vm.formAudio == 0 ? rate * (bits / 8.0) * 2.0 * 60.0 : vm.formAudio == 1 ? rate * (bits == 16 ? 2.0 : 3.0) * 2.0 * 60.0 * 0.55 : 320000.0 / 8.0 * 60.0 * 0.5;
         juce::String t = "About " + juce::String (juce::roundToInt (bytesPerMin * 1.34 / 1.0e6)) + " MB of file for every minute of music (the page is the audio plus about a third).";
+        if (vm.formSingle)
+        {
+            double minutes = 0.0;
+            for (auto& it : def().items) if (it.include) if (auto* e = app.project.findEdit (it.editId)) minutes += e->lengthSeconds() / 60.0;
+            if (minutes > 0.0) t += " All the pieces together: about " + (bytesPerMin * 1.34 * minutes >= 1.0e9 ? juce::String (bytesPerMin * 1.34 * minutes / 1.0e9, 1) + " GB." : juce::String (juce::roundToInt (bytesPerMin * 1.34 * minutes / 1.0e6)) + " MB.");
+        }
         if (vm.formAudio == 0 && bytesPerMin * 1.34 / 1.0e6 > 60.0) t += " Phones and tablets may struggle with files over about 150 MB; FLAC is half the size with no loss.";
         formInfo.setText (t, juce::dontSendNotification);
     }
@@ -1251,7 +1263,7 @@ void MasteringComponent::chooseFolder (bool disc, bool forms)
 // ----------------------------------------------------------------------------- exporting
 void MasteringComponent::setBusy (bool busy)
 {
-    for (juce::Component* c : std::initializer_list<juce::Component*> { &formatBox, &rateBox, &bitsBox, &ditherBox, &qualityBox, &normToggle, &overallToggle, &individualToggle, &numberToggle, &formAudioBox, &formRateBox, &formBitsBox, &formFolderEditor, &formChoose, &alsoCaption, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4], &peakEditor,
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &formatBox, &rateBox, &bitsBox, &ditherBox, &qualityBox, &normToggle, &overallToggle, &individualToggle, &numberToggle, &formSingleBox, &formAudioBox, &formRateBox, &formBitsBox, &formFolderEditor, &formChoose, &alsoCaption, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4], &peakEditor,
                                                                          &folderEditor, &chooseButton, &mixerBox, &sourceBox, &tailBox, &vmAll, &vmNone, &vmUp, &vmDown, &autoPq, &allGapsBox, &ddpChoose,
                                                                          &ddpFolderEditor, &zipToggle, &cueToggle, &ddpNorm, &ddpTogether, &ddpPeakEditor, &ddpUp, &ddpDown, &gapEditor, &ddpCheck })
         c->setEnabled (! busy);
@@ -1357,7 +1369,7 @@ void MasteringComponent::setView (int v)
     for (juce::Component* c : std::initializer_list<juce::Component*> { &vmSettings, &vmProgress, &vmStatus, &exportButton })
         c->setVisible (vm);
     showButton.setVisible (vm && showButton.isVisible());
-    for (juce::Component* c : std::initializer_list<juce::Component*> { &formCaption, &formIntro, &formAudioCaption, &formAudioBox, &formRateCaption, &formRateBox, &formBitsCaption, &formBitsBox,
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &formCaption, &formIntro, &formSingleCaption, &formSingleBox, &formAudioCaption, &formAudioBox, &formRateCaption, &formRateBox, &formBitsCaption, &formBitsBox,
                                                                          &formLevelNote, &formInfo, &formFolderCaption, &formFolderEditor, &formChoose, &formStatus, &formProgress, &formExport })
         c->setVisible (fm);
     formShow.setVisible (fm && formShow.isVisible());
@@ -1443,6 +1455,7 @@ void MasteringComponent::layoutForms (juce::Rectangle<int> area)
     formCaption.setBounds (row (20));
     formIntro.setBounds (row (juce::jmax (64, juce::roundToInt (formIntro.getFont().getHeight() * 1.25f) * (1 + juce::roundToInt ((float) juce::GlyphArrangement::getStringWidthInt (formIntro.getFont(), formIntro.getText()) / (float) juce::jmax (100, r.getWidth() - 10))))));
     auto labelled = [&] (juce::Label& l, juce::ComboBox& c) { auto x = row (grid::btnH + 2); l.setBounds (x.removeFromLeft (110)); c.setBounds (x.removeFromLeft (juce::jmin (x.getWidth(), 340))); };
+    labelled (formSingleCaption, formSingleBox);
     labelled (formAudioCaption, formAudioBox);
     labelled (formRateCaption, formRateBox);
     labelled (formBitsCaption, formBitsBox);

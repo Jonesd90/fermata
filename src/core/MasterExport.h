@@ -30,6 +30,8 @@ struct MasterJobSpec
     juce::File   workFolder;         // intermediates (deleted at the end)
     DdpDisc      disc;              // Disc only. disc.clips holds every clip; 'items' are the included ones, in order
     bool         formsOnly = false; // Files: make only the listening copies (one .html per piece, with its audio inside), no audio files
+    bool         formSingle = false;// the listening copies: all the pieces in ONE .html (named after formTitle) instead of one per piece
+    juce::String formTitle;         // the name of that one page (the album title, or the project's name)
     juce::String discName;
 };
 

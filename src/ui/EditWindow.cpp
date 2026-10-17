@@ -1523,7 +1523,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
                              "You can also drag the files onto this window. Each track goes on its own row.");
     importButton.onClick = [this] { fixtools::showImportMenu (app, juce::Uuid::null(), &importButton, editId); };
     addAndMakeVisible (importButton);
-    feedbackButton.setTooltip ("Comments from listeners: import the file they sent back (or a marker list exported from a review website) and see their comments as flags along the top of this timeline. Make the listening copy with the Virtual Master tab: tick 'Include Feedback Form'.");
+    feedbackButton.setTooltip ("Comments from listeners: import the file they sent back (or a marker list exported from a review website) and see their comments as flags along the top of this timeline. The file they send back ends in .fmnotes; a file with all the pieces puts each piece's comments on its own edit. Make the listening copy in Mastering, on the Listening copy tab.");
     feedbackButton.onClick = [this] { showFeedbackMenu(); };
     addAndMakeVisible (feedbackButton); feedbackButton.setWantsKeyboardFocus (false);
     markersToggle.setTooltip ("Show or hide your own markers (the amber flags on the top line). Right-click that line to add one.");
@@ -1760,7 +1760,7 @@ void EditWindowComponent::importFeedback()
     auto* st = app.props.getUserSettings();
     juce::File start (st != nullptr ? st->getValue ("feedbackFolder") : juce::String());
     if (! start.isDirectory()) start = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
-    feedbackChooser = std::make_unique<juce::FileChooser> ("Choose the comments file(s) sent back by listeners (or exported from a review website)", start, "*.json;*.txt;*.csv;*.tsv");
+    feedbackChooser = std::make_unique<juce::FileChooser> ("Choose the comments file(s) sent back by listeners (or exported from a review website)", start, "*.fmnotes;*.json;*.txt;*.csv;*.tsv");
     juce::Component::SafePointer<EditWindowComponent> safe (this);
     feedbackChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::canSelectMultipleItems, [safe] (const juce::FileChooser& fc)
     {
@@ -1798,46 +1798,61 @@ void EditWindowComponent::importFeedback()
 
 void EditWindowComponent::importFeedbackFiles (juce::Array<juce::File> files, double frameRate)
 {
-    juce::String report; int total = 0;
+    juce::String report; int total = 0; bool toOthers = false;
     std::vector<juce::Uuid> replaced;                         // edits whose old comments have been superseded by this import (the first file of a batch replaces, the rest add)
     std::map<juce::String, std::vector<juce::File>> kept;     // the files read for each edit, saved in the project's comments folder
     for (auto& f : files)
     {
         juce::MemoryBlock data;
         if (! f.loadFileAsData (data)) { report += f.getFileName() + ": could not be read.\n"; continue; }
-        feedback::Parsed p;
-        const auto err = feedback::parse (data.getData(), data.getSize(), frameRate, f.getFileName(), p);
+        feedback::Parsed parsed;
+        const auto err = feedback::parse (data.getData(), data.getSize(), frameRate, f.getFileName(), parsed);
         if (err.isNotEmpty()) { report += f.getFileName() + ": " + err + "\n"; continue; }
-        EditDef* target = edit();
-        juce::String where;
-        if (p.editId.isNotEmpty())
-            if (auto* te = app.project.findEdit (juce::Uuid (p.editId))) { if (te != target) where = " (they were made on the edit '" + te->name + "', so they went there)"; target = te; }
-        if (target == nullptr) continue;
-        const double offset = p.hasOffset ? p.offset : (target->sampleRate > 0.0 ? (double) target->firstSample() / target->sampleRate : 0.0);
-        const double len = target->lengthSeconds();
-        int late = 0;
-        for (auto& n : p.notes) { n.seconds += offset; if (len > 0.0 && n.seconds > len + 2.0) ++late; }
-        int updated = 0;
-        if (std::find (replaced.begin(), replaced.end(), target->id) == replaced.end())
-        {   // a new set of comments supersedes the old one; a tick ("done") on a comment that is still in the new set is kept
-            replaced.push_back (target->id);
-            auto oldNotes = target->feedback; target->feedback.clear();
-            for (auto& n : p.notes) for (auto& o : oldNotes) if (o.key == n.key && o.done) n.done = true;
+        const bool several = ! parsed.parts.empty();                  // a listening copy that held all the pieces: each piece's comments go to its own edit
+        std::vector<feedback::Parsed*> groups;
+        if (several) for (auto& part : parsed.parts) groups.push_back (&part); else groups.push_back (&parsed);
+        for (auto* gp : groups)
+        {
+            auto& p = *gp;
+            const auto label = f.getFileName() + (several ? " - " + p.piece : juce::String());
+            EditDef* target = several ? nullptr : edit();
+            juce::String where;
+            if (p.editId.isNotEmpty())
+                if (auto* te = app.project.findEdit (juce::Uuid (p.editId))) { if (te != target && ! several) where = " (they were made on the edit '" + te->name + "', so they went there)"; target = te; }
+            if (target == nullptr && several)
+                for (auto& e2 : app.project.edits) if (e2->name == p.piece) { target = e2.get(); break; }
+            if (target == nullptr)
+            {
+                if (several) report += label + ": " + juce::String ((int) p.notes.size()) + " comment" + (p.notes.size() == 1 ? "" : "s") + " not imported: the edit they were made on is no longer in this project.\n";
+                continue;
+            }
+            const double offset = p.hasOffset ? p.offset : (target->sampleRate > 0.0 ? (double) target->firstSample() / target->sampleRate : 0.0);
+            const double len = target->lengthSeconds();
+            int late = 0;
+            for (auto& n : p.notes) { n.seconds += offset; if (len > 0.0 && n.seconds > len + 2.0) ++late; }
+            int updated = 0;
+            if (std::find (replaced.begin(), replaced.end(), target->id) == replaced.end())
+            {   // a new set of comments supersedes the old one; a tick ("done") on a comment that is still in the new set is kept
+                replaced.push_back (target->id);
+                auto oldNotes = target->feedback; target->feedback.clear();
+                for (auto& n : p.notes) for (auto& o : oldNotes) if (o.key == n.key && o.done) n.done = true;
+            }
+            kept[target->id.toString()].push_back (f);
+            const int added = feedback::merge (target->feedback, p.notes, &updated);
+            target->showFeedback = true;
+            total += added;
+            if (target != edit()) toOthers = true;
+            report += label + ": " + juce::String (added) + " new comment" + (added == 1 ? "" : "s") + " from " + juce::String ((int) p.notes.size()) + " in the file" + where + (several ? " (on the edit '" + target->name + "')" : juce::String())
+                    + (updated > 0 ? ", " + juce::String (updated) + " already there and updated" : juce::String())
+                    + (p.format == "marker list" ? ". Timecode read at " + juce::String (frameRate) + " frames a second" : juce::String())
+                    + (late > 0 ? ". " + juce::String (late) + " fall after the end of the edit" : juce::String()) + ".\n";
         }
-        kept[target->id.toString()].push_back (f);
-        const int added = feedback::merge (target->feedback, p.notes, &updated);
-        target->showFeedback = true;
-        total += added;
-        report += f.getFileName() + ": " + juce::String (added) + " new comment" + (added == 1 ? "" : "s") + " from " + juce::String ((int) p.notes.size()) + " in the file" + where
-                + (updated > 0 ? ", " + juce::String (updated) + " already there and updated" : juce::String())
-                + (p.format == "marker list" ? ". Timecode read at " + juce::String (frameRate) + " frames a second" : juce::String())
-                + (late > 0 ? ". " + juce::String (late) + " fall after the end of the edit" : juce::String()) + ".\n";
     }
     for (auto& id : replaced) if (auto* te = app.project.findEdit (id)) app.project.saveCommentsCopy (*te, kept[id.toString()]);
     app.project.markDirty();
     if (timeline != nullptr) timeline->repaint();
     juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (total > 0 ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon)
-        .withTitle ("Comments").withMessage (report.trim() + (total > 0 ? "\n\nThe flags are along the top of the timeline. Click one to read it." : juce::String())).withButton ("OK").withAssociatedComponent (this), nullptr);
+        .withTitle ("Comments").withMessage (report.trim() + (total > 0 ? "\n\nThe flags are along the top of the timeline. Click one to read it." + juce::String (toOthers ? " Comments on other pieces are on their own edits: open those edits to see them." : "") : juce::String())).withButton ("OK").withAssociatedComponent (this), nullptr);
 }
 
 void EditWindowComponent::showTracksMenu()

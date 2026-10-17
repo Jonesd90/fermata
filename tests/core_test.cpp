@@ -2352,10 +2352,10 @@ int main()
 
         // the saved form
         {
-            MasteringDef m; m.vm.format = MasterFormat::Flac; m.vm.bitDepth = 16; m.vm.folder = "X:/out"; m.vm.album.album = "Alb"; m.ddp = d; m.ddp.upc = "4006381333931"; m.tailSeconds = 2.5;
+            MasteringDef m; m.vm.format = MasterFormat::Flac; m.vm.bitDepth = 16; m.vm.folder = "X:/out"; m.vm.album.album = "Alb"; m.vm.formSingle = true; m.ddp = d; m.ddp.upc = "4006381333931"; m.tailSeconds = 2.5;
             MasterItem it; it.editId = juce::Uuid(); it.include = false; it.fileName = "Name"; it.tags.title = "Ti"; m.items.push_back (it);
             MasteringDef m2; m2.fromVar (juce::JSON::parse (juce::JSON::toString (m.toVar())));
-            CHECK (m2.vm.format == MasterFormat::Flac && m2.vm.bitDepth == 16 && m2.vm.folder == "X:/out" && m2.vm.album.album == "Alb" && m2.tailSeconds == 2.5);
+            CHECK (m2.vm.format == MasterFormat::Flac && m2.vm.bitDepth == 16 && m2.vm.folder == "X:/out" && m2.vm.album.album == "Alb" && m2.vm.formSingle && m2.tailSeconds == 2.5);
             CHECK (m2.items.size() == 1 && ! m2.items[0].include && m2.items[0].fileName == "Name" && m2.items[0].tags.title == "Ti" && m2.items[0].editId == it.editId);
             CHECK (m2.ddp.upc == "4006381333931" && m2.ddp.clips.size() == 3 && m2.ddp.clips[2].gapSectors == 0 && m2.ddp.clips[0].gapSectors == 10);
         }
@@ -2495,6 +2495,14 @@ int main()
                 CHECK (forms.findChildFiles (juce::File::findFiles, false, "*.html").size() == 1);
                 CHECK (forms.findChildFiles (juce::File::findFiles, false, "*.wav;*.flac;*.mp3;*.aif*;*.ogg").isEmpty());
                 CHECK (res.files.size() == 1 && juce::File (res.files[0]).loadFileAsString().contains ("audio/flac"));
+                // all the pieces in one file: named after the album
+                vm.formSingle = true;
+                CHECK (makeFormsSpec (mp, mp.mastering, spec).isEmpty() && spec.formSingle && spec.formTitle == "Test Album");
+                MasterExportJob job2 (mp, spec, nullptr, false); auto res2 = job2.execute();
+                CHECK (res2.error.isEmpty() && res2.files.size() == 1 && juce::File (res2.files[0]).getFileName() == "Test Album - listening copy.html");
+                CHECK (juce::File (res2.files[0]).loadFileAsString().contains ("data-k=\"0\" class=\"ch\""));
+                CHECK (forms.findChildFiles (juce::File::findFiles, false, "*.wav;*.flac;*.mp3;*.aif*;*.ogg").isEmpty());
+                vm.formSingle = false;
                 vm.formFolder = {};
             }
             vm.format = MasterFormat::Flac; vm.bitDepth = 16; vm.sampleRate = 0.0;                     // FLAC, 16 bit, the edit's own rate
@@ -3872,6 +3880,20 @@ int main()
             CHECK (p3.notes[0].key == "n1" && p3.notes[0].bar == "Bar 19 -24" && p3.notes[0].who == "Anna" && std::abs (p3.notes[0].seconds - 12.345) < 1e-9);
         }
         CHECK (! feedback::parse ("hello", 5, 25.0, "x", pr).isEmpty());
+        // what the page sends back when it held all the pieces: one part per piece with comments, each with its own edit and offset
+        {
+            const juce::String js = "{\"fermata\":\"feedback\",\"v\":2,\"id\":\"abc\",\"name\":\"Album - listening copy\",\"title\":\"Album\",\"who\":\"Anna\",\"pieces\":["
+                                    "{\"k\":0,\"edit\":\"E1\",\"piece\":\"One\",\"offset\":1.5,\"duration\":60,\"notes\":[{\"id\":\"a1\",\"t\":3,\"bar\":\"\",\"text\":\"early\"}]},"
+                                    "{\"k\":1,\"edit\":\"E2\",\"piece\":\"Two\",\"offset\":0,\"duration\":60,\"notes\":[]},"
+                                    "{\"k\":2,\"edit\":\"E3\",\"piece\":\"Three\",\"offset\":2,\"duration\":60,\"notes\":[{\"id\":\"c1\",\"t\":4.25,\"text\":\"flat\",\"who\":\"Ben\"},{\"id\":\"c2\",\"t\":9,\"text\":\"lovely\"}]}]}";
+            feedback::Parsed p4; const auto u = js.toRawUTF8();
+            CHECK (feedback::parse (u, std::strlen (u), 25.0, "Album - listening notes.fmnotes", p4).isEmpty());
+            CHECK (p4.notes.empty() && p4.parts.size() == 2 && p4.parts[0].editId == "E1" && p4.parts[1].editId == "E3");
+            CHECK (p4.parts[0].hasOffset && std::abs (p4.parts[0].offset - 1.5) < 1e-9 && p4.parts[0].notes.size() == 1 && p4.parts[0].notes[0].who == "Anna");
+            CHECK (p4.parts[1].notes.size() == 2 && p4.parts[1].notes[0].who == "Ben" && p4.parts[1].notes[1].who == "Anna" && std::abs (p4.parts[1].notes[0].seconds - 4.25) < 1e-9);
+            const juce::String none = "{\"fermata\":\"feedback\",\"pieces\":[{\"edit\":\"E1\",\"notes\":[]}]}";
+            feedback::Parsed p5; CHECK (! feedback::parse (none.toRawUTF8(), std::strlen (none.toRawUTF8()), 25.0, "x.fmnotes", p5).isEmpty());
+        }
         // saved with the project
         {
             Project pj; auto ed = std::make_unique<EditDef>(); ed->id = juce::Uuid(); ed->name = "Piece"; ed->feedback = list; ed->showFeedback = false; ed->showMarkers = false;
@@ -3913,6 +3935,27 @@ int main()
             }
             juce::MemoryBlock orig; wav.loadFileAsData (orig);
             CHECK (chunks >= 2 && all.getSize() == (size_t) wav.getSize() && all.getSize() == orig.getSize() && std::memcmp (all.getData(), orig.getData(), all.getSize()) == 0);
+            CHECK (text.contains ("\"name\": \"t\"") && text.contains ("\"tracks\"") && ! text.contains ("beforeunload") && text.contains ("Export comments for sending back to the sender"));
+            // all the pieces in one page: the second piece's audio is marked as piece 1 and comes back whole
+            const auto wav2 = dir.getChildFile ("t2.wav");
+            {
+                auto w = audioops::makeWavWriter (wav2, 48000.0, 2, true);
+                std::vector<float> a (48000 * 2, 0.25f); const float* pp[2] = { a.data(), a.data() }; w->writeFromFloatArrays (pp, 2, (int) a.size());
+            }
+            auto sp2 = sp; sp2.audio = wav2; sp2.piece = "Second"; sp2.editId = "E2"; sp2.durationSeconds = 2.0; sp2.peaks = reviewpage::computePeaks (wav2, 1.0f, reviewpage::peakColumnsFor (2.0));
+            const auto both = dir.getChildFile ("Album - listening copy.html");
+            CHECK (reviewpage::writeMany (both, "Album", "P", { sp, sp2 }).isEmpty());
+            const auto t2 = both.loadFileAsString();
+            CHECK (t2.contains ("\"name\": \"Album - listening copy\"") && t2.contains ("\"edit\": \"E2\"") && t2.contains ("data-k=\"0\" class=\"ch\"") && t2.contains ("data-k=\"1\" class=\"ch\""));
+            juce::MemoryBlock second; at = 0;
+            for (;;)
+            {
+                const int s0 = t2.indexOf (at, "data-k=\"1\" class=\"ch\">"); if (s0 < 0) break;
+                const int s1 = s0 + 22, e1 = t2.indexOf (s1, "</script>");
+                juce::MemoryOutputStream mo (second, true); CHECK (juce::Base64::convertFromBase64 (mo, t2.substring (s1, e1))); at = e1;
+            }
+            juce::MemoryBlock orig2; wav2.loadFileAsData (orig2);
+            CHECK (second.getSize() == orig2.getSize() && std::memcmp (second.getData(), orig2.getData(), second.getSize()) == 0);
         }
     }
 

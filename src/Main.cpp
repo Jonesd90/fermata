@@ -261,6 +261,7 @@ public:
             mainWindow->setBounds (mainWindow->getBounds().constrainedWithin (area));
         }
         mainWindow->setVisible (true);
+        mainWindow->setFullScreen (true);                              // opens maximised every time (the title bar and the taskbar still show); the size above is what "Restore" goes back to
         if (splash != nullptr)
             splash->startCountdown ([this] { juce::MessageManager::callAsync ([this] { splash.reset(); }); });
         if (err.isNotEmpty()) showError ("Audio device", err + "\n\nOpen \"Audio settings\" to choose your ASIO device.");

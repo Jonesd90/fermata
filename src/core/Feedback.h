@@ -27,6 +27,7 @@ struct Parsed
     juce::String editId, piece, format;
     double offset = 0.0;
     bool hasOffset = false;
+    std::vector<Parsed> parts;       // a listening copy that held several pieces: one part per piece that has comments (each with its own edit and offset); 'notes' is then empty
 };
 
 inline juce::uint32 colourArgb (const juce::String& name)
@@ -157,8 +158,44 @@ inline juce::String parseTable (const juce::String& text, double frameRate, cons
     return {};
 }
 
+inline void readNotes (const juce::var& list, double frameRate, const juce::String& source, const juce::String& defaultWho, std::vector<FeedbackNote>& into)
+{
+    auto* a = list.getArray();
+    if (a == nullptr) return;
+    for (auto& v : *a)
+    {
+        FeedbackNote n; double s = 0.0;
+        juce::var t = v["t"]; if (t.isVoid()) t = v["seconds"]; if (t.isVoid()) t = v["time"]; if (t.isVoid()) t = v["timestamp"];
+        if (t.isDouble() || t.isInt() || t.isInt64()) s = (double) t; else if (! parseTime (t.toString(), frameRate, s)) continue;
+        n.seconds = juce::jmax (0.0, s);
+        n.text = v["text"].toString(); if (n.text.isEmpty()) n.text = v["comment"].toString(); if (n.text.isEmpty()) n.text = v["message"].toString();
+        if (n.text.trim().isEmpty()) continue;
+        n.who = v["who"].toString(); if (n.who.isEmpty()) n.who = v["author"].toString(); if (n.who.isEmpty()) n.who = v["user"].toString(); if (n.who.isEmpty()) n.who = defaultWho;
+        n.bar = v["bar"].toString(); n.colour = v["colour"].toString(); if (n.colour.isEmpty()) n.colour = v["color"].toString();
+        n.source = source; n.done = (bool) v["done"];
+        const auto id = v["id"].toString();
+        n.key = id.isNotEmpty() ? id : makeKey (source, n.seconds, n.who, n.text);
+        into.push_back (n);
+    }
+}
+
 inline juce::String parseJson (const juce::var& root, double frameRate, const juce::String& source, Parsed& out)
 {
+    if (root.isObject() && root["pieces"].isArray())
+    {   // a listening copy that held all the pieces: one part per piece
+        out.format = "Fermata review"; out.piece = root["title"].toString();
+        const juce::var pieces = root["pieces"];
+        for (auto& pv : *pieces.getArray())
+        {
+            Parsed part;
+            part.editId = pv["edit"].toString(); part.piece = pv["piece"].toString(); part.format = out.format;
+            if (! pv["offset"].isVoid()) { part.offset = (double) pv["offset"]; part.hasOffset = true; }
+            readNotes (pv["notes"], frameRate, source, root["who"].toString(), part.notes);
+            if (! part.notes.empty()) out.parts.push_back (std::move (part));
+        }
+        if (out.parts.empty()) return "The file holds no comments.";
+        return {};
+    }
     const juce::var* list = &root; juce::var notesVar;
     if (root.isObject())
     {
@@ -168,23 +205,8 @@ inline juce::String parseJson (const juce::var& root, double frameRate, const ju
         notesVar = root["notes"]; if (notesVar.isVoid()) notesVar = root["comments"];
         list = &notesVar;
     }
-    auto* a = list->getArray();
-    if (a == nullptr) return "The file is JSON, but it holds no list of comments.";
-    for (auto& v : *a)
-    {
-        FeedbackNote n; double s = 0.0;
-        juce::var t = v["t"]; if (t.isVoid()) t = v["seconds"]; if (t.isVoid()) t = v["time"]; if (t.isVoid()) t = v["timestamp"];
-        if (t.isDouble() || t.isInt() || t.isInt64()) s = (double) t; else if (! parseTime (t.toString(), frameRate, s)) continue;
-        n.seconds = juce::jmax (0.0, s);
-        n.text = v["text"].toString(); if (n.text.isEmpty()) n.text = v["comment"].toString(); if (n.text.isEmpty()) n.text = v["message"].toString();
-        if (n.text.trim().isEmpty()) continue;
-        n.who = v["who"].toString(); if (n.who.isEmpty()) n.who = v["author"].toString(); if (n.who.isEmpty()) n.who = v["user"].toString();
-        n.bar = v["bar"].toString(); n.colour = v["colour"].toString(); if (n.colour.isEmpty()) n.colour = v["color"].toString();
-        n.source = source; n.done = (bool) v["done"];
-        const auto id = v["id"].toString();
-        n.key = id.isNotEmpty() ? id : makeKey (source, n.seconds, n.who, n.text);
-        out.notes.push_back (n);
-    }
+    if (list->getArray() == nullptr) return "The file is JSON, but it holds no list of comments.";
+    readNotes (*list, frameRate, source, root.isObject() ? root["who"].toString() : juce::String(), out.notes);
     if (out.notes.empty()) return "The file holds no comments.";
     return {};
 }

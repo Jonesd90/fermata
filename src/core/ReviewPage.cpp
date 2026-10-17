@@ -76,21 +76,36 @@ std::vector<int> computePeaks (const juce::File& file, float gain, int columns, 
 
 juce::String write (const juce::File& html, const Spec& s, const std::atomic<bool>* cancel)
 {
+    return writeMany (html, s.piece, s.project, { s }, cancel);
+}
+
+juce::String writeMany (const juce::File& html, const juce::String& title, const juce::String& project, const std::vector<Spec>& pieces, const std::atomic<bool>* cancel)
+{
+    if (pieces.empty()) return "There is nothing to put in the listening copy.";
     juce::String tpl;
     for (auto* p : kReviewTemplate) tpl += p;
 
     auto meta = new juce::DynamicObject();
     juce::var m (meta);
     meta->setProperty ("id", juce::Uuid().toString().retainCharacters ("0123456789abcdef").substring (0, 16));
-    meta->setProperty ("edit", s.editId); meta->setProperty ("piece", s.piece); meta->setProperty ("project", s.project);
-    meta->setProperty ("offset", s.offsetSeconds); meta->setProperty ("duration", s.durationSeconds); meta->setProperty ("mime", s.mime);
-    juce::Array<juce::var> pk; for (int v : s.peaks) pk.add (v);
-    meta->setProperty ("peaks", pk);
+    meta->setProperty ("title", title); meta->setProperty ("project", project);
+    meta->setProperty ("name", html.getFileNameWithoutExtension());          // the returned notes are named after this ("... listening copy" -> "... listening notes")
+    juce::Array<juce::var> tracks;
+    for (auto& s : pieces)
+    {
+        auto t = new juce::DynamicObject();
+        t->setProperty ("piece", s.piece); t->setProperty ("edit", s.editId);
+        t->setProperty ("offset", s.offsetSeconds); t->setProperty ("duration", s.durationSeconds); t->setProperty ("mime", s.mime);
+        juce::Array<juce::var> pk; for (int v : s.peaks) pk.add (v);
+        t->setProperty ("peaks", pk);
+        tracks.add (juce::var (t));
+    }
+    meta->setProperty ("tracks", tracks);
 
     const int at = tpl.indexOf ("__CHUNKS__");
     if (at < 0) return "Internal error: the page template is damaged.";
     auto head = tpl.substring (0, at), tail = tpl.substring (at + 10);
-    head = head.replace ("__TITLE__", htmlEscape (s.piece)).replace ("__META__", scriptJson (m));
+    head = head.replace ("__TITLE__", htmlEscape (title)).replace ("__META__", scriptJson (m));
 
     html.getParentDirectory().createDirectory();
     html.deleteFile();                                           // (a FileOutputStream would append to an old file)
@@ -98,19 +113,23 @@ juce::String write (const juce::File& html, const Spec& s, const std::atomic<boo
     if (out.failedToOpen()) return "Cannot write " + html.getFullPathName();
     out.write (head.toRawUTF8(), head.getNumBytesAsUTF8());
 
-    juce::FileInputStream src (s.audio);
-    if (src.failedToOpen()) return "Cannot read " + s.audio.getFullPathName();
     constexpr size_t kRaw = 3000000;                             // a multiple of 3, so every piece is whole base64 with no padding inside
     std::vector<char> buf (kRaw);
-    for (;;)
+    for (size_t k = 0; k < pieces.size(); ++k)
     {
-        if (cancel != nullptr && cancel->load()) { out.flush(); html.deleteFile(); return "Cancelled."; }
-        const int got = src.read (buf.data(), (int) kRaw);
-        if (got <= 0) break;
-        const auto b64 = base64 (buf.data(), (size_t) got);
-        out.writeText ("<script type=\"text/plain\" class=\"ch\">", false, false, nullptr);
-        out.write (b64.toRawUTF8(), b64.getNumBytesAsUTF8());
-        out.writeText ("</script>\n", false, false, nullptr);
+        juce::FileInputStream src (pieces[k].audio);
+        if (src.failedToOpen()) { out.flush(); html.deleteFile(); return "Cannot read " + pieces[k].audio.getFullPathName(); }
+        const juce::String open = "<script type=\"text/plain\" data-k=\"" + juce::String ((int) k) + "\" class=\"ch\">";
+        for (;;)
+        {
+            if (cancel != nullptr && cancel->load()) { out.flush(); html.deleteFile(); return "Cancelled."; }
+            const int got = src.read (buf.data(), (int) kRaw);
+            if (got <= 0) break;
+            const auto b64 = base64 (buf.data(), (size_t) got);
+            out.writeText (open, false, false, nullptr);
+            out.write (b64.toRawUTF8(), b64.getNumBytesAsUTF8());
+            out.writeText ("</script>\n", false, false, nullptr);
+        }
     }
     out.write (tail.toRawUTF8(), tail.getNumBytesAsUTF8());
     out.flush();

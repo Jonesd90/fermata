@@ -180,6 +180,8 @@ juce::String makeFormsSpec (const Project& p, const MasteringDef& def, MasterJob
     spec.formsOnly = true;
     spec.out.feedbackForm = true;
     spec.out.formAudio = def.vm.formAudio;
+    spec.formSingle = def.vm.formSingle;
+    spec.formTitle = def.vm.album.album.trim().isNotEmpty() ? def.vm.album.album.trim() : (p.name.trim().isNotEmpty() ? p.name.trim() : juce::String ("Listening copy"));
     if (! spec.destFolder.createDirectory()) return "Cannot make the folder " + spec.destFolder.getFullPathName();
     return {};
 }
@@ -453,6 +455,8 @@ MasterExportResult MasterExportJob::executeInner()
     const auto& o = spec.out;
     float loudest = 0.0f; for (auto pk : peaks) loudest = juce::jmax (loudest, pk);
     std::vector<juce::File> finals;
+    std::vector<reviewpage::Spec> onePage;                   // all the pieces in one listening copy: their audio waits in the work folder until the page is written
+    auto dropOnePage = [&onePage] { for (auto& s : onePage) s.audio.deleteFile(); onePage.clear(); };
     float overall = 0.0f;
     for (int i = 0; i < n; ++i)
     {
@@ -493,11 +497,12 @@ MasterExportResult MasterExportJob::executeInner()
         {
             const auto fmtForm = o.formAudio == 2 ? MasterFormat::Mp3 : o.formAudio == 1 ? MasterFormat::Flac : MasterFormat::Wav;
             const auto audioFile = spec.workFolder.getChildFile ("form-" + juce::String (i + 1).paddedLeft ('0', 2) + masterFileExtension (fmtForm));
+            const bool single = spec.formSingle && spec.formsOnly;
             setStatus ("Making the listening copy " + juce::String (i + 1) + " of " + juce::String (n) + "...");
             float pkForm = 0.0f;
             auto e = finalise (proc[(size_t) i], audioFile, rates[(size_t) i], gain, item, pkForm, fmtForm);
             if (spec.formsOnly) pk = juce::jmax (pk, pkForm);
-            if (e == "Cancelled.") { R.cancelled = true; for (auto& f : finals) f.deleteFile(); return R; }
+            if (e == "Cancelled.") { R.cancelled = true; for (auto& f : finals) f.deleteFile(); dropOnePage(); return R; }
             if (e.isEmpty())
             {
                 reviewpage::Spec ps;
@@ -505,16 +510,30 @@ MasterExportResult MasterExportJob::executeInner()
                 ps.piece = item.tags.title.isNotEmpty() ? item.tags.title : item.editName; ps.project = item.projectName; ps.editId = item.editId.toString();
                 ps.offsetSeconds = item.editOffsetSeconds; ps.durationSeconds = (double) R.frames[(size_t) i] / juce::jmax (1.0, rates[(size_t) i]);
                 ps.peaks = reviewpage::computePeaks (proc[(size_t) i], gain, reviewpage::peakColumnsFor (ps.durationSeconds), &cancelFlag);
-                const auto page = spec.destFolder.getNonexistentChildFile (sanitiseForFile (item.baseName) + " - listening copy", ".html", true);
-                e = reviewpage::write (page, ps, &cancelFlag);
-                if (e.isEmpty()) { R.files.add (page.getFullPathName()); finals.push_back (page); }     // (in the list so that Cancel takes it away again)
+                if (single) onePage.push_back (ps);                                   // written once every piece is ready (below); its audio waits till then
+                else
+                {
+                    const auto page = spec.destFolder.getNonexistentChildFile (sanitiseForFile (item.baseName) + " - listening copy", ".html", true);
+                    e = reviewpage::write (page, ps, &cancelFlag);
+                    if (e.isEmpty()) { R.files.add (page.getFullPathName()); finals.push_back (page); }     // (in the list so that Cancel takes it away again)
+                }
             }
-            audioFile.deleteFile();
-            if (e == "Cancelled.") { R.cancelled = true; for (auto& f : finals) f.deleteFile(); return R; }
-            if (e.isNotEmpty()) { R.error = "The listening copy could not be made: " + e; for (auto& f : finals) f.deleteFile(); return R; }
+            if (! single || e.isNotEmpty()) audioFile.deleteFile();
+            if (e == "Cancelled.") { R.cancelled = true; for (auto& f : finals) f.deleteFile(); dropOnePage(); return R; }
+            if (e.isNotEmpty()) { R.error = "The listening copy could not be made: " + e; for (auto& f : finals) f.deleteFile(); dropOnePage(); return R; }
         }
         overall = juce::jmax (overall, pk);
         sub = (float) (i + 1) / (float) n * (spec.kind == MasterJobSpec::Kind::Disc ? 0.3f : 1.0f);
+    }
+    if (! onePage.empty())
+    {   // all the pieces in one listening copy
+        setStatus ("Writing the listening copy with all " + juce::String ((int) onePage.size()) + " pieces...");
+        const auto page = spec.destFolder.getNonexistentChildFile (sanitiseForFile (spec.formTitle) + " - listening copy", ".html", true);
+        const auto e = reviewpage::writeMany (page, spec.formTitle, onePage.front().project, onePage, &cancelFlag);
+        dropOnePage();
+        if (e == "Cancelled.") { R.cancelled = true; for (auto& f : finals) f.deleteFile(); return R; }
+        if (e.isNotEmpty()) { R.error = "The listening copy could not be made: " + e; for (auto& f : finals) f.deleteFile(); return R; }
+        R.files.add (page.getFullPathName()); finals.push_back (page);
     }
     R.peakDb = juce::Decibels::gainToDecibels (overall, -100.0f);
     R.clipped = overall > 1.0f;
