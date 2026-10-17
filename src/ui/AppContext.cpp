@@ -2,6 +2,7 @@
 #include "../core/Ravenna.h"
 #include "TakeDisplay.h"
 #include "TalkbackGlow.h"
+#include "BusyWindow.h"
 
 namespace td
 {
@@ -296,8 +297,12 @@ void AppContext::applyAudioSettings()
 void AppContext::timerCallback()
 {
     engine.checkLatency();
+    // The automatic save (every 4 s when something changed). While the music plays it waits, up to a minute: saving a big project takes a moment
+    // of the screen's time, and doing it every few seconds while you mix made the moving playhead hitch. Stopping saves straight away (stopPlayback).
+    if (engine.isPlaying() && ++savesHeldWhilePlaying < 15) return;
     if (project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording())
         saveNow();
+    savesHeldWhilePlaying = 0;
 }
 
 void AppContext::undoStep()
@@ -466,10 +471,34 @@ bool AppContext::newProject (const juce::File& file)
 bool AppContext::openProject (const juce::File& file)
 {
     if (engine.isRecording()) { showError ("Recording", "Stop recording first."); return false; }
+    // The "please wait" window: up at once, told what is being read as it goes, and closed only after the windows have caught up with the new project.
+    busy::begin ("Opening project", file.getFileNameWithoutExtension());
+    struct Closer { ~Closer() { busy::endAfterPendingMessages(); } } closer;
     stopPlayback();
+    if (project.projectFile != juce::File()) busy::step ("Saving " + project.name + " first");
     saveNow();
     juce::String err;
+    // While the project is read: say which window is being read, and which plug-in is being loaded (a plug-in can take a few seconds to start).
+    const auto realFactory = project.insertFactory;
+    struct Restore
+    {
+        Project& p; InsertFactory f;
+        ~Restore() { p.insertFactory = f; p.loadProgress = nullptr; }
+    } restore { project, realFactory };
+    project.loadProgress = [] (const juce::String& what, double progress) { busy::step (what, progress); };
+    if (realFactory)
+    {
+        auto count = std::make_shared<int> (0);
+        project.insertFactory = [realFactory, count] (const juce::String& desc, const juce::String& state)
+        {
+            juce::String nm;
+            if (auto xml = juce::XmlDocument::parse (desc)) nm = xml->getStringAttribute ("name");
+            busy::step ("Starting plug-in " + juce::String (++*count) + (nm.isNotEmpty() ? ":  " + nm : juce::String()), -1.0);
+            return realFactory (desc, state);
+        };
+    }
     if (! project.load (file, err)) { showError ("Could not open project", err); return false; }
+    project.insertFactory = realFactory;
     project.createFolders();
     if (! project.loadNotes.isEmpty())
     {
@@ -478,6 +507,7 @@ bool AppContext::openProject (const juce::File& file)
         juce::MessageManager::callAsync ([text] { juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Files missing").withMessage (text).withButton ("OK"), nullptr); });
     }
     const auto mended = project.repairInterruptedRecordings();      // the program or the computer stopped while recording: keep everything that was recorded
+    busy::step ("Getting the audio ready", -1.0);
     if (mended.size() > 0)
     {
         saveNow();
@@ -909,12 +939,25 @@ void AppContext::stopPlayback()
     }
     engine.stopPlayback();
     playInfo = {};
+    if (savesHeldWhilePlaying > 0)                     // a save waited while it played: do it now
+    {
+        savesHeldWhilePlaying = 0;
+        if (project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording())
+            juce::MessageManager::callAsync ([this] { if (project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording()) saveNow(); });
+    }
 }
 
 double AppContext::playheadSeconds() const
 {
     if (! engine.isPlaying() || playInfo.kind == PlayInfo::Kind::None) return -1.0;
     return playInfo.startSeconds + playedSeconds();
+}
+
+double AppContext::playheadSecondsSmooth() const
+{
+    if (! engine.isPlaying() || playInfo.kind == PlayInfo::Kind::None) return -1.0;
+    const double played = engine.playbackSecondsSmooth();
+    return playInfo.startSeconds + (playInfo.loopLen > 0.0 ? std::fmod (played, playInfo.loopLen) : played);
 }
 
 double AppContext::playedSeconds() const

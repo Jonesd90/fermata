@@ -205,6 +205,8 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     void stopPlayback();
     /** Seconds played since the playback began, wrapped to the loop length while a loop plays. */
     double playedSeconds() const;
+    /** playheadSeconds, moving on smoothly between the audio blocks: what the windows draw the moving playhead with. */
+    double playheadSecondsSmooth() const;
     bool isPlaying() const { return engine.isPlaying(); }
     /** Time on the timeline of the thing being played (take or edit), or -1 if nothing plays. */
     double playheadSeconds() const;
@@ -279,6 +281,7 @@ private:
     struct PlaybackWatcher : juce::Timer { std::function<void()> fn; void timerCallback() override { if (fn) fn(); } } watcher;
     void timerCallback() override;                   // autosave
     void changeListenerCallback (juce::ChangeBroadcaster*) override;   // re-plan the engine after structural edits
+    int savesHeldWhilePlaying = 0;                   // automatic saves put off while the music plays (see timerCallback)
     void afterProjectReplaced();
 };
 } // namespace td

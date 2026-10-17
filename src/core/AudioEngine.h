@@ -70,6 +70,8 @@ public:
     /** True once a session has reached its end (call stopPlayback() from the message thread to tidy up). */
     bool playbackFinished() const noexcept { auto* p = playback.load(); return p != nullptr && p->isFinished(); }
     double playbackSeconds() const noexcept { auto* p = playback.load(); return p != nullptr ? p->getPositionSeconds() : 0.0; }
+    /** The same, moving on smoothly between audio blocks: for drawing the playhead. */
+    double playbackSecondsSmooth() const noexcept { auto* p = playback.load(); return p != nullptr ? p->getSmoothPositionSeconds() : 0.0; }
     int playbackUnderruns() const noexcept { auto* p = playback.load(); return p != nullptr ? p->getUnderruns() : 0; }
 
     /** The waveform recorded so far for one track (message thread, only while recording).

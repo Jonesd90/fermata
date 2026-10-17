@@ -6,6 +6,21 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.57.0
+- **A "please wait" window while a project opens.** It appears straight away over the main window and says what is being read: the project file, each take window, edit and mixer (with a bar showing how far it has got), each plug-in as it starts (a plug-in can take a few seconds), and the check of the recordings. A big project no longer looks as if the program has frozen.
+- **The same while files are imported.** After you choose the files (or a folder) for Import takes, every file is opened to read its length, sample rate and channels. That now happens in the background, with the window saying "File 212 of 480" and a Cancel button; the import window follows when it is done. When the copying has finished, the window shows again while the takes are put into the take window or edit.
+- **Projects open faster, above all big ones (thousands of recordings):**
+  - The check for recordings cut off by a crash or a power cut used to open every recording in the project, one by one. Now only takes that can have been cut off are opened: one saved while it was still recording, or one whose file is shorter than the take. The rest are passed by their file size alone, which is far quicker, especially on a hard disk or with a virus checker running.
+  - When the project is still in the folder it was saved in, the audio files are no longer each looked up on the disk while the project is read.
+- **Saving is quicker.** The automatic save (a few seconds after any change) used to write out every take window and edit as text just to see whether it had changed. It now works that out from the data itself, and only writes a window's file when that window really changed. On a test project with 250 takes of 32 tracks a save went from about 0.23 s to 0.06 s.
+- **The moving playhead is smooth.** In the Edit and Take windows it now moves with every refresh of the screen, and only the thin strip it leaves and the one it moves to are redrawn. Before, every waveform in the window was redrawn 30 times a second, which is what made it stutter with many tracks. Between audio blocks it now glides with the clock instead of jumping a block at a time. The audio itself is not affected.
+- **Fewer hitches while playing:**
+  - The automatic save waits while the music plays (for up to a minute) and is done as soon as you stop.
+  - The Media window looks for new files every 3 seconds instead of every second, not while playing or recording, and takes the file sizes from the folder listing instead of asking each file twice.
+  - Waveforms being read (after an import, or the first time a window shows them) are redrawn at most about 6 times a second. The take window also no longer asks the disk about every file it has shown each time one of those waveforms moves on, which could keep the program busy for a long while after a big import.
+- The start-up picture is drawn at once, instead of when the program has finished starting.
+- New tests: a cut-off finished take is still mended while a healthy one is left alone, a window's file is only rewritten when that window changed, and the playhead clock never runs more than one audio block ahead.
+
 ## 2.56.0
 - **Re-HarmoniSer: better with a voice that is out of tune among others.** Tuned on your three examples (the flat sop D and the flat repeated F, the sops' C that is not together, the alto Eb / Db / C), and on a bench of eight made-up cases built from your own recordings (a known note plus known neighbours mixed into the real choir). The aim: move the boxed voice, and nothing else.
   - **The TimeCode track is ignored.** A TimeCode (LTC) channel is recognised (a loud, very steady buzz that music never is). It is hidden from the picture and from measuring (its Mute box is ticked, and you can untick it), so it can no longer confuse the pitch search, and it comes out of a correction exactly as it went in.

@@ -101,6 +101,9 @@ public:
         return startPos + ((looping.load() || played > len) ? played % len : played);
     }
     double getPositionSeconds() const noexcept { return sampleRate > 0 ? (double) position.load() / sampleRate : 0.0; }
+    /** Like getPositionSeconds, but between two audio blocks it moves on with the clock (never past the next block), so a playhead drawn from it
+        glides instead of stepping a block at a time. For drawing only. */
+    double getSmoothPositionSeconds() const noexcept;
     int getUnderruns() const noexcept       { return underruns.load(); }
 
     /** Renders [from, from+n) of the segments into 'out' (one buffer per track). Public so tests can check the maths. */
@@ -127,6 +130,12 @@ private:
     std::atomic<bool> renderDone { false }, finished { false }, looping { false };
     std::atomic<juce::int64> position { 0 };
     std::atomic<int> underruns { 0 };
+    // the clock for getSmoothPositionSeconds: where playback was at the last audio block, when (ms), and how long that block was. clockSeq is odd
+    // while the audio thread writes them, so a reader can tell it caught them half written.
+    std::atomic<juce::uint32> clockSeq { 0 };
+    std::atomic<juce::int64> clockPos { 0 };
+    std::atomic<double> clockMs { 0.0 };
+    std::atomic<int> clockBlock { 0 };
 };
 
 // ---- building segments from the project ----

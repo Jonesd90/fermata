@@ -15,6 +15,7 @@
 #include "ui/MediaWindow.h"
 #include "ui/MasteringWindow.h"
 #include "ui/Splash.h"
+#include "ui/BusyWindow.h"
 #include "ui/RemoteControl.h"
 #include "ui/CpuCoresPanel.h"
 #if JUCE_WINDOWS
@@ -220,6 +221,7 @@ public:
             if (it != windows.end()) if (auto* mc = dynamic_cast<MediaComponent*> (it->second->getContentComponent())) mc->selectFile (f);   // the window need not be in front
         };
         ctx->refreshTitles = [this] { refreshWindows(); };
+        busy::setAreaProvider ([this] { return mainWindow != nullptr && mainWindow->isVisible() ? mainWindow->getScreenBounds() : juce::Rectangle<int>(); });   // the "please wait" window sits over the main window
 
         // audio device: restore the last choice, otherwise prefer ASIO
         std::unique_ptr<juce::XmlElement> saved (ctx->props.getUserSettings()->getXmlValue ("audioDevice"));
@@ -263,6 +265,7 @@ public:
 
     void shutdown() override
     {
+        busy::setAreaProvider (nullptr);
         splash.reset();
         remoteServer.reset();
         if (ctx) ctx->shutdown();

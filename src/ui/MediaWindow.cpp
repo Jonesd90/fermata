@@ -154,13 +154,14 @@ juce::String MediaComponent::signature() const
     juce::String s;
     for (auto& r : rootFolders())
     {
-        s << r.getFullPathName() << ":";
-        juce::Array<juce::File> all;
-        r.findChildFiles (all, juce::File::findFilesAndDirectories, true);
-        s << all.size();
-        juce::int64 bytes = 0;
-        for (auto& f : all) if (f.existsAsFile()) bytes += f.getSize();
-        s << "/" << bytes << ";";
+        // (the folder listing already carries every file's size: asking each file again, twice, made this slow in a project with thousands of files)
+        int n = 0; juce::int64 bytes = 0;
+        for (const auto& entry : juce::RangedDirectoryIterator (r, true, "*", juce::File::findFilesAndDirectories))
+        {
+            ++n;
+            if (! entry.isDirectory()) bytes += entry.getFileSize();
+        }
+        s << r.getFullPathName() << ":" << n << "/" << bytes << ";";
     }
     return s;
 }
@@ -182,7 +183,10 @@ void MediaComponent::refresh()
 
 void MediaComponent::timerCallback()
 {
-    if (isShowing() && signature() != lastSignature) refresh();     // a take was recorded, a bounce written...
+    // a take was recorded, a bounce written...: looked for every 3 seconds, and not while the music plays or records (listing a big project folder
+    // takes a moment of the screen's time, which made the moving playhead hitch); what changed meanwhile shows up as soon as it stops
+    if (app.isPlaying() || app.engine.isRecording() || ++ticks % 3 != 0) return;
+    if (isShowing() && signature() != lastSignature) refresh();
 }
 
 void MediaComponent::selectFile (const juce::File& f)

@@ -243,7 +243,9 @@ public:
     juce::File masteredFolder() const;               // Bounced Media/Mastered Audio
     void createFolders() const;
     /** After a crash or power cut: recordings that were still being made have a header that says 'empty'. Puts the headers right and the takes' lengths,
-        so everything that was recorded up to the moment it stopped is there. Returns a line for each take that was mended. */
+        so everything that was recorded up to the moment it stopped is there. Returns a line for each take that was mended.
+        Only takes that can have been cut off are opened (saved while still recording, or a file shorter than the take): the others are passed by
+        their file size alone, so a project with thousands of recordings opens quickly. */
     juce::StringArray repairInterruptedRecordings();
     juce::File takeFolder (const TakeWindowDef&) const;
     bool save (juce::String& error);
@@ -257,6 +259,10 @@ public:
     std::vector<juce::var> missingWindowRefs;            // listed by the project file but not readable when it was opened: kept in the list so nothing is forgotten
     std::function<void()> onNewWindow;                   // the program sets this: called when an edit, take window or mixer is made, so its file is written at once
     juce::StringArray loadNotes;                         // things to tell the person after the project was opened
+    /** The program sets this while a project opens: called now and then with what is being read and how far it has got (0..1, < 0 = not known),
+        so a "please wait" window can show it. Nothing else depends on it. */
+    std::function<void (const juce::String& what, double progress)> loadProgress;
+    void reportLoad (const juce::String& what, double progress) const { if (loadProgress) loadProgress (what, progress); }
     /** Reads a .fmedit / .fmtake file (from another project, or a copy) and adds it. Same-named windows get a number, ids that clash are renewed, tracks are matched by name. */
     bool importWindowFile (const juce::File&, juce::String& message, juce::Uuid* newId = nullptr);
     /** Reads a .fmmix mixer file and adds it as a new mixer (the strips are matched with this project's tracks and buses by name). */

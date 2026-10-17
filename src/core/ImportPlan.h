@@ -66,7 +66,9 @@ std::vector<StereoPairCandidate> stereoPairCandidates (const ImportPlan&, bool n
 ImportPlan joinStereoPairs (const ImportPlan&, bool numbers = false, const std::set<juce::String>* joinOnly = nullptr);
 
 /** Reads the header information of the files. Files that cannot be read are listed in 'problems'. */
-std::vector<ImportSource> inspectFiles (juce::AudioFormatManager&, const juce::Array<juce::File>&, juce::StringArray& problems);
+/** progress (may be empty) is called before each file with (files done, all files); returning false stops (what was read so far is returned). Any thread. */
+std::vector<ImportSource> inspectFiles (juce::AudioFormatManager&, const juce::Array<juce::File>&, juce::StringArray& problems,
+                                        const std::function<bool (int done, int total)>& progress = {});
 
 /** The track names of a polyphonic WAV from its iXML chunk (channel order); empty if there are none. */
 juce::StringArray readIXmlTrackNames (const juce::File&, int channels);

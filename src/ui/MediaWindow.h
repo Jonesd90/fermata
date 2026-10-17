@@ -30,6 +30,7 @@ private:
     juce::TextButton refreshButton { "Refresh" }, revealButton { "Show in Explorer" };
     InfoNote info;
     juce::String lastSignature;
+    int ticks = 0;
     std::vector<juce::File> extraRoots;       // folders added because a selected file is not under any other root
     juce::File pending;
     int contentWidth = 600;                    // what the rows are told their width is

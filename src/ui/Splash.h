@@ -1,5 +1,6 @@
 #pragma once
 #include "Uikit.h"
+#include "BusyWindow.h"
 
 namespace td
 {
@@ -15,9 +16,9 @@ public:
         setInterceptsMouseClicks (true, false);
         auto area = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
         setTopLeftPosition (area.getCentre().x - getWidth() / 2, area.getCentre().y - getHeight() / 2);
-        if (onDesktop) { addToDesktop (juce::ComponentPeer::windowIsTemporary); setVisible (true); toFront (false); }
+        if (onDesktop) { addToDesktop (juce::ComponentPeer::windowIsTemporary); busy::paintImmediately (*this); setVisible (true); toFront (false); }
         shownAt = juce::Time::getMillisecondCounter();
-        if (auto* peer = getPeer()) peer->performAnyPendingRepaintsNow();     // paint it now, before the program gets busy starting up
+        if (auto* peer = getPeer()) peer->performAnyPendingRepaintsNow();     // paint it now, before the program gets busy starting up (needs the software renderer on Windows)
     }
 
     /** Called when the program is ready: the picture stays until it has been up for four seconds in all. */

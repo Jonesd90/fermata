@@ -1,6 +1,7 @@
 #include "Project.h"
 #include "WavRepair.h"
 #include <algorithm>
+#include <cstring>
 #include <set>
 #include <tuple>
 
@@ -868,6 +869,7 @@ static juce::File getFilePath (const var& fv, const juce::File& base)
     if (rel.isNotEmpty() && base != juce::File())
     {
         auto f = base.getChildFile (rel);
+        if (f.getFullPathName() == fv["file"].toString()) return f;      // the project is still where it was saved: no need to ask the disk (thousands of files)
         if (f.existsAsFile()) return f;
     }
     return juce::File (fv["file"].toString());
@@ -1445,9 +1447,27 @@ std::unique_ptr<Project> Project::cloneForRender (double sampleRate, int maxBloc
 juce::StringArray Project::repairInterruptedRecordings()
 {
     juce::StringArray report;
+    size_t total = 0, done = 0;
+    for (auto& w : takeWindows) total += w->groups.size();
+    const auto inside = projectFolder();
     for (auto& w : takeWindows)
         for (auto& g : w->groups)
         {
+            if ((done++ % 32) == 0) reportLoad ("Checking the recordings (" + String ((int) done) + " of " + String ((int) total) + " takes)", total > 0 ? (double) done / (double) total : 1.0);
+            // A take that was still recording when the program stopped was saved with length 0. A finished take only needs a look if one of its files is
+            // shorter than its length says (the computer lost power before everything reached the disk). Asking for a file's size is quick; opening
+            // thousands of files one by one is what made big projects slow to open.
+            bool look = g.lengthSamples <= 0;
+            for (size_t i = 0; ! look && i < g.files.size(); ++i)
+            {
+                const auto& f = g.files[i];
+                if (! f.file.hasFileExtension ("wav;wave;bwf")) continue;                     // (only WAV files can be mended)
+                const auto size = f.file.getSize();
+                if (size <= 0) continue;                                                       // missing: nothing to mend
+                const int bytes = (inside != juce::File() && f.file.isAChildOf (inside)) ? 3 : 2;  // Fermata writes 24-bit; a linked original may be 16-bit
+                if (size < 44 + g.lengthSamples * (juce::int64) juce::jmax (1, f.numChannels) * bytes) look = true;
+            }
+            if (! look) continue;
             bool mended = false; juce::int64 longest = 0;
             for (auto& f : g.files)
             {
@@ -1476,6 +1496,7 @@ juce::StringArray Project::repairInterruptedRecordings()
 bool Project::load (const juce::File& f, juce::String& error)
 {
     juce::var v;
+    reportLoad ("Reading the project file", 0.02);
     auto r = juce::JSON::parse (f.loadFileAsString(), v);
     readingFrom = f.getParentDirectory();
     windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear();
@@ -1490,6 +1511,7 @@ bool Project::load (const juce::File& f, juce::String& error)
             if (! bak.exists()) f.copyFileTo (bak);
         }
         mergeWindowFiles (v);
+        reportLoad ("Setting up the tracks, mixers and plug-ins", -1.0);
         ok = fromVar (v);
         if (ok && cueEnd() == 0)                           // the processing mixer's file is missing: start a fresh one (the missing file stays listed only if it is not replaced)
         {
@@ -1535,6 +1557,52 @@ template <typename F> void forEachAudioFile (std::vector<std::unique_ptr<TakeWin
     }
 }
 
+/** A fingerprint of what a window file would hold, worked out from the data itself (quicker than writing all of it out as text first). Only used to
+    tell whether a window changed since it was last written, so an unchanged take window with thousands of takes costs almost nothing to save. */
+void fingerprint (const var& v, juce::uint64& h)
+{
+    auto mix = [&h] (juce::uint64 x) { h ^= x + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2); };
+    if (v.isVoid() || v.isUndefined()) { mix (1); return; }
+    if (v.isBool())   { mix ((bool) v ? 3 : 2); return; }
+    if (v.isInt() || v.isInt64()) { mix (4); mix ((juce::uint64) (juce::int64) v); return; }
+    if (v.isDouble()) { const double d = (double) v; juce::uint64 b = 0; std::memcpy (&b, &d, sizeof (b)); mix (5); mix (b); return; }
+    if (v.isString()) { mix (6); mix ((juce::uint64) v.toString().hashCode64()); return; }
+    if (auto* a = v.getArray())
+    {
+        mix (7); mix ((juce::uint64) a->size());
+        for (auto& x : *a) fingerprint (x, h);
+        return;
+    }
+    if (auto* o = v.getDynamicObject())
+    {
+        mix (8); mix ((juce::uint64) o->getProperties().size());
+        for (auto& p : o->getProperties()) { mix ((juce::uint64) p.name.toString().hashCode64()); fingerprint (p.value, h); }
+        return;
+    }
+    mix (9); mix ((juce::uint64) v.toString().hashCode64());
+}
+String fingerprintOf (const var& v) { juce::uint64 h = 1469598103934665603ull; fingerprint (v, h); return String::toHexString ((juce::int64) h); }
+
+/** Which of the 'wanted' ids (track ids) are used anywhere in v: as a value, as a name, or after a "kind:" prefix. */
+void findIds (const var& v, const std::set<String>& wanted, std::set<String>& found)
+{
+    if (v.isString())
+    {
+        const auto t = v.toString();
+        if (wanted.count (t) > 0) found.insert (t);
+        else if (t.containsChar (':')) { const auto tail = t.fromLastOccurrenceOf (":", false, false); if (wanted.count (tail) > 0) found.insert (tail); }
+        return;
+    }
+    if (auto* a = v.getArray()) { for (auto& x : *a) findIds (x, wanted, found); return; }
+    if (auto* o = v.getDynamicObject())
+        for (auto& p : o->getProperties())
+        {
+            const auto nm = p.name.toString();
+            if (wanted.count (nm) > 0) found.insert (nm);
+            findIds (p.value, wanted, found);
+        }
+}
+
 void collectIds (const var& o, std::vector<String>& out, const char* arrayKey)
 {
     if (auto* a = o[arrayKey].getArray()) for (auto& x : *a) { auto i = x["id"].toString(); if (i.isNotEmpty()) out.push_back (i); }
@@ -1568,23 +1636,25 @@ bool Project::splitWindowFiles (var& root)
         return sub + "/" + id + ext;
     };
 
+    std::set<String> trackIds;                             // (the tracks a window uses are written into its file, so another project can match them by name)
+    if (auto* ta = root["tracks"].getArray()) for (auto& t : *ta) { auto tid = t["id"].toString(); if (tid.isNotEmpty()) trackIds.insert (tid); }
+
     auto handle = [&] (const var& wv, const char* format, const char* key, const char* sub, const char* ext, juce::Array<var>& refs, const var& mixer)
     {
         const auto id = wv["id"].toString(), nm = wv["name"].toString();
         var fr = obj();
         put (fr, "format", format); put (fr, "version", 1); put (fr, key, wv);
         if (mixer.isObject()) put (fr, "mixer", mixer);
-        const auto wtext = juce::JSON::toString (wv, true);
+        std::set<String> used; findIds (wv, trackIds, used);
         juce::Array<var> tl;
         if (auto* ta = root["tracks"].getArray())
-            for (auto& t : *ta) { auto tid = t["id"].toString(); if (tid.isNotEmpty() && wtext.contains (tid)) tl.add (t); }
+            for (auto& t : *ta) { auto tid = t["id"].toString(); if (tid.isNotEmpty() && used.count (tid) > 0) tl.add (t); }
         put (fr, "tracks", tl);
-        const auto text = juce::JSON::toString (fr, false);
-        const auto hash = String::toHexString (text.hashCode64());
+        const auto hash = fingerprintOf (fr);                 // the text is only made when the file has to be written
         const auto rel = place (id, nm, sub, ext);
         auto prev = windowFiles.find (id);
         const bool same = prev != windowFiles.end() && prev->second.rel == rel && prev->second.hash == hash && folder.getChildFile (rel).existsAsFile();
-        if (! same) pending.push_back ({ folder.getChildFile (rel), text });
+        if (! same) pending.push_back ({ folder.getChildFile (rel), juce::JSON::toString (fr, false) });
         next[id] = { rel, hash };
         var ref = obj(); put (ref, "id", id); put (ref, "name", nm); put (ref, "file", rel);
         refs.add (ref);
@@ -1609,12 +1679,11 @@ bool Project::splitWindowFiles (var& root)
             var fr = obj();
             put (fr, "format", kMixerFormat); put (fr, "version", 1); put (fr, "mixer", m);
             put (fr, "tracks", root["tracks"]); put (fr, "buses", root["buses"]);       // (what the strips refer to: lets another project match them by name)
-            const auto text = juce::JSON::toString (fr, false);
-            const auto hash = String::toHexString (text.hashCode64());
+            const auto hash = fingerprintOf (fr);
             const auto rel = place (id, nm, "Mixer Windows", ".fmmix");
             auto prev = windowFiles.find (id);
             const bool same = prev != windowFiles.end() && prev->second.rel == rel && prev->second.hash == hash && folder.getChildFile (rel).existsAsFile();
-            if (! same) pending.push_back ({ folder.getChildFile (rel), text });
+            if (! same) pending.push_back ({ folder.getChildFile (rel), juce::JSON::toString (fr, false) });
             next[id] = { rel, hash };
             var ref = obj(); put (ref, "id", id); put (ref, "name", nm); put (ref, "file", rel);
             mixerRefs.add (ref);
@@ -1656,6 +1725,13 @@ bool Project::splitWindowFiles (var& root)
 void Project::mergeWindowFiles (var& root)
 {
     const auto base = loadBase();
+    int total = 0, done = 0;
+    for (auto* k : { "mixerFiles", "takeWindowFiles", "editFiles" }) if (auto* a = root[k].getArray()) total += a->size();
+    auto tell = [&] (const String& what, const var& ref)
+    {
+        ++done;
+        reportLoad ("Reading " + what + " \"" + ref["name"].toString() + "\"  (" + String (done) + " of " + String (total) + ")", 0.05 + 0.45 * (double) done / (double) juce::jmax (1, total));
+    };
     auto go = [&] (const char* arrayKey, const char* refsKey, const char* fileKey, const char* format, const char* kind)
     {
         auto* refs = root[refsKey].getArray();
@@ -1664,6 +1740,7 @@ void Project::mergeWindowFiles (var& root)
         if (! arr.isArray()) { arr = var (juce::Array<var>()); put (root, arrayKey, arr); }
         for (auto& r : *refs)
         {
+            tell (String (kind) == "edit" ? "the edit" : "the take window", r);
             const auto rel = r["file"].toString();
             const auto f = base.getChildFile (rel);
             var fv; bool ok = false;
@@ -1688,6 +1765,7 @@ void Project::mergeWindowFiles (var& root)
         juce::Array<var> all;
         for (auto& r : *refs)
         {
+            tell ("the mixer", r);
             const auto rel = r["file"].toString();
             const auto f = base.getChildFile (rel);
             var fv;

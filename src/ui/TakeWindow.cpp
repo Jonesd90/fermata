@@ -1,4 +1,5 @@
 #include <array>
+#include <limits>
 #include "WaveDraw.h"
 #include "TakeWindow.h"
 #include "FixTools.h"
@@ -353,10 +354,10 @@ public:
                     used ((double) rg.srcOut / rg.sampleRate, false, usedEdit->editNumberAt ((int) ri + 1));
                 }
             // playhead
-            if (playhead >= 0 && app.playInfo.kind != AppContext::PlayInfo::Kind::Edit && ! app.playInfo.windowTimeline && app.playInfo.windowId == windowId && app.playInfo.id == grp.id)
+            if (shownPhX != kNoLine && playhead >= 0 && app.playInfo.kind != AppContext::PlayInfo::Kind::Edit && ! app.playInfo.windowTimeline && app.playInfo.windowId == windowId && app.playInfo.id == grp.id)
             {
                 g.setColour (theme::playhead);
-                g.fillRect (x0 + (int) (playhead * pixelsPerSecond), kRulerH, 2, y1 - kRulerH);
+                g.fillRect (shownPhX, kRulerH, 2, y1 - kRulerH);              // (where movePlayhead last put it)
             }
             if (live)                                           // while recording the playhead is the end of the growing take
             {
@@ -365,9 +366,9 @@ public:
             }
         }
 
-        if (playhead >= 0 && app.playInfo.kind == AppContext::PlayInfo::Kind::Take && app.playInfo.windowTimeline && app.playInfo.windowId == windowId)
+        if (shownPhX != kNoLine && playhead >= 0 && app.playInfo.kind == AppContext::PlayInfo::Kind::Take && app.playInfo.windowTimeline && app.playInfo.windowId == windowId)
         {                                                                          // the whole window is playing: one moving line across every row
-            g.setColour (theme::playhead); g.fillRect (xOf (playhead), kRulerH, 2, getHeight() - kRulerH);
+            g.setColour (theme::playhead); g.fillRect (shownPhX, kRulerH, 2, getHeight() - kRulerH);
         }
         {   // the playhead: set by clicking the ruler; Space plays from here, IN / OUT are marked here
             const int px = xOf (w->playheadSeconds);
@@ -735,8 +736,9 @@ private:
         app.project.changed();
     }
 
-    /** Where the playhead is right now: the end of the growing take while recording, the moving position while playing here, otherwise where you put it. */
-    double livePosition() const
+    /** Where the playhead is right now: the end of the growing take while recording, the moving position while playing here, otherwise where you put it.
+        smooth: the playing position moves on between the audio blocks (for drawing). */
+    double livePosition (bool smooth = false) const
     {
         auto* w = const_cast<TakeTimeline*> (this)->def();
         if (w == nullptr) return -1.0;
@@ -746,7 +748,7 @@ private:
         }
         else
         {
-            const double ph = app.playheadSeconds();
+            const double ph = smooth ? app.playheadSecondsSmooth() : app.playheadSeconds();
             if (ph >= 0.0 && app.playInfo.kind != AppContext::PlayInfo::Kind::Edit && app.playInfo.windowId == windowId)
             {
                 if (app.playInfo.windowTimeline) return ph;
@@ -983,13 +985,34 @@ private:
         redrawSeen = app.redrawStamp;
     }
 
-    void changeListenerCallback (juce::ChangeBroadcaster*) override
+    void changeListenerCallback (juce::ChangeBroadcaster* source) override
     {
+        if (source != &app.project) { thumbsChanged = true; return; }      // a waveform was read a bit further: shown at the next tick (see timerCallback)
         saver.saveFinished (thumbs, wavesFolder());
-        for (auto it = thumbs.begin(); it != thumbs.end();)
-            if (! juce::File (it->first).existsAsFile()) it = thumbs.erase (it); else ++it;
+        pruneLeft = thumbs.size();                                         // look again, a few at a time, for waveforms whose audio file has gone
         updateSize();
         repaint();
+    }
+    // Waveforms being read report every little step; before, each step redrew the whole window AND asked the disk about every audio file the
+    // window had shown (thousands of questions, many times a second, after a big import). Now the window is redrawn at most about 6 times a second
+    // while they come in, and the check for files that have gone is spread out, 16 files per tick, and only after the project has changed.
+    bool thumbsChanged = false; juce::uint32 lastThumbRefresh = 0;
+    size_t pruneLeft = 0; juce::String pruneAfter;
+    void refreshThumbsAndPrune()
+    {
+        if (thumbsChanged && juce::Time::getMillisecondCounter() - lastThumbRefresh >= 150)
+        {
+            thumbsChanged = false; lastThumbRefresh = juce::Time::getMillisecondCounter();
+            saver.saveFinished (thumbs, wavesFolder()); repaint();
+        }
+        for (int n = 0; n < 16 && pruneLeft > 0; ++n, --pruneLeft)
+        {
+            auto it = pruneAfter.isEmpty() ? thumbs.begin() : thumbs.upper_bound (pruneAfter);
+            if (it == thumbs.end()) it = thumbs.begin();
+            if (it == thumbs.end()) { pruneLeft = 0; break; }
+            pruneAfter = it->first;
+            if (! juce::File (it->first).existsAsFile()) { thumbs.erase (it); repaint(); }
+        }
     }
 
     static constexpr int kMaxMeterCh = 8;
@@ -1023,10 +1046,28 @@ private:
     void timerCallback() override
     {
         updateMeters();
+        refreshThumbsAndPrune();
         if (app.engine.isRecording() || app.isPlaying()) updateSize();
-        if (app.engine.isRecording() || app.isPlaying()) { followPlayhead(); repaint(); }
+        if (app.engine.isRecording()) { followPlayhead(); repaint(); }        // the growing take is drawn as it comes in
+        else if (app.isPlaying()) followPlayhead();                          // the playhead moves by itself with the screen (movePlayhead)
         else followActive = false;
     }
+
+    /** Called at every refresh of the screen (VBlankAttachment): puts the moving playhead where the music is now, redrawing only the thin strip it
+        leaves and the one it moves to. Redrawing every waveform 30 times a second is what made it stutter with many tracks. (While recording the
+        whole window is redrawn by the timer anyway, with the end of the growing take as its playhead.) */
+    static constexpr int kNoLine = std::numeric_limits<int>::min();
+    void movePlayhead()
+    {
+        const double live = app.engine.isRecording() || ! app.isPlaying() ? -1.0 : livePosition (true);
+        const int x = live >= 0.0 ? xOf (live) : kNoLine;
+        if (x == shownPhX) return;
+        const int h = juce::jmax (1, getHeight() - kRulerH);
+        if (shownPhX != kNoLine) repaint (shownPhX - 1, kRulerH, 4, h);
+        if (x != kNoLine) repaint (x - 1, kRulerH, 4, h);
+        shownPhX = x;
+    }
+    int shownPhX = kNoLine;
 
     /** The playhead (recording or playing here) moves left to right; when it reaches the right edge the view turns a whole page,
         putting the playhead at the left again, instead of scrolling continuously. */
@@ -1083,6 +1124,7 @@ private:
         return nullptr;
     }
     bool followActive = false; int lastFollowX = 0; bool scrubbing = false;
+    juce::VBlankAttachment vblank { this, [this] { movePlayhead(); } };     // (last, so everything it uses exists first)
 
     friend class TakeWindowComponent;
 };

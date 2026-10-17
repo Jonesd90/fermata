@@ -2,6 +2,7 @@
 #include "EditWindow.h"
 #include <set>
 #include <map>
+#include <limits>
 #include "FixTools.h"
 #include "ColourPicker.h"
 #include "VolumeDialog.h"
@@ -371,10 +372,9 @@ public:
             g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
             g.drawText ("next take goes here", x + 4, rowsEnd - 16, 130, 14, juce::Justification::left);
         }
-        const double ph = app.playheadSeconds();
-        if (ph >= 0 && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId)
+        if (shownPhX != kNoLine)                                     // the moving playhead, where movePlayhead last put it
         {
-            g.setColour (theme::playhead); g.fillRect (xOf (ph), kRulerH, 2, rowsEnd - kRulerH);
+            g.setColour (theme::playhead); g.fillRect (shownPhX, kRulerH, 2, rowsEnd - kRulerH);
         }
         if (cursorSeconds >= 0)
         {
@@ -1419,16 +1419,46 @@ private:
         redrawSeen = app.redrawStamp;
     }
 
-    void changeListenerCallback (juce::ChangeBroadcaster*) override { saver.saveFinished (thumbs, wavesFolder()); updateSize(); repaint(); }
+    void changeListenerCallback (juce::ChangeBroadcaster* source) override
+    {
+        if (source != &app.project) { thumbsChanged = true; return; }      // a waveform was read a bit further: shown at the next tick (see timerCallback)
+        saver.saveFinished (thumbs, wavesFolder()); updateSize(); repaint();
+    }
     void timerCallback() override
     {
         if (auto* ed = edit())                      // the playhead moved by itself (Stop leaves it where playback got to): the cursor follows
             if (std::abs (ed->playheadSeconds - lastHead) > 1.0e-9) { lastHead = ed->playheadSeconds; cursorSeconds = ed->playheadSeconds; repaint(); }
+        // Waveforms being read (after an import, or the first time a project is shown) report every little step. Redrawing the whole window for each
+        // one kept the program busy; now it is redrawn at most about 6 times a second while they come in.
+        if (thumbsChanged && juce::Time::getMillisecondCounter() - lastThumbRefresh >= 150)
+        {
+            thumbsChanged = false; lastThumbRefresh = juce::Time::getMillisecondCounter();
+            saver.saveFinished (thumbs, wavesFolder()); repaint();
+        }
         const bool meterMoving = updateMeterFall();
-        if (app.isPlaying()) { updateSize(); followPlayhead(); repaint(); }
+        // While it plays only the meters are redrawn here: the playhead moves by itself with the screen (movePlayhead), redrawing just the thin strip
+        // it leaves and the one it moves to. Redrawing every waveform 30 times a second is what made it stutter with many tracks.
+        if (app.isPlaying()) { updateSize(); followPlayhead(); repaint (viewport.getViewPositionX(), kRulerH + kLaneH, kNameW, getHeight()); }
         else if (app.engine.isRecording() || meterMoving || ++meterTick % 3 == 0) repaint (viewport.getViewPositionX(), kRulerH + kLaneH, kNameW, getHeight());
         else followActive = false;
     }
+    bool thumbsChanged = false; juce::uint32 lastThumbRefresh = 0;
+
+    /** Called at every refresh of the screen (VBlankAttachment): puts the moving playhead where the music is now. Only the strip under its old place
+        and under its new one are redrawn, so it can move smoothly at the screen's own rate however many tracks the window shows. */
+    static constexpr int kNoLine = std::numeric_limits<int>::min();
+    void movePlayhead()
+    {
+        double ph = -1.0;
+        if (app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId) ph = app.playheadSecondsSmooth();
+        const int x = ph >= 0.0 ? xOf (ph) : kNoLine;
+        if (x == shownPhX) return;
+        const int h = juce::jmax (1, getHeight() - kRulerH);
+        if (shownPhX != kNoLine) repaint (shownPhX - 1, kRulerH, 4, h);
+        if (x != kNoLine) repaint (x - 1, kRulerH, 4, h);
+        shownPhX = x;
+    }
+    int shownPhX = kNoLine;
     double lastHead = 0.0;
     bool widthDrag = false; int meterTick = 0;
     bool followActive = false; int lastFollowX = 0;
@@ -1457,6 +1487,7 @@ private:
     bool insertDrag = false, insertSnapped = true; int insertShownX = 0, insertDragIndex = 0;                 // the insert flag being dragged
     juce::Uuid shuffleId; juce::int64 shuffleGrab = 0, shuffleSample = 0; bool shuffleMoved = false; int shuffleStartX = 0;     // a piece being shuffled by its banner
     int fadeDrag = 0; juce::Uuid fadeId; double fadeBase = 0.0;      // dragging a piece's fade-in (1) or fade-out (2) from its corner
+    juce::VBlankAttachment vblank { this, [this] { movePlayhead(); } };     // (last, so everything it uses exists first)
 };
 
 struct EditViewport : public juce::Viewport

@@ -57,11 +57,15 @@ juce::StringArray readIXmlTrackNames (const juce::File& f, int channels)
     return names;
 }
 
-std::vector<ImportSource> inspectFiles (juce::AudioFormatManager& fm, const juce::Array<juce::File>& files, juce::StringArray& problems)
+std::vector<ImportSource> inspectFiles (juce::AudioFormatManager& fm, const juce::Array<juce::File>& files, juce::StringArray& problems,
+                                        const std::function<bool (int, int)>& progress)
 {
     std::vector<ImportSource> out;
+    int done = 0;
     for (auto& f : files)
     {
+        if (progress && ! progress (done, files.size())) break;
+        ++done;
         std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (f));
         if (r == nullptr || r->numChannels < 1 || r->lengthInSamples < 1) { problems.add (f.getFileName() + " could not be read"); continue; }
         ImportSource s; s.file = f; s.channels = (int) r->numChannels; s.length = r->lengthInSamples; s.sampleRate = r->sampleRate;

@@ -1,5 +1,6 @@
 #include "WinOwner.h"
 #include "FixTools.h"
+#include "BusyWindow.h"
 #include "../reharmoniser/ReHarmoniserEditor.h"
 #include "../core/ImportPlan.h"
 #include "../core/ProjectCopy.h"
@@ -2395,7 +2396,9 @@ private:
                     {
                         if (safe == nullptr) return;
                         if (err.isNotEmpty()) { safe->status.setText (err, juce::dontSendNotification); safe->doIt.setEnabled (true); return; }
+                        busy::begin ("Adding the takes", "Putting the imported takes into their take windows");
                         for (auto& pt : *parts) finishImport (appRef, pt.wid, pt.plan, pt.files, reorder);
+                        busy::endAfterPendingMessages();
                         closeDialogOf (safe.getComponent());
                     });
             return;
@@ -2413,7 +2416,9 @@ private:
                     juce::ignoreUnused (self);
                     if (safe == nullptr) return;
                     if (err.isNotEmpty()) { safe->status.setText (err, juce::dontSendNotification); safe->doIt.setEnabled (true); return; }
+                    busy::begin ("Adding the takes", eid.isNull() ? "Putting the imported takes into the take window" : "Putting the imported audio into the edit");
                     if (eid.isNull()) finishImport (appRef, wid, *planCopy, *result, reorder); else finishImportToEdit (appRef, eid, *planCopy, *result, reorder);
+                    busy::endAfterPendingMessages();
                     closeDialogOf (safe.getComponent());
                 });
     }
@@ -2531,12 +2536,44 @@ static void openImportDialog (AppContext& app, const juce::Uuid& wid, const juce
         else if (isAudioFile (f)) files.add (f);
     }
     if (files.isEmpty()) { say ("Import takes", "No audio files were found. Fermata imports WAV (including polyphonic / multichannel WAV), AIFF and FLAC files."); return; }
-    juce::StringArray problems;
-    auto sources = inspectFiles (formats(), files, problems);
-    if (sources.empty()) { say ("Import takes", "None of those files could be read.\n\n" + problems.joinIntoString ("\n")); return; }
-    auto plan = buildImportPlan (std::move (sources));
-    for (auto& pr : problems) plan.notes.add (pr);
-    launchDialog (std::make_unique<ImportDialog> (app, wid, eid, std::move (plan)), eid.isNull() ? "Import takes" : "Import into the edit", parent);
+    // Every file is opened to read its length, rate and channels. With hundreds of files (or a slow or network drive) that takes a while, so it is
+    // done on another thread, with the "please wait" window up saying how far it has got (and a Cancel button). The import window follows.
+    struct Shared
+    {
+        juce::Array<juce::File> files;
+        std::atomic<int> done { 0 };
+        std::atomic<bool> cancel { false };
+        std::vector<ImportSource> sources;
+        juce::StringArray problems;
+    };
+    struct Ticker : juce::Timer { std::function<void()> fn; void timerCallback() override { if (fn) fn(); } };
+    auto sh = std::make_shared<Shared>();
+    sh->files = files;
+    const int total = files.size();
+    busy::begin ("Reading the audio files", juce::String (total) + " files");
+    busy::setCancel ([sh] { sh->cancel = true; });
+    auto* ticker = new Ticker();                                           // (made and deleted on the message thread only)
+    ticker->fn = [sh, total] { busy::step ("File " + juce::String (sh->done.load()) + " of " + juce::String (total), (double) sh->done.load() / (double) juce::jmax (1, total)); };
+    ticker->startTimer (100);
+    juce::Component::SafePointer<juce::Component> safeParent (parent);
+    auto* appPtr = &app;
+    const bool launched = juce::Thread::launch ([sh, ticker, appPtr, wid, eid, safeParent]
+    {
+        juce::AudioFormatManager fm; fm.registerBasicFormats();            // (its own, so nothing is shared with the message thread)
+        sh->sources = inspectFiles (fm, sh->files, sh->problems, [sh] (int d, int) { sh->done = d; return ! sh->cancel.load(); });
+        juce::MessageManager::callAsync ([sh, ticker, appPtr, wid, eid, safeParent]
+        {
+            delete ticker;
+            busy::setCancel (nullptr);
+            busy::end();
+            if (sh->cancel.load()) return;
+            if (sh->sources.empty()) { say ("Import takes", "None of those files could be read.\n\n" + sh->problems.joinIntoString ("\n")); return; }
+            auto plan = buildImportPlan (std::move (sh->sources));
+            for (auto& pr : sh->problems) plan.notes.add (pr);
+            launchDialog (std::make_unique<ImportDialog> (*appPtr, wid, eid, std::move (plan)), eid.isNull() ? "Import takes" : "Import into the edit", safeParent.getComponent());
+        });
+    });
+    if (! launched) { delete ticker; busy::setCancel (nullptr); busy::end(); say ("Import takes", "Could not start reading the files. Please try again."); }
 }
 
 void importTakes (AppContext& app, const juce::Uuid& wid, const juce::Array<juce::File>& files, juce::Component* parent, const juce::Uuid& intoEdit)

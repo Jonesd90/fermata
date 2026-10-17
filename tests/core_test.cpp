@@ -1089,6 +1089,14 @@ int main()
         CHECK (eng.isPlaying());
         std::vector<double> playing;
         rig.run (eng, 40, &playing);
+        {   // the position for drawing the playhead moves on between blocks with the clock, but never runs more than one block ahead
+            const double p0 = eng.playbackSeconds();
+            juce::Thread::sleep (3);
+            const double s1 = eng.playbackSecondsSmooth();
+            CHECK (s1 >= p0 && s1 <= p0 + (double) Rig::block / 48000.0 + 1e-9);
+            juce::Thread::sleep (50);                             // far longer than a block: it waits at the next block's start
+            CHECK (std::abs (eng.playbackSecondsSmooth() - (p0 + (double) Rig::block / 48000.0)) < 1e-9);
+        }
         CHECK (playing[0] > 0.05 && playing[2] > 0.05);       // both mixers play the take
         CHECK (std::abs (playing[0] - playing[2]) < 1e-5);
         CHECK (eng.playbackUnderruns() == 0);
@@ -2876,6 +2884,57 @@ int main()
         auto r2 = wavrepair::inspect (wav, false); CHECK (! r2.wasBroken && r2.frames == 48000);
         juce::AudioFormatManager afm; afm.registerBasicFormats();
         std::unique_ptr<juce::AudioFormatReader> rd (afm.createReaderFor (wav)); CHECK (rd != nullptr && rd->lengthInSamples == 48000);
+        {   // finished takes: only one whose file is shorter than the take is opened and mended; one with full-length files is passed by its size alone
+            auto writeTone = [] (const juce::File& f)
+            {
+                juce::WavAudioFormat fmt; std::unique_ptr<juce::FileOutputStream> os (f.createOutputStream());
+                std::unique_ptr<juce::AudioFormatWriter> w (fmt.createWriterFor (os.get(), 48000.0, 1, 24, {}, 0)); os.release();
+                juce::AudioBuffer<float> b (1, 48000); for (int i = 0; i < 48000; ++i) b.setSample (0, i, 0.25f * std::sin (i * 0.05f));
+                w->writeFromAudioSampleBuffer (b, 0, 48000);
+            };
+            auto dataPos = [] (const juce::File& f) { juce::MemoryBlock mb; f.loadFileAsData (mb); for (int i = 12; i < 300; ++i) if (std::memcmp ((const char*) mb.getData() + i, "data", 4) == 0) return i; return -1; };
+            auto cutSrc = a.audioFolder().getChildFile ("002 - Piece - full.wav"), cut = a.audioFolder().getChildFile ("002 - Piece - violin.wav");
+            writeTone (cutSrc);
+            {   // the power went: only half of the audio reached the disk, but the header (written at the end of the take) says all of it
+                juce::MemoryBlock mb; cutSrc.loadFileAsData (mb);
+                const int dp = dataPos (cutSrc); CHECK (dp > 0);
+                cut.replaceWithData (mb.getData(), (size_t) (dp + 8 + 24000 * 3));
+                cutSrc.deleteFile();
+            }
+            auto odd = a.audioFolder().getChildFile ("003 - Piece - violin.wav");
+            writeTone (odd);
+            {   // a full-length file whose header says 'size unknown' (as some recorders leave a file being recorded): fine to play, not to be touched
+                const int dp = dataPos (odd); CHECK (dp > 0);
+                juce::FileOutputStream fo (odd); fo.setPosition (dp + 4); fo.writeInt ((int) 0xffffffff);
+            }
+            const auto oddSize = odd.getSize();
+            for (auto [f, num] : { std::pair<juce::File, int> { cut, 2 }, std::pair<juce::File, int> { odd, 3 } })
+            {
+                TakeGroup g2; g2.id = juce::Uuid(); g2.number = num; g2.lengthSamples = 48000; g2.sampleRate = 48000.0;
+                TakeFile t2; t2.trackId = a.tracks[0].id; t2.trackName = "violin"; t2.file = f; t2.numChannels = 1; g2.files.push_back (t2);
+                a.takeWindows.back()->groups.push_back (g2);
+            }
+            auto lines2 = a.repairInterruptedRecordings();
+            CHECK (lines2.size() == 1);
+            CHECK (a.takeWindows.back()->groups[1].lengthSamples == 24000);
+            CHECK (! wavrepair::inspect (cut, false).wasBroken && wavrepair::inspect (cut, false).frames == 24000);
+            CHECK (a.takeWindows.back()->groups[2].lengthSamples == 48000 && odd.getSize() == oddSize && wavrepair::inspect (odd, false).wasBroken);
+            CHECK (a.takeWindows.back()->groups[0].lengthSamples == 48000);      // (the take mended before is fine now and left alone)
+        }
+        {   // saving: a window's file is rewritten only when that window changed
+            juce::String se; CHECK (a.save (se));
+            const auto twId = a.takeWindows.back()->id.toString();
+            CHECK (a.windowFiles.count (twId) == 1);
+            const auto twFile = a.projectFolder().getChildFile (a.windowFiles[twId].rel);
+            CHECK (twFile.existsAsFile());
+            const auto longAgo = juce::Time (2001, 0, 1, 12, 0);
+            twFile.setLastModificationTime (longAgo);
+            CHECK (a.save (se));
+            CHECK (twFile.getLastModificationTime() == longAgo);                  // nothing changed: not written again
+            a.takeWindows.back()->groups[0].label = "Fresh label";
+            CHECK (a.save (se));
+            CHECK (twFile.getLastModificationTime() != longAgo && twFile.loadFileAsString().contains ("Fresh label"));
+        }
         // save, then copy the whole thing somewhere else
         juce::String e; CHECK (a.save (e));
         auto dest = tmp.getChildFile ("Elsewhere").getChildFile ("Copy of Concert");

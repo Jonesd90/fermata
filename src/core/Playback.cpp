@@ -98,7 +98,12 @@ void PlaybackSession::pull (int n) noexcept
         }
     }
     fifo.finishedRead (got);
-    position.fetch_add (got);
+    const auto now = position.fetch_add (got) + got;
+    clockSeq.fetch_add (1, std::memory_order_acq_rel);                    // (odd: being written)
+    clockPos.store (now, std::memory_order_relaxed);
+    clockMs.store (juce::Time::getMillisecondCounterHiRes(), std::memory_order_relaxed);
+    clockBlock.store (got, std::memory_order_relaxed);
+    clockSeq.fetch_add (1, std::memory_order_release);
     if (got < n)
     {
         if (renderDone.load()) { if (fifo.getNumReady() == 0) finished = true; }
@@ -106,6 +111,25 @@ void PlaybackSession::pull (int n) noexcept
     }
     else if (renderDone.load() && fifo.getNumReady() == 0)
         finished = true;
+}
+
+double PlaybackSession::getSmoothPositionSeconds() const noexcept
+{
+    if (sampleRate <= 0.0) return 0.0;
+    for (int tries = 0; tries < 16; ++tries)
+    {
+        const auto s0 = clockSeq.load (std::memory_order_acquire);
+        if ((s0 & 1u) != 0) continue;
+        const auto pos = clockPos.load (std::memory_order_relaxed);
+        const double ms = clockMs.load (std::memory_order_relaxed);
+        const int block = clockBlock.load (std::memory_order_relaxed);
+        std::atomic_thread_fence (std::memory_order_acquire);
+        if (clockSeq.load (std::memory_order_relaxed) != s0) continue;
+        if (ms <= 0.0 || finished.load()) return (double) pos / sampleRate;
+        const double ahead = juce::jlimit (0.0, (double) block, (juce::Time::getMillisecondCounterHiRes() - ms) * 0.001 * sampleRate);
+        return ((double) pos + ahead) / sampleRate;
+    }
+    return getPositionSeconds();
 }
 
 void PlaybackSession::renderSegments (std::vector<std::unique_ptr<juce::AudioFormatReader>>& readers, const std::vector<PlaySegment>& segs,
