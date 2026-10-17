@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <cstdlib>
 
 namespace rehar
 {
@@ -87,6 +88,28 @@ double meanOf (const Vec& v) { return v.empty() ? 0.0 : std::accumulate (v.begin
 } // namespace
 
 // ================================================================================================== measuring a note
+bool looksLikeTimecode (const Span& x, int sr)
+{
+    if (x.p == nullptr || sr <= 0 || x.n < (size_t) sr) return false;                 // under a second: cannot tell
+    const size_t blk = (size_t) (0.2 * sr), sub = std::max<size_t> (8, (size_t) (0.02 * sr)), nb = x.n / blk;
+    const size_t step = std::max<size_t> (1, nb / 40);
+    int loud = 0, steady = 0;
+    for (size_t b = 0; b < nb; b += step)
+    {
+        const float* p = x.p + b * blk;
+        double pk = 0, ss = 0; size_t zc = 0;
+        for (size_t k = 0; k < blk; ++k) { const double v = p[k]; pk = std::max (pk, std::abs (v)); ss += v * v; if (k > 0 && ((p[k - 1] < 0.0f) != (p[k] < 0.0f))) ++zc; }
+        if (pk < 0.003) continue;                                                      // silence (below -50 dBFS)
+        ++loud;
+        const double rms = std::sqrt (ss / (double) blk), crest = pk / (rms + 1e-12), zcr = (double) zc / 0.2;
+        double m = 0, m2 = 0; size_t cnt = 0;                                          // how much the level of 20 ms pieces moves
+        for (size_t q = 0; q + sub <= blk; q += sub) { double e = 0; for (size_t k = 0; k < sub; ++k) e += (double) p[q + k] * (double) p[q + k]; e = std::sqrt (e / (double) sub); m += e; m2 += e * e; ++cnt; }
+        m /= (double) std::max<size_t> (1, cnt); const double cv = std::sqrt (std::max (0.0, m2 / (double) std::max<size_t> (1, cnt) - m * m)) / (m + 1e-12);
+        if (crest < 1.9 && cv < 0.06 && zcr > 1200.0 && zcr < 6000.0) ++steady;
+    }
+    return loud >= 5 && steady * 5 >= loud * 4;
+}
+
 Tracking trackingInputs (const std::vector<Span>& seg, int sr, double fLo, double fHi, const Vec& visGainDb, int kmax)
 {
     const size_t nch = seg.size();
@@ -147,6 +170,103 @@ Track trackNote (const std::vector<Span>& chans, const Vec& ws, int sr, double t
     if (tOk.size() < 5) throw std::runtime_error ("Could not track a pitch in that selection.");
     f0 = interp (tr.ts, tOk, fOk);
     tr.f0 = gaussianFilter1d (medianFilter (f0, 5), 1.5, Edge::Nearest);
+    return tr;
+}
+
+namespace
+{
+/** The comb score of every candidate pitch (every 2 cents inside +-halfCents of fMid) at every time of the grid ts. */
+struct CombField
+{
+    Vec cents, cand;
+    std::vector<Vec> emis;
+    std::vector<char> ok;
+    double fMid = 0.0, halfCents = 0.0;
+};
+CombField combField (const Decimated& d, const Vec& ws, double tSeg0, const Vec& ts, double fMid, double halfCents)
+{
+    CombField F; F.fMid = fMid; F.halfCents = halfCents;
+    const double sr2 = d.sr2;
+    const size_t N = pow2Round (sr2, 0.34), pad = 4;
+    const Vec win = hanning (N);
+    const double df = sr2 / (double) (N * pad);
+    const double fTop = fMid * std::pow (2.0, halfCents / 1200.0);
+    const int nharm = (int) std::max (1.0, std::min (6.0, 0.42 * sr2 / fTop));
+    const double step = 2.0;
+    const int nc = (int) std::ceil (2.0 * halfCents / step) + 1;
+    F.cents.resize ((size_t) nc); F.cand.resize ((size_t) nc);
+    for (int k = 0; k < nc; ++k) { F.cents[(size_t) k] = -halfCents + step * k; F.cand[(size_t) k] = fMid * std::pow (2.0, F.cents[(size_t) k] / 1200.0); }
+    const size_t nf = ts.size();
+    F.emis.resize (nf); F.ok.assign (nf, 0);
+    Vec sp;
+    for (size_t k = 0; k < nf; ++k)
+        if (powerSpectrumAt (d, ws, win, N, pad, tSeg0, ts[k], sp))
+        {
+            Vec sc = combScore (sp, df, F.cand, nharm);
+            const double mx = maxOf (sc);
+            for (auto& v : sc) v -= mx;
+            F.emis[k] = std::move (sc); F.ok[k] = 1;
+        }
+    size_t nok = 0; for (char c : F.ok) nok += (size_t) c;
+    if (nok < 5) throw std::runtime_error ("Could not track a pitch in that selection.");
+    return F;
+}
+
+/** The best path of the comb score through time, for one voice. The path is drawn towards the middle (prior) and moves smoothly; cents within keepOut of any of the
+    'avoid' lines (on the same time grid) are not allowed. Returns the line in Hz. */
+Vec combViterbi (const CombField& F, size_t nf, double prior, const std::vector<Vec>& avoid, double keepOut)
+{
+    const double halfCents = F.halfCents;
+    const int nc = (int) F.cents.size();
+    const double step = 2.0, lambda = 0.25, dref = 10.0;
+    const Vec& cents = F.cents;
+    std::vector<Vec> avc;                                                   // the lines to keep clear of, in cents from fMid
+    for (auto& l : avoid) { Vec a (nf); for (size_t k = 0; k < nf && k < l.size(); ++k) a[k] = 1200.0 * std::log2 (l[k] / F.fMid); avc.push_back (std::move (a)); }
+    std::vector<std::vector<int>> from (nf, std::vector<int> ((size_t) nc, 0));
+    Vec prev ((size_t) nc, 0.0);
+    bool first = true;
+    const int maxJump = (int) std::ceil (45.0 / step);
+    for (size_t k = 0; k < nf; ++k)
+    {
+        Vec cur ((size_t) nc, 0.0);
+        for (int c = 0; c < nc; ++c)
+        {
+            double e = (F.ok[k] ? F.emis[k][(size_t) c] : 0.0) - prior * (cents[(size_t) c] / halfCents) * (cents[(size_t) c] / halfCents);
+            for (auto& a : avc) if (std::abs (cents[(size_t) c] - a[k]) < keepOut) { e -= 1.0e4; break; }
+            if (first) { cur[(size_t) c] = e; continue; }
+            double bv = -1e300; int bi = c;
+            for (int q = std::max (0, c - maxJump); q <= std::min (nc - 1, c + maxJump); ++q)
+            {
+                const double dc = (cents[(size_t) c] - cents[(size_t) q]) / dref;
+                const double v = prev[(size_t) q] - lambda * dc * dc;
+                if (v > bv) { bv = v; bi = q; }
+            }
+            cur[(size_t) c] = bv + e; from[k][(size_t) c] = bi;
+        }
+        prev = cur; first = false;
+    }
+    int c = (int) (std::max_element (prev.begin(), prev.end()) - prev.begin());
+    Vec f0 (nf);
+    for (size_t k = nf; k-- > 0;) { f0[k] = F.cand[(size_t) c]; c = from[k][(size_t) c]; }
+    return gaussianFilter1d (medianFilter (f0, 5), 1.5, Edge::Nearest);
+}
+
+Vec combPath (const Decimated& d, const Vec& ws, double tSeg0, const Vec& ts, double fMid, double halfCents, double prior, const std::vector<Vec>& avoid, double keepOut)
+{
+    return combViterbi (combField (d, ws, tSeg0, ts, fMid, halfCents), ts.size(), prior, avoid, keepOut);
+}
+} // namespace
+
+Track trackNoteLocked (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, double t0, double t1, double fLo, double fHi, double hopS, double prior)
+{
+    const auto d = decimateAll (chans, sr);
+    Track tr; tr.ts = arange (t0, t1, hopS);
+    const double fMid = std::sqrt (fLo * fHi), hw = std::max (15.0, 600.0 * std::log2 (fHi / fLo));        // the box: its middle and half width in cents
+    const CombField F = combField (d, ws, tSeg0, tr.ts, fMid, hw + 6.0);
+    const size_t nf = tr.ts.size();
+    // WHICH voice: a firm pull towards the middle of the box, so a louder voice beside the boxed one is not taken for it. The path is then rather flat (vibrato is
+    // smeared in the picture): only a first guess, the vibrato is followed by the refinement.
+    tr.f0 = combViterbi (F, nf, 2.0 * prior, {}, 0.0);
     return tr;
 }
 
@@ -253,6 +373,362 @@ Vec refineTrack (const std::vector<Span>& chans, const Vec& ws, int sr, double t
     return f0;
 }
 
+Vec refineTrackLocked (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, const Vec& tsIn, const Vec& f0In, double b0, bool wide)
+{
+    // the line is followed a little beyond the note's ends too (held flat there to begin with), so the filters see real sound right up to its ends
+    const double hop = tsIn.size() > 1 ? (tsIn.back() - tsIn.front()) / (double) (tsIn.size() - 1) : 0.02;
+    const size_t nPad = (size_t) std::floor (0.2 / hop);
+    Vec ts, f0;
+    for (size_t k = nPad; k > 0; --k) { ts.push_back (tsIn.front() - (double) k * hop); f0.push_back (f0In.front()); }
+    ts.insert (ts.end(), tsIn.begin(), tsIn.end()); f0.insert (f0.end(), f0In.begin(), f0In.end());
+    for (size_t k = 1; k <= nPad; ++k) { ts.push_back (tsIn.back() + (double) k * hop); f0.push_back (f0In.back()); }
+    const long i0 = std::max<long> (0, (long) ((ts.front() - tSeg0) * sr));
+    const long i1 = std::min<long> ((long) chans[0].n, (long) ((ts.back() - tSeg0) * sr));
+    if (i1 <= i0) return f0In;
+    const size_t n = (size_t) (i1 - i0);
+    Vec tt (n);
+    for (size_t k = 0; k < n; ++k) tt[k] = tSeg0 + (double) (i0 + (long) k) / sr;
+    const size_t useCh = std::min<size_t> (chans.size(), 4);                      // (the strongest come first)
+    std::vector<Vec> sigs (useCh);
+    for (size_t c = 0; c < useCh; ++c) sigs[c].assign (chans[c].p + i0, chans[c].p + i1);
+    const int dec = std::max (1, (int) (sr / 400));
+    Vec td; for (size_t k = 0; k < n; k += (size_t) dec) td.push_back (tt[k]);
+    const double rate = (double) sr / dec;
+    const int nhMax = 8;
+    struct Stage { double scale, smoothS; int iters; };
+    // from wide and slow to narrow and quick. The wide one starts with a window twice as wide, so a voice that swings far from where the line is (a big vibrato) is still
+    // caught: use it only where no other voice is near (they would be caught too).
+    static const Stage narrow[] = { { 1.0, 0.03, 4 }, { 0.8, 0.025, 3 }, { 0.6, 0.02, 3 } };
+    static const Stage broad[] = { { 2.0, 0.04, 4 }, { 1.4, 0.03, 3 }, { 1.0, 0.025, 3 }, { 0.6, 0.02, 3 } };
+    const Stage* stages = wide ? broad : narrow;
+    const size_t nStages = wide ? 4 : 3;
+    for (size_t si = 0; si < nStages; ++si)
+        for (int it = 0, nIt = stages[si].iters; it < nIt; ++it)
+        {
+            const Stage& st = stages[si];
+            const Vec phi = cumPhase (interp (tt, ts, f0), sr);
+            const double f0max = maxOf (f0);
+            std::vector<Vec> qh, wh;                                    // per overtone: the estimated shift of the fundamental (Hz) and its weight, on the td grid
+            for (int h = 1; h <= nhMax; ++h)
+            {
+                if (h * f0max * 1.05 > 0.45 * sr) break;
+                const CVec base = phasor (phi, h, -1.0);
+                const double bw = std::min (160.0, b0 * st.scale * (double) h);       // the same width in pitch at every overtone: a neighbour a few Hz away stays out of all of them
+                std::vector<Vec> pn (sigs.size(), Vec (td.size(), 0.0)), pd (sigs.size(), Vec (td.size(), 0.0));
+                parallelFor (sigs.size(), [&] (size_t c)
+                {
+                    CVec z (n);
+                    for (size_t k = 0; k < n; ++k) z[k] = sigs[c][k] * base[k];
+                    const CVec lp = lowpassGaussian (z, sr, bw);
+                    Vec ang (td.size()), p2 (td.size());
+                    for (size_t k = 0; k < td.size(); ++k) { const cplx a = lp[k * (size_t) dec]; ang[k] = std::atan2 (a.imag(), a.real()); p2[k] = std::norm (a); }
+                    const Vec g = gradient (unwrap (ang));
+                    const Vec wgt = gaussianFilter1d (p2, 0.05 * rate);
+                    for (size_t k = 0; k < td.size(); ++k) { const double inst = g[k] * rate / (2.0 * kPi), wg = wgt[k] * ws[c] * ws[c]; pn[c][k] = wg * inst / h; pd[c][k] = wg; }
+                });
+                Vec q (td.size(), 0.0), w (td.size(), 0.0);
+                for (size_t k = 0; k < td.size(); ++k)
+                {
+                    double a = 0, b = 0; for (size_t c = 0; c < sigs.size(); ++c) { a += pn[c][k]; b += pd[c][k]; }
+                    q[k] = a / (b + 1e-30); w[k] = b * (double) h;
+                }
+                qh.push_back (std::move (q)); wh.push_back (std::move (w));
+            }
+            if (qh.empty()) break;
+            Vec cons (td.size(), 0.0);
+            const double sTol = std::max (0.8, 0.4 * b0 * st.scale);      // how far an overtone may differ from the rest (Hz of the fundamental) before it counts for less
+            for (size_t k = 0; k < td.size(); ++k)
+            {
+                double a = 0, b = 0; for (size_t j = 0; j < qh.size(); ++j) { a += wh[j][k] * qh[j][k]; b += wh[j][k]; }
+                double m = a / (b + 1e-30);
+                for (int pass = 0; pass < 3; ++pass)
+                {
+                    a = 0; b = 0;
+                    for (size_t j = 0; j < qh.size(); ++j) { const double r = (qh[j][k] - m) / sTol; const double w = wh[j][k] / (1.0 + r * r * r * r); a += w * qh[j][k]; b += w; }
+                    m = a / (b + 1e-30);
+                }
+                cons[k] = m;
+            }
+            const Vec dlt = gaussianFilter1d (cons, st.smoothS * rate);
+            const Vec add = interp (ts, td, dlt);
+            for (size_t k = 0; k < f0.size(); ++k) f0[k] += add[k];
+        }
+    return Vec (f0.begin() + (long) nPad, f0.begin() + (long) (nPad + tsIn.size()));
+}
+
+namespace
+{
+/** Takes the sound of one voice (its overtones 1..nh, each through a window bw0*h Hz wide) out of the channels, in place. sig[c][k] is at tStart + k / sr.
+    The voice's line is on the grid ts; nothing is taken outside it (and the ends are eased). */
+void peelLine (std::vector<Vec>& sig, int sr, double tStart, const Vec& ts, const Vec& line, double bw0, int nh)
+{
+    if (sig.empty() || sig[0].empty() || ts.size() < 2) return;
+    const size_t n = sig[0].size();
+    Vec tt (n), w (n);
+    for (size_t k = 0; k < n; ++k)
+    {
+        tt[k] = tStart + (double) k / sr;
+        w[k] = smoothstep ((tt[k] - (ts.front() - 0.3)) / 0.08) * smoothstep (((ts.back() + 0.3) - tt[k]) / 0.08);       // (the line is held flat for 0.3 s beyond its ends)
+    }
+    const Vec f = interp (tt, ts, line);
+    const Vec phi = cumPhase (f, sr);
+    const double fmax = maxOf (line);
+    for (int h = 1; h <= nh; ++h)
+    {
+        if (h * fmax * 1.05 > 0.45 * sr) break;
+        const CVec base = phasor (phi, h, -1.0);
+        parallelFor (sig.size(), [&] (size_t c)
+        {
+            CVec z (n); for (size_t k = 0; k < n; ++k) z[k] = sig[c][k] * base[k];
+            const CVec a = lowpassGaussian (z, sr, bw0 * (double) h);
+            for (size_t k = 0; k < n; ++k) sig[c][k] -= w[k] * (a[k] * std::conj (base[k])).real();
+        });
+    }
+}
+
+/** How much sound one voice has in the channels, sample by sample (power, over overtones 1..nh). */
+Vec linePower (const std::vector<Vec>& sig, const Vec& ws, int sr, double tStart, const Vec& ts, const Vec& line, int nh, double bw0)
+{
+    const size_t n = sig[0].size();
+    Vec tt (n);
+    for (size_t k = 0; k < n; ++k) tt[k] = tStart + (double) k / sr;
+    const Vec f = interp (tt, ts, line);
+    const Vec phi = cumPhase (f, sr);
+    const double fmax = maxOf (line);
+    Vec P (n, 0.0);
+    for (int h = 1; h <= nh; ++h)
+    {
+        if (h * fmax * 1.05 > 0.45 * sr) break;
+        const CVec base = phasor (phi, h, -1.0);
+        std::vector<Vec> part (sig.size());
+        parallelFor (sig.size(), [&] (size_t c)
+        {
+            CVec z (n); for (size_t k = 0; k < n; ++k) z[k] = sig[c][k] * base[k];
+            const CVec a = lowpassGaussian (z, sr, bw0 * (double) h);
+            part[c].resize (n); for (size_t k = 0; k < n; ++k) part[c][k] = std::norm (a[k]) * ws[c] * ws[c];
+        });
+        for (const auto& pc : part) for (size_t k = 0; k < n; ++k) P[k] += pc[k];
+    }
+    return P;
+}
+
+/** How much sound one voice has in the channels (power, over overtones 1..nh, inside the line's own time range). */
+double lineEnergy (const std::vector<Vec>& sig, const Vec& ws, int sr, double tStart, const Vec& ts, const Vec& line, int nh, double bw0)
+{
+    const Vec P = linePower (sig, ws, sr, tStart, ts, line, nh, bw0);
+    double e = 0;
+    for (size_t k = 0; k < P.size(); ++k) { const double t = tStart + (double) k / sr; if (t >= ts.front() && t <= ts.back()) e += P[k]; }
+    return e;
+}
+
+/** Is the line a voice that is there all through the note? Its sound is compared with what is at the same distance on either side of it, stretch by stretch (0.3 s);
+    returns the share of the stretches in which it stands clearly above that, and (total) how much it stands above it over the whole note. */
+double persistence (const std::vector<Vec>& sig, const Vec& ws, int sr, double tStart, const Vec& ts, const Vec& line, double* totalRatio = nullptr)
+{
+    const Vec P = linePower (sig, ws, sr, tStart, ts, line, 4, 8.0);
+    std::vector<Vec> R;
+    for (double sh : { 45.0, -45.0, 75.0, -75.0 }) { Vec l2 = line; for (auto& x : l2) x *= std::pow (2.0, sh / 1200.0); R.push_back (linePower (sig, ws, sr, tStart, ts, l2, 4, 8.0)); }
+    auto sum = [&] (const Vec& v, double a, double b)
+    {
+        const long i0 = std::max<long> (0, (long) std::ceil ((a - tStart) * sr)), i1 = std::min<long> ((long) v.size(), (long) std::floor ((b - tStart) * sr));
+        double e = 0; for (long k = i0; k < i1; ++k) e += v[(size_t) k]; return e;
+    };
+    auto refMedian = [&] (double a, double b) { Vec r; for (const auto& v : R) r.push_back (sum (v, a, b)); return median (r); };
+    if (totalRatio != nullptr) *totalRatio = sum (P, ts.front(), ts.back()) / (refMedian (ts.front(), ts.back()) + 1e-30);
+    const double w = 0.3;
+    int good = 0, tot = 0;
+    for (double a = ts.front() + 0.05; a + w <= ts.back() - 0.05 + 1e-9; a += w)
+    {
+        ++tot;
+        if (sum (P, a, a + w) > 3.0 * refMedian (a, a + w)) ++good;
+    }
+    return tot > 0 ? (double) good / (double) tot : 1.0;
+}
+} // namespace
+
+Vec refineTrackPeeled (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, const Vec& ts, const Vec& f0In, const std::vector<Vec>& nb, double b0, bool wide)
+{
+    const long m = (long) (0.45 * sr);
+    const long i0 = std::max<long> (0, (long) ((ts.front() - tSeg0) * sr) - m);
+    const long i1 = std::min<long> ((long) chans[0].n, (long) ((ts.back() - tSeg0) * sr) + m);
+    if (i1 <= i0) return f0In;
+    const double tStart = tSeg0 + (double) i0 / sr;
+    std::vector<Vec> clean (chans.size());
+    for (size_t c = 0; c < chans.size(); ++c) clean[c].assign (chans[c].p + i0, chans[c].p + i1);
+    for (const auto& fn : nb) peelLine (clean, sr, tStart, ts, fn, 8.0, 8);
+    std::vector<std::vector<float>> cf (clean.size());
+    std::vector<Span> cs;
+    for (size_t c = 0; c < clean.size(); ++c) { cf[c].assign (clean[c].begin(), clean[c].end()); cs.push_back ({ cf[c].data(), cf[c].size() }); }
+    return refineTrackLocked (cs, ws, sr, tStart, ts, f0In, b0, wide);
+}
+
+std::vector<Vec> findNeighbours (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, const Vec& ts, const Vec& f0, double span, int maxVoices)
+{
+    std::vector<Vec> found;
+    if (chans.empty() || ts.size() < 8 || f0.size() != ts.size()) return found;
+    const long m = (long) (0.4 * sr);                                              // a little of the music each side of the note, so the picture of the spectrum is whole at its ends
+    const long i0 = std::max<long> (0, (long) ((ts.front() - tSeg0) * sr) - m), i1 = std::min<long> ((long) chans[0].n, (long) ((ts.back() - tSeg0) * sr) + m);
+    if (i1 - i0 < sr / 2) return found;
+    const double tStart = tSeg0 + (double) i0 / sr;
+    std::vector<Vec> sig (chans.size());
+    for (size_t c = 0; c < chans.size(); ++c) sig[c].assign (chans[c].p + i0, chans[c].p + i1);
+    const double eT = lineEnergy (sig, ws, sr, tStart, ts, f0, 4, 8.0);
+    if (eT <= 0.0) return found;
+    const double peelBw = 16.0;                                                    // (wide: what is left beside a voice - its own vibrato sidebands - must not be taken for a voice)
+    peelLine (sig, sr, tStart, ts, f0, peelBw, 8);                                 // the boxed voice out first
+    std::vector<Vec> avoid = { f0 };
+    const double fMid = median (f0);
+    for (int v = 0; v < maxVoices; ++v)
+    {
+        std::vector<std::vector<float>> cf (sig.size());
+        std::vector<Span> cs;
+        for (size_t c = 0; c < sig.size(); ++c) { cf[c].assign (sig[c].begin(), sig[c].end()); cs.push_back ({ cf[c].data(), cf[c].size() }); }
+        Vec path;
+        try { path = combPath (decimateAll (cs, sr), ws, tStart, ts, fMid, span, 0.0, avoid, 7.0); } catch (...) { break; }
+        const Vec line = refineTrackLocked (cs, ws, sr, tStart, ts, path, 14.0);
+        // is it really a voice? It must stand clear of what is at the same distance on either side of it all through the note (not only in a stretch of it: a
+        // line that is only strong where the boxed voice was lost is a piece of that voice), and not be a faint rest of the boxed voice
+        const double eN = lineEnergy (sig, ws, sr, tStart, ts, line, 4, 8.0);
+        double ratio = 0.0;
+        const double share = persistence (sig, ws, sr, tStart, ts, line, &ratio);
+        size_t close = 0; for (size_t k = 0; k < line.size(); ++k) if (std::abs (1200.0 * std::log2 (line[k] / f0[k])) < 6.0) ++close;
+        if (! (ratio > 4.0 && share >= 0.7 && eN > 0.01 * eT && close * 2 < line.size())) break;
+        found.push_back (line); avoid.push_back (line);
+        peelLine (sig, sr, tStart, ts, line, peelBw, 8);
+    }
+    return found;
+}
+
+NoteMeasure measureNote (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, double t0, double t1, double fLo, double fHi, const Hooks& hooks, double prior)
+{
+    NoteMeasure r;
+    hooks.report ("Measuring the note", 0.05);
+    const Track tr = trackNoteLocked (chans, ws, sr, tSeg0, t0, t1, fLo, fHi, 0.02, prior);
+    hooks.check(); hooks.report ("Measuring the note", 0.15);
+    // 1) the line of the voice near the first guess, with wide windows to begin with so the swings of a big vibrato are caught
+    Vec f0 = refineTrackLocked (chans, ws, sr, tSeg0, tr.ts, tr.f0, 20.0, true);
+    hooks.check(); hooks.report ("Looking for the voices beside it", 0.3);
+    std::vector<Vec> nbs = findNeighbours (chans, ws, sr, tSeg0, tr.ts, f0);
+    // 2) With louder voices close by, that line can have gone over to one of them for a while, and the voice that was left is then found as a "neighbour" over the same
+    //    stretch. The lines found together hold every voice, so the boxed one is picked again moment by moment: the line whose pitch (the middle value over 0.4 s, so a vibrato or a brief mix-up does not count)
+    //    is nearest the middle of the box (a line is only given up for another that is clearly nearer: 8 cents). lines[0] is the boxed voice afterwards.
+    const double fMidBox = std::sqrt (fLo * fHi);
+    // slow[i][k]: line i's pitch in cents from the middle of the box, the middle value over 0.4 s (a vibrato or a brief mix-up does not count)
+    auto slowOf = [fMidBox] (const std::vector<Vec>& lines)
+    {
+        std::vector<Vec> slow;
+        for (auto& l : lines)
+        {
+            Vec c (l.size()); for (size_t k = 0; k < l.size(); ++k) c[k] = 1200.0 * std::log2 (l[k] / fMidBox);
+            Vec med (c.size()); const long half = 10;
+            for (long k = 0; k < (long) c.size(); ++k) { Vec w; for (long q = std::max<long> (0, k - half); q <= std::min<long> ((long) c.size() - 1, k + half); ++q) w.push_back (c[(size_t) q]); std::nth_element (w.begin(), w.begin() + (long) (w.size() / 2), w.end()); med[(size_t) k] = w[w.size() / 2]; }
+            slow.push_back (med);
+        }
+        return slow;
+    };
+    // Puts the boxed voice first, moment by moment. Over stretches (brief = false): the line whose slow pitch is nearest the middle of the box, given up only for a line clearly
+    // nearer (8 cents). For brief mix-ups (brief = true, when the lines are already right over the long stretches): the line (of those not far apart in the other way round) whose own
+    // pitch at that moment is nearest the slow pitch of the boxed one, and it takes a good reason (30 cents' worth) to change from one line to another.
+    auto pickBoxed = [&] (std::vector<Vec>& lines, bool brief)
+    {
+        const size_t L = lines.size(), nf = lines[0].size();
+        if (L < 2) return;
+        const std::vector<Vec> slow = slowOf (lines);
+        size_t first = 0; double bm = 1e300;
+        for (size_t i = 0; i < L; ++i) { double m = 0; for (double v : slow[i]) m += std::abs (v); m /= (double) nf; if (m < bm) { bm = m; first = i; } }
+        std::vector<size_t> pick (nf, first);
+        if (! brief)
+        {
+            size_t cur = first;
+            for (size_t k = 0; k < nf; ++k)
+            {
+                double bd = std::abs (slow[cur][k]);
+                for (size_t i = 0; i < L; ++i) if (std::abs (slow[i][k]) < bd - 8.0) { bd = std::abs (slow[i][k]); cur = i; }
+                pick[k] = cur;
+            }
+        }
+        else
+        {
+            const double penalty = 30.0, cap = 40.0;
+            std::vector<Vec> cost (nf, Vec (L, 0.0)); std::vector<std::vector<size_t>> from (nf, std::vector<size_t> (L, 0));
+            for (size_t k = 0; k < nf; ++k)
+            {
+                for (size_t i = 0; i < L; ++i)
+                {
+                    const double own = 1200.0 * std::log2 (lines[i][k] / fMidBox), e = std::min (cap, std::abs (own - slow[first][k]));
+                    if (k == 0) { cost[k][i] = e; continue; }
+                    double bv = 1e300; size_t bi = i;
+                    for (size_t q = 0; q < L; ++q) { const double v = cost[k - 1][q] + (q == i ? 0.0 : penalty); if (v < bv) { bv = v; bi = q; } }
+                    cost[k][i] = bv + e; from[k][i] = bi;
+                }
+            }
+            size_t st = 0; for (size_t i = 1; i < L; ++i) if (cost[nf - 1][i] < cost[nf - 1][st]) st = i;
+            for (size_t k = nf; k-- > 0;) { pick[k] = st; if (k > 0) st = from[k][st]; }
+        }
+        std::vector<Vec> now = lines;
+        for (size_t k = 0; k < nf; ++k) if (pick[k] != 0) std::swap (now[0][k], now[pick[k]][k]);
+        lines = now;
+    };
+    std::vector<Vec> found = { f0 }; for (auto& l : nbs) found.push_back (l);
+    pickBoxed (found, false);
+    f0 = found[0]; nbs.assign (found.begin() + 1, found.end());
+    std::vector<Vec> all = { f0 };
+    for (auto& l : nbs) all.push_back (l);
+    if (all.size() > 1)
+    {
+        // two lines whose pitch is about the same are one voice (the first guess was rough, or two singers too close to tell apart): keep the one that follows it better, i.e. holds more of its sound
+        const long i0 = std::max<long> (0, (long) ((tr.ts.front() - tSeg0) * sr)), i1 = std::min<long> ((long) chans[0].n, (long) ((tr.ts.back() - tSeg0) * sr));
+        std::vector<Vec> sig (chans.size());
+        for (size_t c = 0; c < chans.size(); ++c) sig[c].assign (chans[c].p + i0, chans[c].p + i1);
+        const double tStart = tSeg0 + (double) i0 / sr;
+        Vec en; for (auto& l : all) en.push_back (lineEnergy (sig, ws, sr, tStart, tr.ts, l, 4, 8.0));
+        std::vector<char> gone (all.size(), 0);
+        for (size_t i = 0; i < all.size(); ++i)
+            for (size_t j = i + 1; j < all.size(); ++j)
+            {
+                if (gone[i] || gone[j]) continue;
+                double md = 0; for (size_t k = 0; k < all[i].size(); ++k) md += 1200.0 * std::log2 (all[i][k] / all[j][k]);
+                if (std::abs (md / (double) all[i].size()) < 12.0) gone[en[i] >= en[j] ? j : i] = 1;
+            }
+        std::vector<Vec> kept; for (size_t i = 0; i < all.size(); ++i) if (! gone[i]) kept.push_back (all[i]);
+        all = kept;
+    }
+    if (all.size() > 1)
+    {
+        // each voice is followed again with the others taken out; the boxed voice is the one whose line lies nearest the middle of the box
+        hooks.check();
+        const int sweeps = 2;                                               // the second sweep uses the lines of the first, which are far truer than the first rough ones
+        for (int sw = 0; sw < sweeps; ++sw)
+        {
+        if (sw > 0) pickBoxed (all, true);                                  // in a sweep the lines of two close voices can swap places for a moment (each is taken out of the other's); put them right before the next one
+        for (size_t j = 0; j < all.size(); ++j)
+        {
+            hooks.check(); hooks.report ("Measuring the note", 0.6 + 0.35 * (double) (sw * (int) all.size() + (int) j) / (double) (sweeps * (int) all.size()));
+            std::vector<Vec> others; for (size_t i = 0; i < all.size(); ++i) if (i != j) others.push_back (all[i]);
+            Vec seed = all[j];
+            {   // start from the slow drift of the line, not the line itself: a stretch where it was caught by a neighbour (at a vibrato trough, say) would otherwise be too far from the voice to find it again
+                Vec c (seed.size()); for (size_t k = 0; k < seed.size(); ++k) c[k] = std::log2 (seed[k]);
+                c = gaussianFilter1d (c, 0.15 / 0.02, Edge::Nearest);
+                for (size_t k = 0; k < seed.size(); ++k) seed[k] = std::pow (2.0, c[k]);
+            }
+            all[j] = refineTrackPeeled (chans, ws, sr, tSeg0, tr.ts, seed, others, 20.0, true);
+        }
+        }
+    }
+    pickBoxed (all, true);
+    const size_t best = 0;
+    r.ts = tr.ts; r.f0 = all[best];
+    // after the joint refinement two lines can have ended on the very same sound; a neighbour that follows the note (or another neighbour) to within 8 cents all through is not a voice of its own
+    auto rmsCents = [] (const Vec& a, const Vec& b) { double e = 0; for (size_t k = 0; k < a.size() && k < b.size(); ++k) { const double d = 1200.0 * std::log2 (a[k] / b[k]); e += d * d; } return std::sqrt (e / (double) std::max<size_t> (1, a.size())); };
+    for (size_t j = 0; j < all.size(); ++j)
+    {
+        if (j == best || rmsCents (all[j], r.f0) < 8.0) continue;
+        bool same = false; for (auto& l : r.nb) if (rmsCents (all[j], l) < 8.0) same = true;
+        if (! same) r.nb.push_back (all[j]);
+    }
+    return r;
+}
+
 // ================================================================================================== the correction
 Plan planCurve (const Vec& ts, const Vec& f0, const Params& p, int midi, const Vec& pull)
 {
@@ -323,6 +799,107 @@ Vec bandEnergyGain (const std::vector<Vec>& x, const std::vector<Vec>& removed, 
     return interp (idx, centres, gs);
 }
 
+/** Splits the sound into its voices, overtone by overtone, by sliding least squares: in every short window each voice's overtone is a complex amplitude (and how it is
+    changing) times a wave that follows the voice's own line, and all the voices' amplitudes are fitted TOGETHER, so a voice near another is not carried along with it.
+    The parts of the voices to be moved (fNew[j] != nullptr) are returned twice: where they were (removed) and as they would be at the new pitch (added).
+    x[c][k]; f[j][k] (Hz, every sample); the same length m. */
+void separateAndMove (const std::vector<Vec>& x, int sr, const std::vector<const Vec*>& f, const std::vector<const Vec*>& fNew, int nh, double win,
+                      std::vector<Vec>& removed, std::vector<Vec>& added, const Hooks& hooks)
+{
+    const size_t nch = x.size(), m = x[0].size(), K = f.size();
+    const size_t W = std::max<size_t> (64, (size_t) (win * sr)), hop = std::max<size_t> (1, W / 4);
+    Vec wA (W), u (W);
+    for (size_t i = 0; i < W; ++i) { wA[i] = 0.5 - 0.5 * std::cos (2.0 * kPi * ((double) i + 0.5) / (double) W); u[i] = (((double) i + 0.5) - 0.5 * (double) W) / (0.5 * (double) W); }
+    std::vector<long> starts;
+    for (long st = -(long) (W / 2); st < (long) m - (long) (W / 2) + 1; st += (long) hop) starts.push_back (st);
+    const size_t nF = starts.size();
+    Vec norm (m, 0.0);
+    for (size_t q = 0; q < nF; ++q) for (size_t i = 0; i < W; ++i) { const long k = starts[q] + (long) i; if (k >= 0 && k < (long) m) norm[(size_t) k] += 0.5 * wA[i]; }
+    for (auto& v : norm) v = std::max (v, 0.2);
+    std::vector<Vec> phase (K), phaseNew (K);
+    for (size_t j = 0; j < K; ++j) { phase[j] = cumPhase (*f[j], sr); if (fNew[j] != nullptr) phaseNew[j] = cumPhase (*fNew[j], sr); }
+    std::vector<double> fmax (K); for (size_t j = 0; j < K; ++j) fmax[j] = maxOf (*f[j]);
+    for (int h = 1; h <= nh; ++h)
+    {
+        hooks.check();
+        std::vector<size_t> act;                                              // the voices that have this overtone below the top of the band
+        for (size_t j = 0; j < K; ++j) if ((double) h * fmax[j] * 1.03 < 0.45 * sr && (fNew[j] == nullptr || (double) h * maxOf (*fNew[j]) * 1.03 < 0.45 * sr)) act.push_back (j);
+        bool any = false; for (size_t j : act) if (fNew[j] != nullptr) any = true;
+        if (! any) continue;
+        const size_t Ka = act.size(), B = 2 * Ka;
+        std::vector<CVec> e (Ka), eN (Ka);
+        for (size_t a = 0; a < Ka; ++a)
+        {
+            const size_t j = act[a]; e[a].resize (m);
+            for (size_t k = 0; k < m; ++k) { const double ang = (double) h * phase[j][k]; e[a][k] = cplx (std::cos (ang), std::sin (ang)); }
+            if (fNew[j] != nullptr) { eN[a].resize (m); for (size_t k = 0; k < m; ++k) { const double ang = (double) h * phaseNew[j][k]; eN[a][k] = cplx (std::cos (ang), std::sin (ang)); } }
+        }
+        // the Gram matrix of every window (the same for all channels), inverted
+        std::vector<CVec> ginv (nF);
+        parallelFor (nF, [&] (size_t q)
+        {
+            const long st = starts[q];
+            const size_t i0 = (size_t) std::max<long> (0, -st), i1 = (size_t) std::min<long> ((long) W, (long) m - st);
+            CVec G (B * B, cplx (0, 0));
+            for (size_t a = 0; a < Ka; ++a)
+                for (size_t b = a; b < Ka; ++b)
+                {
+                    cplx s0 (0, 0), s1 (0, 0), s2 (0, 0);
+                    for (size_t i = i0; i < i1; ++i)
+                    {
+                        const cplx pr = std::conj (e[a][(size_t) (st + (long) i)]) * e[b][(size_t) (st + (long) i)] * wA[i];
+                        s0 += pr; s1 += pr * u[i]; s2 += pr * (u[i] * u[i]);
+                    }
+                    G[(2 * a) * B + 2 * b] = s0; G[(2 * a) * B + 2 * b + 1] = s1; G[(2 * a + 1) * B + 2 * b] = s1; G[(2 * a + 1) * B + 2 * b + 1] = s2;
+                    if (b != a) { G[(2 * b) * B + 2 * a] = std::conj (s0); G[(2 * b) * B + 2 * a + 1] = std::conj (s1); G[(2 * b + 1) * B + 2 * a] = std::conj (s1); G[(2 * b + 1) * B + 2 * a + 1] = std::conj (s2); }
+                }
+            for (size_t a = 0; a < B; ++a) G[a * B + a] *= 1.0 + 1.0e-3;                                  // (a touch of regularisation, for voices on top of each other)
+            // inverse by Gauss-Jordan
+            CVec inv (B * B, cplx (0, 0)); for (size_t a = 0; a < B; ++a) inv[a * B + a] = 1.0;
+            for (size_t c = 0; c < B; ++c)
+            {
+                size_t piv = c; for (size_t r = c + 1; r < B; ++r) if (std::abs (G[r * B + c]) > std::abs (G[piv * B + c])) piv = r;
+                if (piv != c) for (size_t k = 0; k < B; ++k) { std::swap (G[c * B + k], G[piv * B + k]); std::swap (inv[c * B + k], inv[piv * B + k]); }
+                const cplx d = G[c * B + c]; const cplx di = std::abs (d) > 1e-30 ? 1.0 / d : cplx (0, 0);
+                for (size_t k = 0; k < B; ++k) { G[c * B + k] *= di; inv[c * B + k] *= di; }
+                for (size_t r = 0; r < B; ++r) if (r != c) { const cplx fct = G[r * B + c]; if (fct == cplx (0, 0)) continue; for (size_t k = 0; k < B; ++k) { G[r * B + k] -= fct * G[c * B + k]; inv[r * B + k] -= fct * inv[c * B + k]; } }
+            }
+            ginv[q] = std::move (inv);
+        });
+        // every channel: the amplitudes of each window, and the parts of the moved voices put together again
+        parallelFor (nch, [&] (size_t c)
+        {
+            Vec rem (m, 0.0), add (m, 0.0);
+            CVec r (B), co (B);
+            for (size_t q = 0; q < nF; ++q)
+            {
+                const long st = starts[q];
+                const size_t i0 = (size_t) std::max<long> (0, -st), i1 = (size_t) std::min<long> ((long) W, (long) m - st);
+                for (size_t a = 0; a < Ka; ++a)
+                {
+                    cplx s0 (0, 0), s1 (0, 0);
+                    for (size_t i = i0; i < i1; ++i) { const cplx t = std::conj (e[a][(size_t) (st + (long) i)]) * (x[c][(size_t) (st + (long) i)] * wA[i]); s0 += t; s1 += t * u[i]; }
+                    r[2 * a] = s0; r[2 * a + 1] = s1;
+                }
+                for (size_t a = 0; a < B; ++a) { cplx v (0, 0); for (size_t b = 0; b < B; ++b) v += ginv[q][a * B + b] * r[b]; co[a] = v; }
+                for (size_t a = 0; a < Ka; ++a)
+                {
+                    if (fNew[act[a]] == nullptr) continue;
+                    for (size_t i = i0; i < i1; ++i)
+                    {
+                        const size_t k = (size_t) (st + (long) i);
+                        const cplx amp = 2.0 * (co[2 * a] + co[2 * a + 1] * u[i]);                  // (a real wave is half in the positive frequencies, half in the negative)
+                        const double sw = 0.5 * wA[i];
+                        rem[k] += sw * (amp * e[a][k]).real();
+                        add[k] += sw * (amp * eN[a][k]).real();
+                    }
+                }
+            }
+            for (size_t k = 0; k < m; ++k) { removed[c][k] += rem[k] / norm[k]; added[c][k] += add[k] / norm[k]; }
+        });
+    }
+}
+
 /** The region [lo, hi) where w > 0. */
 bool activeRange (const Vec& w, size_t& lo, size_t& hi)
 {
@@ -333,7 +910,7 @@ bool activeRange (const Vec& w, size_t& lo, size_t& hi)
 Vec timeAxis (size_t n, double tSeg0, double sr) { Vec t (n); for (size_t i = 0; i < n; ++i) t[i] = tSeg0 + (double) i / sr; return t; }
 } // namespace
 
-Block retuneSegment (const Block& seg, int sr, double tSeg0, const Vec& ts, const Vec& f0, const Vec& off, const Params& p, const Hooks& hooks)
+Block retuneSegment (const Block& seg, int sr, double tSeg0, const Vec& ts, const Vec& f0, const Vec& off, const Params& p, const Hooks& hooks, const std::vector<Vec>& nb)
 {
     const size_t nch = seg.size(), n = seg[0].size();
     const Vec t = timeAxis (n, tSeg0, sr);
@@ -353,7 +930,21 @@ Block retuneSegment (const Block& seg, int sr, double tSeg0, const Vec& ts, cons
     const Vec phi0 = cumPhase (Vec (f0t.begin() + (long) lo, f0t.begin() + (long) hi), sr), phi1 = cumPhase (Vec (f0n.begin() + (long) lo, f0n.begin() + (long) hi), sr);
     std::vector<Vec> x (nch, Vec (m)), removed (nch, Vec (m, 0.0)), added (nch, Vec (m, 0.0));
     for (size_t c = 0; c < nch; ++c) for (size_t k = 0; k < m; ++k) x[c][k] = (double) seg[c][lo + k];
+    std::vector<Vec> others;                                          // the voices beside the note, as lines over the samples of this stretch
+    const Vec tLo (t.begin() + (long) lo, t.begin() + (long) hi);
+    for (const auto& line : nb) if (line.size() == ts.size()) others.push_back (interp (tLo, ts, line));
     const double fmaxNew = maxOf (Vec (f0n.begin() + (long) lo, f0n.begin() + (long) hi));
+    if (! others.empty())
+    {
+        // with other voices close by, the note and the voices are fitted together, window by window, so only the note's own sound is moved
+        hooks.report ("Correcting the note", 0.2);
+        const Vec fOld (f0t.begin() + (long) lo, f0t.begin() + (long) hi), fNew (f0n.begin() + (long) lo, f0n.begin() + (long) hi);
+        std::vector<const Vec*> fp = { &fOld }, fn = { &fNew };
+        for (auto& o : others) { fp.push_back (&o); fn.push_back (nullptr); }
+        separateAndMove (x, sr, fp, fn, p.nharm, p.sepWindow, removed, added, hooks);
+        for (size_t c = 0; c < nch; ++c) for (size_t k = 0; k < m; ++k) { removed[c][k] *= w[lo + k]; added[c][k] *= w[lo + k]; }
+    }
+    else
     for (int h = 1; h <= p.nharm; ++h)
     {
         hooks.check();

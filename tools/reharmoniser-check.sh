@@ -5,6 +5,9 @@ set -e
 cd "$(dirname "$0")/.."
 g++ -std=c++17 -O2 -Wall -Wextra -pthread tests/reharmoniser_test.cpp src/reharmoniser/Engine.cpp src/reharmoniser/Spectrogram.cpp src/reharmoniser/Dsp.cpp -o /tmp/reharmoniser_test
 /tmp/reharmoniser_test "$1"
+# no files needed: the timecode detector, and a boxed note beside a louder voice (its line, and what a retune leaves of the voice beside it)
+g++ -std=c++17 -O2 -Wall -Wextra -pthread tests/reharmoniser_voices_test.cpp src/reharmoniser/Engine.cpp src/reharmoniser/Dsp.cpp -o /tmp/reharmoniser_voices_test
+/tmp/reharmoniser_voices_test
 if [ -n "$2" ]; then   # optional: real clips (made with tools/reharmoniser/make_golden_real.py)
   g++ -std=c++17 -O2 -Wall -Wextra -pthread tests/reharmoniser_real_test.cpp src/reharmoniser/Engine.cpp src/reharmoniser/Spectrogram.cpp src/reharmoniser/Dsp.cpp -o /tmp/reharmoniser_real_test
   /tmp/reharmoniser_real_test "$2"

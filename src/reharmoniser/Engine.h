@@ -12,6 +12,7 @@ namespace rehar
 struct Params
 {
     double strength = 1.0, smooth = 0.25, ease = 0.10, hold = 0.25, fadeOut = 0.35, bw = 45.0;
+    double sepWindow = 0.20;                  // seconds: the window of the fit that keeps the note apart from the voices beside it
     int nharm = 10;
     bool match = true;
     double a4 = 440.0, move = 0.0, snap = 0.0, keep = 0.0;
@@ -22,6 +23,9 @@ using Block = std::vector<std::vector<float>>;
 inline std::vector<Span> spansOf (const Block& b) { std::vector<Span> s; for (auto& c : b) s.push_back ({ c.data(), c.size() }); return s; }
 
 // ---------------------------------------------------------------------------------------------------- measuring a note
+/** Is this channel a timecode (LTC) signal rather than music? It is a loud, very steady, buzzing signal (its level hardly moves and its peaks are
+    barely above its average), which music never is. Such a channel must not be measured, and must not be changed by a correction. */
+bool looksLikeTimecode (const Span& channel, int sampleRate);
 /** The channels to measure a note with (the loudest few in the note's pitch range after weighting) and their weights. visGainDb: the "see" gain per channel (empty = all 0 dB). */
 struct Tracking { std::vector<int> channels; Vec weights; };
 Tracking trackingInputs (const std::vector<Span>& seg, int sr, double fLo, double fHi, const Vec& visGainDb = {}, int kmax = 6);
@@ -31,6 +35,21 @@ struct Track { Vec ts, f0; };
 Track trackNote (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, double t0, double t1, double fLo, double fHi, double hopS = 0.02);
 /** Keeps the demodulated partials centred (refines the f0 track). */
 Vec refineTrack (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, const Vec& ts, const Vec& f0, double bw = 30, int nh = 4, int iters = 4, double smoothS = 0.12);
+/** Like trackNote, but it follows the voice in the MIDDLE of the box (a prior centred on the box, and a continuous path through time instead of picking the
+    loudest comb frame by frame), so a quieter / flatter voice that is boxed is not swapped for a louder neighbour. The returned track is a coarse first guess. */
+Track trackNoteLocked (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, double t0, double t1, double fLo, double fHi, double hopS = 0.02, double prior = 20.0);
+/** The refined line of ONE voice among others: coarse to fine, every overtone seen through a window that is the same width in pitch (so a neighbouring voice a
+    few Hz away is shut out at every overtone) and the overtones that disagree with the rest (a neighbour beating in them) count for less. wide: the first windows are twice as
+    wide, so a voice swinging far from the line (a big vibrato) is still caught; only for a voice with no other near it (or with the others taken out first). */
+Vec refineTrackLocked (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, const Vec& ts, const Vec& f0, double b0 = 20.0, bool wide = false);
+/** refineTrackLocked with the other voices taken out first: nb[i] are the lines (Hz) of the neighbouring voices on the same time grid as ts. */
+Vec refineTrackPeeled (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, const Vec& ts, const Vec& f0, const std::vector<Vec>& nb, double b0 = 20.0, bool wide = false);
+/** The other voices singing within +-span cents of the boxed one (on the same time grid as ts): the boxed voice is taken out, then the strongest steady line left near
+    it is followed, refined and taken out too, up to maxVoices times; a line is only kept when it clearly stands above its surroundings. */
+std::vector<Vec> findNeighbours (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, const Vec& ts, const Vec& f0, double span = 110.0, int maxVoices = 2);
+/** Everything the editor measures about a boxed note: its line (Hz) on the grid ts, and the lines of the voices beside it (empty when it is alone). */
+struct NoteMeasure { Vec ts, f0; std::vector<Vec> nb; };
+NoteMeasure measureNote (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, double t0, double t1, double fLo, double fHi, const Hooks& hooks = {}, double prior = 20.0);
 /** Does the measured line look like an overtone? Returns k (2..4) when it probably is the k-th partial, else 1. */
 int detectPartial (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, const Vec& ts, const Vec& f0);
 
@@ -44,8 +63,10 @@ struct Plan
 /** Works out the correction for one note. pull: cents per time step added by hand (empty or the size of ts). */
 Plan planCurve (const Vec& ts, const Vec& f0, const Params& p, int midi, const Vec& pull = {});
 
-/** Retunes the note in 'seg' (all channels alike). f0 in Hz and off in cents on the grid ts (seconds, from the start of seg + tSeg0). Returns the corrected copy. */
-Block retuneSegment (const Block& seg, int sr, double tSeg0, const Vec& ts, const Vec& f0, const Vec& off, const Params& p, const Hooks& hooks = {});
+/** Retunes the note in 'seg' (all channels alike). f0 in Hz and off in cents on the grid ts (seconds, from the start of seg + tSeg0). Returns the corrected copy.
+    nb: the lines (Hz, on the grid ts) of other voices found beside the note: they are taken out of what the note is measured in and the band is kept narrow, so
+    they are left as they were. Empty (or none found) = the band is p.bw * sqrt (overtone number), as it always was. */
+Block retuneSegment (const Block& seg, int sr, double tSeg0, const Vec& ts, const Vec& f0, const Vec& off, const Params& p, const Hooks& hooks = {}, const std::vector<Vec>& nb = {});
 /** Keeps only the picked note (fundamental and overtones, following fPts) between tA and tB; everything else there is removed (for the Isolate audition). */
 Block soloSegment (const Block& seg, int sr, double tSeg0, const Vec& ts, const Vec& fPts, const Params& p, double tA, double tB, double fade = 0.06);
 

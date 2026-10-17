@@ -17,6 +17,7 @@ struct NoteEdit
     int midi = 57; double a4 = 440.0;
     Params params;
     Vec ts, f0, off;                               // the measured note (seconds, Hz) and the correction (cents) on the same grid
+    std::vector<Vec> nb;                           // the lines (Hz, on the same grid) of other voices found beside the note: they are kept as they were
     bool enabled = true;
     juce::String label;
     bool isVoices = false; VoiceSet vs; Vec offs, vis; int vtarget = 0; std::vector<bool> vticks;     // a Section ReFinement move: the voices found, how far each moved, the See gains used
@@ -29,6 +30,7 @@ struct Correction
 {
     std::vector<NoteEdit> list;
     Vec isoTs, isoF; Params isoP;                  // Isolate: the picked note on its own (empty = off)
+    std::vector<char> leave;                       // channels that must come out exactly as they went in (the TimeCode channel); empty = none
 };
 /** Applies a Correction to block[channel][frame]. originSec is the time (in the editor's seconds) of the first frame of the block, so the
     block can be any stretch of the audio. The length of the block never changes. Throws Cancelled if the hook says so. */
@@ -86,7 +88,7 @@ private:
     class View; class Worker; class EditsList; struct Section; class SectionHeader;
     friend class View;
     std::unique_ptr<juce::LookAndFeel_V4> look;      // (declared first so it is destroyed last)
-    struct Cand { bool has = false; double t0 = 0, t1 = 0, fLo = 0, fHi = 0; Vec ts, f0; int hint = 1, midi = 57; Plan plan; } cand;
+    struct Cand { bool has = false; double t0 = 0, t1 = 0, fLo = 0, fHi = 0; Vec ts, f0; std::vector<Vec> nb; int hint = 1, midi = 57; Plan plan; } cand;
     struct Hist { Params p; };
     struct BCand { bool has = false; Brush b; } bcand;
     struct VCand { bool has = false, preview = false; VoiceSet vs; } vcand;
@@ -127,6 +129,8 @@ private:
     void rebuildSeeStrips();
     void layoutSeeStrips();
     Vec seeGainsDb() const;                          // the See mixer as dB per channel (muted / not soloed = -100); empty = all flat
+    Vec seeGainsLin() const;                         // the same as linear gains for the picture (empty = all flat)
+    std::vector<char> ltcCh;                         // channels that are timecode, not music (found when the audio is given): shown muted, never measured, never changed
     void seeChanged();
     void recombine();
     void brushChanged();

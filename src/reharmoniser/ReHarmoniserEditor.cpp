@@ -743,7 +743,7 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     row (smoothRow, "Wobble faster than", 0.05, 1.5, 0.05, 0.25, " s", "Slower drift than this is treated as pitch; faster is treated as wobble.");
     row (easeRow, "Ease in", 0, 1, 0.05, 0.1, " s", "The correction fades in over this time after the start of the box.");
     row (holdRow, "Tail hold", 0, 1.5, 0.05, 0.25, " s", "Keep correcting the room's ring-out for this long after the end of the box.");
-    row (bwRow, "Band width", 20, 120, 5, 45, " Hz", "Width of the band taken around each overtone. Wider removes more of the old pitch but can catch neighbouring voices.");
+    row (bwRow, "Band width", 20, 120, 5, 45, " Hz", "Width of the band taken around each overtone. Wider removes more of the old pitch but can catch neighbouring voices. (Where other voices are found beside the note they are kept apart from it separately, so this matters less there.)");
     partialBox.addItem ("Box is round: the note itself", 1); partialBox.addItem ("its 2nd line (octave up)", 2); partialBox.addItem ("its 3rd line", 3); partialBox.addItem ("its 4th line", 4);
     partialBox.setSelectedId (1, juce::dontSendNotification); partialBox.onChange = [this] { partial = partialBox.getSelectedId(); if (cand.has) measure(); };
     partialBox.setColour (juce::ComboBox::backgroundColourId, cBg); partialBox.setColour (juce::ComboBox::textColourId, cAmber); partialBox.setColour (juce::ComboBox::outlineColourId, cLine);
@@ -914,6 +914,10 @@ void ReHarmoniserEditor::setAudio (std::shared_ptr<const Block> audio, int sampl
     orig = std::move (audio); sr = sampleRate;
     if (orig == nullptr || orig->empty() || (*orig)[0].empty() || sr <= 0) { setStatus ("There is no audio to work on.", true); return; }
     dur = (double) (*orig)[0].size() / sr;
+    ltcCh.assign (orig->size(), 0);
+    { int nl = 0; for (size_t c = 0; c < orig->size(); ++c) if (looksLikeTimecode ({ (*orig)[c].data(), (*orig)[c].size() }, sr)) { ltcCh[c] = 1; ++nl; }
+      if (nl >= (int) orig->size()) std::fill (ltcCh.begin(), ltcCh.end(), (char) 0);          // (never leave nothing to listen to)
+    }
     rebuildSeeStrips(); spec = nullptr;
     view->vt0 = 0; view->vt1 = dur; view->vm0 = 43; view->vm1 = 88; view->clampView();
     startAnalysis();
@@ -925,9 +929,11 @@ void ReHarmoniserEditor::startAnalysis()
     auto audio = orig; const int rate = sr; const auto detail = detailMode == 0 ? Spectrogram::Detail::Pitch : detailMode == 2 ? Spectrogram::Detail::Time : Spectrogram::Detail::Balanced;
     auto result = std::make_shared<std::pair<std::shared_ptr<Mix>, double>>();
     auto specOut = std::make_shared<std::shared_ptr<Spectrogram>>();
-    startJob ("Analysing the audio", [audio, rate, detail, result, specOut] (Worker& w) -> juce::String
+    const Vec seeLin = seeGainsLin();
+    startJob ("Analysing the audio", [audio, rate, detail, result, specOut, seeLin] (Worker& w) -> juce::String
     {
         auto sp = std::make_shared<Spectrogram>(); sp->build (spansOf (*audio), rate, detail, w.hooks());
+        if (! seeLin.empty()) sp->setGains (seeLin);
         *result = { makeMix (*sp), sp->ref }; *specOut = sp;
         return {};
     },
@@ -960,7 +966,7 @@ void ReHarmoniserEditor::measure()
     if (orig == nullptr) return;
     const double t0 = cand.t0, t1 = cand.t1, fLo = cand.fLo, fHi = cand.fHi; const int mode = refModeId, part = partial; const double a4in = a4; const Vec vis = seeGainsDb();
     auto audio = orig; const int rate = sr; const double total = dur;
-    struct Res { Vec ts, f0; int hint = 1; double a4 = 440.0; bool refFound = false; };
+    struct Res { Vec ts, f0; std::vector<Vec> nb; int hint = 1; double a4 = 440.0; bool refFound = false; };
     auto res = std::make_shared<Res>();
     measuring = true; tipLabel.setVisible (false); tipUse.setVisible (false); tipIgnore.setVisible (false);
     startJob ("Measuring the note", [=] (Worker& w) -> juce::String
@@ -979,7 +985,7 @@ void ReHarmoniserEditor::measure()
             if (r1 - r0 >= 2.0)
             {
                 double s0r; Block b = slice (r0, r1, s0r);
-                try { const auto rp = refPoints (spansOf (b), rate, s0r, {}, 4, h); const auto st = refStats (rp.D, rp.W); if (st.ok) { res->a4 = st.a4; res->refFound = true; } }
+                try { const auto rp = refPoints (spansOf (b), rate, s0r, vis, 4, h); const auto st = refStats (rp.D, rp.W); if (st.ok) { res->a4 = st.a4; res->refFound = true; } }
                 catch (const Cancelled&) { throw; } catch (...) {}
             }
         }
@@ -987,9 +993,8 @@ void ReHarmoniserEditor::measure()
         double s0; Block seg = slice (t0 - 0.8, t1 + 0.8, s0);
         const auto tk = trackingInputs (spansOf (seg), rate, fLo, fHi, vis);
         std::vector<Span> chans; for (int c : tk.channels) chans.push_back ({ seg[(size_t) c].data(), seg[(size_t) c].size() });
-        auto tr = trackNote (chans, tk.weights, rate, s0, t0, t1, fLo, fHi);
-        h.report ("Measuring the note", 0.6); h.check();
-        res->f0 = refineTrack (chans, tk.weights, rate, s0, tr.ts, tr.f0); res->ts = tr.ts;
+        const auto nm = measureNote (chans, tk.weights, rate, s0, t0, t1, fLo, fHi, h);
+        res->f0 = nm.f0; res->ts = nm.ts; res->nb = nm.nb;
         res->hint = part == 1 ? detectPartial (chans, tk.weights, rate, s0, res->ts, res->f0) : 1;
         return {};
     },
@@ -997,13 +1002,13 @@ void ReHarmoniserEditor::measure()
     {
         measuring = false;
         if (err.isNotEmpty()) { cand.has = false; view->clearSelection(); setStatus (err == "Cancelled." ? err : err, err != "Cancelled."); updateInfo(); view->repaint(); return; }
-        cand.ts = res->ts; cand.f0 = res->f0; cand.hint = res->hint;
+        cand.ts = res->ts; cand.f0 = res->f0; cand.nb = res->nb; cand.hint = res->hint;
         if (res->refFound) { a4 = res->a4; a4Box.setText (juce::String (a4, 1), false); refInfo.setText ("Measured: A4 " + juce::String (a4, 1) + " Hz", juce::dontSendNotification); view->dirty = true; }
         if (! midiLocked) cand.midi = (int) std::lround (midiOf (median (cand.f0), a4));
         cand.has = true; inHistory = true; syncSliders(); inHistory = false; hist.clear(); hist.push_back ({ params }); histPos = 0;
         replan(); view->setSelection (cand.t0, cand.t1, midiOf (cand.fLo * partial, a4), midiOf (cand.fHi * partial, a4));
         view->showNote (cand.t0, cand.t1, cand.f0.empty() ? cand.fLo : median (cand.f0));
-        auditionStale = true; openSection (1); setStatus ("Measured. Change Move whole note or Snap to note, then Audition (it gets ready; press Space to listen) and Apply correction.");
+        auditionStale = true; openSection (1); setStatus (juce::String ("Measured") + (res->nb.empty() ? "" : " (" + juce::String ((int) res->nb.size()) + (res->nb.size() == 1 ? " other voice" : " other voices") + " found beside it, they will be left as they are)") + ". Change Move whole note or Snap to note, then Audition (it gets ready; press Space to listen) and Apply correction.");
     });
 }
 
@@ -1040,11 +1045,11 @@ void ReHarmoniserEditor::updateInfo()
 void ReHarmoniserEditor::detectReference()
 {
     if (orig == nullptr || busy) return;
-    auto audio = orig; const int rate = sr;
+    auto audio = orig; const int rate = sr; const Vec vis = seeGainsDb();
     auto res = std::make_shared<RefStats>();
-    startJob ("Measuring the choir's pitch", [audio, rate, res] (Worker& w) -> juce::String
+    startJob ("Measuring the choir's pitch", [audio, rate, res, vis] (Worker& w) -> juce::String
     {
-        const auto rp = refPoints (spansOf (*audio), rate, 0.0, {}, 4, w.hooks()); *res = refStats (rp.D, rp.W); return {};
+        const auto rp = refPoints (spansOf (*audio), rate, 0.0, vis, 4, w.hooks()); *res = refStats (rp.D, rp.W); return {};
     },
     [this, res] (const juce::String& err)
     {
@@ -1071,11 +1076,11 @@ void ReHarmoniserEditor::closeChartSoon()
 void ReHarmoniserEditor::showChart()
 {
     if (orig == nullptr || busy) return;
-    auto audio = orig; const int rate = sr;
+    auto audio = orig; const int rate = sr; const Vec vis = seeGainsDb();
     auto ser = std::make_shared<std::vector<RefSeriesPoint>>(); auto st = std::make_shared<RefStats>();
-    startJob ("Measuring the choir's pitch", [audio, rate, ser, st] (Worker& w) -> juce::String
+    startJob ("Measuring the choir's pitch", [audio, rate, ser, st, vis] (Worker& w) -> juce::String
     {
-        const auto rp = refPoints (spansOf (*audio), rate, 0.0, {}, 4, w.hooks());
+        const auto rp = refPoints (spansOf (*audio), rate, 0.0, vis, 4, w.hooks());
         *ser = refSeries (rp); *st = refStats (rp.D, rp.W); return {};
     },
     [this, ser, st] (const juce::String& err)
@@ -1126,7 +1131,7 @@ void ReHarmoniserEditor::renderAndSet (bool withPending, std::function<void()> t
     }
     if (withPending && cand.has)
     {
-        NoteEdit p; p.t0 = cand.t0; p.t1 = cand.t1; p.fLo = cand.fLo; p.fHi = cand.fHi; p.midi = cand.midi; p.a4 = a4; p.params = params; p.ts = cand.ts; p.f0 = cand.f0; p.off = cand.plan.off;
+        NoteEdit p; p.t0 = cand.t0; p.t1 = cand.t1; p.fLo = cand.fLo; p.fHi = cand.fHi; p.midi = cand.midi; p.a4 = a4; p.params = params; p.ts = cand.ts; p.f0 = cand.f0; p.nb = cand.nb; p.off = cand.plan.off;
         list.push_back (std::move (p));
     }
     originalMode = false; originalBtn.setToggleState (false, juce::dontSendNotification);
@@ -1139,7 +1144,7 @@ void ReHarmoniserEditor::renderAndSet (bool withPending, std::function<void()> t
     }
     // Isolate: the picked note on its own (as it would sound after the planned correction), the music around it unchanged
     auto corr = std::make_shared<Correction>();
-    corr->list = std::move (list);
+    corr->list = std::move (list); corr->leave = ltcCh;
     if (isolating && withPending && cand.has && ! cand.ts.empty() && cand.plan.off.size() == cand.f0.size() && cand.f0.size() == cand.ts.size())
     {
         corr->isoTs = cand.ts; corr->isoF.resize (cand.f0.size());
@@ -1185,8 +1190,11 @@ void renderCorrection (const Correction& c, Block& out, int rate, double origin,
         i0 = (size_t) std::floor ((a - origin) * rate); i1 = juce::jmin (len, (size_t) std::floor ((b - origin) * rate));
         return i1 > i0 + 16;
     };
-    auto take = [&] (size_t i0, size_t i1) { Block sg (out.size()); for (size_t ch = 0; ch < sg.size(); ++ch) sg[ch].assign (out[ch].begin() + (long) i0, out[ch].begin() + (long) i1); return sg; };
-    auto put = [&] (const Block& done, size_t i0) { for (size_t ch = 0; ch < done.size() && ch < out.size(); ++ch) std::copy (done[ch].begin(), done[ch].end(), out[ch].begin() + (long) i0); };
+    std::vector<size_t> use;                                         // the channels that are worked on (a timecode channel is left exactly as it is)
+    for (size_t ch = 0; ch < out.size(); ++ch) if (! (ch < c.leave.size() && c.leave[ch])) use.push_back (ch);
+    if (use.empty()) return;
+    auto take = [&] (size_t i0, size_t i1) { Block sg (use.size()); for (size_t k = 0; k < sg.size(); ++k) sg[k].assign (out[use[k]].begin() + (long) i0, out[use[k]].begin() + (long) i1); return sg; };
+    auto put = [&] (const Block& done, size_t i0) { for (size_t k = 0; k < done.size() && k < use.size(); ++k) std::copy (done[k].begin(), done[k].end(), out[use[k]].begin() + (long) i0); };
     const size_t n = c.list.size();
     for (size_t k = 0; k < n; ++k)
     {
@@ -1198,7 +1206,8 @@ void renderCorrection (const Correction& c, Block& out, int rate, double origin,
         {
             if (! cut (e.vs.t0 - 0.8, e.vs.t1 + 0.8, i0, i1)) continue;
             const Block sg = take (i0, i1);
-            const auto trk = voiceInputs (spansOf (sg), rate, e.vs.fT, e.vis);
+            Vec visUse; if (! e.vis.empty()) for (size_t k = 0; k < use.size(); ++k) visUse.push_back (use[k] < e.vis.size() ? e.vis[use[k]] : 0.0);         // (the See gains of the channels that are worked on)
+            const auto trk = voiceInputs (spansOf (sg), rate, e.vs.fT, visUse);
             put (retuneVoices (sg, rate, origin + (double) i0 / rate, e.vs.fT, e.vs.ts, e.vs.C, e.offs, e.vs.t0, e.vs.t1, trk, sub), i0);
             continue;
         }
@@ -1210,7 +1219,7 @@ void renderCorrection (const Correction& c, Block& out, int rate, double origin,
             continue;
         }
         if (e.ts.empty() || ! cut (e.ts.front() - 0.15 - 0.3, e.ts.back() + e.params.hold + e.params.fadeOut + 0.3, i0, i1)) continue;
-        put (retuneSegment (take (i0, i1), rate, origin + (double) i0 / rate, e.ts, e.f0, e.off, e.params, sub), i0);
+        put (retuneSegment (take (i0, i1), rate, origin + (double) i0 / rate, e.ts, e.f0, e.off, e.params, sub, e.nb), i0);
     }
     size_t i0 = 0, i1 = 0;
     if (! c.isoTs.empty() && cut (c.isoTs.front() - 0.5, c.isoTs.back() + 0.5, i0, i1))
@@ -1221,7 +1230,7 @@ void ReHarmoniserEditor::applyCorrection()
 {
     if (! cand.has || busy) return;
     NoteEdit e; e.id = nextId++; e.t0 = cand.t0; e.t1 = cand.t1; e.fLo = cand.fLo; e.fHi = cand.fHi; e.midi = cand.midi; e.a4 = a4;
-    e.params = params; e.ts = cand.ts; e.f0 = cand.f0; e.off = cand.plan.off;
+    e.params = params; e.ts = cand.ts; e.f0 = cand.f0; e.nb = cand.nb; e.off = cand.plan.off;
     e.label = noteName (e.midi) + " at " + fmtTime (e.t0) + "   " + juce::String (median (cand.plan.c), 1) + " > " + juce::String (median (cand.plan.planned), 1) + " c";
     edits.push_back (e); undone.clear();
     cand = Cand(); view->clearSelection(); nameBox.setText ("", false); hist.clear(); histPos = 0;
@@ -1433,7 +1442,7 @@ void ReHarmoniserEditor::redoStep()
 
 void ReHarmoniserEditor::loadAsPending (const NoteEdit& e)
 {
-    cand = Cand(); cand.has = true; cand.t0 = e.t0; cand.t1 = e.t1; cand.fLo = e.fLo; cand.fHi = e.fHi; cand.ts = e.ts; cand.f0 = e.f0; cand.midi = e.midi;
+    cand = Cand(); cand.has = true; cand.t0 = e.t0; cand.t1 = e.t1; cand.fLo = e.fLo; cand.fHi = e.fHi; cand.ts = e.ts; cand.f0 = e.f0; cand.nb = e.nb; cand.midi = e.midi;
     a4 = e.a4; a4Box.setText (juce::String (a4, 1), false); params = e.params; midiLocked = true; partial = 1; partialBox.setSelectedId (1, juce::dontSendNotification);
     inHistory = true; syncSliders(); inHistory = false; hist.clear(); hist.push_back ({ params }); histPos = 0;
     replan(); view->setSelection (cand.t0, cand.t1, midiOf (cand.fLo, a4), midiOf (cand.fHi, a4));
@@ -1534,6 +1543,7 @@ void ReHarmoniserEditor::rebuildSeeStrips()
         styleButton (st->m); styleButton (st->s); st->m.setClickingTogglesState (true); st->s.setClickingTogglesState (true);
         st->m.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffb04a3a)); st->s.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffc9a227));
         st->m.setTooltip ("Hide this channel from the picture (and from measuring). It does not change what you hear.");
+        if (c < ltcCh.size() && ltcCh[c]) { st->m.setToggleState (true, juce::dontSendNotification); st->m.setTooltip ("This channel is timecode, not music, so it is hidden from the picture and from measuring. A correction never changes it."); }
         st->s.setTooltip ("Show only the soloed channels in the picture (and measure with them). It does not change what you hear.");
         styleSlider (st->g, -24, 12, 0.5, 0.0, " dB"); st->g.setDoubleClickReturnValue (true, 0.0);
         st->g.setTooltip ("How bright this channel is in the picture. It does not change what you hear.");
@@ -1574,14 +1584,21 @@ Vec ReHarmoniserEditor::seeGainsDb() const
     return g;
 }
 
+Vec ReHarmoniserEditor::seeGainsLin() const
+{
+    const auto db = seeGainsDb(); Vec lin;
+    if (db.empty()) return lin;
+    lin.assign (db.size(), 1.0); for (size_t c = 0; c < db.size(); ++c) lin[c] = db[c] <= -99.0 ? 0.0 : std::pow (10.0, db[c] / 20.0);
+    return lin;
+}
+
 void ReHarmoniserEditor::seeChanged() { seeDirty = true; seeDirtyAt = juce::Time::getMillisecondCounter(); }
 
 void ReHarmoniserEditor::recombine()
 {
     if (spec == nullptr || busy) return;
     seeDirty = false;
-    Vec lin;
-    { const auto db = seeGainsDb(); lin.assign (spec->gain.size(), 1.0); for (size_t c = 0; c < db.size() && c < lin.size(); ++c) lin[c] = db[c] <= -99.0 ? 0.0 : std::pow (10.0, db[c] / 20.0); }
+    Vec lin = seeGainsLin(); if (lin.size() != spec->gain.size()) lin.assign (spec->gain.size(), 1.0);
     auto sp = spec; auto res = std::make_shared<std::pair<std::shared_ptr<Mix>, double>>();
     startJob ("Updating the picture", [sp, lin, res] (Worker&) -> juce::String
     {
