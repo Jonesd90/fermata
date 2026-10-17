@@ -32,7 +32,7 @@ GitHub builds the program for you on its own computers. You only click buttons.
 
 ## Main window layout
 
-Driver inputs are always listed on the left and driver outputs on the right (drag the bar between them to give one more room), Outputs have live meters too, and show which Ext bus feeds them.
+The main window has the "desk" look (src/ui/DeskLook.h): a blue-grey panel (six colours, chosen in Project > Colour theme and remembered as `deskColour`), wooden side panels and a wooden rail along the bottom that carries the tabs of minimised windows. Driver inputs are a row of vertical strips along the top and driver outputs a row of strips below; each row scrolls sideways. An input strip has the display (your second name, the driver name), the gain knob with its value, the preamp keys with pictures, a meter, E / S / S-L / T and the talkback mic key. The pictures are SVG drawings kept as strings in DeskLook.h (the talkback mic's red TALK is drawn as text).
 
 The top row of buttons: **Project**, **Audio settings**, **Project Designer**, **Take Window**, **Edit Window**, **Mixer** (and **Meter bridge**). There is no Record button here: recording is always started with **REC** in a take window. A faint Fermata mark sits behind the window.
 

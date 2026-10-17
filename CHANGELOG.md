@@ -6,6 +6,14 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.58.0
+- **A new look for the main window: the blue desk.** The Driver Inputs are now a row of vertical strips along the top and the Driver Outputs a row of strips below (each row scrolls sideways when there are more than fit). A strip has a coloured bar top and bottom, a black display with your own second name and the driver's name, the gain as a knob ringed with 21 lit segments (drag up or down; double-click for 20 dB; double-click the number under it to type a gain; the mouse wheel still never changes it), the preamp keys, a live meter with its dB scale, the E / S / S-L / T monitor keys and the talkback mic key. The panel is light blue-grey with wooden side panels and a thick wooden rail along the bottom (the minimised windows sit on it as cream tabs). Everything else about the controls works as before.
+- **Little pictures on the preamp keys:** a microphone (MIC) or a jack plug (LINE), a lightning bolt (48V), a ramp (LC), a pillow (PAD) and a rocket (BOOST), each over a small caption; phase and Z HI stay as words. The TB key has a megaphone, the audition buttons a pair of headphones, and the talkback mic key is a large-diaphragm studio microphone with a red TALK under it. The keys have 10 pixel rounded corners and are lighter than the panel so they stand out; a lit key goes dark with a coloured line along its bottom (red for 48V, amber for the rest, green / orange for monitoring, purple for talkback).
+- **Six colours, chosen once in the Project menu** (Project > Colour theme): blue (the default), red, orange, yellow, green and purple. The choice is remembered. Only the panel changes colour; meters and channel colours do not.
+- **The menu bar squares are renamed:** C-R is now **Talkback** and P-B is **Playback**. They are clickable (as before) as well as being switched by the + and - keys, and on the Stream Deck.
+- The main window opens taller (940 pixels) to fit the strips; on a smaller screen the inputs scroll up and down.
+- Not changed yet: the Take, Edit, Trim and Mixer windows keep their present look.
+
 ## 2.57.1
 - **The menu bar stays visible on a small screen.** An edit or take window (or any other) that opened maximised, or at a place remembered from a bigger screen, could cover the menu bar along the top of the main window, for example on a laptop. Windows are now checked as soon as they open and whenever they come to the front: one that would cover the bar is moved down below it (a maximised one is fitted to the screen under the bar instead), made shorter if its bottom would go off the screen, and the bar is brought back in front.
 

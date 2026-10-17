@@ -6,39 +6,54 @@
 
 namespace td
 {
-/** One driver input: its number and fixed driver name, an optional second name, a live meter, and the preamp controls
-    (they belong to the physical input, so there is exactly one set no matter how many mixers or tracks use it). */
+/** One driver input, drawn as a strip of the desk: a coloured bar, a black display with your own second name and the driver's name, the gain knob with its value,
+    the preamp keys (MIC / 48V / phase / low cut / PAD / Z HI / BOOST, with little pictures), a live meter, the monitor keys E / S / S-L / T and CR.
+    The preamp controls belong to the physical input, so there is exactly one set no matter how many mixers or tracks use it. */
 class InputRow : public juce::Component
 {
 public:
     InputRow (AppContext& a, int index) : app (a), idx (index)
     {
-        number.setText (juce::String (idx + 1), juce::dontSendNotification);
-        number.setJustificationType (juce::Justification::centredRight);
-        number.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-        driver.setText (app.project.inputs[(size_t) idx].driverName, juce::dontSendNotification);
-        driver.setColour (juce::Label::textColourId, theme::text);
+        using desk::Ic;
+        colour = desk::stripColour (idx);
+        driver.setJustificationType (juce::Justification::centredLeft);
+        driver.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 9.0f, juce::Font::plain));
+        driver.setColour (juce::Label::textColourId, colour);
+        driver.setMinimumHorizontalScale (0.7f);
+        driver.setInterceptsMouseClicks (false, false);
         driver.setTooltip ("The name the audio driver gives this input (it cannot be changed)");
-        alias.setText (app.project.inputs[(size_t) idx].name, juce::dontSendNotification);
-        alias.setTextToShowWhenEmpty ("second name (e.g. ORTF L)", theme::dimText.withAlpha (0.6f));
-        alias.setTooltip ("Your own name for this input. It is shown next to the driver name everywhere.");
+        alias.setFont (juce::FontOptions (12.5f, juce::Font::bold));
+        alias.setColour (juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
+        alias.setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+        alias.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
+        alias.setColour (juce::TextEditor::textColourId, juce::Colours::white);
+        alias.setIndents (0, 0); alias.setBorder (juce::BorderSize<int> (0));
+        alias.setTextToShowWhenEmpty ("name", juce::Colours::white.withAlpha (0.35f));
+        alias.setTooltip ("Your own name for this input (click to type it). It is shown next to the driver name everywhere.");
         auto commit = [this]
         {
             if (idx >= (int) app.project.inputs.size()) return;
             app.project.setInputName (idx, alias.getText());
         };
         alias.onReturnKey = commit; alias.onFocusLost = commit;
-        for (auto* c : std::initializer_list<juce::Component*> { &number, &driver, &alias, &meter }) addAndMakeVisible (c);
+        for (auto* c : std::initializer_list<juce::Component*> { &driver, &alias, &meter, &scale, &readout }) addAndMakeVisible (c);
 
-        gain.setSliderStyle (juce::Slider::LinearHorizontal);
-        gain.setTextBoxStyle (juce::Slider::TextBoxRight, false, 62, 20);
         gain.setRange (0.0, 66.0, 0.5);
-        gain.setScrollWheelEnabled (false);                   // the mouse wheel must never change a preamp gain by accident
-        gain.setTextValueSuffix (" dB");
         gain.setDoubleClickReturnValue (true, 20.0);
-        gain.setTooltip ("Preamp gain (double-click for 20 dB)");
-        gain.onValueChange = [this] { push(); };
+        gain.setRing (colour);
+        gain.setTooltip ("Preamp gain: drag up or down (double-click for 20 dB; the mouse wheel never changes it)");
+        gain.onValueChange = [this] { updateReadout(); push(); };
         addAndMakeVisible (gain);
+        readout.setTooltip ("Preamp gain in dB. Double-click to type a value.");
+        readout.onDouble = [this]
+        {
+            juce::Component::SafePointer<InputRow> safe (this);
+            valueentry::ask (readout, "Gain in dB (0 to 66)", juce::String (gain.getValue(), 1), [safe] (const juce::String& t)
+            {
+                double v = 0.0;
+                if (safe != nullptr && valueentry::parseDb (t, 0.0, 0.0, 66.0, v)) safe->gain.setValue (v, juce::sendNotificationSync);
+            });
+        };
 
         // the monitor mode applies to every track that is fed by this input (ARM lives in the Take window)
         static const char* tips[] = { "E - Editing: the live input is only heard while it is ARMed.",
@@ -47,44 +62,46 @@ public:
                                       "T - Talkback (conductor's microphone): always heard between takes, completely off while recording." };
         for (int m = 0; m < 4; ++m)
         {
-            auto* b = monButtons.add (new juce::TextButton (monitorLabel ((Monitor) m)));
+            auto* b = monButtons.add (new desk::DeskKey (monitorLabel ((Monitor) m), Ic::None, 3.0f));
             b->setRadioGroupId (4700 + idx);
-            b->setClickingTogglesState (true);
             b->setTooltip (tips[m]);
-            b->setColour (juce::TextButton::buttonOnColourId, m == 3 ? juce::Colour (0xffc26500) : juce::Colour (0xff1f7a46));
+            b->setLed (m == 3 ? juce::Colour (0xffff8a2e) : juce::Colour (0xff35e07a));
             b->onClick = [this, m] { if (updating) return; for (auto* t : tracksOnInput()) t->setMonitor ((Monitor) m); app.project.markDirty(); };
             addAndMakeVisible (b);
         }
 
-        crButton.setClickingTogglesState (true);
-        crButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffa83cff));
-        crButton.setTooltip ("CR: this input is part of the Control Room microphone. Switch CR on for as many inputs as you like: they are all heard together. Numpad + opens it to the TB (talkback) outputs: tap to latch, hold for as long as the key is held.");
+        crButton.setLed (juce::Colour (0xffb682ff));
+        crButton.setTooltip ("Talkback mic: this input is part of the control-room (talkback) microphone. Switch it on for as many inputs as you like: they are all heard together. Numpad + opens it to the TB (talkback) outputs: tap to latch, hold for as long as the key is held.");
         crButton.onClick = [this] { if (! updating) app.setCrMicInput (idx, crButton.getToggleState()); };
         addAndMakeVisible (crButton);
-        mic = make ("MIC", "Mic / Line: lit = LINE input, off = MIC input", theme::accent);
-        v48 = make ("48V", "Phantom power (+48 V)", juce::Colour (0xffc62828));
-        pol = make (juce::String (juce::CharPointer_UTF8 ("\xc3\x98")), "Polarity invert", theme::accent);
-        lc  = make ("LC", "Low cut filter", theme::accent);
-        pad = make ("PAD", "Pad: the mic preamp's input attenuator", theme::accent);
-        zhi = make ("Z HI", "High input impedance (the device's Z in switch)", theme::accent);
-        boost = make ("BOOST", "Boost: the mic preamp's extra-gain setting (Hapi: Mic / Boost). Sent to the device as its 'lift' switch.", theme::accent);
+        mic = make ("MIC", Ic::Mic, "Mic / Line: lit = LINE input, off = MIC input", juce::Colour (0xffffb02e));
+        v48 = make ("48V", Ic::Bolt, "Phantom power (+48 V)", juce::Colour (0xffff4a3d));
+        pol = make (juce::String (juce::CharPointer_UTF8 ("\xc3\x98")), Ic::None, "Polarity invert", juce::Colour (0xffffb02e));
+        lc  = make ("LC", Ic::Ramp, "Low cut filter", juce::Colour (0xffffb02e));
+        pad = make ("PAD", Ic::Pillow, "Pad: the mic preamp's input attenuator", juce::Colour (0xffffb02e));
+        zhi = make ("Z HI", Ic::None, "High input impedance (the device's Z in switch)", juce::Colour (0xffffb02e));
+        boost = make ("BOOST", Ic::Rocket, "Boost: the mic preamp's extra-gain setting (Hapi: Mic / Boost). Sent to the device as its 'lift' switch.", juce::Colour (0xffffb02e));
         refreshFromModel();
         checkPreampShown();
     }
 
     void refreshFromModel()
     {
+        using desk::Ic;
         if (idx >= (int) app.project.inputs.size()) return;
         auto& in = app.project.inputs[(size_t) idx];
         updating = true;
-        if (driver.getText() != in.driverName) driver.setText (in.driverName, juce::dontSendNotification);
-        if (! alias.hasKeyboardFocus (false) && alias.getText() != in.name) alias.setText (in.name, juce::dontSendNotification);
+        const auto drv = juce::String (idx + 1).paddedLeft ('0', 2) + juce::String (juce::CharPointer_UTF8 (" \xc2\xb7 ")) + in.driverName;
+        if (driver.getText() != drv) driver.setText (drv, juce::dontSendNotification);
+        if (! alias.hasKeyboardFocus (false) && alias.getText() != in.name) { alias.setText (in.name, juce::dontSendNotification); alias.moveCaretToTop (false); }
         if (std::abs (gain.getValue() - in.preamp.gainDb) > 0.01 && ! gain.isMouseButtonDown()) gain.setValue (in.preamp.gainDb, juce::dontSendNotification);
+        updateReadout();
         const bool lo = in.preamp.lineOnly;                                         // a fixed line input (Anubis jack 3/4): only gain, phase, low cut and Line / Instrument
-        if (lo)                                                                     // the first button is the Line / Instrument switch: LINE (plain) or INSTR (blue)
+        if (lo)                                                                     // the first key is the Line / Instrument switch: LINE (plain) or INSTR (lit)
         {
             mic->setToggleState (in.preamp.zHigh, juce::dontSendNotification);
             mic->setButtonText (in.preamp.zHigh ? "INSTR" : "LINE");
+            mic->setIcon (Ic::Jack);
             mic->setEnabled (in.preamp.hasInstrument);
             mic->setTooltip ("Line / Instrument: lit = INSTRUMENT input, plain = LINE input");
         }
@@ -92,6 +109,7 @@ public:
         {
             mic->setToggleState (in.preamp.line, juce::dontSendNotification);
             mic->setButtonText (in.preamp.line ? "LINE" : "MIC");
+            mic->setIcon (in.preamp.line ? Ic::Jack : Ic::Mic);
             mic->setEnabled (true);
             mic->setTooltip ("Mic / Line: lit = LINE input, off = MIC input");
         }
@@ -124,28 +142,55 @@ public:
 
     void resized() override
     {
-        auto r = getLocalBounds().reduced (4, 3);
-        number.setBounds (r.removeFromLeft (30));
-        r.removeFromLeft (4);
-        driver.setBounds (r.removeFromLeft (104));
-        alias.setBounds (r.removeFromLeft (120).reduced (0, 1));
-        r.removeFromLeft (6);
-        meter.setBounds (r.removeFromLeft (84).reduced (0, 6));
-        r.removeFromLeft (6);
-        if (preampShown)                                           // the preamp controls only exist for Merging Hapi / MT48 / Anubis inputs (through the MADPanel driver)
-        {
-            gain.setBounds (r.removeFromLeft (190));
-            r.removeFromLeft (4);
-            for (auto* b : { mic, v48, pol, lc, pad, zhi, boost }) b->setBounds (r.removeFromLeft (b == mic ? 48 : b == boost ? 58 : b == zhi ? 46 : 40).reduced (1, 0));
-            r.removeFromLeft (10);
+        constexpr int padX = 6;
+        auto r = getLocalBounds().reduced (padX, 0);
+        r.removeFromTop (12);
+        auto disp = r.removeFromTop (50);
+        alias.setBounds (disp.reduced (6, 0).removeFromTop (30).withTrimmedTop (5));
+        driver.setBounds (disp.reduced (5, 0).removeFromBottom (18));
+        r.removeFromTop (16);                                                           // "GAIN" is drawn here
+        gain.setBounds (r.removeFromTop (72).withSizeKeepingCentre (72, 72));
+        r.removeFromTop (2);
+        readout.setBounds (r.removeFromTop (22));
+        r.removeFromTop (10);
+        {   // the preamp keys: two columns, BOOST across both
+            auto keys = r.removeFromTop (4 * kKeyH + 3 * 3);
+            const int w = (keys.getWidth() - 3) / 2;
+            auto row = [&] (desk::DeskKey* a, desk::DeskKey* b)
+            {
+                auto line = keys.removeFromTop (kKeyH); keys.removeFromTop (3);
+                a->setBounds (line.removeFromLeft (w)); line.removeFromLeft (3); b->setBounds (line);
+            };
+            row (mic, v48); row (pol, lc); row (pad, zhi);
+            boost->setBounds (keys.removeFromTop (kKeyH));
         }
-        for (auto* b : monButtons) b->setBounds (r.removeFromLeft (b->getButtonText().length() > 1 ? 38 : 30).reduced (1, 0));
-        r.removeFromLeft (10);
-        crButton.setBounds (r.removeFromLeft (36).reduced (1, 0));
+        r.removeFromTop (12);
+        {   // the meter with its scale, and the four monitor keys
+            auto lower = r.removeFromTop (112);
+            meter.setBounds (lower.removeFromLeft (12));
+            scale.setBounds (lower.removeFromLeft (21).withTrimmedLeft (1));
+            lower.removeFromLeft (2);
+            for (auto* b : monButtons) { b->setBounds (lower.removeFromTop (25)); lower.removeFromTop (3); }
+        }
+        r.removeFromTop (10);
+        crButton.setBounds (r.removeFromTop (44));
     }
-    void paint (juce::Graphics& g) override { g.setColour (theme::row.withAlpha (0.8f)); g.fillRect (getLocalBounds().reduced (1)); g.setColour (theme::border.withAlpha (0.6f)); g.drawRect (getLocalBounds().reduced (1), 1); }
 
-    static constexpr int kRowHeight = 30, kMinWidth = 1100;
+    void paint (juce::Graphics& g) override
+    {
+        const auto& p = desk::pal();
+        auto b = getLocalBounds();
+        g.setColour (p.strip); g.fillRect (b);
+        g.setColour (p.stripEdge); g.drawRect (b, 1);
+        g.setColour (colour); g.fillRect (0, 0, b.getWidth(), 4); g.fillRect (0, b.getHeight() - 4, b.getWidth(), 4);
+        auto disp = juce::Rectangle<int> (6, 12, b.getWidth() - 12, 50);
+        g.setColour (p.disp); g.fillRect (disp);
+        g.setColour (p.dispEdge); g.drawRect (disp, 1);
+        g.setColour (p.cream); g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+        g.drawText ("GAIN", 0, 12 + 50 + 1, b.getWidth(), 14, juce::Justification::centred, false);
+    }
+
+    static constexpr int kStripW = 84, kStripH = 528, kKeyH = 34;
 private:
     /** The tracks that record from this input (any channel of the track). */
     std::vector<TrackDef*> tracksOnInput()
@@ -156,16 +201,16 @@ private:
                 if (t.inputOf (c) == idx) { v.push_back (&t); break; }
         return v;
     }
-    juce::TextButton* make (const juce::String& text, const juce::String& tip, juce::Colour on)
+    desk::DeskKey* make (const juce::String& text, desk::Ic ic, const juce::String& tip, juce::Colour led)
     {
-        auto* b = buttons.add (new juce::TextButton (text));
-        b->setClickingTogglesState (true);
-        b->setColour (juce::TextButton::buttonOnColourId, on);
+        auto* b = buttons.add (new desk::DeskKey (text, ic, 10.0f));
+        b->setLed (led);
         b->setTooltip (tip);
         b->onClick = [this] { push(); };
         addAndMakeVisible (b);
         return b;
     }
+    void updateReadout() { readout.setValueText (juce::String (gain.getValue(), 1)); }
     void push()
     {
         if (updating || idx >= (int) app.project.inputs.size()) return;
@@ -181,46 +226,53 @@ private:
     void checkPreampShown()
     {
         const bool hw = hasPreamp(); if (hw == preampShown) return;
-        preampShown = hw; gain.setVisible (hw); for (auto* b : { mic, v48, pol, lc, pad, zhi, boost }) b->setVisible (hw);
+        preampShown = hw; gain.setVisible (hw); readout.setVisible (hw);
+        for (auto* b : { mic, v48, pol, lc, pad, zhi, boost }) b->setVisible (hw);
         refreshFromModel(); resized();
     }
 
     AppContext& app; int idx; bool updating = false, preampShown = true;
-    juce::Label number, driver; juce::TextEditor alias; LevelMeter meter { false }; juce::Slider gain;
-    juce::OwnedArray<juce::TextButton> buttons, monButtons;
-    juce::TextButton crButton { "CR" };
-    juce::TextButton *mic = nullptr, *v48 = nullptr, *pol = nullptr, *lc = nullptr, *boost = nullptr, *pad = nullptr, *zhi = nullptr;
+    juce::Colour colour;
+    juce::Label driver; juce::TextEditor alias; LevelMeter meter { true }; desk::DeskScale scale; desk::DeskEncoder gain; desk::DeskReadout readout;
+    juce::OwnedArray<desk::DeskKey> buttons, monButtons;
+    desk::DeskKey crButton { "", desk::Ic::TbMic, 10.0f };
+    desk::DeskKey *mic = nullptr, *v48 = nullptr, *pol = nullptr, *lc = nullptr, *boost = nullptr, *pad = nullptr, *zhi = nullptr;
 };
 
-/** One driver output: number, fixed driver name, an optional second name, a live meter and which mixer feeds it. */
+/** One driver output, drawn as a wider desk strip: a coloured bar, a black display with your own second name, the driver's name, the TB (talkback) key with its
+    megaphone, which mixer feeds it, and a live meter. */
 class OutputRow : public juce::Component
 {
 public:
     OutputRow (AppContext& a, int index) : app (a), idx (index)
     {
-        number.setText (juce::String (idx + 1), juce::dontSendNotification);
-        number.setJustificationType (juce::Justification::centredRight);
-        number.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-        driver.setText (app.project.outputs[(size_t) idx].driverName, juce::dontSendNotification);
-        driver.setColour (juce::Label::textColourId, theme::text);
+        colour = desk::stripColour (idx + 3);
+        driver.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 9.5f, juce::Font::plain));
+        driver.setColour (juce::Label::textColourId, desk::pal().cream);
+        driver.setMinimumHorizontalScale (0.7f);
+        driver.setInterceptsMouseClicks (false, false);
         driver.setTooltip ("The name the audio driver gives this output (it cannot be changed)");
-        alias.setText (app.project.outputs[(size_t) idx].name, juce::dontSendNotification);
-        alias.setTextToShowWhenEmpty ("second name (e.g. Monitors L)", theme::dimText.withAlpha (0.6f));
-        alias.setTooltip ("Your own name for this output.");
+        alias.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        alias.setColour (juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
+        alias.setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+        alias.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
+        alias.setColour (juce::TextEditor::textColourId, juce::Colours::white);
+        alias.setIndents (0, 0); alias.setBorder (juce::BorderSize<int> (0));
+        alias.setTextToShowWhenEmpty ("name", juce::Colours::white.withAlpha (0.35f));
+        alias.setTooltip ("Your own name for this output (click to type it).");
         auto commit = [this]
         {
             if (idx >= (int) app.project.outputs.size()) return;
             if (app.project.outputs[(size_t) idx].name != alias.getText()) { app.project.outputs[(size_t) idx].name = alias.getText(); app.project.changed(); }
         };
         alias.onReturnKey = commit; alias.onFocusLost = commit;
-        fedBy.setColour (juce::Label::textColourId, theme::dimText);
-        fedBy.setFont (juce::FontOptions (12.0f));
+        fedBy.setColour (juce::Label::textColourId, desk::pal().ink);
+        fedBy.setFont (juce::FontOptions (11.5f));
         fedBy.setMinimumHorizontalScale (0.8f);
-        for (auto* c : std::initializer_list<juce::Component*> { &number, &driver, &alias, &meter, &fedBy }) addAndMakeVisible (c);
-        tbButton.setClickingTogglesState (true);
-        tbButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffe0b800));
-        tbButton.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
-        tbButton.setTooltip ("TB: make this output and the next one a stereo talkback pair (to the studio). Any outputs, any number of pairs; on the last output it is mono. Only the CR mic and recorded playback can ever reach it - never live microphones. Click again to turn the pair off.");
+        fedBy.setInterceptsMouseClicks (false, false);
+        for (auto* c : std::initializer_list<juce::Component*> { &driver, &alias, &meter, &fedBy }) addAndMakeVisible (c);
+        tbButton.setLed (juce::Colour (0xffff8a2e));
+        tbButton.setTooltip ("TB: make this output and the next one a stereo talkback pair (to the studio). Any outputs, any number of pairs; on the last output it is mono. Only the talkback mic and recorded playback can ever reach it - never live microphones. Click again to turn the pair off.");
         tbButton.onClick = [this] { if (! updating) app.setTbPair (tbFirst(), ! isTbNow()); };
         addAndMakeVisible (tbButton);
         refreshFromModel();
@@ -235,36 +287,50 @@ public:
         tbButton.setButtonText (isTb ? (asLeft ? "TB L" : "TB R") : "TB");
         tbButton.setEnabled (true);
         updating = false;
-        if (driver.getText() != o.driverName) driver.setText (o.driverName, juce::dontSendNotification);
-        if (! alias.hasKeyboardFocus (false) && alias.getText() != o.name) alias.setText (o.name, juce::dontSendNotification);
+        const auto drv = juce::String (idx + 1) + juce::String (juce::CharPointer_UTF8 (" \xc2\xb7 ")) + o.driverName;
+        if (driver.getText() != drv) driver.setText (drv, juce::dontSendNotification);
+        if (! alias.hasKeyboardFocus (false) && alias.getText() != o.name) { alias.setText (o.name, juce::dontSendNotification); alias.moveCaretToTop (false); }
         const auto fed = app.project.outputFedBy (idx);
-        const auto t = fed.isEmpty() ? juce::String() : "<- " + fed;
+        const auto t = fed.isEmpty() ? juce::String() : juce::String (juce::CharPointer_UTF8 ("\xe2\x86\x90 ")) + fed;
         if (fedBy.getText() != t) fedBy.setText (t, juce::dontSendNotification);
     }
     void tick (const std::vector<float>& outPk) { meter.setLevel (juce::isPositiveAndBelow (idx, (int) outPk.size()) ? outPk[(size_t) idx] : 0.0f); }
     void resized() override
     {
-        auto r = getLocalBounds().reduced (4, 3);
-        number.setBounds (r.removeFromLeft (30));
-        r.removeFromLeft (4);
-        driver.setBounds (r.removeFromLeft (104));
-        alias.setBounds (r.removeFromLeft (130).reduced (0, 1));
-        r.removeFromLeft (6);
-        meter.setBounds (r.removeFromLeft (84).reduced (0, 6));
-        r.removeFromLeft (6);
-        tbButton.setBounds (r.removeFromLeft (44).reduced (1, 0));
-        r.removeFromLeft (6);
-        fedBy.setBounds (r);
+        auto r = getLocalBounds().reduced (8, 0);
+        r.removeFromTop (10);
+        auto disp = r.removeFromTop (30);
+        alias.setBounds (disp.reduced (7, 0).withTrimmedTop (6).withTrimmedBottom (4));
+        r.removeFromTop (6);
+        {
+            auto line = r.removeFromTop (24);
+            tbButton.setBounds (line.removeFromRight (58));
+            driver.setBounds (line);
+        }
+        fedBy.setBounds (r.removeFromTop (18));
+        r.removeFromTop (3);
+        meter.setBounds (r.removeFromTop (8));
     }
-    void paint (juce::Graphics& g) override { g.setColour (theme::row.withAlpha (0.8f)); g.fillRect (getLocalBounds().reduced (1)); g.setColour (theme::border.withAlpha (0.6f)); g.drawRect (getLocalBounds().reduced (1), 1); }
-    static constexpr int kRowHeight = 30, kMinWidth = 510;
+    void paint (juce::Graphics& g) override
+    {
+        const auto& p = desk::pal();
+        auto b = getLocalBounds();
+        g.setColour (p.strip); g.fillRect (b);
+        g.setColour (p.stripEdge); g.drawRect (b, 1);
+        g.setColour (colour); g.fillRect (0, 0, b.getWidth(), 4);
+        auto disp = juce::Rectangle<int> (8, 10, b.getWidth() - 16, 30);
+        g.setColour (p.disp); g.fillRect (disp);
+        g.setColour (p.dispEdge); g.drawRect (disp, 1);
+    }
+    static constexpr int kStripW = 170, kStripH = 112;
 private:
     bool hasPair (int first) const { auto& v = app.project.tbOutputs; return std::find (v.begin(), v.end(), first) != v.end(); }
     bool isTbNow() const { return hasPair (idx) || hasPair (idx - 1); }
     int tbFirst() const { return hasPair (idx) ? idx : hasPair (idx - 1) ? idx - 1 : idx; }       // the right-hand output of a pair switches that pair off
     AppContext& app; int idx; bool updating = false;
-    juce::TextButton tbButton { "TB" };
-    juce::Label number, driver, fedBy; juce::TextEditor alias; LevelMeter meter { false };
+    juce::Colour colour;
+    desk::DeskKey tbButton { "TB", desk::Ic::Mega, 10.0f };
+    juce::Label driver, fedBy; juce::TextEditor alias; LevelMeter meter { false };
 };
 
 /** Shown when Fermata starts: nothing can be done until the project's folder is chosen (or an existing project opened). */
@@ -319,6 +385,8 @@ void MainComponent::showStartPanel()
 
 MainComponent::MainComponent (AppContext& a) : app (a)
 {
+    if (auto* st = app.props.getUserSettings()) desk::setTheme (st->getIntValue ("deskColour", 0));
+    addAndMakeVisible (auditionIcon);
     addAndMakeVisible (logo);
     addChildComponent (stagePanel);
     takeBox.setCompact (true);                                    // the take counter lives in the menu bar
@@ -377,31 +445,24 @@ MainComponent::MainComponent (AppContext& a) : app (a)
     addAndMakeVisible (projectName);
     statusLabel.setFont (juce::FontOptions (12.5f));
     addAndMakeVisible (statusLabel);
-    inputsCaption.setText ("DRIVER INPUTS   MIC/LINE  48V  " + juce::String (juce::CharPointer_UTF8 ("\xc3\x98")) + "  LC  PAD  Z HI  BOOST   |   E / S / S-L / T = monitoring", juce::dontSendNotification);
+    inputsCaption.setText ("DRIVER INPUTS      E / S / S-L / T = monitoring", juce::dontSendNotification);
     outputsCaption.setText ("DRIVER OUTPUTS", juce::dontSendNotification);
     for (auto* l : { &inputsCaption, &outputsCaption })
     {
-        l->setColour (juce::Label::textColourId, theme::dimText);
+        l->setColour (juce::Label::textColourId, desk::pal().cream);
         l->setFont (juce::FontOptions (12.5f, juce::Font::bold));
         addAndMakeVisible (l);
     }
     for (auto* v : { &inputsViewport, &outputsViewport }) { v->setScrollBarsShown (true, true); addAndMakeVisible (v); }
     inputsViewport.setViewedComponent (&inputsHolder, false);
     outputsViewport.setViewedComponent (&outputsHolder, false);
-    ioDivider.onMove = [this] (juce::Point<int> p)
-    {
-        const int w = getWidth() - 20;
-        ioSplit = juce::jlimit (0.2f, 0.85f, (float) (p.x - 10) / (float) juce::jmax (1, w));
-        resized();
-    };
-    addAndMakeVisible (ioDivider);
     rebuildRows(); rebuildAuditionBar();
     app.project.structure.addChangeListener (this);
     app.project.addChangeListener (this);
     startTimerHz (30);
     app.peakListeners.add (this);
     if (! app.hasProject()) showStartPanel();                      // nothing can be done until the project's folder is chosen
-    setSize (juce::jmax (1120, menuBarWidth() + 4), 840);
+    setSize (juce::jmax (1120, menuBarWidth() + 4), 940);
 }
 
 void MainComponent::parentHierarchyChanged()
@@ -450,13 +511,19 @@ int MainComponent::menuBarBottomOnScreen() const { return localAreaToGlobal (juc
 
 void MainComponent::paint (juce::Graphics& g)
 {
-    g.fillAll (theme::window);
-    g.setColour (theme::panel); g.fillRect (0, 0, getWidth(), menuBarH);                 // the menu bar
-    g.setColour (theme::border); g.fillRect (0, menuBarH - 1, getWidth(), 1);
+    const auto& p = desk::pal();
+    g.fillAll (p.window);
+    g.setColour (p.menu); g.fillRect (0, 0, getWidth(), menuBarH);                       // the menu bar
+    g.setColour (p.menuEdge); g.fillRect (0, menuBarH - 1, getWidth(), 1);
     // a faint Fermata mark behind everything, in the middle
     const float w = (float) getWidth() * 0.45f;
     auto area = juce::Rectangle<float> (w, w * 0.5f).withCentre (getLocalBounds().toFloat().getCentre());
-    drawFermataLogo (g, area, theme::text.withAlpha (0.07f), theme::accent.withAlpha (0.14f));
+    drawFermataLogo (g, area, p.cream.withAlpha (0.06f), p.cyan.withAlpha (0.10f));
+    // the wooden side panels, and the rail along the bottom
+    const int top = menuBarH, bottom = getHeight() - kRailH;
+    desk::paintCheek (g, { 0, top, kCheekW, bottom - top }, true);
+    desk::paintCheek (g, { getWidth() - kCheekW, top, kCheekW, bottom - top }, false);
+    desk::paintRail (g, { 0, bottom, getWidth(), kRailH });
 }
 
 void MainComponent::resized()
@@ -470,8 +537,8 @@ void MainComponent::resized()
         {   // the three status squares: right end of the first line
             int fx = getWidth() - kFlagsW;
             flagPre.setBounds (fx, y + 2, 72, lineH); fx += 72 + 4;
-            flagCr.setBounds (fx, y + 2, 52, lineH);  fx += 52 + 4;
-            flagPb.setBounds (fx, y + 2, 52, lineH);
+            flagCr.setBounds (fx, y + 2, 86, lineH);  fx += 86 + 4;
+            flagPb.setBounds (fx, y + 2, 82, lineH);
             const int lx = getWidth() - kFlagsW - kLtcW;
             ltcInLamp.setBounds (lx, y + 2, 124, lineH); ltcOutLamp.setBounds (lx + 128, y + 2, 124, lineH);
         }
@@ -496,8 +563,9 @@ void MainComponent::resized()
     }
     menuStrip->setSize (getWidth(), menuBarH);
     syncMenuStrip();
-    auto r = getLocalBounds().withTrimmedTop (menuBarH).reduced (10);
-    dock.setBounds (r.removeFromBottom (dock.wantedHeight()));
+    auto rail = getLocalBounds().removeFromBottom (kRailH);
+    dock.setBounds (rail.withTrimmedLeft (kCheekW + 17).withTrimmedRight (kCheekW + 17).withTrimmedTop (13).withHeight (30));
+    auto r = getLocalBounds().withTrimmedTop (menuBarH).withTrimmedBottom (kRailH).reduced (kCheekW + 10, 10);
     // the stage speaker mixer lives top right, beside the logo, project line and audition buttons (it needs a CR input or a TB pair)
     const bool showStage = stagePanel.wanted();
     stagePanel.setVisible (showStage);
@@ -515,9 +583,11 @@ void MainComponent::resized()
     auto info = r.removeFromTop (22).withRight (leftLimit);  // one line: project, then the driver and recording state
     projectName.setBounds (info.removeFromLeft (juce::jmin (260, info.getWidth() / 3)));
     statusLabel.setBounds (info);
+    auditionIcon.setVisible (! auditionButtons.isEmpty());
     if (! auditionButtons.isEmpty())
     {
         auto bar = r.removeFromTop (32).withRight (leftLimit);
+        auditionIcon.setBounds (bar.removeFromLeft (26).withSizeKeepingCentre (22, 22));
         auditionCaption.setBounds (bar.removeFromLeft (150));
         for (auto* b : auditionButtons) b->setBounds (bar.removeFromLeft (juce::jmin (260, juce::jmax (150, bar.getWidth() / juce::jmax (1, auditionButtons.size())))).withSizeKeepingCentre (juce::jmin (260, juce::jmax (150, bar.getWidth() / juce::jmax (1, auditionButtons.size()))) - 4, grid::btnH));
     }
@@ -529,27 +599,25 @@ void MainComponent::resized()
     }
     r.removeFromTop (6);
     r.removeFromTop (2);
-    // driver inputs (with ARM, monitoring and the preamp controls) on the left, driver outputs on the right
+    // driver inputs in a row along the top (a strip each, with the preamp controls, monitoring and the talkback mic), driver outputs in a row below
+    constexpr int outH = OutputRow::kStripH + 14;                       // the outputs' row, with room for its scroll bar
+    outputsViewport.setBounds (r.removeFromBottom (outH));
+    outputsCaption.setBounds (r.removeFromBottom (22));
+    r.removeFromBottom (4);
+    auto inCap = r.removeFromTop (22);
+    inputsCaption.setBounds (inCap.withTrimmedRight (0));
+    inputsViewport.setBounds (r);
 
-    const int gap = 8;
-    const int inW = juce::jlimit (150, juce::jmax (150, r.getWidth() - gap - 150), (int) ((r.getWidth() - gap) * ioSplit));
-    auto left = r.removeFromLeft (inW);
-    ioDivider.setBounds (r.removeFromLeft (gap));
-    inputsCaption.setBounds (left.removeFromTop (22));
-    inputsViewport.setBounds (left);
-    ioDivider.setBounds (ioDivider.getBounds().withY (left.getY()).withHeight (2 * InputRow::kRowHeight));   // the handle sits on the first two rows, clear of the logo behind
-    outputsCaption.setBounds (r.removeFromTop (22));
-    outputsViewport.setBounds (r);
-
-    auto fill = [] (juce::Viewport& vp, juce::Component& holder, auto& rowList, int rowH, int minW)
+    auto fill = [] (juce::Viewport& vp, juce::Component& holder, auto& rowList, int stripW, int stripH)
     {
-        const int h = juce::jmax (1, (int) rowList.size()) * rowH;
-        holder.setSize (juce::jmax (minW, vp.getMaximumVisibleWidth()), h);
-        int y = 0;
-        for (auto* row : rowList) { row->setBounds (0, y, holder.getWidth(), rowH); y += rowH; }
+        constexpr int gap = 2;
+        const int w = juce::jmax (1, (int) rowList.size()) * (stripW + gap);
+        holder.setSize (juce::jmax (w, vp.getMaximumVisibleWidth()), stripH);
+        int x = 0;
+        for (auto* row : rowList) { row->setBounds (x, 0, stripW, stripH); x += stripW + gap; }
     };
-    fill (inputsViewport, inputsHolder, inputRows, InputRow::kRowHeight, InputRow::kMinWidth);
-    fill (outputsViewport, outputsHolder, outputRows, OutputRow::kRowHeight, OutputRow::kMinWidth);
+    fill (inputsViewport, inputsHolder, inputRows, InputRow::kStripW, InputRow::kStripH);
+    fill (outputsViewport, outputsHolder, outputRows, OutputRow::kStripW, OutputRow::kStripH);
 }
 
 void MainComponent::rebuildRows()
@@ -631,7 +699,7 @@ void MainComponent::timerCallback()
     if (noticeOn) s = app.notice;
     statusLabel.setText (s, juce::dontSendNotification);
     if (noticeOn) statusLabel.setColour (juce::Label::textColourId, juce::Colour (0xff3ee0c0)); else
-    statusLabel.setColour (juce::Label::textColourId, rec ? juce::Colour (0xffff5555) : s.startsWith ("DISK") || s.startsWith ("No audio") ? theme::warn : theme::dimText);
+    statusLabel.setColour (juce::Label::textColourId, rec ? juce::Colour (0xffff5555) : s.startsWith ("DISK") || s.startsWith ("No audio") ? theme::warn : desk::pal().cream.withAlpha (0.8f));
 }
 
 void MainComponent::showProjectMenu()
@@ -650,8 +718,12 @@ void MainComponent::showProjectMenu()
     const auto workKey = app.lastWorkWindowKey ? app.lastWorkWindowKey() : juce::String();
     m.addItem (9, "Import AAF as edit windows...");
     m.addItem (8, "Re-draw all waveforms in current window", workKey.isNotEmpty());
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&projectButton), [this, workKey] (int r)
+    m.addSeparator();
+    auto picked = std::make_shared<int> (-1);
+    m.addCustomItem (11, std::make_unique<desk::SwatchRow> (desk::themeIndex(), picked), nullptr, "Colour theme");
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&projectButton), [this, workKey, picked] (int r)
     {
+        if (r == 11) { if (*picked >= 0) pickColour (*picked); return; }
         if (r == 8) { app.redrawWaveforms (app.audioFilesOfWindow (workKey)); return; }
         if (r == 9) { fixtools::importAaf (app, this); return; }
         if (r == 10) { closeProjectDialog(); return; }
@@ -674,6 +746,17 @@ void MainComponent::showProjectMenu()
             }));
         }
     });
+}
+
+void MainComponent::pickColour (int index)
+{
+    desk::setTheme (index);
+    if (auto* st = app.props.getUserSettings()) { st->setValue ("deskColour", desk::themeIndex()); app.props.saveIfNeeded(); }
+    for (auto* r : inputRows) r->refreshFromModel();
+    for (auto* r : outputRows) r->refreshFromModel();
+    repaint();
+    if (menuStrip != nullptr) menuStrip->repaint();
+    for (auto* f : { &flagPre, &flagCr, &flagPb, &flagT, &flagE, &flagM }) f->repaint();
 }
 
 void MainComponent::closeProjectDialog()

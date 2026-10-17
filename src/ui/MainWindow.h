@@ -1,6 +1,7 @@
 #pragma once
 #include "AppContext.h"
 #include "StageMixer.h"
+#include "DeskLook.h"
 
 namespace td
 {
@@ -14,8 +15,8 @@ public:
     void paint (juce::Graphics& g) override
     {
         auto b = getLocalBounds().toFloat();
-        drawFermataLogo (g, b.removeFromLeft (64.0f).reduced (2.0f, 4.0f), theme::text, theme::accent);
-        g.setColour (theme::text);
+        drawFermataLogo (g, b.removeFromLeft (64.0f).reduced (2.0f, 4.0f), desk::pal().cream, desk::pal().cyan);
+        g.setColour (desk::pal().cream);
         g.setFont (juce::Font (juce::FontOptions ("Georgia", 32.0f, juce::Font::bold)));
         g.drawText ("fermata", b.toNearestInt().withTrimmedLeft (4), juce::Justification::centredLeft, false);
     }
@@ -55,7 +56,7 @@ public:
         const int w = juce::jlimit (120, 260, wins.empty() ? 200 : r.getWidth() / (int) wins.size() - 4);
         for (auto* b : buttons) b->setBounds (r.removeFromLeft (w).reduced (1, 0)), r.removeFromLeft (3);
     }
-    void paint (juce::Graphics& g) override { g.setColour (theme::panel); g.fillRect (getLocalBounds()); }
+    void paint (juce::Graphics&) override {}                         // it sits on the wooden rail
 private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override { rebuild(); }
     void timerCallback() override { for (size_t i = 0; i < wins.size() && (int) i < buttons.size(); ++i) if (wins[i] != nullptr) buttons[(int) i]->setButtonText (wins[i]->getName()); }
@@ -68,7 +69,8 @@ private:
             wins.push_back (juce::Component::SafePointer<juce::DocumentWindow> (w));
             auto* b = buttons.add (new juce::TextButton (w->getName()));
             b->setTooltip ("Minimised: click to bring this window back");
-            b->setColour (juce::TextButton::buttonColourId, theme::row);
+            b->setColour (juce::TextButton::buttonColourId, juce::Colour (0xffefe4c8));
+            b->setColour (juce::TextButton::textColourOffId, juce::Colour (0xff2a2418));
             b->setWantsKeyboardFocus (false);
             juce::Component::SafePointer<juce::DocumentWindow> sp (w);
             b->onClick = [sp] { if (sp != nullptr) DockHub::get().show (sp.getComponent()); };
@@ -93,8 +95,8 @@ public:
     }
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (theme::panel);
-        g.setColour (theme::border); g.fillRect (0, getHeight() - 1, getWidth(), 1);
+        g.fillAll (desk::pal().menu);
+        g.setColour (desk::pal().menuEdge); g.fillRect (0, getHeight() - 1, getWidth(), 1);
     }
 };
 
@@ -231,15 +233,15 @@ private:
     static constexpr int kTakeBoxW = 40;                       // the take counter at the left of the menu bar
     NextTakeBox takeBox;
     // always-visible status squares at the right end of the menu bar (they replaced the coloured borders)
-    static constexpr int kFlagsW = 186;
+    static constexpr int kFlagsW = 250;
     static constexpr int kLtcW = 2 * 124 + 4;                  // the two LTC lamps, just left of the squares
     LtcLamp ltcInLamp { "LTC IN", "LTC in: red = no timecode arriving, green = LTC is arriving (with its frame rate). Click to choose the audio input it comes in on (a Hapi TC input routed in Aneman arrives as an ordinary input channel). It is recorded with every take on the track named LTC." },
             ltcOutLamp { "LTC OUT", "LTC out: green = Fermata is sending LTC. Click to choose the output channel (route it in Aneman to the Hapi TC output), the frame rate and the start time." };
     void showLtcInMenu();
     void showLtcOutMenu();
     StatusFlag flagPre { "Pre-Rec", juce::Colour (0xffe53935), "Pre-Rec (red): session mode is ON - the inputs are kept for the last 6 seconds, so a take starts 6 seconds before you press Record. Click it to switch Pre-Rec on or off." },
-               flagCr  { "C-R", juce::Colour (0xffa83cff), "C-R (purple): the control-room mic is OPEN - you are talking to the talkback speakers. Click it to open or close the mic (it stays as you leave it)." },
-               flagPb  { "P-B", juce::Colour (0xffffd21f), "P-B (yellow): playback - recorded material only is being played to the talkback output. Click it to switch it on or off." };
+               flagCr  { "Talkback", juce::Colour (0xffa83cff), "Talkback (purple): the talkback mic is OPEN - you are talking to the talkback speakers. Click it (or press numpad +) to open or close the mic (it stays as you leave it)." },
+               flagPb  { "Playback", juce::Colour (0xffffd21f), "Playback (yellow): recorded material only is being played to the talkback output. Click it (or press numpad -) to switch it on or off." };
     // little squares to the right of Take Window / Edit Window / Mixer: bring back the one you used last (lit while that kind of window is the one you are working in)
     StatusFlag flagT { "T", juce::Colour (0xff1fb5a8), "T: brings the take window you used last to the front (opens it if it was closed). Lit while you are working in a take window." },
                flagE { "E", juce::Colour (0xffe8892b), "E: brings the edit window you used last to the front (opens it if it was closed). Lit while you are working in an edit window." },
@@ -252,8 +254,9 @@ private:
     juce::Component inputsHolder, outputsHolder;
     juce::OwnedArray<InputRow> inputRows;
     juce::OwnedArray<OutputRow> outputRows;
-    Divider ioDivider { true };
-    float ioSplit = 0.62f;                         // share of the width given to the inputs
+    desk::PictureBadge auditionIcon { desk::Ic::Phones };
+    static constexpr int kCheekW = 22, kRailH = 54;    // the wooden side panels and the wooden rail along the bottom
+    void pickColour (int index);                       // the colour of the desk (chosen in the Project menu)
     StageSpeakerPanel stagePanel { app };
     juce::OwnedArray<juce::TextButton> auditionButtons;
     juce::Label auditionCaption;
