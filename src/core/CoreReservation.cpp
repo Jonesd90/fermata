@@ -444,4 +444,10 @@ void CoreReservation::shutdown()
         configure (off);
     }
 }
+void CoreReservation::makeThisThreadBackground() noexcept
+{
+#if FERMATA_CPU_WINDOWS
+    SetThreadPriority (GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);       // low disk (and CPU) priority for this thread
+#endif
+}
 } // namespace td

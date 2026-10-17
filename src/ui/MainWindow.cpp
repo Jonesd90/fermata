@@ -140,40 +140,58 @@ public:
         updating = false;
     }
 
+    /** The strip's measurements: full size (squeeze 0) down to the most compact (squeeze 1), for a screen without the height for the full strip
+        (for example 1920 x 1080 at 150 %). In between, everything shrinks evenly. */
+    struct Sizes { int top, disp, gainCap, knob, afterKnob, readout, gap1, key, keyGap, gap2, lower, monGap, gap3, talk, bottom; };
+    static Sizes sizesFor (float t)
+    {
+        auto l = [t] (int full, int small) { return juce::roundToInt ((float) full + ((float) small - (float) full) * juce::jlimit (0.0f, 1.0f, t)); };
+        return { l (12, 9), l (50, 40), l (16, 13), l (72, 48), l (2, 1), l (22, 18), l (10, 6), l (32, 26), l (3, 2), l (10, 6), l (105, 72), l (3, 2), l (8, 5), l (24, 20), l (10, 8) };
+    }
+    /** The height of a strip at a given squeeze. */
+    static int heightFor (float t)
+    {
+        const auto z = sizesFor (t);
+        return z.top + z.disp + z.gainCap + z.knob + z.afterKnob + z.readout + z.gap1 + 4 * z.key + 3 * z.keyGap + z.gap2 + z.lower + z.gap3 + z.talk + z.bottom;
+    }
+    void setSqueeze (float t) { if (std::abs (t - squeeze) > 0.001f) { squeeze = t; resized(); repaint(); } }
+
     void resized() override
     {
         constexpr int padX = 6;
+        const auto z = sizesFor (squeeze);
         auto r = getLocalBounds().reduced (padX, 0);
-        r.removeFromTop (12);
-        auto disp = r.removeFromTop (50);
-        alias.setBounds (disp.reduced (6, 0).removeFromTop (30).withTrimmedTop (5));
-        driver.setBounds (disp.reduced (5, 0).removeFromBottom (18));
-        r.removeFromTop (16);                                                           // "GAIN" is drawn here
-        gain.setBounds (r.removeFromTop (72).withSizeKeepingCentre (72, 72));
-        r.removeFromTop (2);
-        readout.setBounds (r.removeFromTop (22));
-        r.removeFromTop (10);
+        r.removeFromTop (z.top);
+        dispArea = r.removeFromTop (z.disp);
+        alias.setBounds (dispArea.reduced (6, 0).removeFromTop (juce::roundToInt (z.disp * 0.6f)).withTrimmedTop (z.disp >= 46 ? 5 : 3));
+        driver.setBounds (dispArea.reduced (5, 0).removeFromBottom (juce::jmin (18, z.disp / 3)));
+        gainCapArea = r.removeFromTop (z.gainCap);                                     // "GAIN" is drawn here
+        gain.setBounds (r.removeFromTop (z.knob).withSizeKeepingCentre (z.knob, z.knob));
+        r.removeFromTop (z.afterKnob);
+        readout.setBounds (r.removeFromTop (z.readout));
+        r.removeFromTop (z.gap1);
         {   // the preamp keys: two columns, BOOST across both
-            auto keys = r.removeFromTop (4 * kKeyH + 3 * 3);
+            auto keys = r.removeFromTop (4 * z.key + 3 * z.keyGap);
             const int w = (keys.getWidth() - 3) / 2;
             auto row = [&] (desk::DeskKey* a, desk::DeskKey* b)
             {
-                auto line = keys.removeFromTop (kKeyH); keys.removeFromTop (3);
+                auto line = keys.removeFromTop (z.key); keys.removeFromTop (z.keyGap);
                 a->setBounds (line.removeFromLeft (w)); line.removeFromLeft (3); b->setBounds (line);
             };
             row (mic, v48); row (pol, lc); row (pad, zhi);
-            boost->setBounds (keys.removeFromTop (kKeyH));
+            boost->setBounds (keys.removeFromTop (z.key));
         }
-        r.removeFromTop (10);
+        r.removeFromTop (z.gap2);
         {   // the meter with its scale, and the four monitor keys
-            auto lower = r.removeFromTop (105);
+            auto lower = r.removeFromTop (z.lower);
             meter.setBounds (lower.removeFromLeft (12));
             scale.setBounds (lower.removeFromLeft (21).withTrimmedLeft (1));
             lower.removeFromLeft (2);
-            for (auto* b : monButtons) { b->setBounds (lower.removeFromTop (24)); lower.removeFromTop (3); }
+            const int mh = (z.lower - 3 * z.monGap) / 4;
+            for (auto* b : monButtons) { b->setBounds (lower.removeFromTop (mh)); lower.removeFromTop (z.monGap); }
         }
-        r.removeFromTop (8);
-        crButton.setBounds (r.removeFromTop (24));
+        r.removeFromTop (z.gap3);
+        crButton.setBounds (r.removeFromTop (z.talk));
     }
 
     void paint (juce::Graphics& g) override
@@ -183,14 +201,13 @@ public:
         g.setColour (p.strip); g.fillRect (b);
         g.setColour (p.stripEdge); g.drawRect (b, 1);
         g.setColour (colour); g.fillRect (0, 0, b.getWidth(), 4); g.fillRect (0, b.getHeight() - 4, b.getWidth(), 4);
-        auto disp = juce::Rectangle<int> (6, 12, b.getWidth() - 12, 50);
-        g.setColour (p.disp); g.fillRect (disp);
-        g.setColour (p.dispEdge); g.drawRect (disp, 1);
-        g.setColour (p.cream); g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
-        g.drawText ("GAIN", 0, 12 + 50 + 1, b.getWidth(), 14, juce::Justification::centred, false);
+        g.setColour (p.disp); g.fillRect (dispArea);
+        g.setColour (p.dispEdge); g.drawRect (dispArea, 1);
+        g.setColour (p.cream); g.setFont (juce::FontOptions (juce::jmin (10.5f, (float) gainCapArea.getHeight() * 0.75f), juce::Font::bold));
+        g.drawText ("GAIN", 0, gainCapArea.getY() + 1, b.getWidth(), gainCapArea.getHeight() - 2, juce::Justification::centred, false);
     }
 
-    static constexpr int kStripW = 84, kStripH = 482, kKeyH = 32;
+    static constexpr int kStripW = 84;
 private:
     /** The tracks that record from this input (any channel of the track). */
     std::vector<TrackDef*> tracksOnInput()
@@ -232,6 +249,8 @@ private:
     }
 
     AppContext& app; int idx; bool updating = false, preampShown = true;
+    float squeeze = 0.0f;                                   // 0 = full size, 1 = the most compact (see sizesFor)
+    juce::Rectangle<int> dispArea, gainCapArea;
     juce::Colour colour;
     juce::Label driver; juce::TextEditor alias; LevelMeter meter { true }; desk::DeskScale scale; desk::DeskEncoder gain; desk::DeskReadout readout;
     juce::OwnedArray<desk::DeskKey> buttons, monButtons;
@@ -396,7 +415,8 @@ MainComponent::MainComponent (AppContext& a) : app (a)
     menuStrip = std::make_unique<MenuBarStrip>();                  // the menu bar floats above every window (see MenuBarStrip)
     for (auto* b : menuItems()) menuStrip->addAndMakeVisible (b);
     menuStrip->addAndMakeVisible (takeBox);
-    for (auto* f : { &flagPre, &flagCr, &flagPb, &flagT, &flagE, &flagM }) menuStrip->addAndMakeVisible (f);
+    for (auto* f : { &flagPre, &flagCr, &flagPb }) menuStrip->addAndMakeVisible (f);
+    for (auto* f : { &flagT, &flagE, &flagM }) menuStrip->addAndMakeVisible (f);
     flagT.onClick = [this] { if (app.focusRecent) app.focusRecent ("take"); };
     flagE.onClick = [this] { if (app.focusRecent) app.focusRecent ("edit"); };
     flagM.onClick = [this] { if (app.focusRecent) app.focusRecent ("mixer"); };
@@ -442,8 +462,13 @@ MainComponent::MainComponent (AppContext& a) : app (a)
     bridgeButton.setTooltip ("Meter bridge: a meter for every driver input and output (key B)");
     mixersButton.setTooltip ("Mixers. Key M opens or closes the processing mixer.");
 
-    projectName.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-    addAndMakeVisible (projectName);
+    projectBox.setFontHeight (15.0f);
+    for (auto* b : { &projectBox, &rateBox, &depthBox, &diskBox }) addAndMakeVisible (b);
+    if (auto* st = app.props.getUserSettings())                     // the second recording drive (Project menu)
+    {
+        const auto path = st->getValue ("backupFolder");
+        if (path.isNotEmpty() && juce::File::isAbsolutePath (path)) app.engine.setBackupFolder (juce::File (path));
+    }
     statusLabel.setFont (juce::FontOptions (12.5f));
     addAndMakeVisible (statusLabel);
     inputsCaption.setText ("DRIVER INPUTS", juce::dontSendNotification);
@@ -464,7 +489,7 @@ MainComponent::MainComponent (AppContext& a) : app (a)
     startTimerHz (30);
     app.peakListeners.add (this);
     if (! app.hasProject()) showStartPanel();                      // nothing can be done until the project's folder is chosen
-    setSize (juce::jmax (1440, menuBarWidth() + 4), 790);           // fits a laptop screen (1080 lines at 125 %) without scrolling
+    setSize (juce::jmax (1440, menuBarWidth() + 4), fullHeight());    // the full-size layout (on a smaller screen Main.cpp makes it fit, and the strips shrink)
 }
 
 void MainComponent::parentHierarchyChanged()
@@ -501,15 +526,18 @@ MainComponent::~MainComponent()
     app.project.removeChangeListener (this);
 }
 
+static constexpr int kLampW = 13;                 // the window lights after Take Window / Edit Window / Mixer
+
 /** The width the menu bar's entries need at a given writing size and space round each entry (the squares and lamps included). */
-static int menuNeed (const std::vector<MenuBarButton*>& items, const std::vector<StatusFlag*>& squares, const std::vector<StatusFlag*>& flags,
+static int menuNeed (const std::vector<MenuBarButton*>& items, const std::vector<WindowLamp*>& squares, const std::vector<StatusFlag*>& flags,
                      const std::vector<LtcLamp*>& lamps, int takeBoxW, int lineH, float font, int pad)
 {
     const auto keep = menuStyle();
     menuStyle() = { font, pad };
     int w = 6 + takeBoxW;
     for (auto* b : items) w += MenuBarButton::widthFor (b->getButtonText()) + 1;
-    w += (int) squares.size() * (lineH - 6 + 2);
+    w += (int) squares.size() * (kLampW + 2);
+    juce::ignoreUnused (lineH);
     for (auto* l : lamps) w += l->wantedWidth() + 3;
     for (auto* f : flags) w += f->wantedWidth() + 3;
     menuStyle() = keep;
@@ -527,7 +555,8 @@ void MainComponent::layoutMenuBar()
 {
     constexpr int lineH = 30;
     menuBarH = lineH + 4;
-    const std::vector<StatusFlag*> squares { &flagT, &flagE, &flagM }, flags { &flagPre, &flagCr, &flagPb };
+    const std::vector<WindowLamp*> squares { &flagT, &flagE, &flagM };
+    const std::vector<StatusFlag*> flags { &flagPre, &flagCr, &flagPb };
     const std::vector<LtcLamp*> lamps { &ltcInLamp, &ltcOutLamp };
     // as large as the width allows: first the space round each entry gets smaller, then the writing
     float font = 14.0f; int pad = 14;
@@ -547,28 +576,27 @@ void MainComponent::layoutMenuBar()
     int rx = getWidth() - 3;
     for (auto it = flags.rbegin(); it != flags.rend(); ++it) { const int w = (*it)->wantedWidth(); (*it)->setBounds (rx - w, y, w, lineH); rx -= w + 3; }
     for (auto it = lamps.rbegin(); it != lamps.rend(); ++it) { const int w = (*it)->wantedWidth(); (*it)->setBounds (rx - w, y, w, lineH); rx -= w + 3; }
-    // Media and Mastering just left of the lamps; everything else from the left
+    // every entry from the left, in order (Media and Mastering are the last two); the space left over sits before the lamps at the right
     auto widthOf = [] (MenuBarButton* b) { return MenuBarButton::widthFor (b->getButtonText()); };
-    for (auto* b : { &masteringButton, &mediaButton })
-    {
-        const int w = widthOf (b);
-        b->setBounds (rx - w, y, w, lineH); rx -= w;
-        seps.push_back (rx); rx -= 1;
-    }
     for (auto* b : menuItems())
     {
-        if (b == &mediaButton || b == &masteringButton) continue;
         seps.push_back (x); x += 1;
         const int w = widthOf (b);
         b->setBounds (x, y, w, lineH);
         x += w;
-        if (auto* square = flagFor (b)) { square->setBounds (x, y + 3, lineH - 6, lineH - 6); x += lineH - 6 + 2; }   // T / E / M: a small square just right of its entry
+        if (auto* lamp = flagFor (b)) { lamp->setBounds (x - menuStyle().pad + 2, y, kLampW, lineH); x += kLampW + 2 - menuStyle().pad + 2; }   // its light, just after the words
     }
     seps.push_back (x);
+    juce::ignoreUnused (rx);
     menuStrip->separators = seps;
     menuStrip->setSize (getWidth(), menuBarH);
     menuStrip->repaint();
     syncMenuStrip();
+}
+
+int MainComponent::fullHeight() const
+{
+    return 34 + 4 + StageSpeakerPanel::kHeight + 7 + InputRow::heightFor (0.0f) + 4 + 26 + OutputRow::kStripH + 4 + kRailFull;
 }
 
 int MainComponent::menuBarBottomOnScreen() const { return localAreaToGlobal (juce::Rectangle<int> (0, 0, 1, menuBarH)).getBottom(); }
@@ -579,61 +607,81 @@ void MainComponent::paint (juce::Graphics& g)
     g.fillAll (p.window);
     g.setColour (p.menu); g.fillRect (0, 0, getWidth(), menuBarH);                       // the menu bar
     g.setColour (p.menuEdge); g.fillRect (0, menuBarH - 1, getWidth(), 1);
-    // thin lines between the parts of the top row
-    g.setColour (p.cream.withAlpha (0.3f));
-    for (int x : headerSeps) g.fillRect (x, headerLine.getY() + 6, 1, headerLine.getHeight() - 12);
+    // the line under the top row (the Fermata mark, project and displays, the stage speaker boxes)
+    if (headerLineY > 0)
+    {
+        g.setColour (p.cream.withAlpha (0.55f)); g.fillRect (kCheekW + 10, headerLineY, getWidth() - 2 * (kCheekW + 10), 1);
+        g.setColour (juce::Colours::black.withAlpha (0.25f)); g.fillRect (kCheekW + 10, headerLineY + 1, getWidth() - 2 * (kCheekW + 10), 1);
+    }
     // the wooden side panels, and the rail along the bottom with the maker's name
-    const int top = menuBarH, bottom = getHeight() - kRailH;
+    const int top = menuBarH, bottom = getHeight() - railH;
     desk::paintCheek (g, { 0, top, kCheekW, bottom - top }, true);
     desk::paintCheek (g, { getWidth() - kCheekW, top, kCheekW, bottom - top }, false);
-    desk::paintRail (g, { 0, bottom, getWidth(), kRailH });
-    desk::paintNameplate (g, { kCheekW + 12, bottom + 11, getWidth() - 2 * kCheekW - 24, kRailH - 22 });
+    desk::paintRail (g, { 0, bottom, getWidth(), railH });
+    desk::paintNameplate (g, { kCheekW + 12, bottom + (railH - 22) / 2, getWidth() - 2 * kCheekW - 24, 22 });
 }
 
 void MainComponent::resized()
 {
     if (startPanel != nullptr) startPanel->setBounds (getLocalBounds());
     layoutMenuBar();                                                    // the menu bar: always one line
+    // ---- does everything fit at full size? If not (a 16:9 screen at 150 %, say) the rail gets thinner and the input strips shrink to fit
+    const bool showStage = stagePanel.wanted();
+    const int headH = showStage ? StageSpeakerPanel::kHeight : 58;
+    const int innerW = getWidth() - 2 * (kCheekW + 10);
+    const bool outScroll = (int) outputRows.size() * (OutputRow::kStripW + 2) > innerW;
+    const bool inScroll  = (int) inputRows.size()  * (InputRow::kStripW + 2)  > innerW;
+    constexpr int sb = 10;
+    const int outH = OutputRow::kStripH + (outScroll ? sb : 0);
+    const int fixedH = menuBarH + 4 + headH + 7 + (inScroll ? sb : 0) + 4 + 26 + outH + 4;     // everything but the input strips and the rail
+    railH = getHeight() >= fixedH + InputRow::heightFor (0.0f) + kRailFull ? kRailFull : kRailCompact;
+    {
+        const int room = getHeight() - fixedH - railH;                  // what the input strips can have
+        const int full = InputRow::heightFor (0.0f), small = InputRow::heightFor (1.0f);
+        squeeze = room >= full ? 0.0f : juce::jlimit (0.0f, 1.0f, (float) (full - room) / (float) (full - small));
+        for (auto* row : inputRows) row->setSqueeze (squeeze);
+    }
     // ---- the wooden rail along the bottom: the minimised windows sit on it, the maker's name at its right
     {
-        auto rail = getLocalBounds().removeFromBottom (kRailH).reduced (kCheekW + 12, 0);
+        auto rail = getLocalBounds().removeFromBottom (railH).reduced (kCheekW + 12, 0);
         rail.removeFromRight (190);
-        dock.setBounds (rail.withSizeKeepingCentre (rail.getWidth(), 30));
+        dock.setBounds (rail.withSizeKeepingCentre (rail.getWidth(), juce::jmin (30, railH - 8)));
     }
-    auto r = getLocalBounds().withTrimmedTop (menuBarH).withTrimmedBottom (kRailH).reduced (kCheekW + 10, 0);
-    r.removeFromTop (6); r.removeFromBottom (4);
+    auto r = getLocalBounds().withTrimmedTop (menuBarH).withTrimmedBottom (railH).reduced (kCheekW + 10, 0);
+    r.removeFromTop (4); r.removeFromBottom (4);
     // ---- the top row: the Fermata mark and name | project | the driver and recording state | DRIVER INPUTS, and the stage speaker boxes at the right
     headerSeps.clear();
-    const bool showStage = stagePanel.wanted();
     stagePanel.setVisible (showStage);
-    auto head = r.removeFromTop (showStage ? StageSpeakerPanel::kHeight : 40);
+    auto head = r.removeFromTop (headH);
     if (showStage)
     {
         const int pw = juce::jmin (stagePanel.wantedWidth(), head.getWidth() / 3);
         stagePanel.setBounds (head.removeFromRight (pw));
         head.removeFromRight (10);
     }
-    headerLine = head.withSizeKeepingCentre (head.getWidth(), 36);
+    headerLine = head;
     {
-        auto line = headerLine;
-        logo.setBounds (line.removeFromLeft (148));
-        auto sep = [&] { line.removeFromLeft (10); headerSeps.push_back (line.getX()); line.removeFromLeft (11); };
-        sep();
-        const int pw = juce::jlimit (60, 280, juce::roundToInt (juce::GlyphArrangement::getStringWidth (projectName.getFont(), projectName.getText())) + 12);
-        projectName.setBounds (line.removeFromLeft (pw));
-        sep();
+        auto line = head;
+        logo.setBounds (line.removeFromLeft (148).withSizeKeepingCentre (148, 40));
+        line.removeFromLeft (12);
+        // the displays: the project on top, the rate, depth and free disk space under it
+        const int colW = juce::jmax (rateBox.wantedWidth() + depthBox.wantedWidth() + diskBox.wantedWidth() + 24, juce::jmin (460, projectBox.wantedWidth()));
+        auto col = line.removeFromLeft (juce::jmin (colW, line.getWidth() / 2)).withSizeKeepingCentre (juce::jmin (colW, line.getWidth() / 2), 56);
+        projectBox.setBounds (col.removeFromTop (28).withWidth (juce::jmin (col.getWidth(), juce::jmax (180, projectBox.wantedWidth()))));
+        col.removeFromTop (6);
+        for (auto* b : { &rateBox, &depthBox, &diskBox }) { b->setBounds (col.removeFromLeft (b->wantedWidth()).withSizeKeepingCentre (b->wantedWidth(), 22)); col.removeFromLeft (12); }
+        line.removeFromLeft (12);
         auto cap = line.removeFromRight (122);
-        inputsCaption.setBounds (cap);
-        line.removeFromRight (10); headerSeps.push_back (line.getRight()); line.removeFromRight (10);
-        statusLabel.setBounds (line);
+        inputsCaption.setBounds (cap.withSizeKeepingCentre (cap.getWidth(), 24));
+        line.removeFromRight (10);
+        statusLabel.setBounds (line.withSizeKeepingCentre (line.getWidth(), 24));
+        projectName.setBounds ({});
     }
-    r.removeFromTop (4);
+    headerLineY = head.getBottom() + 3;                                // the line that separates the top row from the strips (in the middle of the gap)
+    r.removeFromTop (7);
     // ---- the driver outputs at the bottom, with the audition buttons on their caption line
-    const bool outScroll = (int) outputRows.size() * (OutputRow::kStripW + 2) > r.getWidth();
-    const bool inScroll  = (int) inputRows.size()  * (InputRow::kStripW + 2)  > r.getWidth();
-    const int sb = 10;
-    const int outH = OutputRow::kStripH + (outScroll ? sb : 0);
-    const int inH  = juce::jmin (InputRow::kStripH + (inScroll ? sb : 0), juce::jmax (120, r.getHeight() - outH - 30));
+    const int stripH = InputRow::heightFor (squeeze);
+    const int inH  = juce::jmin (stripH + (inScroll ? sb : 0), juce::jmax (120, r.getHeight() - outH - 30));
     inputsViewport.setBounds (r.removeFromTop (inH));
     r.removeFromTop (4);
     {
@@ -663,7 +711,7 @@ void MainComponent::resized()
         int x = 0;
         for (auto* row : rowList) { row->setBounds (x, 0, stripW, stripH); x += stripW + gap; }
     };
-    fill (inputsViewport, inputsHolder, inputRows, InputRow::kStripW, InputRow::kStripH);
+    fill (inputsViewport, inputsHolder, inputRows, InputRow::kStripW, stripH);
     fill (outputsViewport, outputsHolder, outputRows, OutputRow::kStripW, OutputRow::kStripH);
     repaint();
 }
@@ -701,7 +749,8 @@ void MainComponent::timerCallback()
     flagPre.set (app.sessionMode()); flagCr.set (app.crMicOpen()); flagPb.set (app.tbPlaybackOn());
     {
         const auto kind = app.activeKind ? app.activeKind() : juce::String();
-        flagT.set (kind == "take"); flagE.set (kind == "edit"); flagM.set (kind == "mixer");
+        auto light = [&] (const char* k) { return app.windowLight ? app.windowLight (k) : (kind == k ? 2 : 0); };
+        flagT.set (light ("take")); flagE.set (light ("edit")); flagM.set (light ("mixer"));
     }
     {
         const auto st = app.engine.ltcInStatus();
@@ -722,16 +771,43 @@ void MainComponent::timerCallback()
     }
     const bool rec = app.engine.isRecording();
     { int n = 1; const bool tr = app.takeBoxInfo (n); takeBox.set (tr, n); }
-    if (projectName.getText() != app.project.name) { projectName.setText (app.project.name, juce::dontSendNotification); resized(); }
-    projectName.setTooltip (app.project.projectFile.getFullPathName());
+    {   // the displays in the top row
+        const auto pn = app.project.name.toUpperCase().replace (" - ", juce::String (juce::CharPointer_UTF8 (" \xc2\xb7 ")));
+        const int before = projectBox.wantedWidth();
+        projectBox.setText (pn.isEmpty() ? juce::String ("NO PROJECT") : pn);
+        projectBox.setTooltip (app.project.projectFile.getFullPathName());
+        auto* dev = app.devices.getCurrentAudioDevice();
+        rateBox.setText (dev != nullptr ? juce::String (dev->getCurrentSampleRate() / 1000.0, (std::fmod (dev->getCurrentSampleRate(), 1000.0) == 0.0 ? 0 : 1)) + " KHZ" : juce::String ("-"));
+        depthBox.setText (dev != nullptr ? juce::String (dev->getCurrentBitDepth()) + " BIT" : juce::String ("-"));
+        const auto now = juce::Time::getMillisecondCounter();
+        if (now - lastDiskCheck > 2000 || lastDiskCheck == 0)              // the free space on the project's drive (asked every 2 seconds)
+        {
+            lastDiskCheck = now;
+            const auto folder = app.project.projectFile.getParentDirectory();
+            if (app.hasProject() && folder.isDirectory())
+            {
+                const double gb = (double) folder.getBytesFreeOnVolume() / (1024.0 * 1024.0 * 1024.0);
+                diskBox.setText (gb >= 1000.0 ? juce::String (gb / 1024.0, 1) + " TB" : juce::String (juce::roundToInt (gb)) + " GB", gb < 10.0 ? juce::Colour (0xffff5a4a) : juce::Colour());
+                diskBox.setTooltip ("Free space on the drive of the project (" + folder.getFullPathName() + ")" + (gb < 10.0 ? ": nearly full!" : ""));
+            }
+            else diskBox.setText ("-");
+            // the second recording drive: say so if a copy could not be made
+            const auto problems = app.engine.takeBackupProblems();
+            for (auto& pr : problems) juce::Logger::writeToLog ("Second recording drive: " + pr);
+            if (! problems.isEmpty())
+                app.setNotice ("Second drive: " + problems[0] + (problems.size() > 1 ? "  (and " + juce::String (problems.size() - 1) + " more files of this take)" : juce::String())
+                               + ". The main recording is not affected.");
+        }
+        if (projectBox.wantedWidth() != before) resized();
+    }
 
     juce::String s;
     if (auto* dev = app.devices.getCurrentAudioDevice())
     {
-        s = dev->getTypeName() + ": " + dev->getName() + "  " + juce::String (dev->getCurrentSampleRate() / 1000.0, 1) + " kHz  "
-            + juce::String (dev->getCurrentBitDepth()) + "-bit  buf " + juce::String (dev->getCurrentBufferSizeSamples())
-            + "  in " + juce::String (dev->getActiveInputChannels().countNumberOfSetBits())
-            + "/out " + juce::String (dev->getActiveOutputChannels().countNumberOfSetBits());
+        s = dev->getTypeName() + ": " + dev->getName() + "   buffer " + juce::String (dev->getCurrentBufferSizeSamples())
+            + "   in " + juce::String (dev->getActiveInputChannels().countNumberOfSetBits())
+            + " / out " + juce::String (dev->getActiveOutputChannels().countNumberOfSetBits());
+        if (app.engine.getBackupFolder() != juce::File()) s += "   2nd drive on";
         if (dev->getTypeName() != "ASIO") s += "  (not ASIO)";
         if (rec && app.engine.overruns() > 0) s = "DISK OVERRUN - audio may have been lost!   " + s;
         if (auto* x = dynamic_cast<juce::AudioIODevice*> (dev); x != nullptr && dev->getXRunCount() > 0)
@@ -767,11 +843,25 @@ void MainComponent::showProjectMenu()
     m.addItem (9, "Import AAF as edit windows...");
     m.addItem (8, "Re-draw all waveforms in current window", workKey.isNotEmpty());
     m.addSeparator();
+    {
+        const auto bf = app.engine.getBackupFolder();
+        m.addItem (12, bf == juce::File() ? juce::String ("Second recording drive...") : "Second recording drive: " + bf.getFullPathName() + "   (change...)");
+        if (bf != juce::File()) m.addItem (13, "Stop recording to the second drive");
+    }
+    m.addSeparator();
     auto picked = std::make_shared<int> (-1);
     m.addCustomItem (11, std::make_unique<desk::SwatchRow> (desk::themeIndex(), picked), nullptr, "Colour theme");
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&projectButton), [this, workKey, picked] (int r)
     {
         if (r == 11) { if (*picked >= 0) pickColour (*picked); return; }
+        if (r == 12) { chooseBackupFolder(); return; }
+        if (r == 13)
+        {
+            app.engine.setBackupFolder ({});
+            if (auto* st = app.props.getUserSettings()) { st->setValue ("backupFolder", juce::String()); app.props.saveIfNeeded(); }
+            app.setNotice ("Takes are recorded to the main drive only.");
+            return;
+        }
         if (r == 8) { app.redrawWaveforms (app.audioFilesOfWindow (workKey)); return; }
         if (r == 9) { fixtools::importAaf (app, this); return; }
         if (r == 10) { closeProjectDialog(); return; }
@@ -796,6 +886,27 @@ void MainComponent::showProjectMenu()
     });
 }
 
+void MainComponent::chooseBackupFolder()
+{
+    const auto current = app.engine.getBackupFolder();
+    chooser = std::make_unique<juce::FileChooser> ("Choose a folder on the second drive (every take is copied there while it records, in a folder named after the project)",
+                                                   current != juce::File() ? current : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory));
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories, [this] (const juce::FileChooser& fc)
+    {
+        const auto dir = fc.getResult();
+        if (dir == juce::File() || ! dir.isDirectory()) return;
+        const auto main = app.project.projectFile.getParentDirectory();
+        if (app.hasProject() && (dir == main || dir.isAChildOf (main)))
+        {
+            showError ("Second recording drive", "Choose a folder outside the project's own folder, ideally on another drive: the copy is there in case the main drive fails.");
+            return;
+        }
+        app.engine.setBackupFolder (dir);
+        if (auto* st = app.props.getUserSettings()) { st->setValue ("backupFolder", dir.getFullPathName()); app.props.saveIfNeeded(); }
+        app.setNotice ("Every take is now also copied to " + dir.getFullPathName() + " while it records.");
+    });
+}
+
 void MainComponent::pickColour (int index)
 {
     applyDeskColour (index);                                         // every window takes the new colour
@@ -804,7 +915,9 @@ void MainComponent::pickColour (int index)
     for (auto* r : outputRows) r->refreshFromModel();
     repaint();
     if (menuStrip != nullptr) menuStrip->repaint();
-    for (auto* f : { &flagPre, &flagCr, &flagPb, &flagT, &flagE, &flagM }) f->repaint();
+    for (auto* f : { &flagPre, &flagCr, &flagPb }) f->repaint();
+    for (auto* f : { &flagT, &flagE, &flagM }) f->repaint();
+    for (auto* b : { &projectBox, &rateBox, &depthBox, &diskBox }) b->repaint();
 }
 
 void MainComponent::closeProjectDialog()

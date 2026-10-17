@@ -166,6 +166,24 @@ juce::String makeFilesSpec (const Project& p, const MasteringDef& def, MasterJob
     return {};
 }
 
+juce::String makeFormsSpec (const Project& p, const MasteringDef& def, MasterJobSpec& spec)
+{
+    auto d = def;                                            // the Virtual Master's pieces, names and levels; the audio as set on the Listening copy tab
+    d.vm.format = MasterFormat::Wav; d.vm.extraFormats = 0;
+    d.vm.sampleRate = def.vm.formAudio == 2 && (def.vm.formRate <= 0.0 || def.vm.formRate > 48000.0) ? 48000.0 : def.vm.formRate;
+    d.vm.bitDepth = def.vm.formBits == 16 ? 16 : 24;
+    d.vm.folder = def.vm.formFolder.trim().isNotEmpty() ? def.vm.formFolder.trim() : p.masteredFolder().getChildFile ("Listening copies").getFullPathName();
+    auto err = makeFilesSpec (p, d, spec);
+    if (err.isNotEmpty()) return err;
+    if (def.vm.formAudio == 2 && findLame().isEmpty())
+        return "MP3 inside the listening copy needs the free LAME encoder. Put lame.exe in the same folder as Fermata, or choose WAV or FLAC.";
+    spec.formsOnly = true;
+    spec.out.feedbackForm = true;
+    spec.out.formAudio = def.vm.formAudio;
+    if (! spec.destFolder.createDirectory()) return "Cannot make the folder " + spec.destFolder.getFullPathName();
+    return {};
+}
+
 juce::String makeDiscSpec (const Project& p, const MasteringDef& def, MasterJobSpec& spec)
 {
     spec = MasterJobSpec();
@@ -449,8 +467,11 @@ MasterExportResult MasterExportJob::executeInner()
         std::vector<MasterFormat> fmts;
         if (spec.kind == MasterJobSpec::Kind::Files)
         {
-            fmts.push_back (o.format);
-            for (int f = 0; f < 5; ++f) if ((o.extraFormats & (1 << f)) != 0 && (MasterFormat) f != o.format) fmts.push_back ((MasterFormat) f);
+            if (! spec.formsOnly)                            // (listening copies on their own: no audio files at all)
+            {
+                fmts.push_back (o.format);
+                for (int f = 0; f < 5; ++f) if ((o.extraFormats & (1 << f)) != 0 && (MasterFormat) f != o.format) fmts.push_back ((MasterFormat) f);
+            }
         }
         else fmts.push_back (o.format);
         float pk = 0.0f;
@@ -475,6 +496,7 @@ MasterExportResult MasterExportJob::executeInner()
             setStatus ("Making the listening copy " + juce::String (i + 1) + " of " + juce::String (n) + "...");
             float pkForm = 0.0f;
             auto e = finalise (proc[(size_t) i], audioFile, rates[(size_t) i], gain, item, pkForm, fmtForm);
+            if (spec.formsOnly) pk = juce::jmax (pk, pkForm);
             if (e == "Cancelled.") { R.cancelled = true; for (auto& f : finals) f.deleteFile(); return R; }
             if (e.isEmpty())
             {
@@ -485,7 +507,7 @@ MasterExportResult MasterExportJob::executeInner()
                 ps.peaks = reviewpage::computePeaks (proc[(size_t) i], gain, reviewpage::peakColumnsFor (ps.durationSeconds), &cancelFlag);
                 const auto page = spec.destFolder.getNonexistentChildFile (sanitiseForFile (item.baseName) + " - listening copy", ".html", true);
                 e = reviewpage::write (page, ps, &cancelFlag);
-                if (e.isEmpty()) R.files.add (page.getFullPathName());
+                if (e.isEmpty()) { R.files.add (page.getFullPathName()); finals.push_back (page); }     // (in the list so that Cancel takes it away again)
             }
             audioFile.deleteFile();
             if (e == "Cancelled.") { R.cancelled = true; for (auto& f : finals) f.deleteFile(); return R; }

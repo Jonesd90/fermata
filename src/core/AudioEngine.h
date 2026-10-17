@@ -3,6 +3,8 @@
 #include "Dither.h"
 #include "Playback.h"
 #include "Ltc.h"
+#include "MixerWorkers.h"
+#include "BackupCopier.h"
 
 namespace td
 {
@@ -50,6 +52,26 @@ public:
     /** Stops, flushes files to disk and finalises the take group. Returns the group id. */
     juce::Uuid stopRecording();
     bool   isRecording() const noexcept   { return rec.load() != nullptr; }
+
+    // --- the second recording drive (see BackupCopier) ---
+    /** Message thread: every new take is also copied, while it records, into this folder (normally on another drive), in a folder named after the
+        project. An empty File switches it off. The main recording never waits for it. */
+    void setBackupFolder (const juce::File& folder)        { backupRoot = folder; }
+    juce::File getBackupFolder() const                     { return backupRoot; }
+    /** Message thread: the copies that were thrown away since the last call (the second drive could not keep up, or could not be written). */
+    juce::StringArray takeBackupProblems()                 { return backupCopier.takeBinned(); }
+    int backupCopiesGoing() const                          { return backupCopier.busy(); }
+
+    // --- the mixers of a block run side by side on helper threads (see MixerWorkers) ---
+    /** Message thread: how many helper threads (0 = all the mixers run one after another on the audio thread). Set at start. */
+    void setMixerThreads (int count)                       { mixerWorkers.start (juce::jmax (0, count)); }
+    int  mixerThreads() const noexcept                     { return mixerWorkers.size(); }
+    /** How many blocks have run their mixers side by side so far (a diagnostic). */
+    juce::uint64 parallelBlockCount() const noexcept       { return parallelBlocks.load(); }
+    /** Tests only: behave as if a device were running, so a rebuilt plan is picked up by the next process() call the way the audio thread would. */
+    void setRunningForTests (bool r) noexcept              { running = r; }
+    /** Tests only: how far (seconds) the second drive may fall behind before its copy is thrown away. */
+    void setBackupMaxLag (double seconds)                  { backupCopier.maxLagSeconds.store (seconds); }
     double recordedSeconds() const;
     int    overruns() const;
     juce::Uuid currentTakeId() const      { return currentGroupId; }
@@ -200,12 +222,21 @@ private:
         int latency = 0;                        // the longest path through the mixer (samples): all Ext Bus outputs are this late
         int tapLatency = 0;                     // offline render: the captured signals are this late
         bool wasPlaying = false;                // audio thread
+        // running side by side with the other mixers: this mixer writes its driver outputs here, and the audio thread adds them up afterwards
+        juce::AudioBuffer<float> outScratch;
+        std::vector<float*> outPtrs;            // per driver output: where this mixer writes it (into outScratch), or nullptr
+        std::vector<int> touched;               // the driver outputs it wrote in this block (room for every Ext Bus pair and the audition pair)
+        int numTouched = 0;
     };
     struct TrackPlan { int numCh = 1; int inputs[kMaxTrackChannels] {}; std::shared_ptr<TrackLive> live; };
+    /** One mixer to run in this block, and how. */
+    struct MixerJob { MixerPlan* mp = nullptr; bool silenceOwnOutput = false; int alsoToFirst = -1; bool strict = false; };
     struct Plan
     {
         std::vector<TrackPlan> tracks;
         std::vector<std::unique_ptr<MixerPlan>> mixers;
+        std::vector<MixerJob> jobs;                             // audio thread: the mixers that run in this block (room for all of them)
+        int outChannels = 0;                                    // driver outputs the mixers' outScratch buffers have room for
         std::vector<const juce::AudioBuffer<float>*> disk;      // per track: the audio to play instead of the live input (audio thread fills it)
     };
     /** Waveform overview of what is being recorded, written by the audio thread, read by the take window. */
@@ -230,6 +261,7 @@ private:
         TrackPlan route;
         std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> writer;
         std::unique_ptr<LivePeaks> peaks;
+        std::shared_ptr<BackupCopier::Job> backup;              // its copy on the second drive (null when there is none)
     };
     /** The last seconds of every driver input that a track is patched to (session mode). Written by the audio thread; never reallocated
         while a recording uses it. Positions are counted in samples since the ring was made. */
@@ -257,6 +289,20 @@ private:
 
     void processMixer (const Plan& pl, MixerPlan&, const float* const* in, int numIn, int offset, int n, float* const* out, int numOut, bool playing,
                        bool silenceOwnOutput, int alsoToFirst, bool playbackOnly = false, float* tapL = nullptr, float* tapR = nullptr);
+    /** The audio thread has just picked up a new plan: the sound that is on its way through the old one's delay lines (delay compensation) is moved
+        into the new one, so a rebuild (starting or stopping a recording, a routing change) never puts a gap or a click into what you hear. */
+    static void carryOver (Plan& from, Plan& to) noexcept;
+    /** Does any Ext bus of this mixer go to a driver output? */
+    static bool mixerHasOutput (const MixerPlan&) noexcept;
+    /** Runs one mixer of the block on whichever thread takes it (see MixerWorkers). */
+    static void runMixerJob (void* engine, int index) noexcept;
+    struct BlockJobs { Plan* plan = nullptr; const float* const* in = nullptr; int numIn = 0; float* const* out = nullptr; int numOut = 0, n = 0; bool playing = false; float* tapL = nullptr; float* tapR = nullptr; };
+    BlockJobs blockJobs;                            // audio thread: what the mixer jobs of this block work on
+    std::atomic<juce::uint64> parallelBlocks { 0 };
+    std::atomic<Plan*> lastPlanSeen { nullptr };    // audio thread: the plan of the previous block (see carryOver)
+    MixerWorkers mixerWorkers;
+    BackupCopier backupCopier;
+    juce::File backupRoot;
     bool waitForAudioThread();                      // true once the audio thread has certainly left the old data; false if it stalled for half a second (then the old data is left alone rather than freed under it)
     void ensurePreRoll();                           // message thread: (re)makes the ring when session mode is on and nothing is recording
     void deliverFromRing (RecordingSession&, juce::int64 from, juce::int64 to);

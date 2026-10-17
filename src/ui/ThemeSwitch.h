@@ -41,6 +41,7 @@ inline void switchTheme (bool dark)
     if (theme::isDark() == dark) return;
     const auto oldP = theme::snapshot();
     theme::setDark (dark);
+    desk::setTheme (desk::themeIndex());                         // (the main window's desk takes the new shade too)
     setMixDark (dark);
     if (auto* l = FermataLookAndFeel::instance()) l->applyTheme();
     const auto newP = theme::all();
@@ -63,18 +64,15 @@ inline void applyDeskColour (int index)
     const auto oldP = theme::snapshot();
     theme::deskIndex() = index;
     desk::setTheme (index);
-    if (theme::isDark())
-    {
-        theme::setDark (true);
-        setMixDark (true);
-        if (auto* l = FermataLookAndFeel::instance()) l->applyTheme();
-    }
+    theme::setDark (theme::isDark());
+    setMixDark (theme::isDark());
+    if (auto* l = FermataLookAndFeel::instance()) l->applyTheme();
     const auto newP = theme::all();
     auto& d = juce::Desktop::getInstance();
     for (int i = 0; i < d.getNumComponents(); ++i)
         if (auto* c = d.getComponent (i))
         {
-            if (theme::isDark()) themeswitch::recolour (*c, oldP, newP);
+            themeswitch::recolour (*c, oldP, newP);
             c->sendLookAndFeelChange();
             c->repaint();
         }

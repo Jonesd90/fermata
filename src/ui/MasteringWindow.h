@@ -69,10 +69,12 @@ private:
     // ---- actions
     void startVmExport();
     void startDdpExport();
-    void startJob (const MasterJobSpec&, bool disc);
-    void jobFinished (const MasterExportResult&, bool disc);
+    void startFormExport();
+    void startJob (const MasterJobSpec&, int kind);           // kind: 0 Virtual Master, 1 DDP, 2 listening copies
+    void jobFinished (const MasterExportResult&, int kind);
+    void layoutForms (juce::Rectangle<int> area);
     void setBusy (bool);
-    void chooseFolder (bool disc);
+    void chooseFolder (bool disc, bool forms = false);
     void applyGapToSelected (const juce::String& text);
     void setAllGaps (double seconds);
     void moveItem (int from, int to, bool disc);
@@ -87,7 +89,7 @@ private:
 
     AppContext& app;
     int view = 0;
-    juce::TextButton vmTab { "Virtual Master" }, ddpTab { "DDP builder" };
+    juce::TextButton vmTab { "Virtual Master" }, ddpTab { "DDP builder" }, formTab { "Listening copy" };
     juce::Label renderCaption, tailCaption, renderNote;
     juce::ComboBox mixerBox, sourceBox, tailBox;
     std::vector<juce::Uuid> mixerIds, sourceIds;
@@ -113,6 +115,13 @@ private:
     struct VmHolder : juce::Component { } vmHolder;
     double progressValue = 0.0;                 // shown by the progress bars below (declared first: they hold a reference to it)
     juce::ProgressBar vmProgress;
+
+    // ---- the Listening copy page: the same pieces (the list of the Virtual Master), each made into one .html page with its audio inside
+    juce::Label formIntro, formRateCaption, formBitsCaption, formLevelNote, formFolderCaption, formStatus;
+    juce::ComboBox formRateBox, formBitsBox;
+    juce::TextEditor formFolderEditor;
+    juce::TextButton formChoose { "Choose folder..." }, formExport { "Make listening copies" }, formShow { "Show in folder" };
+    juce::ProgressBar formProgress;
 
     // ---- the DDP page
     std::unique_ptr<MasterListPanel> ddpList;
@@ -181,5 +190,6 @@ private:
     std::unique_ptr<juce::FileChooser> chooser;
     juce::File lastOutput;
     bool lastWasDisc = false;
+    int lastJobKind = 0;                         // 0 Virtual Master, 1 DDP, 2 listening copies
 };
 } // namespace td

@@ -42,7 +42,11 @@ struct MasterExportSettings
     bool         peakTogether = false;          // false: every file reaches the peak level on its own. true: one gain for all (the loudest reaches it)
     bool         numberFiles = true;            // "01 - name"
     bool         feedbackForm = false;          // also make a listening copy of every file: ONE .html with the recording inside, a waveform, play controls and a comment form
-    int          formAudio = 0;                 // what goes inside it: 0 = WAV (full quality, the export's rate and bit depth), 1 = FLAC (lossless, about half the size), 2 = MP3 (small; needs LAME)
+    int          formAudio = 0;                 // what goes inside it: 0 = WAV (full quality), 1 = FLAC (lossless, about half the size), 2 = MP3 (small; needs LAME)
+    // the Listening copy tab (made on its own, without audio files): the audio inside the page
+    double       formRate = 0.0;                // 0 = the sample rate of the edits (MP3: 48 kHz at most)
+    int          formBits = 24;                 // 16 or 24 (WAV / FLAC)
+    juce::String formFolder;                    // where the listening copies go (empty = the project's Mastered Audio / Listening copies folder)
     juce::String folder;
     MasterTags   album;               // album, albumArtist, genre, year, comment, copyright: the defaults for every file
 };
@@ -83,7 +87,7 @@ struct MasteringDef
     juce::Uuid              mixerId = juce::Uuid::null();     // what is rendered: null = the processing mixer ...
     juce::Uuid              sourceId = juce::Uuid::null();    // ... and its first Ext bus
     double                  tailSeconds = 0.0;                // extra time after the last audio (reverb tails)
-    int                     view = 0;                         // 0 = Virtual Master, 1 = DDP builder
+    int                     view = 0;                         // 0 = Virtual Master, 1 = DDP builder, 2 = Listening copy
     juce::Uuid              selectedItem = juce::Uuid::null(), selectedClip = juce::Uuid::null();
 
     /** Adds edits that are new, drops the ones that are gone (keeps order and settings of the rest). */

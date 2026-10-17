@@ -21,5 +21,7 @@ typedef int (*FARPROC_STUB)();
 HMODULE GetModuleHandleW (LPCWSTR); HMODULE LoadLibraryW (LPCWSTR); FARPROC_STUB GetProcAddress (HMODULE, const char*);
 HANDLE GetCurrentProcess(); HANDLE GetCurrentThread(); DWORD GetCurrentProcessId(); DWORD GetLastError(); BOOL CloseHandle (HANDLE);
 HANDLE OpenProcess (DWORD, BOOL, DWORD); HANDLE OpenThread (DWORD, BOOL, DWORD);
+#define THREAD_MODE_BACKGROUND_BEGIN 0x00010000
+BOOL SetThreadPriority (HANDLE, int);
 HANDLE CreateToolhelp32Snapshot (DWORD, DWORD); BOOL Process32FirstW (HANDLE, PROCESSENTRY32W*); BOOL Process32NextW (HANDLE, PROCESSENTRY32W*);
 DWORD GetActiveProcessorCount (WORD);

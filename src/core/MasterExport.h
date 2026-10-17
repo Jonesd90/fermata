@@ -29,6 +29,7 @@ struct MasterJobSpec
     juce::File   destFolder;         // Files: the audio files go here. Disc: the folder that gets the DDP folder, the zip and the WAV + CUE
     juce::File   workFolder;         // intermediates (deleted at the end)
     DdpDisc      disc;              // Disc only. disc.clips holds every clip; 'items' are the included ones, in order
+    bool         formsOnly = false; // Files: make only the listening copies (one .html per piece, with its audio inside), no audio files
     juce::String discName;
 };
 
@@ -44,6 +45,9 @@ struct MasterExportResult
 
 /** Builds the list of files for the Virtual Master (or says why it cannot): included edits, in list order, named and tagged. */
 juce::String makeFilesSpec (const Project&, const MasteringDef&, MasterJobSpec& spec);
+/** The listening copies on their own (the Listening copy tab): the same pieces as the Virtual Master, at the Virtual Master's levels, with the audio
+    inside each page as chosen on that tab (WAV / FLAC / MP3, its own sample rate and bit depth). No audio files are made. */
+juce::String makeFormsSpec (const Project&, const MasteringDef&, MasterJobSpec& spec);
 /** The same for the DDP: the included clips, in order, as 44.1 kHz / 16 bit files. */
 juce::String makeDiscSpec (const Project&, const MasteringDef&, MasterJobSpec& spec);
 

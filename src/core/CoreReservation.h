@@ -85,6 +85,10 @@ public:
     /** Puts everything back as it was (the programs that were moved, this program's own settings). Called when Fermata closes. */
     void shutdown();
 
+    /** The calling thread's disk and CPU work gets Windows' "background" priority (the copy to the second recording drive), so the main drive's
+        writes always come first. Does nothing on other systems. */
+    static void makeThisThreadBackground() noexcept;
+
 private:
     CoreReservation();
     ~CoreReservation();

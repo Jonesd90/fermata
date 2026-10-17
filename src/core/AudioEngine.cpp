@@ -15,10 +15,13 @@ AudioEngine::AudioEngine (Project& p) : project (p)
     for (auto& x : stagePrevR) x = 1.0f;
     writerThread.startThread (juce::Thread::Priority::high);
     CoreReservation::get().registerAudioThread (writerThread.getThreadId());          // (kept on the reserved cores, when there are any)
+    // helpers for running the mixers side by side: one fewer than the physical cores the audio can use, leaving a core or two for everything else
+    mixerWorkers.start (juce::jlimit (0, 6, juce::SystemStats::getNumPhysicalCpus() - 2));
 }
 
 AudioEngine::~AudioEngine()
 {
+    mixerWorkers.stop();
     CoreReservation::get().unregisterAudioThread (writerThread.getThreadId());
     if (isRecording()) stopRecording();
     stopPlayback();
@@ -58,6 +61,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* in, int 
 void AudioEngine::prepare (double sr, int block)
 {
     stopPlayback();
+    lastPlanSeen.store (nullptr);                  // (the audio thread is not running here: the plan it last saw may already be gone)
     sampleRate = sr;
     maxBlock = juce::jmax (16, block);
     zeros.assign ((size_t) juce::jmax (maxBlock * 4, 8192), 0.0f);
@@ -210,8 +214,18 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
         mp->chanBuf.setSize (kMaxTrackChannels, maxBlock);
         mp->pre.setSize (2, maxBlock); mp->post.setSize (2, maxBlock); mp->preSend.setSize (2, maxBlock);
         mp->sendTmp.setSize (2, maxBlock);
+        {   // for running side by side with the other mixers (see process)
+            const int outs = juce::jmax (8, deviceOutputs);
+            mp->outScratch.setSize (outs, maxBlock);
+            mp->outPtrs.assign ((size_t) outs, nullptr);
+            int ext = 0;
+            for (auto& nd : mp->order) if (nd->kind == NodeKind::ExtBus) ++ext;
+            mp->touched.assign ((size_t) (2 * ext + 2), -1);
+        }
         p->mixers.push_back (std::move (mp));
     }
+    p->jobs.resize (p->mixers.size());
+    p->outChannels = juce::jmax (8, deviceOutputs);
     return p;
 }
 
@@ -223,7 +237,9 @@ void AudioEngine::rebuildPlan()
     planLatencySig.store (latencySignature (true));
     auto fresh = buildPlan();
     auto* old = plan.exchange (fresh.release());
+    if (! running.load()) lastPlanSeen.store (nullptr);       // no audio thread to pick it up: nothing to carry over into the new plan
     if (waitForAudioThread()) delete old;           // (if the audio thread stalled, the old plan is left in memory rather than freed under it)
+                                                    // (the audio thread has moved the sound in the old plan's delay lines into the new one by now: see carryOver)
     ensurePreRoll();                                 // a track patched to a new input starts being kept for the pre-roll
 }
 
@@ -359,6 +375,70 @@ void AudioEngine::renderOffline (const std::vector<juce::AudioBuffer<float>>& tr
 
 // ------------------------------------------------------------------ audio thread
 /** An Edit mixer runs only while its own Edit plays; the processing mixer (isFront) rests while an Edit that has a mixer of its own plays. */
+bool AudioEngine::mixerHasOutput (const MixerPlan& mp) noexcept
+{
+    for (auto& nd : mp.order)
+        if (nd->kind == NodeKind::ExtBus && nd->bus->outFirst.load (std::memory_order_relaxed) >= 0) return true;
+    return false;
+}
+
+void AudioEngine::runMixerJob (void* engine, int index) noexcept
+{
+    auto& e = *static_cast<AudioEngine*> (engine);
+    const auto& b = e.blockJobs;
+    const auto& job = b.plan->jobs[(size_t) index];
+    auto& mp = *job.mp;
+    // the driver outputs this mixer can write in this block: its Ext buses' pairs (unless they are silenced for an audition) and the audition pair
+    mp.numTouched = 0;
+    auto addCh = [&] (int ch)
+    {
+        if (ch < 0 || ch >= b.numOut || b.out[ch] == nullptr) return;
+        for (int k = 0; k < mp.numTouched; ++k) if (mp.touched[(size_t) k] == ch) return;
+        if (mp.numTouched < (int) mp.touched.size()) mp.touched[(size_t) mp.numTouched++] = ch;
+    };
+    for (auto& nd : mp.order)
+        if (nd->kind == NodeKind::ExtBus && ! job.silenceOwnOutput)
+        {
+            const int f = nd->bus->outFirst.load (std::memory_order_relaxed);
+            if (f >= 0) { addCh (f); addCh (f + 1); }
+        }
+    if (job.alsoToFirst >= 0) { addCh (job.alsoToFirst); addCh (job.alsoToFirst + 1); }
+    for (int k = 0; k < mp.numTouched; ++k) juce::FloatVectorOperations::clear (mp.outScratch.getWritePointer (mp.touched[(size_t) k]), b.n);
+    for (int c = 0; c < b.numOut && c < (int) mp.outPtrs.size(); ++c) mp.outPtrs[(size_t) c] = b.out[c] != nullptr ? mp.outScratch.getWritePointer (c) : nullptr;
+    e.processMixer (*b.plan, mp, b.in, b.numIn, 0, b.n, mp.outPtrs.data(), b.numOut, b.playing, job.silenceOwnOutput, job.alsoToFirst,
+                    job.strict, job.strict ? b.tapL : nullptr, job.strict ? b.tapR : nullptr);
+}
+
+/** Moves a delay line's contents across when both plans have the same delay there (a changed delay starts empty: it cannot be helped). */
+static void takeDelay (PathDelay& to, PathDelay& from) noexcept
+{
+    if (to.len > 0 && to.len == from.len && to.ch == from.ch && to.data.size() == from.data.size()) { std::swap (to.data, from.data); to.pos = from.pos; }
+}
+
+void AudioEngine::carryOver (Plan& from, Plan& to) noexcept
+{
+    for (auto& tm : to.mixers)
+    {
+        MixerPlan* fm = nullptr;
+        for (auto& m : from.mixers) if (m->mixer == tm->mixer) { fm = m.get(); break; }
+        if (fm == nullptr) continue;
+        tm->wasPlaying = fm->wasPlaying;
+        auto same = [] (const Node& a, const Node& b) { return a.kind == b.kind && a.strip == b.strip && a.bus == b.bus; };
+        for (size_t i = 0; i < tm->order.size(); ++i)
+        {
+            Node& tn = *tm->order[i];
+            Node* fn = (i < fm->order.size() && same (*fm->order[i], tn)) ? fm->order[i].get() : nullptr;
+            if (fn == nullptr) for (auto& x : fm->order) if (same (*x, tn)) { fn = x.get(); break; }
+            if (fn == nullptr) continue;
+            takeDelay (tn.srcDelay, fn->srcDelay);
+            takeDelay (tn.outDelay, fn->outDelay);
+            for (auto& sp : tn.sends)
+                for (auto& fsp : fn->sends)
+                    if (fsp.st == sp.st) { takeDelay (sp.delay, fsp.delay); break; }
+        }
+    }
+}
+
 static bool mixerIsLive (const MixerState& m, bool isFront, const PlaybackSession* ps, bool editMixerPlays) noexcept
 {
     if (! m.editId.isNull()) return ps != nullptr && ps->editId == m.editId;
@@ -369,6 +449,11 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
 {
     auto* pl = plan.load (std::memory_order_acquire);
     auto* rs = rec.load (std::memory_order_acquire);
+    if (auto* prev = lastPlanSeen.load (std::memory_order_relaxed); prev != pl)        // a new plan: what is on its way through the old one carries on
+    {
+        if (prev != nullptr && pl != nullptr) carryOver (*prev, *pl);
+        lastPlanSeen.store (pl, std::memory_order_relaxed);
+    }
 
     for (int c = 0; c < numOut; ++c)
         if (out[c] != nullptr) juce::FloatVectorOperations::clear (out[c], numSamples);
@@ -471,15 +556,43 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
                     { monitorOut = nd->bus->outFirst.load (std::memory_order_relaxed); break; }
                 if (monitorOut < 0) audActive = false;          // the engineer has nowhere to hear it: leave everything as it is
             }
+            // the mixers that run in this block: an Edit mixer sleeps unless its own Edit plays, and a mixer whose Ext buses go to no driver output
+            // is not run at all (nothing of it could be heard), unless it is being auditioned or feeds the talkback playback
+            int nJobs = 0;
             for (auto& mp : pl->mixers)
             {
-                if (! mixerIsLive (*mp->mixer, mp.get() == pl->mixers.front().get(), ps, editMixerPlays)) continue;                 // an Edit mixer sleeps unless its own Edit plays
+                if (! mixerIsLive (*mp->mixer, mp.get() == pl->mixers.front().get(), ps, editMixerPlays)) continue;
                 const bool strict = tbPlayNow && mp.get() == (editMixerPlays ? editPlan : pl->mixers.front().get());       // the processing mixer (or the playing Edit's mixer)
-                processMixer (*pl, *mp, in, numIn, offset, n, out, numOut, ps != nullptr && ! direct,
-                              audActive && mp->mixer == eng,
-                              audActive && mp->mixer == aud ? monitorOut : -1,
-                              strict, strict ? tapL : nullptr, strict ? tapR : nullptr);
+                const bool audited = audActive && mp->mixer == aud;
+                if (! strict && ! audited && ! mixerHasOutput (*mp)) continue;
+                if (nJobs >= (int) pl->jobs.size()) break;
+                pl->jobs[(size_t) nJobs++] = { mp.get(), audActive && mp->mixer == eng, audited ? monitorOut : -1, strict };
             }
+            const bool playingNow = ps != nullptr && ! direct;
+            // Two or more mixers: they run side by side on the helper threads, each into its own outputs, which are then added up here in the usual
+            // order (so the result is exactly what running them one after another gives).
+            if (nJobs >= 2 && mixerWorkers.size() > 0 && offset == 0 && n == numSamples && numOut <= pl->outChannels)
+            {
+                blockJobs = { pl, in, numIn, out, numOut, n, playingNow, tapL, tapR };
+                mixerWorkers.run (nJobs, &AudioEngine::runMixerJob, this);
+                parallelBlocks.fetch_add (1, std::memory_order_relaxed);
+                for (int j = 0; j < nJobs; ++j)
+                {
+                    const auto& mp = *pl->jobs[(size_t) j].mp;
+                    for (int k = 0; k < mp.numTouched; ++k)
+                    {
+                        const int ch = mp.touched[(size_t) k];
+                        juce::FloatVectorOperations::add (out[ch], mp.outScratch.getReadPointer (ch), n);
+                    }
+                }
+            }
+            else
+                for (int j = 0; j < nJobs; ++j)
+                {
+                    const auto& job = pl->jobs[(size_t) j];
+                    processMixer (*pl, *job.mp, in, numIn, offset, n, out, numOut, playingNow, job.silenceOwnOutput, job.alsoToFirst,
+                                  job.strict, job.strict ? tapL : nullptr, job.strict ? tapR : nullptr);
+                }
             if (direct && ps->numTracks() > 0)
             {
                 const auto& mix = ps->trackBuffer (0);
@@ -997,6 +1110,14 @@ juce::String AudioEngine::startRecording (TakeWindowDef& window)
         auto w = wav.createWriterFor (stream, opts);
         if (w == nullptr) return "Cannot create a 24-bit WAV writer for " + t->name;
         rt.writer = std::make_unique<juce::AudioFormatWriter::ThreadedWriter> (w.release(), writerThread, ringNow != nullptr ? 1 << 19 : 1 << 18);
+        if (backupRoot != juce::File())                    // the second drive: the same file, in a folder named after the project (copied while it records)
+        {
+            const auto projFolder = project.projectFolder();
+            const auto rel = (projFolder != juce::File() && file.isAChildOf (projFolder)) ? file.getRelativePathFrom (projFolder) : file.getFileName();
+            const auto name = projFolder != juce::File() ? projFolder.getFileName() : project.name;
+            rt.backup = backupCopier.add (file, backupRoot.getChildFile (juce::File::createLegalFileName (name)).getChildFile (rel),
+                                          sampleRate * (double) rt.info.numChannels * 3.0);
+        }
         group.files.push_back (rt.info);
         rs->tracks.push_back (std::move (rt));
     }
@@ -1029,7 +1150,10 @@ juce::Uuid AudioEngine::stopRecording()
     }
     const auto length = session->samples.load();
     const auto gid = session->groupId;
+    std::vector<std::shared_ptr<BackupCopier::Job>> copies;
+    for (auto& rt : session->tracks) if (rt.backup != nullptr) copies.push_back (rt.backup);
     session->tracks.clear();          // destroys the ThreadedWriters: flushes everything to disk
+    for (auto& c : copies) BackupCopier::finish (c);      // the second drive's copies finish by themselves, in the background
     if (auto* w = project.findTakeWindow (session->windowId))
         if (auto* g = w->findGroup (gid))
             g->lengthSamples = length;

@@ -523,12 +523,14 @@ private:
 };
 
 // ============================================================================= the window
-MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (progressValue), ddpProgress (progressValue), renderProgress (renderProgressValue)
+MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (progressValue), formProgress (progressValue), ddpProgress (progressValue), renderProgress (renderProgressValue)
 {
     auto cap = [this] (juce::Label& l, const juce::String& t, bool bold = false) { styleCaption (l, t, bold); addChildComponent (l); };
-    for (auto* b : { &vmTab, &ddpTab }) { b->setClickingTogglesState (false); b->setColour (juce::TextButton::buttonOnColourId, theme::accent); addAndMakeVisible (b); }
+    for (auto* b : { &vmTab, &ddpTab, &formTab }) { b->setClickingTogglesState (false); b->setColour (juce::TextButton::buttonOnColourId, theme::accent); addAndMakeVisible (b); }
     vmTab.onClick = [this] { setView (0); };
     ddpTab.onClick = [this] { setView (1); };
+    formTab.onClick = [this] { setView (2); };
+    formTab.setTooltip ("Listening copies for reviewers: one .html page per piece with the recording inside, a waveform, play controls and a comment form. Made on their own: no audio files are exported.");
     vmTab.setTooltip ("Export the edits as audio files: WAV, AIFF, FLAC, Ogg Vorbis or MP3, with levels, names and tags");
     ddpTab.setTooltip ("Lay the edits out as a CD: pauses, automatic PQ points, CD-Text, and a DDP master for the factory");
     styleCaption (renderCaption, "Render from:", true); styleCaption (tailCaption, "Tail:", true);
@@ -612,16 +614,33 @@ MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (pr
         else vm.oggQuality = id - 1;
         touched();
     };
-    for (auto* t : { &normToggle, &overallToggle, &individualToggle, &numberToggle, &feedbackToggle }) vmHolder.addChildComponent (*t);
+    for (auto* t : { &normToggle, &overallToggle, &individualToggle, &numberToggle }) vmHolder.addChildComponent (*t);
     cap (formCaption, "Listening copy for reviewers", true); cap (formAudioCaption, "Audio inside"); styleCaption (formInfo, "");
     formInfo.setMinimumHorizontalScale (1.0f); formInfo.setJustificationType (juce::Justification::topLeft);
-    for (auto* l : { &formCaption, &formAudioCaption, &formInfo }) vmHolder.addChildComponent (*l);
-    vmHolder.addChildComponent (formAudioBox);
-    formAudioBox.addItem ("WAV (full quality, the same rate and bit depth)", 1); formAudioBox.addItem ("FLAC (lossless, about half the size)", 2); formAudioBox.addItem ("MP3 (small, needs LAME)", 3);
+    addChildComponent (formInfo);
+    addChildComponent (formAudioBox);
+    cap (formIntro, "Fermata makes ONE .html file per piece with the recording inside it. Send it to a listener: they double-click it, see the waveform, play it, and press a button "
+                    "to add comments (with an optional bar) at the time they hear something. They save a small file and send it back; import it in the edit window (Feedback button) and "
+                    "the comments appear as flags on the timeline. It works in any current browser on Windows, Mac, iPhone / iPad and Android. No audio files are exported here: "
+                    "the audio is inside each page.");
+    formIntro.setJustificationType (juce::Justification::topLeft); formIntro.setMinimumHorizontalScale (1.0f);
+    cap (formRateCaption, "Sample rate"); cap (formBitsCaption, "Bit depth"); cap (formLevelNote, ""); cap (formFolderCaption, "Folder"); cap (formStatus, "");
+    formLevelNote.setJustificationType (juce::Justification::topLeft); formStatus.setJustificationType (juce::Justification::topLeft);
+    formRateBox.addItem ("The edits' own rate", 1); formRateBox.addItem ("44.1 kHz", 2); formRateBox.addItem ("48 kHz", 3);
+    formBitsBox.addItem ("16 bit", 1); formBitsBox.addItem ("24 bit", 2);
+    formRateBox.onChange = [this] { if (updating) return; const double r[] = { 0.0, 44100.0, 48000.0 }; def().vm.formRate = r[juce::jlimit (0, 2, formRateBox.getSelectedId() - 1)]; touched(); refreshFormatControls(); };
+    formBitsBox.onChange = [this] { if (updating) return; def().vm.formBits = formBitsBox.getSelectedId() == 1 ? 16 : 24; touched(); refreshFormatControls(); };
+    formFolderEditor.onTextChange = [this] { def().vm.formFolder = formFolderEditor.getText(); touched(); };
+    formChoose.onClick = [this] { chooseFolder (false, true); };
+    formExport.setColour (juce::TextButton::buttonColourId, theme::accent);
+    formExport.onClick = [this] { startFormExport(); };
+    formShow.onClick = [this] { if (lastOutput.exists()) lastOutput.revealToUser(); };
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &formRateBox, &formBitsBox, &formFolderEditor, &formChoose, &formExport, &formShow, &formProgress }) addChildComponent (c);
+    formAudioBox.addItem ("WAV (no loss)", 1); formAudioBox.addItem ("FLAC (lossless, about half the size)", 2); formAudioBox.addItem ("MP3 (small, needs LAME)", 3);
     feedbackToggle.setTooltip ("Besides the audio file, Fermata makes ONE .html file per track with the recording inside it. Send it to a listener: they double-click it, "
                                "see the waveform, play it, and press a button to add comments (with an optional bar) at the time they hear something. They save a small file and send it back; "
                                "import it in the edit window (Feedback button) and the comments appear as flags on the timeline. Works in any current browser on Windows, Mac, iPhone / iPad and Android.");
-    feedbackToggle.onClick = [this] { def().vm.feedbackForm = feedbackToggle.getToggleState(); touched(); refreshFormatControls(); };
+    feedbackToggle.onClick = [this] { def().vm.feedbackForm = feedbackToggle.getToggleState(); touched(); refreshFormatControls(); };      // (no longer shown: see the Listening copy tab)
     formAudioBox.onChange = [this] { if (updating) return; def().vm.formAudio = juce::jlimit (0, 2, formAudioBox.getSelectedId() - 1); touched(); refreshFormatControls(); };
     cap (alsoCaption, "Also export every file as (all in one go)", true); vmHolder.addChildComponent (alsoCaption);
     {
@@ -918,7 +937,7 @@ void MasteringComponent::timerCallback()
     {
         progressValue = job->getProgress();
         const auto st = job->getStatus();
-        (lastWasDisc ? ddpStatus : vmStatus).setText (st, juce::dontSendNotification);
+        (lastJobKind == 1 ? ddpStatus : lastJobKind == 2 ? formStatus : vmStatus).setText (st, juce::dontSendNotification);
     }
 }
 
@@ -1037,14 +1056,21 @@ void MasteringComponent::refreshFormatControls()
     numberToggle.setToggleState (vm.numberFiles, juce::dontSendNotification);
     feedbackToggle.setToggleState (vm.feedbackForm, juce::dontSendNotification);
     formAudioBox.setSelectedId (vm.formAudio + 1, juce::dontSendNotification);
-    formAudioBox.setEnabled (vm.feedbackForm);
+    formRateBox.setSelectedId (vm.formRate >= 47999.0 || (vm.formAudio == 2 && vm.formRate <= 0.0) ? 3 : vm.formRate >= 44099.0 ? 2 : 1, juce::dontSendNotification);
+    formRateBox.setItemEnabled (1, vm.formAudio != 2);                                    // MP3: 48 kHz at most
+    formBitsBox.setSelectedId (vm.formBits == 16 ? 1 : 2, juce::dontSendNotification);
+    formBitsBox.setEnabled (vm.formAudio != 2);
+    formFolderEditor.setText (vm.formFolder.trim().isNotEmpty() ? vm.formFolder : app.project.masteredFolder().getChildFile ("Listening copies").getFullPathName(), false);
+    formLevelNote.setText (vm.normalise ? "Levels: as set on the Virtual Master tab (the peak at " + juce::String (vm.peakDb, 1) + " dBFS, " + (vm.peakTogether ? "one gain for all the pieces" : "each piece on its own") + ")."
+                                        : juce::String ("Levels: as set on the Virtual Master tab (no levelling: the pieces as they are)."), juce::dontSendNotification);
     {
-        double rate = vm.sampleRate;
+        double rate = vm.formAudio == 2 ? 48000.0 : vm.formRate;
+        const int bits = vm.formAudio == 2 ? 16 : vm.formBits;
         if (rate <= 0.0) { rate = 48000.0; for (auto& it : def().items) if (it.include) if (auto* e = app.project.findEdit (it.editId)) if (e->sampleRate > 0.0) { rate = e->sampleRate; break; } }
-        const double bytesPerMin = vm.formAudio == 0 ? rate * (vm.bitDepth / 8.0) * 2.0 * 60.0 : vm.formAudio == 1 ? rate * (vm.bitDepth == 16 ? 2.0 : 3.0) * 2.0 * 60.0 * 0.55 : 320000.0 / 8.0 * 60.0 * 0.5;
-        juce::String t = "About " + juce::String (bytesPerMin * 1.34 / 1.0e6, 0) + " MB of file for every minute of music (the page is the audio plus about a third).";
+        const double bytesPerMin = vm.formAudio == 0 ? rate * (bits / 8.0) * 2.0 * 60.0 : vm.formAudio == 1 ? rate * (bits == 16 ? 2.0 : 3.0) * 2.0 * 60.0 * 0.55 : 320000.0 / 8.0 * 60.0 * 0.5;
+        juce::String t = "About " + juce::String (juce::roundToInt (bytesPerMin * 1.34 / 1.0e6)) + " MB of file for every minute of music (the page is the audio plus about a third).";
         if (vm.formAudio == 0 && bytesPerMin * 1.34 / 1.0e6 > 60.0) t += " Phones and tablets may struggle with files over about 150 MB; FLAC is half the size with no loss.";
-        formInfo.setText (vm.feedbackForm ? t : juce::String(), juce::dontSendNotification);
+        formInfo.setText (t, juce::dontSendNotification);
     }
     if (vm.folder.trim().isEmpty()) vm.folder = app.project.masteredFolder().getFullPathName();           // the default place: the project's Bounced Media / Mastered Audio folder
     folderEditor.setText (vm.folder, false);
@@ -1206,16 +1232,18 @@ void MasteringComponent::setAllGaps (double seconds)
     touched(); refreshDdp (false);
 }
 
-void MasteringComponent::chooseFolder (bool disc)
+void MasteringComponent::chooseFolder (bool disc, bool forms)
 {
-    const auto start = juce::File (disc ? def().ddp.folder : def().vm.folder);
-    chooser = std::make_unique<juce::FileChooser> (disc ? "Choose the folder for the DDP" : "Choose the folder for the files", start.exists() ? start : app.project.audioFolder().getParentDirectory());
+    const auto start = juce::File (forms ? formFolderEditor.getText() : disc ? def().ddp.folder : def().vm.folder);
+    chooser = std::make_unique<juce::FileChooser> (forms ? "Choose the folder for the listening copies" : disc ? "Choose the folder for the DDP" : "Choose the folder for the files",
+                                                   start.exists() ? start : app.project.audioFolder().getParentDirectory());
     juce::Component::SafePointer<MasteringComponent> safe (this);
-    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories, [safe, disc] (const juce::FileChooser& fc)
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories, [safe, disc, forms] (const juce::FileChooser& fc)
     {
         if (safe == nullptr || fc.getResult() == juce::File()) return;
         const auto path = fc.getResult().getFullPathName();
-        if (disc) { safe->def().ddp.folder = path; safe->ddpFolderEditor.setText (path, false); } else { safe->def().vm.folder = path; safe->folderEditor.setText (path, false); }
+        if (forms) { safe->def().vm.formFolder = path; safe->formFolderEditor.setText (path, false); }
+        else if (disc) { safe->def().ddp.folder = path; safe->ddpFolderEditor.setText (path, false); } else { safe->def().vm.folder = path; safe->folderEditor.setText (path, false); }
         safe->touched();
     });
 }
@@ -1223,13 +1251,14 @@ void MasteringComponent::chooseFolder (bool disc)
 // ----------------------------------------------------------------------------- exporting
 void MasteringComponent::setBusy (bool busy)
 {
-    for (juce::Component* c : std::initializer_list<juce::Component*> { &formatBox, &rateBox, &bitsBox, &ditherBox, &qualityBox, &normToggle, &overallToggle, &individualToggle, &numberToggle, &feedbackToggle, &formAudioBox, &formCaption, &formAudioCaption, &formInfo, &alsoCaption, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4], &peakEditor,
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &formatBox, &rateBox, &bitsBox, &ditherBox, &qualityBox, &normToggle, &overallToggle, &individualToggle, &numberToggle, &formAudioBox, &formRateBox, &formBitsBox, &formFolderEditor, &formChoose, &alsoCaption, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4], &peakEditor,
                                                                          &folderEditor, &chooseButton, &mixerBox, &sourceBox, &tailBox, &vmAll, &vmNone, &vmUp, &vmDown, &autoPq, &allGapsBox, &ddpChoose,
                                                                          &ddpFolderEditor, &zipToggle, &cueToggle, &ddpNorm, &ddpTogether, &ddpPeakEditor, &ddpUp, &ddpDown, &gapEditor, &ddpCheck })
         c->setEnabled (! busy);
-    exportButton.setButtonText (busy && ! lastWasDisc ? "Cancel" : "Export");
-    ddpExport.setButtonText (busy && lastWasDisc ? "Cancel" : "Make DDP");
-    exportButton.setEnabled (! busy || ! lastWasDisc); ddpExport.setEnabled (! busy || lastWasDisc);
+    exportButton.setButtonText (busy && lastJobKind == 0 ? "Cancel" : "Export");
+    ddpExport.setButtonText (busy && lastJobKind == 1 ? "Cancel" : "Make DDP");
+    formExport.setButtonText (busy && lastJobKind == 2 ? "Cancel" : "Make listening copies");
+    exportButton.setEnabled (! busy || lastJobKind == 0); ddpExport.setEnabled (! busy || lastJobKind == 1); formExport.setEnabled (! busy || lastJobKind == 2);
     if (! busy) refreshFormatControls();
 }
 
@@ -1241,8 +1270,20 @@ void MasteringComponent::startVmExport()
     MasterJobSpec spec;
     const auto err = makeFilesSpec (app.project, def(), spec);
     if (err.isNotEmpty()) { vmStatus.setColour (juce::Label::textColourId, theme::warn); vmStatus.setText (err, juce::dontSendNotification); return; }
+    spec.out.feedbackForm = false;                                         // (the listening copies are made on their own tab now)
     if (auto* st = app.props.getUserSettings()) { st->setValue ("masterFolder", def().vm.folder); app.props.saveIfNeeded(); }
-    startJob (spec, false);
+    startJob (spec, 0);
+}
+
+void MasteringComponent::startFormExport()
+{
+    if (job != nullptr) { job->cancel(); formStatus.setText ("Cancelling...", juce::dontSendNotification); return; }
+    if (renderJob != nullptr) { formStatus.setColour (juce::Label::textColourId, theme::warn); formStatus.setText ("The pieces are being rendered: try again when the line at the top says the renders are up to date.", juce::dontSendNotification); return; }
+    if (app.engine.isRecording()) { showError ("Mastering", "Stop recording first."); return; }
+    MasterJobSpec spec;
+    const auto err = makeFormsSpec (app.project, def(), spec);
+    if (err.isNotEmpty()) { formStatus.setColour (juce::Label::textColourId, theme::warn); formStatus.setText (err, juce::dontSendNotification); return; }
+    startJob (spec, 2);
 }
 
 void MasteringComponent::startDdpExport()
@@ -1262,38 +1303,42 @@ void MasteringComponent::startDdpExport()
         else for (auto& t : L.tracks) if (! isValidIsrc (def().ddp.clips[(size_t) t.clipIndex].isrc)) { err = "Track " + juce::String (t.number) + ": the ISRC must look like GB-AJY-14-12345 (or be empty)."; break; }
     }
     if (err.isNotEmpty()) { ddpStatus.setColour (juce::Label::textColourId, theme::warn); ddpStatus.setText (err, juce::dontSendNotification); return; }
-    startJob (spec, true);
+    startJob (spec, 1);
 }
 
-void MasteringComponent::startJob (const MasterJobSpec& spec, bool disc)
+void MasteringComponent::startJob (const MasterJobSpec& spec, int kind)
 {
-    lastWasDisc = disc;
-    auto& status = disc ? ddpStatus : vmStatus;
+    lastJobKind = kind; lastWasDisc = kind == 1;
+    auto& status = kind == 1 ? ddpStatus : kind == 2 ? formStatus : vmStatus;
     status.setColour (juce::Label::textColourId, theme::text);
     status.setText ("Starting...", juce::dontSendNotification);
-    (disc ? ddpShow : showButton).setVisible (false);
+    (kind == 1 ? ddpShow : kind == 2 ? formShow : showButton).setVisible (false);
     progressValue = 0.0;
     setBusy (true);
     juce::Component::SafePointer<MasteringComponent> safe (this);
-    job = std::make_unique<MasterExportJob> (app.project, spec, [safe, disc] (MasterExportResult r) { if (safe != nullptr) safe->jobFinished (r, disc); });
+    job = std::make_unique<MasterExportJob> (app.project, spec, [safe, kind] (MasterExportResult r) { if (safe != nullptr) safe->jobFinished (r, kind); });
 }
 
-void MasteringComponent::jobFinished (const MasterExportResult& r, bool disc)
+void MasteringComponent::jobFinished (const MasterExportResult& r, int kind)
 {
+    const bool disc = kind == 1;
     job.reset();
     setBusy (false);
     scheduleRecheck (300);                                               // (the export made or reused the renders: show how they stand)
-    auto& status = disc ? ddpStatus : vmStatus;
+    auto& status = disc ? ddpStatus : kind == 2 ? formStatus : vmStatus;
     progressValue = r.error.isEmpty() && ! r.cancelled ? 1.0 : 0.0;
     if (r.cancelled) { status.setColour (juce::Label::textColourId, theme::text); status.setText ("Cancelled.", juce::dontSendNotification); return; }
     if (r.error.isNotEmpty()) { status.setColour (juce::Label::textColourId, theme::warn); status.setText (r.error, juce::dontSendNotification); return; }
     status.setColour (juce::Label::textColourId, r.clipped ? theme::warn : theme::text);
-    if (disc)
+    if (kind == 2)
+        status.setText ("Done: " + juce::String (r.files.size()) + " listening cop" + (r.files.size() == 1 ? "y" : "ies") + ", loudest peak " + juce::String (r.peakDb, 1) + " dBFS"
+                        + (r.clipped ? "   -  THIS CLIPPED. Set the peak level on the Virtual Master tab or lower the faders." : "") + "\n" + juce::File (r.files[0]).getFileName() + (r.files.size() > 1 ? "  ..." : ""), juce::dontSendNotification);
+    else if (disc)
         status.setText ("Done. Loudest peak " + juce::String (r.peakDb, 1) + " dBFS" + (r.clipped ? " (CLIPPED: lower the level)" : "") + ".\n" + r.report, juce::dontSendNotification);
     else
         status.setText ("Done: " + juce::String (r.files.size()) + " file(s), loudest peak " + juce::String (r.peakDb, 1) + " dBFS"
                         + (r.clipped ? "   -  THIS CLIPPED. Tick 'Set the peak level' or lower the faders." : "") + "\n" + juce::File (r.files[0]).getFileName() + (r.files.size() > 1 ? "  ..." : ""), juce::dontSendNotification);
-    if (! r.files.isEmpty()) { lastOutput = juce::File (r.files[0]); (disc ? ddpShow : showButton).setVisible (true); }
+    if (! r.files.isEmpty()) { lastOutput = juce::File (r.files[0]); (disc ? ddpShow : kind == 2 ? formShow : showButton).setVisible (true); }
     resized();
 }
 
@@ -1302,17 +1347,25 @@ void MasteringComponent::setView (int v)
 {
     if (v != 1) stopPlay();
     view = v; def().view = v;
-    vmTab.setToggleState (v == 0, juce::dontSendNotification); ddpTab.setToggleState (v == 1, juce::dontSendNotification);
+    vmTab.setToggleState (v == 0, juce::dontSendNotification); ddpTab.setToggleState (v == 1, juce::dontSendNotification); formTab.setToggleState (v == 2, juce::dontSendNotification);
     vmTab.setColour (juce::TextButton::buttonColourId, v == 0 ? theme::accent : theme::button);
     ddpTab.setColour (juce::TextButton::buttonColourId, v == 1 ? theme::accent : theme::button);
-    const bool vm = v == 0, dd = v == 1;
-    for (juce::Component* c : std::initializer_list<juce::Component*> { vmList.get(), &vmAll, &vmNone, &vmUp, &vmDown, &vmSettings, &vmProgress, &vmStatus, &exportButton })
+    formTab.setColour (juce::TextButton::buttonColourId, v == 2 ? theme::accent : theme::button);
+    const bool vm = v == 0, dd = v == 1, fm = v == 2;
+    for (juce::Component* c : std::initializer_list<juce::Component*> { vmList.get(), &vmAll, &vmNone, &vmUp, &vmDown })      // the list of pieces: shared by the Virtual Master and the listening copies
+        c->setVisible (vm || fm);
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &vmSettings, &vmProgress, &vmStatus, &exportButton })
         c->setVisible (vm);
     showButton.setVisible (vm && showButton.isVisible());
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &formCaption, &formIntro, &formAudioCaption, &formAudioBox, &formRateCaption, &formRateBox, &formBitsCaption, &formBitsBox,
+                                                                         &formLevelNote, &formInfo, &formFolderCaption, &formFolderEditor, &formChoose, &formStatus, &formProgress, &formExport })
+        c->setVisible (fm);
+    formShow.setVisible (fm && formShow.isVisible());
     for (juce::Component* c : std::initializer_list<juce::Component*> { &fmtCaption, &rateCaption, &bitsCaption, &ditherCaption, &levelCaption, &albumCaption, &fileCaption, &nameCaption, &folderCaption,
-                                                                         &formatBox, &rateBox, &bitsBox, &ditherBox, &normToggle, &overallToggle, &individualToggle, &numberToggle, &feedbackToggle, &formAudioBox, &formCaption, &formAudioCaption, &formInfo, &alsoCaption, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4], &peakEditor, &peakUnit,
+                                                                         &formatBox, &rateBox, &bitsBox, &ditherBox, &normToggle, &overallToggle, &individualToggle, &numberToggle, &alsoCaption, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4], &peakEditor, &peakUnit,
                                                                          &folderEditor, &chooseButton })
         c->setVisible (vm);
+    feedbackToggle.setVisible (false);
     for (auto* f : albumFields) { f->caption.setVisible (vm); f->editor.setVisible (vm); }
     for (auto* f : fileFields) { f->caption.setVisible (vm); f->editor.setVisible (vm); }
     for (juce::Component* c : std::initializer_list<juce::Component*> { ddpList.get(), &rightView, timeline.get(), &playBtn, &gapPlayBtn, &startBtn, &timeLabel, &pqView, &discCaption, &clipCaption, &pqCaption, &gapCaption, &allGapsCaption, &ddpFolderCaption, &ddpPeakUnit,
@@ -1344,6 +1397,7 @@ void MasteringComponent::resized()
         auto bar = all.removeFromTop (46).reduced (8, 0);
         vmTab.setBounds (bar.removeFromLeft (150).withSizeKeepingCentre (146, grid::btnH + 4));
         ddpTab.setBounds (bar.removeFromLeft (150).withSizeKeepingCentre (146, grid::btnH + 4));
+        formTab.setBounds (bar.removeFromLeft (150).withSizeKeepingCentre (146, grid::btnH + 4));
         (void) bar;                                                                // (the top bar holds only the tabs, so the pin and moon buttons have the corner to themselves)
     }
     {
@@ -1361,7 +1415,40 @@ void MasteringComponent::resized()
         renderStatus.setBounds (strip);
     }
     all.reduce (10, 10);
-    if (view == 0) layoutVm (all); else layoutDdp (all);
+    if (view == 0) layoutVm (all); else if (view == 2) layoutForms (all); else layoutDdp (all);
+}
+
+void MasteringComponent::layoutForms (juce::Rectangle<int> area)
+{
+    // the list of pieces on the left (the same as the Virtual Master's), the listening copy's settings on the right
+    auto left = area.removeFromLeft (juce::jmax (380, area.getWidth() * 48 / 100));
+    area.removeFromLeft (12);
+    auto btns = left.removeFromBottom (32);
+    left.removeFromBottom (6);
+    vmList->setBounds (left);
+    for (auto* b : { &vmAll, &vmNone, &vmUp, &vmDown }) b->setBounds (btns.removeFromLeft (grid::btnW).withSizeKeepingCentre (grid::btnW - 4, grid::btnH + 2));
+
+    auto bottom = area.removeFromBottom (74);
+    area.removeFromBottom (6);
+    formStatus.setBounds (bottom.removeFromTop (38));
+    {
+        auto buttons = bottom.removeFromBottom (32);
+        formExport.setBounds (buttons.removeFromRight (190).reduced (2));
+        formShow.setBounds (buttons.removeFromRight (150).reduced (2));
+        buttons.removeFromRight (8);
+        formProgress.setBounds (buttons.withSizeKeepingCentre (buttons.getWidth(), 18));
+    }
+    auto r = area.reduced (6, 4);
+    auto row = [&] (int h) { auto x = r.removeFromTop (h); r.removeFromTop (6); return x; };
+    formCaption.setBounds (row (20));
+    formIntro.setBounds (row (juce::jmax (64, juce::roundToInt (formIntro.getFont().getHeight() * 1.25f) * (1 + juce::roundToInt ((float) juce::GlyphArrangement::getStringWidthInt (formIntro.getFont(), formIntro.getText()) / (float) juce::jmax (100, r.getWidth() - 10))))));
+    auto labelled = [&] (juce::Label& l, juce::ComboBox& c) { auto x = row (grid::btnH + 2); l.setBounds (x.removeFromLeft (110)); c.setBounds (x.removeFromLeft (juce::jmin (x.getWidth(), 340))); };
+    labelled (formAudioCaption, formAudioBox);
+    labelled (formRateCaption, formRateBox);
+    labelled (formBitsCaption, formBitsBox);
+    formInfo.setBounds (row (34));
+    formLevelNote.setBounds (row (34));
+    { auto x = row (grid::btnH + 2); formFolderCaption.setBounds (x.removeFromLeft (60)); formChoose.setBounds (x.removeFromRight (136)); x.removeFromRight (4); formFolderEditor.setBounds (x); }
 }
 
 static void layoutFieldGrid (juce::OwnedArray<MasterField>& fields, juce::Rectangle<int> area, int cols, int captionW, int& usedHeight)
@@ -1421,11 +1508,6 @@ void MasteringComponent::layoutVm (juce::Rectangle<int> area)
     y += 6;
     nameCaption.setBounds (row (20));
     numberToggle.setBounds (row (22));
-    y += 4;
-    formCaption.setBounds (row (20));
-    feedbackToggle.setBounds (row (22));
-    { auto r = row (grid::btnH + 2); formAudioCaption.setBounds (r.removeFromLeft (110)); formAudioBox.setBounds (r.removeFromLeft (juce::jmin (r.getWidth(), 340))); }
-    formInfo.setBounds (row (feedbackToggle.getToggleState() ? 34 : 4));
     y += 4;
     alsoCaption.setBounds (row (20));
     { auto r = row (24); const int cw = juce::jmax (60, r.getWidth() / 5); for (int f = 0; f < 5; ++f) alsoToggle[f].setBounds (r.removeFromLeft (cw)); }

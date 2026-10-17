@@ -6,6 +6,26 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.60.0
+- **Record to a second drive at the same time.** Project > Second recording drive... chooses a folder, normally on another drive. Every take is then copied there while it records, a moment behind the main drive, into a folder named after the project (with the same folders inside it as the project). The main drive always comes first:
+  - the audio and the main recording know nothing about the copy (no extra buffer, no extra work in the audio callback, no waiting at Stop or Record);
+  - the copy runs at Windows' background priority (for the processor and the disk);
+  - if the second drive falls more than 20 seconds behind, or cannot be written (full, removed, unplugged), that take's copy is thrown away, a notice says so ("The main recording is not affected"), and the next take tries again;
+  - after Stop, the last moment and the finished header of each file are copied in the background, so you can record again straight away.
+  Project > Stop recording to the second drive switches it off. The setting belongs to the computer, not to the project.
+- **No gap in the sound when recording starts or stops.** Starting or stopping a recording rebuilds the audio paths, and until now that emptied the delay lines (delay compensation, plug-in latency), so the processing and cue mixers had a tiny hole in them at Record and at Stop. The delay lines now carry their contents across, so what is coming out of the mixers carries on without a break.
+- **The mixers run side by side.** On a computer with more than two physical cores, the processing mixer, the cue mixers and a playing edit's mixer are worked out at the same time on helper threads (on the reserved cores when CPU cores are reserved) instead of one after another. The result is exactly the same as before, sample for sample. A mixer with no outputs going anywhere is no longer worked out at all.
+- **Little lights in the menu bar for the Take, Edit and Mixer windows:** green = one is open and in use (in front), orange = open but not in front, red = open but minimised, no light = none open.
+- **The header of the main window:** a line now separates the Fermata name and the project from the driver inputs, and there are boxes for the project name, the sample rate, the bit depth and the disk space free on the recording drive (red under 10 GB).
+- **The LTC boxes are smaller:** just the light and LTC IN / LTC OUT. Point at one (or click it) for the details.
+- **Media and Mastering are the last two entries of the menu**, straight after Display Organiser, with the spare space after them.
+- **Listening copies have their own tab in the Mastering window.** "Make listening copies" makes one .html page per piece (with the audio inside it) and nothing else: no audio files have to be exported with them. Choose the audio inside (WAV, FLAC or MP3), its sample rate (the edits' own, 44.1 or 48 kHz) and bit depth, and the folder (normally Bounced Media / Mastered Audio / Listening copies). The pieces, their order and their levels are the ones on the Virtual Master tab. The Virtual Master export no longer makes listening copies.
+- **The sun / moon button now switches between the desk colours (light) and the same desk colours a shade darker (dark).** The wood, the colour theme and the lighter keys stay in both. (The old light-grey look is gone.) Fermata starts in the light look.
+
+## 2.59.1
+- **The main window fits a 16:9 screen.** It now opens exactly as tall as the full layout needs (752 pixels), leaving room for the window's title bar, so on a 1920 x 1080 screen at 125 % everything shows at full size with no scroll bar.
+- **On a shorter screen the input strips shrink to fit** (for example 1920 x 1080 at 150 %): the gain knob, the keys, the meters and the gaps get smaller evenly, and the wooden rail gets thinner, just enough for the strips to fit the height. On a taller screen nothing changes. (The strips still scroll sideways when there are more than fit across.)
+
 ## 2.59.0
 - **The desk look in every window.** The Take, Edit, Trim and Mixer windows (and the other windows: Project Designer, Mastering, Media, Audio settings ...) now have the same blue desk as the main window: blue-grey panels, dark waveform lanes and displays, and keys lighter than the panel with dark writing and pictures, so they stand out. Every window has wooden side panels and a wooden strip along the bottom. The mixers have blue strips with light keys. The sun / moon button still switches to the light look (without the wood).
 - **The colour you choose follows everywhere.** Project > Colour theme now changes every window at once (and is used from the start the next time Fermata opens), not only the main window.

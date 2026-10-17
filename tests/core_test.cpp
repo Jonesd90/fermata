@@ -2486,6 +2486,17 @@ int main()
                 CHECK (! res.files.isEmpty() && readInfo (juce::File (res.files[0]), rate, bits, len, pk) && rate == 44100.0 && bits == 24 && std::abs ((double) len - (double) expect) <= 1.0);
                 CHECK (std::abs (pk - juce::Decibels::decibelsToGain (-1.0f)) < 0.003f && std::abs (res.peakDb + 1.0f) < 0.05f);
                 CHECK (! juce::File (vm.folder).getChildFile ("_fermata_work").exists()); }
+            {   // the listening copies on their own: one page per piece, with its audio inside, and no audio files
+                const auto forms = tmp.getChildFile ("Listening copies test");
+                vm.formFolder = forms.getFullPathName(); vm.formAudio = 1; vm.formRate = 0.0; vm.formBits = 16;
+                CHECK (makeFormsSpec (mp, mp.mastering, spec).isEmpty() && spec.formsOnly);
+                MasterExportJob job (mp, spec, nullptr, false); auto res = job.execute();
+                CHECK (res.error.isEmpty() && res.files.size() == 1 && res.files[0].endsWith (".html"));
+                CHECK (forms.findChildFiles (juce::File::findFiles, false, "*.html").size() == 1);
+                CHECK (forms.findChildFiles (juce::File::findFiles, false, "*.wav;*.flac;*.mp3;*.aif*;*.ogg").isEmpty());
+                CHECK (res.files.size() == 1 && juce::File (res.files[0]).loadFileAsString().contains ("audio/flac"));
+                vm.formFolder = {};
+            }
             vm.format = MasterFormat::Flac; vm.bitDepth = 16; vm.sampleRate = 0.0;                     // FLAC, 16 bit, the edit's own rate
             CHECK (makeFilesSpec (mp, mp.mastering, spec).isEmpty());
             {   MasterExportJob job (mp, spec, nullptr, false); auto res = job.execute();
@@ -3903,6 +3914,145 @@ int main()
             juce::MemoryBlock orig; wav.loadFileAsData (orig);
             CHECK (chunks >= 2 && all.getSize() == (size_t) wav.getSize() && all.getSize() == orig.getSize() && std::memcmp (all.getData(), orig.getData(), all.getSize()) == 0);
         }
+    }
+
+    SECTION ("the mixers run side by side on helper threads: exactly the same result as one after another; a mixer with no outputs is not run");
+    {
+        auto runIt = [&] (int threads, juce::uint64& parallelBlocks, float& quietMeter, float& busyMeter)
+        {
+            Project q;
+            q.projectFile = tmp.getChildFile ("Par.fermata");
+            q.setInputCount (2); q.setOutputCount (4);
+            q.tracks.clear();
+            const auto ta = q.addTrack ("A", TrackFormat::Mono, 0).id;
+            const auto tb = q.addTrack ("B", TrackFormat::Stereo, 0).id;
+            q.retireAllMixers();
+            const auto ob = q.addBus ("Out", true).id;
+            const auto ob2 = q.addBus ("Out 2", true).id;
+            auto& m0 = q.addMixer ("M0"); auto& m1 = q.addMixer ("M1"); auto& m2 = q.addMixer ("M2"); auto& m3 = q.addMixer ("M3 (no outputs)");
+            AudioEngine e (q);
+            e.setMixerThreads (threads);
+            e.prepare (48000.0, 256);
+            for (auto* m : { &m0, &m1, &m2, &m3 })
+            {
+                q.setSendLevel (*m, ta, ob, -3.0f); q.setSendLevel (*m, tb, ob, -6.0f); q.setSendLevel (*m, ta, ob2, -1.0f);
+                m->stripFor (ta)->pan.set (m == &m1 ? -0.4f : 0.3f);
+            }
+            m0.busFor (ob)->outFirst.store (0); m0.busFor (ob2)->outFirst.store (0);      // two Ext buses on the same pair
+            m1.busFor (ob)->outFirst.store (2);
+            m2.busFor (ob)->outFirst.store (0);                                            // a second mixer on the same pair as the first
+            e.rebuildPlan();
+            std::vector<float> all;
+            for (int blk = 0; blk < 24; ++blk)
+            {
+                std::vector<float> i0 (256), i1 (256), o[4];
+                for (auto& v : o) v.assign (256, 0.0f);
+                for (int i = 0; i < 256; ++i) { i0[(size_t) i] = 0.4f * (float) std::sin ((blk * 256 + i) * 0.041); i1[(size_t) i] = 0.3f * (float) std::sin ((blk * 256 + i) * 0.017); }
+                const float* in[2] = { i0.data(), i1.data() }; float* out[4] = { o[0].data(), o[1].data(), o[2].data(), o[3].data() };
+                e.process (in, 2, out, 4, 256);
+                for (auto& v : o) all.insert (all.end(), v.begin(), v.end());
+            }
+            parallelBlocks = e.parallelBlockCount();
+            quietMeter = m3.stripFor (ta)->meterL.get(); busyMeter = m1.stripFor (ta)->meterL.get();
+            e.setMixerThreads (0);
+            return all;
+        };
+        juce::uint64 pb0 = 0, pb3 = 0; float q0 = 0, b0 = 0, q3 = 0, b3 = 0;
+        const auto serial = runIt (0, pb0, q0, b0);
+        const auto parallel = runIt (3, pb3, q3, b3);
+        CHECK (pb0 == 0 && pb3 > 0);
+        bool same = ! serial.empty() && serial.size() == parallel.size();
+        for (size_t i = 0; same && i < serial.size(); ++i) same = serial[i] == parallel[i];
+        CHECK (same);
+        double energy = 0; for (float v : parallel) energy += (double) v * v;
+        CHECK (energy > 1.0);                                                           // (and something did come out)
+        CHECK (q3 == 0.0f && b3 > 0.0f && q0 == 0.0f);                                 // the mixer that goes nowhere was not run
+    }
+
+    SECTION ("a rebuilt plan (as when a recording starts or stops) carries on the sound in the delay lines: no gap, no click");
+    {
+        auto runIt = [&] (bool rebuildMidway, int& latency)
+        {
+            Project q;
+            q.projectFile = tmp.getChildFile ("Carry.fermata");
+            q.setInputCount (2); q.setOutputCount (2);
+            q.tracks.clear();
+            const auto ta = q.addTrack ("A", TrackFormat::Mono, 0).id;
+            const auto tb = q.addTrack ("B", TrackFormat::Mono, 1).id;
+            q.retireAllMixers();
+            const auto ob = q.addBus ("Out", true).id;
+            auto& mq = q.addMixer ("M");
+            AudioEngine e (q);
+            e.setMixerThreads (0);
+            e.prepare (48000.0, 64);
+            q.setSendLevel (mq, ta, ob, 0.0f); q.setSendLevel (mq, tb, ob, 0.0f);
+            mq.busFor (ob)->outFirst.store (0);
+            mq.stripFor (ta)->slots[0].set (std::make_unique<LatencyInsert> (100), 48000.0, 64, 2);
+            e.rebuildPlan();
+            latency = e.mixerLatency (&mq);
+            e.setRunningForTests (true);
+            std::vector<float> all;
+            for (int blk = 0; blk < 40; ++blk)
+            {
+                if (rebuildMidway && blk == 20) e.rebuildPlan();
+                std::vector<float> i0 (64), i1 (64), o0 (64, 0.0f), o1 (64, 0.0f);
+                for (int i = 0; i < 64; ++i) { i0[(size_t) i] = 0.3f * (float) std::sin ((blk * 64 + i) * 0.05); i1[(size_t) i] = 0.3f * (float) std::sin ((blk * 64 + i) * 0.031); }
+                const float* in[2] = { i0.data(), i1.data() }; float* out[2] = { o0.data(), o1.data() };
+                e.process (in, 2, out, 2, 64);
+                all.insert (all.end(), o0.begin(), o0.end());
+            }
+            e.setRunningForTests (false);
+            return all;
+        };
+        int l1 = 0, l2 = 0;
+        const auto steady = runIt (false, l1);
+        const auto rebuilt = runIt (true, l2);
+        CHECK (l1 == 100 && l2 == 100);
+        float worst = 0.0f;
+        for (size_t i = 0; i < steady.size() && i < rebuilt.size(); ++i) worst = juce::jmax (worst, std::abs (steady[i] - rebuilt[i]));
+        CHECK (steady.size() == rebuilt.size() && worst < 1.0e-6f);
+    }
+
+    SECTION ("the second recording drive: each file is copied while it records, and the copy is identical once the take stops");
+    {
+        const auto backup = tmp.getChildFile ("Second drive");
+        eng.setBackupFolder (backup);
+        for (auto& t : p.tracks) t.setArmed (false);
+        p.findTrack (violinId)->setArmed (true);
+        p.findTrack (mainId)->setArmed (true);
+        CHECK (eng.startRecording (tw).isEmpty());
+        rig.run (eng, 200);
+        const auto gid = eng.stopRecording();
+        auto* g = tw.findGroup (gid);
+        CHECK (g != nullptr && g->files.size() == 2);
+        for (int w = 0; w < 500 && eng.backupCopiesGoing() > 0; ++w) juce::Thread::sleep (10);
+        CHECK (eng.backupCopiesGoing() == 0 && eng.takeBackupProblems().isEmpty());
+        if (g != nullptr)
+            for (auto& f : g->files)
+            {
+                const auto copy = backup.getChildFile (p.projectFolder().getFileName()).getChildFile (f.file.getRelativePathFrom (p.projectFolder()));
+                juce::MemoryBlock a, b;
+                CHECK (f.file.loadFileAsData (a) && copy.loadFileAsData (b));
+                CHECK (a.getSize() > 44 && a.getSize() == b.getSize() && std::memcmp (a.getData(), b.getData(), a.getSize()) == 0);
+            }
+
+        // a second drive that falls behind: its copy is thrown away, the recording carries on untouched
+        eng.setBackupMaxLag (-1.0);
+        CHECK (eng.startRecording (tw).isEmpty());
+        rig.run (eng, 50);
+        const auto gid2 = eng.stopRecording();
+        for (int w = 0; w < 500 && eng.backupCopiesGoing() > 0; ++w) juce::Thread::sleep (10);
+        const auto problems = eng.takeBackupProblems();
+        CHECK (problems.size() == 2 && problems[0].contains ("could not keep up"));
+        if (auto* g2 = tw.findGroup (gid2))
+            for (auto& f : g2->files)
+            {
+                CHECK (f.file.getSize() > 44 + 50 * Rig::block);                                   // the main recording is whole
+                CHECK (! backup.getChildFile (p.projectFolder().getFileName()).getChildFile (f.file.getRelativePathFrom (p.projectFolder())).exists());
+            }
+        eng.setBackupMaxLag (20.0);
+        eng.setBackupFolder ({});
+        for (auto& t : p.tracks) t.setArmed (false);
     }
 
     eng.rebuildPlan();

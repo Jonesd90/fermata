@@ -571,8 +571,8 @@ public:
         const auto& t = mixTheme();
         auto b = getLocalBounds();
         const auto c0 = colour();
-        g.setColour (t.strip.interpolatedWith (c0, t.dark ? 0.22f : 0.16f)); g.fillRect (b);                      // the strip itself is tinted with the channel colour
-        for (auto& w : wells) { g.setColour (t.well.interpolatedWith (c0, t.dark ? 0.13f : 0.10f)); g.fillRect (w); g.setColour (t.soft.interpolatedWith (c0, 0.3f)); g.drawRect (w, 1); }
+        g.setColour (t.strip.interpolatedWith (c0, t.ground ? 0.22f : 0.16f)); g.fillRect (b);                      // the strip itself is tinted with the channel colour
+        for (auto& w : wells) { g.setColour (t.well.interpolatedWith (c0, t.ground ? 0.13f : 0.10f)); g.fillRect (w); g.setColour (t.soft.interpolatedWith (c0, 0.3f)); g.drawRect (w, 1); }
         g.setFont (juce::FontOptions (8.5f, juce::Font::bold));
         for (auto& s : sections)
         {
@@ -1552,7 +1552,7 @@ MixerComponent::MixerComponent (AppContext& a, const juce::Uuid& id) : app (a), 
         m.fall = st->getIntValue ("meterFall", m.fall); m.hold = st->getIntValue ("meterHold", m.hold);
     }
 
-    themeButton.setTooltip ("Switch the whole program between the light look and the desk look");
+    themeButton.setTooltip ("Switch the whole program between the light look and the dark look (the same colours, a shade darker)");
     themeButton.onClick = [] { if (themeSwitchHook()) themeSwitchHook() (! theme::isDark()); };
     addAndMakeVisible (themeButton);
 
@@ -1806,7 +1806,7 @@ void MixerComponent::updateAuditionButton()
         if (pasteButton.isVisible() != showPaste) { pasteButton.setVisible (showPaste); resized(); }
     }
     themeButton.setDarkLook (mixTheme().dark);
-    themeButton.setTooltip (mixTheme().dark ? "Dark look is on. Click for the light look." : "Light look is on. Click for the dark look.");
+    themeButton.setTooltip (mixTheme().dark ? "Dark look is on (the desk a shade darker). Click for the light look." : "Light look is on. Click for the dark look (the same colours, a shade darker).");
 }
 
 namespace

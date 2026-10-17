@@ -101,7 +101,7 @@ public:
         else if (down) c = c.darker (0.25f);
         else if (highlighted) c = c.brighter (0.18f);
         const auto rf = r.toFloat().reduced (0.5f);
-        const float rad = theme::isDark() ? juce::jmin (4.0f, rf.getHeight() * 0.3f) : 0.0f;     // the desk's keys have softly rounded corners
+        const float rad = juce::jmin (4.0f, rf.getHeight() * 0.3f);     // the desk's keys have softly rounded corners
         g.setColour (c);
         g.fillRoundedRectangle (rf, rad);
         g.setColour (b.getToggleState() ? c.brighter (0.4f) : theme::border);

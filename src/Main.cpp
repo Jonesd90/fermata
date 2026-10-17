@@ -102,10 +102,10 @@ public:
         themeSaveHook() = [this] (bool dark)
         {
             if (ctx == nullptr) return;
-            if (auto* st = ctx->props.getUserSettings()) { st->setValue ("appDark", dark); ctx->props.saveIfNeeded(); }
+            if (auto* st = ctx->props.getUserSettings()) { st->setValue ("deskDark", dark); ctx->props.saveIfNeeded(); }
         };
         if (auto* st = ctx->props.getUserSettings()) if (const int dc = st->getIntValue ("deskColour", 0); dc != 0) applyDeskColour (dc);   // Project > Colour theme
-        if (auto* st = ctx->props.getUserSettings()) if (! st->getBoolValue ("appDark", true)) switchTheme (false);
+        if (auto* st = ctx->props.getUserSettings()) if (st->getBoolValue ("deskDark", false)) switchTheme (true);     // the dark look (the desk a shade darker)
         if (auto* st = ctx->props.getUserSettings()) CoreReservation::get().configure (loadCoreReservationSettings (*st));      // the CPU cores kept for the audio (off unless switched on)
         juce::Logger::writeToLog ("CPU cores: " + CoreReservation::get().statusText().replace ("\n", " "));
         ctx->showTakeWindow = [this] (const juce::Uuid& id) { openTakeWindow (id); };
@@ -114,6 +114,7 @@ public:
         ctx->showEditBehind = [this] (const juce::Uuid& id, juce::Component* front) { openEdit (id, front); };
         ctx->focusRecent = [this] (const juce::String& kind) { focusRecent (kind); };
         ctx->activeKind = [this] { return activeKind(); };
+        ctx->windowLight = [this] (const juce::String& kind) { return windowLight (kind); };
         ctx->lastWorkWindowKey = [this] { return lastWorkWindowKey(); };
         ctx->showTrim = [this] (const juce::Uuid& e, const juce::Uuid& r, bool atEnd) { openTrim (e, r, atEnd); };
         ctx->closeWindowByKey = [this] (const juce::String& key) { closeWindowLater (key); };
@@ -255,7 +256,8 @@ public:
             int minW = 700;
             if (auto* mc = dynamic_cast<MainComponent*> (mainWindow->getContentComponent())) minW = juce::jmax (minW, mc->menuBarWidth() + 4);     // the whole menu bar on one line
             mainWindow->setResizeLimits (juce::jmin (minW, area.getWidth()), 480, 8000, 8000);
-            mainWindow->centreWithSize (juce::jmin (juce::jmax (mainWindow->getWidth(), minW), area.getWidth()), juce::jmin (mainWindow->getHeight(), area.getHeight()));
+            constexpr int titleBarH = 32;                                  // the window's own title bar sits above its content: leave room for it
+            mainWindow->centreWithSize (juce::jmin (juce::jmax (mainWindow->getWidth(), minW), area.getWidth()), juce::jmin (mainWindow->getHeight(), area.getHeight() - titleBarH));
             mainWindow->setBounds (mainWindow->getBounds().constrainedWithin (area));
         }
         mainWindow->setVisible (true);
@@ -456,6 +458,23 @@ private:
         return bestKey;
     }
     /** Which kind of window the person is working in right now: the Fermata window that was last in front, while Fermata is the program in use. "" = none of the three. */
+    /** 0: no window of this kind is open, 1: one is open, 2: one is the window in use, 3: open but minimised (all of them). */
+    int windowLight (const juce::String& kind) const
+    {
+        const auto prefix = kind + ":";
+        bool any = false, shown = false;
+        for (auto& kv : windows)
+        {
+            auto* w = kv.second.get();
+            if (w == nullptr || ! kv.first.startsWith (prefix)) continue;
+            any = true;
+            if (w->isVisible() && ! w->isMinimised() && ! DockHub::get().contains (w)) shown = true;
+        }
+        if (! any) return 0;
+        if (activeKind() == kind) return 2;
+        return shown ? 1 : 3;
+    }
+
     juce::String activeKind() const
     {
         if (! juce::Process::isForegroundProcess()) return {};

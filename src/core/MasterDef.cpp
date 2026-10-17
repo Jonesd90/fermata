@@ -54,6 +54,7 @@ var MasteringDef::toVar() const
         put (s, "format", (int) vm.format); put (s, "rate", vm.sampleRate); put (s, "bits", vm.bitDepth); put (s, "dither", (int) vm.dither);
         put (s, "mp3Kbps", vm.mp3Kbps); put (s, "mp3Vbr", vm.mp3Vbr); put (s, "oggQuality", vm.oggQuality); put (s, "flacLevel", vm.flacLevel); put (s, "extraFormats", vm.extraFormats); put (s, "normalise", vm.normalise);
         put (s, "peak", (double) vm.peakDb); put (s, "together", vm.peakTogether); put (s, "number", vm.numberFiles); put (s, "form", vm.feedbackForm); put (s, "formAudio", vm.formAudio); put (s, "folder", vm.folder);
+        put (s, "formRate", vm.formRate); put (s, "formBits", vm.formBits); put (s, "formFolder", vm.formFolder);
         put (s, "album", tagsToVar (vm.album));
         put (root, "vm", s);
     }
@@ -90,7 +91,7 @@ void MasteringDef::fromVar (const var& root)
 {
     *this = MasteringDef();
     if (! root.isObject()) return;
-    mixerId = idOf (root["mixer"]); sourceId = idOf (root["source"]); tailSeconds = juce::jlimit (0.0, 30.0, (double) root["tail"]); view = juce::jlimit (0, 1, (int) root["view"]);
+    mixerId = idOf (root["mixer"]); sourceId = idOf (root["source"]); tailSeconds = juce::jlimit (0.0, 30.0, (double) root["tail"]); view = juce::jlimit (0, 2, (int) root["view"]);
     const auto s = root["vm"];
     if (s.isObject())
     {
@@ -101,6 +102,7 @@ void MasteringDef::fromVar (const var& root)
         vm.flacLevel = s["flacLevel"].isVoid() ? 5 : juce::jlimit (0, 8, (int) s["flacLevel"]); vm.extraFormats = juce::jlimit (0, 31, (int) s["extraFormats"]);
         vm.normalise = s["normalise"].isVoid() ? true : (bool) s["normalise"]; vm.peakDb = s["peak"].isVoid() ? -1.0f : (float) (double) s["peak"];
         vm.peakTogether = (bool) s["together"]; vm.numberFiles = s["number"].isVoid() ? true : (bool) s["number"]; vm.feedbackForm = (bool) s["form"]; vm.formAudio = juce::jlimit (0, 2, (int) s["formAudio"]); vm.folder = s["folder"].toString();
+        vm.formRate = s["formRate"].isVoid() ? 0.0 : (double) s["formRate"]; vm.formBits = (int) s["formBits"] == 16 ? 16 : 24; vm.formFolder = s["formFolder"].toString();
         vm.album = tagsFromVar (s["album"]);
     }
     if (auto* a = root["items"].getArray())

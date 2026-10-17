@@ -48,7 +48,7 @@ inline juce::Colour deskTint (juce::Colour c, int t)
 }
 inline juce::Colour desk (juce::uint32 argb) { return deskTint (juce::Colour (argb), deskIndex()); }
 
-inline bool& darkFlag() { static bool d = true; return d; }
+inline bool& darkFlag() { static bool d = false; return d; }     // false: the light look (the desk as it is); true: the dark look (the desk a shade darker)
 inline bool isDark() { return darkFlag(); }
 
 /** All the palette colours in a fixed order (for switching and for re-colouring what was coloured by hand). */
@@ -58,24 +58,27 @@ inline std::array<juce::Colour*, 18> all()
 }
 inline std::array<juce::uint32, 18> snapshot() { std::array<juce::uint32, 18> a {}; auto c = all(); for (size_t i = 0; i < a.size(); ++i) a[i] = c[i]->getARGB(); return a; }
 
-/** Sets the palette. The "dark" one is the desk: a blue-grey panel (in the colour chosen in the Project menu) with dark displays and waveform lanes and light keys;
-    the light one has the same structure on light greys. */
+/** The dark look: the same colours as the light one, a shade darker. 'shade' is how much of the brightness is kept. */
+inline juce::Colour deskShade (juce::Colour c, bool dark, float shade) { return dark ? c.withMultipliedBrightness (shade) : c; }
+
 /** Goes up by one whenever the palette changes (dark / light, or another desk colour), so windows can tell they must take the new colours. */
 inline int& generation() { static int g = 0; return g; }
 
+/** Sets the palette: the desk (a blue-grey panel in the colour chosen in the Project menu, with dark displays and waveform lanes and light keys).
+    The light look is the desk as it is; the dark look is the same colours a shade darker. */
 inline void setDark (bool dark)
 {
     darkFlag() = dark;
     ++generation();
     static const juce::uint32 d[18] = { 0xff566b82, 0xff4a5e74, 0xff1d2b3a, 0xff1a2735, 0xff05080c, 0xff0f1821, 0xff131e2a, 0xff1b2634, 0xff33465a,
                                         0xff2b5f7a, 0xffeef2f6, 0xffc3ccd6, 0xff2f3e50, 0xff2a9cc0, 0xff96abc0, 0xffe0a040, 0xffff4a4a, 0xff0c0e11 };
-    static const juce::uint32 l[18] = { 0xffe6eaf0, 0xfff4f6f9, 0xffedf0f4, 0xffe3e7ed, 0xffffffff, 0xffdfe4ea, 0xffd6dce4, 0xffd2d8e0, 0xffbcc4cf,
-                                        0xffb5d6e6, 0xff14181f, 0xff4a5566, 0xff7b8696, 0xff1f7f9f, 0xffdfe4eb, 0xffb36b00, 0xffd62828, 0xff0c0e11 };
+    // how much of each colour's brightness the dark look keeps: the panels go well down, the lanes (already dark) and the keys a little
+    static const float shade[18] = { 0.62f, 0.62f, 0.72f, 0.72f, 1.0f, 0.72f, 0.72f, 0.7f, 0.72f, 0.8f, 1.0f, 1.0f, 0.7f, 1.0f, 0.8f, 1.0f, 1.0f, 1.0f };
     auto c = all();
     for (size_t i = 0; i < c.size(); ++i)
     {
         const bool keep = (i == 4 || i == 10 || i == 13 || i == 15 || i == 16 || i == 17);     // field, text, accent, warn, playhead, meter wells: the same in every desk colour
-        *c[i] = dark ? (keep ? juce::Colour (d[i]) : desk (d[i])) : juce::Colour (l[i]);
+        *c[i] = keep ? juce::Colour (d[i]) : deskShade (desk (d[i]), dark, shade[i]);
     }
 }
 /** Dark or light writing for something drawn on 'fill' (the keys are light in the desk look, so their writing and pictures are dark). */
@@ -430,7 +433,7 @@ public:
             }
         }
     }
-    void mouseEnter (const juce::MouseEvent& e) override { setTooltip (theme::isDark() ? "Desk look is on. Click for the light look." : "Light look is on. Click for the desk look."); juce::Button::mouseEnter (e); }
+    void mouseEnter (const juce::MouseEvent& e) override { setTooltip (theme::isDark() ? "Dark look is on (the desk a shade darker). Click for the light look." : "Light look is on. Click for the dark look (the same colours, a shade darker)."); juce::Button::mouseEnter (e); }
 };
 
 /** Keeps a ThemeToggleButton in the top-right corner of a window's content area. Call from the window's resized(). */
@@ -671,7 +674,7 @@ public:
     juce::BorderSize<int> getContentComponentBorder() const override
     {
         auto b = juce::DocumentWindow::getContentComponentBorder();
-        if (woodSides && theme::isDark()) { b.setLeft (b.getLeft() + wood::kCheekW); b.setRight (b.getRight() + wood::kCheekW); b.setBottom (b.getBottom() + wood::kBottomH); }
+        if (woodSides) { b.setLeft (b.getLeft() + wood::kCheekW); b.setRight (b.getRight() + wood::kCheekW); b.setBottom (b.getBottom() + wood::kBottomH); }
         return b;
     }
     void paint (juce::Graphics& g) override
@@ -679,7 +682,7 @@ public:
         g.saveState();
         juce::DocumentWindow::paint (g);                  // (it narrows the drawing to the title bar and does not put that back)
         g.restoreState();
-        if (! (woodSides && theme::isDark())) return;
+        if (! woodSides) return;
         const auto inner = getContentComponentBorder().subtractedFrom (getLocalBounds());
         wood::paintCheek (g, { inner.getX() - wood::kCheekW, inner.getY(), wood::kCheekW, inner.getHeight() }, true);
         wood::paintCheek (g, { inner.getRight(), inner.getY(), wood::kCheekW, inner.getHeight() }, false);

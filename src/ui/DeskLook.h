@@ -22,9 +22,15 @@ constexpr int kThemes = 6;
 inline juce::Colour tint (juce::Colour c, int theme) { return theme::deskTint (c, theme); }
 inline int& themeIndex() { return theme::deskIndex(); }
 
-inline Palette makePalette (int t)
+inline Palette makePalette (int t, bool dark = theme::isDark())
 {
-    auto k = [t] (juce::uint32 argb) { return tint (juce::Colour (argb), t); };
+    // the dark look: the same colours a shade darker (the panels well down, the keys a little, so they still stand out)
+    auto shadeOf = [] (juce::uint32 argb)
+    {
+        switch (argb) { case 0xff96abc0: return 0.8f; case 0xff1b2a3a: return 1.0f; case 0xff6ee7ff: return 1.0f; default: break; }
+        return 0.65f;
+    };
+    auto k = [t, dark, shadeOf] (juce::uint32 argb) { return theme::deskShade (tint (juce::Colour (argb), t), dark, shadeOf (argb)); };
     Palette p;
     p.window = k (0xff566b82);   p.strip = k (0xff617890);  p.stripEdge = k (0xff2f3e50); p.key = k (0xff96abc0);  p.keyEdge = k (0xff3d5066);
     p.keyOn = juce::Colour (0xff1a2a32);
@@ -191,11 +197,12 @@ public:
         const auto ink = (on ? juce::Colours::white : p.ink).withMultipliedAlpha (alpha);
         const auto text = getButtonText();
         auto area = getLocalBounds().toFloat().reduced (2.0f, 2.0f);
-        if (icon != Ic::None && text.isNotEmpty() && area.getHeight() >= 26.0f && area.getWidth() < 3.0f * area.getHeight())   // tall key: the picture over a small caption
+        if (icon != Ic::None && text.isNotEmpty() && area.getHeight() >= 18.0f && area.getWidth() < 3.0f * area.getHeight())   // tall key: the picture over a small caption
         {
-            auto cap = area.removeFromBottom (10.0f);
+            const float capH = juce::jlimit (7.5f, 10.0f, area.getHeight() * 0.36f);         // (smaller on the compact strips of a short screen)
+            auto cap = area.removeFromBottom (capH);
             drawPicture (g, icon, area.reduced (0.0f, 0.5f), on, alpha);
-            g.setColour (ink); g.setFont (juce::FontOptions (8.5f, juce::Font::bold));
+            g.setColour (ink); g.setFont (juce::FontOptions (capH - 1.5f + (capH < 9.0f ? 0.5f : 0.0f), juce::Font::bold));
             g.drawText (text, cap.toNearestInt(), juce::Justification::centred, false);
         }
         else if (icon != Ic::None && text.isNotEmpty())                                      // wide, short key: the picture beside the text
