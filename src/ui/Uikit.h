@@ -582,7 +582,14 @@ public:
                 auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (avoid)->userArea;
                 w->setBounds (area.getX(), top, area.getWidth(), juce::jmax (200, area.getBottom() - top));
             }
-            else w->setTopLeftPosition (w->getX(), top);
+            else
+            {
+                // moved down below the bar; on a small screen (a laptop) it is also made shorter, so its bottom edge does not go off the screen
+                auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (w->getBounds())->userArea;
+                const int frameBottom = w->getPeer() != nullptr && w->getPeer()->getFrameSizeIfPresent() ? (*w->getPeer()->getFrameSizeIfPresent()).getBottom() : 8;
+                const int h = juce::jmin (w->getHeight(), juce::jmax (200, area.getBottom() - frameBottom - top));
+                w->setBounds (w->getX(), top, w->getWidth(), h);
+            }
             w->adjusting = false;
         });
     }
@@ -598,6 +605,7 @@ public:
         if (isActiveWindow())
         {
             lastActive = ++counter; grabContentFocus();
+            keepTitleBarClear();                                                        // (also here: a window opened or put back where it covers the menu bar)
             if (isTransportWindow) lastTransportWindow() = this;
             if (menuBarRaise()) juce::MessageManager::callAsync ([] { if (menuBarRaise()) menuBarRaise()(); });     // the menu bar stays in front of the Fermata windows
         }

@@ -411,6 +411,14 @@ private:
         if (! owned) raiseToolWindows();
         raw->toFront (true);                                  // the new window always ends up in front, with the keyboard
         raw->grabContentFocus();
+        // A window that opens where it covers the menu bar (a remembered place from a bigger screen, or opened maximised) is moved below it, and the bar is
+        // brought back in front: it must always be visible. (keepTitleBarClear only ran when a window was moved or resized, not when it first appeared.)
+        juce::Component::SafePointer<ToolWindow> safeNew (raw);
+        juce::MessageManager::callAsync ([safeNew]
+        {
+            if (auto* nw = safeNew.getComponent()) nw->keepTitleBarClear();
+            if (menuBarRaise()) menuBarRaise()();
+        });
     }
 
     // ---- the T / E / M squares of the menu bar

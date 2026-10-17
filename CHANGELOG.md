@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.57.1
+- **The menu bar stays visible on a small screen.** An edit or take window (or any other) that opened maximised, or at a place remembered from a bigger screen, could cover the menu bar along the top of the main window, for example on a laptop. Windows are now checked as soon as they open and whenever they come to the front: one that would cover the bar is moved down below it (a maximised one is fitted to the screen under the bar instead), made shorter if its bottom would go off the screen, and the bar is brought back in front.
+
 ## 2.57.0
 - **A "please wait" window while a project opens.** It appears straight away over the main window and says what is being read: the project file, each take window, edit and mixer (with a bar showing how far it has got), each plug-in as it starts (a plug-in can take a few seconds), and the check of the recordings. A big project no longer looks as if the program has frozen.
 - **The same while files are imported.** After you choose the files (or a folder) for Import takes, every file is opened to read its length, sample rate and channels. That now happens in the background, with the window saying "File 212 of 480" and a Cancel button; the import window follows when it is done. When the copying has finished, the window shows again while the takes are put into the take window or edit.
