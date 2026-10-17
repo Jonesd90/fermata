@@ -104,6 +104,7 @@ public:
             if (ctx == nullptr) return;
             if (auto* st = ctx->props.getUserSettings()) { st->setValue ("appDark", dark); ctx->props.saveIfNeeded(); }
         };
+        if (auto* st = ctx->props.getUserSettings()) if (const int dc = st->getIntValue ("deskColour", 0); dc != 0) applyDeskColour (dc);   // Project > Colour theme
         if (auto* st = ctx->props.getUserSettings()) if (! st->getBoolValue ("appDark", true)) switchTheme (false);
         if (auto* st = ctx->props.getUserSettings()) CoreReservation::get().configure (loadCoreReservationSettings (*st));      // the CPU cores kept for the audio (off unless switched on)
         juce::Logger::writeToLog ("CPU cores: " + CoreReservation::get().statusText().replace ("\n", " "));

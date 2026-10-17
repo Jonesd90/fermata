@@ -7,7 +7,7 @@ namespace td
 struct MixTheme
 {
     bool dark = false;
-    juce::Colour bg, strip, well, line, soft, text, dim, field, insertOn, insertByp, groove;
+    juce::Colour bg, strip, well, line, soft, text, dim, field, insertOn, insertByp, groove, key;
 };
 
 inline MixTheme makeMixTheme (bool dark)
@@ -16,17 +16,18 @@ inline MixTheme makeMixTheme (bool dark)
     t.dark = dark;
     if (dark)
     {
-        t.bg = juce::Colour (0xff121418);    t.strip = juce::Colour (0xff2b2f36); t.well = juce::Colour (0xff1d2025);
-        t.line = juce::Colour (0xff59606c);  t.soft = juce::Colour (0xff3b414b);  t.text = juce::Colour (0xffe9edf2);
-        t.dim = juce::Colour (0xff9ba5b4);   t.field = juce::Colour (0xff15171b); t.insertOn = juce::Colour (0xff2b6a4c);
-        t.insertByp = juce::Colour (0xff7a6420); t.groove = juce::Colour (0xff0c0e11);
+        // the desk: blue-grey strips (in the colour chosen in the Project menu), dark wells and displays, light keys
+        t.bg = theme::desk (0xff4a5e74);     t.strip = theme::desk (0xff617890); t.well = theme::desk (0xff4b5f75);
+        t.line = theme::desk (0xff2f3e50);   t.soft = theme::desk (0xff47596e);  t.text = juce::Colour (0xffeef2f6);
+        t.dim = juce::Colour (0xffc3ccd6);   t.field = juce::Colour (0xff05080c); t.insertOn = juce::Colour (0xff2b6a4c);
+        t.insertByp = juce::Colour (0xff7a6420); t.groove = juce::Colour (0xff0c1118); t.key = theme::desk (0xff96abc0);
     }
     else
     {
         t.bg = juce::Colour (0xffd9dee5);    t.strip = juce::Colour (0xfff4f6f9); t.well = juce::Colour (0xffe6eaf0);
         t.line = juce::Colour (0xff7b8696);  t.soft = juce::Colour (0xffbcc4cf);  t.text = juce::Colour (0xff14181f);
         t.dim = juce::Colour (0xff4a5566);   t.field = juce::Colours::white;      t.insertOn = juce::Colour (0xffc4e4d1);
-        t.insertByp = juce::Colour (0xffefdc9c); t.groove = juce::Colour (0xff8e98a6);
+        t.insertByp = juce::Colour (0xffefdc9c); t.groove = juce::Colour (0xff8e98a6); t.key = t.well;
     }
     return t;
 }
@@ -49,9 +50,9 @@ public:
         setColour (juce::ComboBox::outlineColourId, t.line);
         setColour (juce::ComboBox::textColourId, t.text);
         setColour (juce::ComboBox::arrowColourId, t.dim);
-        setColour (juce::TextButton::buttonColourId, t.well);
+        setColour (juce::TextButton::buttonColourId, t.key);          // light keys on the desk, so they stand out (their writing is dark)
         setColour (juce::TextButton::buttonOnColourId, theme::accent);
-        setColour (juce::TextButton::textColourOffId, t.text);
+        setColour (juce::TextButton::textColourOffId, theme::inkOn (t.key));
         setColour (juce::Label::textColourId, t.text);
         setColour (juce::ScrollBar::thumbColourId, t.line);
     }

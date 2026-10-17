@@ -8,17 +8,17 @@ namespace td
 class InputRow;
 class OutputRow;
 
-/** The Fermata mark and name, top left of the main window. */
+/** The Fermata mark and name, in one line at the left of the main window's top row. */
 class LogoBadge : public juce::Component
 {
 public:
     void paint (juce::Graphics& g) override
     {
         auto b = getLocalBounds().toFloat();
-        drawFermataLogo (g, b.removeFromLeft (64.0f).reduced (2.0f, 4.0f), desk::pal().cream, desk::pal().cyan);
+        drawFermataLogo (g, b.removeFromLeft (b.getHeight() * 1.3f).reduced (1.0f, b.getHeight() * 0.12f), desk::pal().cream, desk::pal().cyan);
         g.setColour (desk::pal().cream);
-        g.setFont (juce::Font (juce::FontOptions ("Georgia", 32.0f, juce::Font::bold)));
-        g.drawText ("fermata", b.toNearestInt().withTrimmedLeft (4), juce::Justification::centredLeft, false);
+        g.setFont (juce::Font (juce::FontOptions ("Georgia", juce::jmin (24.0f, b.getHeight() * 0.72f), juce::Font::bold)));
+        g.drawText ("fermata", b.toNearestInt().withTrimmedLeft (5), juce::Justification::centredLeft, false);
     }
 };
 
@@ -83,6 +83,16 @@ private:
     std::vector<juce::Component::SafePointer<juce::DocumentWindow>> wins;
 };
 
+/** How big the writing in the menu bar is: the bar always stays on one line, so on a narrow screen the writing and the space round it get smaller. */
+struct MenuStyle { float font = 14.0f; int pad = 14; };
+inline MenuStyle& menuStyle() { static MenuStyle s; return s; }
+inline int menuTextW (const juce::String& t, float size, bool bold)
+{
+    juce::GlyphArrangement ga;
+    ga.addLineOfText (juce::FontOptions (size, bold ? juce::Font::bold : juce::Font::plain), t, 0.0f, 0.0f);
+    return (int) std::ceil (ga.getBoundingBox (0, -1, true).getWidth());
+}
+
 /** The menu bar of the main window lives in its own borderless window that always stays on top of the other Fermata windows (not other programs), laid exactly over the
     top strip of the main window and following it when it moves. Only this strip floats: the rest of the main window behaves as a normal window. */
 class MenuBarStrip : public juce::Component
@@ -97,7 +107,10 @@ public:
     {
         g.fillAll (desk::pal().menu);
         g.setColour (desk::pal().menuEdge); g.fillRect (0, getHeight() - 1, getWidth(), 1);
+        g.setColour (desk::pal().menuEdge.brighter (0.35f));
+        for (int x : separators) g.fillRect (x, 7, 1, getHeight() - 14);       // thin lines between the entries
     }
+    std::vector<int> separators;
 };
 
 /** The main window: transport, the Driver Inputs (live meters, name, preamp controls), ARM and monitoring for each input, and the menus that open the other windows. */
@@ -108,21 +121,16 @@ public:
     using juce::TextButton::TextButton;
     void paintButton (juce::Graphics& g, bool over, bool down) override
     {
-        auto b = getLocalBounds().toFloat().reduced (1.0f, 3.0f);
+        auto b = getLocalBounds().toFloat().reduced (1.0f, 4.0f);
         if (getToggleState())  { g.setColour (findColour (buttonOnColourId)); g.fillRoundedRectangle (b, 3.0f); }
         else if (down)         { g.setColour (theme::accent.withAlpha (0.55f)); g.fillRoundedRectangle (b, 3.0f); }
-        else if (over)         { g.setColour (theme::button); g.fillRoundedRectangle (b, 3.0f); }
-        g.setColour (theme::text);
-        g.setFont (juce::FontOptions (14.0f, getToggleState() ? juce::Font::bold : juce::Font::plain));
+        else if (over)         { g.setColour (desk::pal().menuEdge.brighter (0.25f)); g.fillRoundedRectangle (b, 3.0f); }
+        g.setColour (juce::Colour (0xffeef2f6));
+        g.setFont (juce::FontOptions (menuStyle().font, getToggleState() ? juce::Font::bold : juce::Font::plain));
         g.drawText (getButtonText(), getLocalBounds(), juce::Justification::centred, false);
     }
-    /** The width this entry needs for the given text. */
-    static int widthFor (const juce::String& text)
-    {
-        juce::GlyphArrangement ga;
-        ga.addLineOfText (juce::FontOptions (14.0f, juce::Font::bold), text, 0.0f, 0.0f);
-        return (int) std::ceil (ga.getBoundingBox (0, -1, true).getWidth()) + 28;
-    }
+    /** The width this entry needs for the given text (at the menu bar's present size). */
+    static int widthFor (const juce::String& text) { return menuTextW (text, menuStyle().font, true) + 2 * menuStyle().pad; }
 };
 
 /** One of the status squares at the right end of the menu bar: a small labelled box that is dark when its state is off and lit in its own colour when on. */
@@ -148,9 +156,10 @@ public:
             g.setColour (theme::border); g.drawRoundedRectangle (b.reduced (0.5f), 4.0f, 1.0f);
             g.setColour (theme::dimText.withAlpha (0.6f));
         }
-        g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        g.setFont (juce::FontOptions (menuStyle().font - 1.0f, juce::Font::bold));
         g.drawText (label, getLocalBounds(), juce::Justification::centred, false);
     }
+    int wantedWidth() const { return label.length() <= 1 ? 0 : menuTextW (label, menuStyle().font - 1.0f, true) + juce::jmax (10, menuStyle().pad + 4); }
 private:
     juce::String label; juce::Colour lit; bool isOn = false;
 };
@@ -173,16 +182,22 @@ public:
         g.setColour (theme::field); g.fillRoundedRectangle (b, 4.0f);
         g.setColour (theme::border); g.drawRoundedRectangle (b.reduced (0.5f), 4.0f, 1.0f);
         const auto lamp = isOn ? juce::Colour (0xff2ecc40) : juce::Colour (0xffe53935);
-        const float d = 12.0f;
-        auto c = juce::Rectangle<float> (d, d).withCentre ({ b.getX() + 14.0f, b.getCentreY() });
+        const float d = 11.0f;
+        auto c = juce::Rectangle<float> (d, d).withCentre ({ b.getX() + 12.0f, b.getCentreY() });
         if (isOn) { g.setColour (lamp.withAlpha (0.30f)); g.fillEllipse (c.expanded (3.0f)); }
         g.setColour (lamp); g.fillEllipse (c);
         g.setColour (juce::Colours::black.withAlpha (0.45f)); g.drawEllipse (c, 1.0f);
-        g.setColour (theme::text); g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
-        auto t = getLocalBounds().withTrimmedLeft (26).reduced (2, 0);
-        g.drawText (title, t.removeFromLeft (50), juce::Justification::centredLeft, false);
-        g.setFont (juce::FontOptions (12.5f)); g.setColour (isOn ? theme::text : theme::dimText);
+        const float fs = menuStyle().font - 1.5f;
+        g.setColour (juce::Colour (0xffeef2f6)); g.setFont (juce::FontOptions (fs, juce::Font::bold));
+        auto t = getLocalBounds().withTrimmedLeft (24).reduced (2, 0);
+        g.drawText (title, t.removeFromLeft (menuTextW (title, fs, true) + 5), juce::Justification::centredLeft, false);
+        g.setFont (juce::FontOptions (fs)); g.setColour (isOn ? juce::Colour (0xffeef2f6) : juce::Colour (0xffaab6c4));
         g.drawText (isOn ? rate : juce::String ("no signal"), t, juce::Justification::centredLeft, false);
+    }
+    int wantedWidth() const
+    {
+        const float fs = menuStyle().font - 1.5f;
+        return 24 + menuTextW (title, fs, true) + 5 + juce::jmax (menuTextW ("no signal", fs, false), menuTextW ("29.97 fps", fs, false)) + 8;
     }
 private:
     juce::String title, rate; bool isOn = false;
@@ -230,11 +245,10 @@ private:
     std::unique_ptr<MenuBarStrip> menuStrip;                  // declared after the buttons: it goes first when this window is destroyed
     std::vector<MenuBarButton*> menuItems() { return { &projectButton, &audioButton, &preampsButton, &designButton, &takesButton, &editsButton, &mixersButton, &bridgeButton, &takeDisplayButton, &organiserButton, &mediaButton, &masteringButton }; }
     LogoBadge logo;
-    static constexpr int kTakeBoxW = 40;                       // the take counter at the left of the menu bar
+    static constexpr int kTakeBoxW = 36;                       // the take counter at the left of the menu bar
+    void layoutMenuBar();                                      // everything in the bar on one line, as large as the width allows
     NextTakeBox takeBox;
     // always-visible status squares at the right end of the menu bar (they replaced the coloured borders)
-    static constexpr int kFlagsW = 250;
-    static constexpr int kLtcW = 2 * 124 + 4;                  // the two LTC lamps, just left of the squares
     LtcLamp ltcInLamp { "LTC IN", "LTC in: red = no timecode arriving, green = LTC is arriving (with its frame rate). Click to choose the audio input it comes in on (a Hapi TC input routed in Aneman arrives as an ordinary input channel). It is recorded with every take on the track named LTC." },
             ltcOutLamp { "LTC OUT", "LTC out: green = Fermata is sending LTC. Click to choose the output channel (route it in Aneman to the Hapi TC output), the frame rate and the start time." };
     void showLtcInMenu();
@@ -255,7 +269,9 @@ private:
     juce::OwnedArray<InputRow> inputRows;
     juce::OwnedArray<OutputRow> outputRows;
     desk::PictureBadge auditionIcon { desk::Ic::Phones };
-    static constexpr int kCheekW = 22, kRailH = 54;    // the wooden side panels and the wooden rail along the bottom
+    static constexpr int kCheekW = wood::kCheekW, kRailH = 44;    // the wooden side panels and the wooden rail along the bottom
+    std::vector<int> headerSeps;                       // x of the thin lines between the parts of the top row
+    juce::Rectangle<int> headerLine;                   // the one line of the top row
     void pickColour (int index);                       // the colour of the desk (chosen in the Project menu)
     StageSpeakerPanel stagePanel { app };
     juce::OwnedArray<juce::TextButton> auditionButtons;

@@ -1,5 +1,5 @@
 #pragma once
-#include "MixerLook.h"
+#include "DeskLook.h"
 
 namespace td
 {
@@ -50,9 +50,34 @@ inline void switchTheme (bool dark)
         {
             themeswitch::recolour (*c, oldP, newP);
             c->sendLookAndFeelChange();
+            if (dynamic_cast<juce::ResizableWindow*> (c) != nullptr) c->resized();      // the wooden side panels come and go with the desk look
             c->repaint();
         }
     if (themeSaveHook()) themeSaveHook() (dark);
+}
+
+/** Gives the desk another colour (Project > Colour theme): 0 blue, 1 red, 2 orange, 3 yellow, 4 green, 5 purple. Every window follows at once. */
+inline void applyDeskColour (int index)
+{
+    index = juce::jlimit (0, desk::kThemes - 1, index);
+    const auto oldP = theme::snapshot();
+    theme::deskIndex() = index;
+    desk::setTheme (index);
+    if (theme::isDark())
+    {
+        theme::setDark (true);
+        setMixDark (true);
+        if (auto* l = FermataLookAndFeel::instance()) l->applyTheme();
+    }
+    const auto newP = theme::all();
+    auto& d = juce::Desktop::getInstance();
+    for (int i = 0; i < d.getNumComponents(); ++i)
+        if (auto* c = d.getComponent (i))
+        {
+            if (theme::isDark()) themeswitch::recolour (*c, oldP, newP);
+            c->sendLookAndFeelChange();
+            c->repaint();
+        }
 }
 
 /** Makes the program use switchTheme for the buttons in the windows. Call once at start. */

@@ -116,6 +116,7 @@ private:
     void updateAuditionButton();
     MixerLookAndFeel mixLook;             // declared before the viewport: it must outlive it
     bool shownDark = false;
+    int shownGen = 0;                                       // theme::generation() when the colours were last taken
     juce::Viewport viewport;
     std::unique_ptr<MixerStripsHolder> holder;
 };

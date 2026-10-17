@@ -13,24 +13,40 @@ namespace td
 namespace theme
 {
 // Plain variables (not constants): switching between the dark and the light look changes them, and everything is drawn from them.
-inline juce::Colour window   { 0xff1b1e23 };     // the logo's ground
-inline juce::Colour panel    { 0xff2b2f36 };
-inline juce::Colour row      { 0xff23272d };
-inline juce::Colour rowAlt   { 0xff1f2328 };
-inline juce::Colour field    { 0xff15171b };
-inline juce::Colour wave     { 0xff181b20 };     // waveform backgrounds
-inline juce::Colour waveAlt  { 0xff1e2227 };
-inline juce::Colour ruler    { 0xff2b2f36 };
-inline juce::Colour grid     { 0xff3b414b };
-inline juce::Colour selected { 0xff2b5a70 };
-inline juce::Colour text     { 0xffe9edf2 };     // the logo's ink
-inline juce::Colour dimText  { 0xff9ba5b4 };
-inline juce::Colour border   { 0xff59606c };     // the 1-pixel outline around every control: what makes the interface look crisp
-inline juce::Colour accent   { 0xff2a8fb0 };     // the logo's teal: "on", selected, the value part of sliders
-inline juce::Colour button   { 0xff373d47 };     // a button at rest
+inline juce::Colour window   { 0xff566b82 };     // the desk's blue-grey panel (the "dark" look: see setDark)
+inline juce::Colour panel    { 0xff4a5e74 };
+inline juce::Colour row      { 0xff1d2b3a };
+inline juce::Colour rowAlt   { 0xff1a2735 };
+inline juce::Colour field    { 0xff05080c };
+inline juce::Colour wave     { 0xff0f1821 };     // waveform backgrounds
+inline juce::Colour waveAlt  { 0xff131e2a };
+inline juce::Colour ruler    { 0xff1b2634 };
+inline juce::Colour grid     { 0xff33465a };
+inline juce::Colour selected { 0xff2b5f7a };
+inline juce::Colour text     { 0xffeef2f6 };
+inline juce::Colour dimText  { 0xffc3ccd6 };
+inline juce::Colour border   { 0xff2f3e50 };     // the 1-pixel outline around every control: what makes the interface look crisp
+inline juce::Colour accent   { 0xff2a9cc0 };     // "on", selected, the value part of sliders
+inline juce::Colour button   { 0xff96abc0 };     // a key at rest: lighter than the panel, so it stands out (dark writing on it)
 inline juce::Colour warn     { 0xffe0a040 };     // warnings
 inline juce::Colour playhead { 0xffff4a4a };
 inline juce::Colour wellDark { 0xff0c0e11 };     // the dark wells of the level meters
+
+/** The colour of the desk (Project > Colour theme): 0 blue (the default), 1 red, 2 orange, 3 yellow, 4 green, 5 purple. */
+inline int& deskIndex() { static int i = 0; return i; }
+/** Moves a blue colour of the desk to the chosen colour (meters, channel colours and other colours are left alone). */
+inline juce::Colour deskTint (juce::Colour c, int t)
+{
+    if (t <= 0) return c;
+    static const float hue[] { 0.0f, 0.985f, 0.07f, 0.125f, 0.385f, 0.75f };
+    static const float satMul[] { 1.0f, 1.5f, 1.6f, 1.6f, 0.95f, 1.3f };
+    t = juce::jlimit (0, 5, t);
+    const float h = c.getHue(), s = c.getSaturationHSL(), l = c.getLightness();
+    if (h > 0.52f && h < 0.68f && s > 0.08f)
+        return juce::Colour::fromHSL (hue[t], juce::jmin (0.6f, s * satMul[t]), l, c.getFloatAlpha());
+    return c;
+}
+inline juce::Colour desk (juce::uint32 argb) { return deskTint (juce::Colour (argb), deskIndex()); }
 
 inline bool& darkFlag() { static bool d = true; return d; }
 inline bool isDark() { return darkFlag(); }
@@ -42,17 +58,28 @@ inline std::array<juce::Colour*, 18> all()
 }
 inline std::array<juce::uint32, 18> snapshot() { std::array<juce::uint32, 18> a {}; auto c = all(); for (size_t i = 0; i < a.size(); ++i) a[i] = c[i]->getARGB(); return a; }
 
-/** Sets the palette. The dark one is the logo's console look; the light one has the same structure on light greys. */
+/** Sets the palette. The "dark" one is the desk: a blue-grey panel (in the colour chosen in the Project menu) with dark displays and waveform lanes and light keys;
+    the light one has the same structure on light greys. */
+/** Goes up by one whenever the palette changes (dark / light, or another desk colour), so windows can tell they must take the new colours. */
+inline int& generation() { static int g = 0; return g; }
+
 inline void setDark (bool dark)
 {
     darkFlag() = dark;
-    static const juce::uint32 d[18] = { 0xff1b1e23, 0xff2b2f36, 0xff23272d, 0xff1f2328, 0xff15171b, 0xff181b20, 0xff1e2227, 0xff2b2f36, 0xff3b414b,
-                                        0xff2b5a70, 0xffe9edf2, 0xff9ba5b4, 0xff59606c, 0xff2a8fb0, 0xff373d47, 0xffe0a040, 0xffff4a4a, 0xff0c0e11 };
+    ++generation();
+    static const juce::uint32 d[18] = { 0xff566b82, 0xff4a5e74, 0xff1d2b3a, 0xff1a2735, 0xff05080c, 0xff0f1821, 0xff131e2a, 0xff1b2634, 0xff33465a,
+                                        0xff2b5f7a, 0xffeef2f6, 0xffc3ccd6, 0xff2f3e50, 0xff2a9cc0, 0xff96abc0, 0xffe0a040, 0xffff4a4a, 0xff0c0e11 };
     static const juce::uint32 l[18] = { 0xffe6eaf0, 0xfff4f6f9, 0xffedf0f4, 0xffe3e7ed, 0xffffffff, 0xffdfe4ea, 0xffd6dce4, 0xffd2d8e0, 0xffbcc4cf,
                                         0xffb5d6e6, 0xff14181f, 0xff4a5566, 0xff7b8696, 0xff1f7f9f, 0xffdfe4eb, 0xffb36b00, 0xffd62828, 0xff0c0e11 };
     auto c = all();
-    for (size_t i = 0; i < c.size(); ++i) *c[i] = juce::Colour (dark ? d[i] : l[i]);
+    for (size_t i = 0; i < c.size(); ++i)
+    {
+        const bool keep = (i == 4 || i == 10 || i == 13 || i == 15 || i == 16 || i == 17);     // field, text, accent, warn, playhead, meter wells: the same in every desk colour
+        *c[i] = dark ? (keep ? juce::Colour (d[i]) : desk (d[i])) : juce::Colour (l[i]);
+    }
 }
+/** Dark or light writing for something drawn on 'fill' (the keys are light in the desk look, so their writing and pictures are dark). */
+inline juce::Colour inkOn (juce::Colour fill) { return fill.getPerceivedBrightness() > 0.6f ? juce::Colour (0xff14181f) : text; }
 
 /** The widget look. */
 inline juce::LookAndFeel_V4::ColourScheme scheme()
@@ -164,11 +191,11 @@ inline juce::Image makeFermataIcon (int size)
 {
     juce::Image img (juce::Image::ARGB, size, size, true);
     juce::Graphics g (img);
-    g.setColour (theme::window);
+    g.setColour (juce::Colour (0xff1b1e23));                                 // always the logo's own dark ground, whatever the look
     g.fillRoundedRectangle (0.0f, 0.0f, (float) size, (float) size, (float) size * 0.2f);
-    g.setColour (theme::border.withAlpha (0.9f));
+    g.setColour (juce::Colour (0xff59606c).withAlpha (0.9f));
     g.drawRoundedRectangle (juce::Rectangle<float> (0.0f, 0.0f, (float) size, (float) size).reduced ((float) size * 0.01f), (float) size * 0.2f, juce::jmax (1.0f, (float) size * 0.012f));
-    drawFermataLogo (g, juce::Rectangle<float> (0.0f, 0.0f, (float) size, (float) size).reduced ((float) size * 0.12f), theme::text, theme::accent);
+    drawFermataLogo (g, juce::Rectangle<float> (0.0f, 0.0f, (float) size, (float) size).reduced ((float) size * 0.12f), juce::Colour (0xffe9edf2), juce::Colour (0xff2a8fb0));
     return img;
 }
 
@@ -382,7 +409,7 @@ public:
         auto b = getLocalBounds().toFloat().reduced (0.5f);
         g.setColour ((down ? theme::grid : over ? theme::button.brighter (0.15f) : theme::button).withAlpha (0.92f)); g.fillRoundedRectangle (b, 4.0f);
         g.setColour (theme::border); g.drawRoundedRectangle (b, 4.0f, 1.0f);
-        g.setColour (theme::text);
+        g.setColour (theme::inkOn (theme::button));
         auto c = b.getCentre();
         if (theme::isDark())                                         // dark look on: a moon (click for light)
         {
@@ -403,7 +430,7 @@ public:
             }
         }
     }
-    void mouseEnter (const juce::MouseEvent& e) override { setTooltip (theme::isDark() ? "Dark look is on. Click for the light look." : "Light look is on. Click for the dark look."); juce::Button::mouseEnter (e); }
+    void mouseEnter (const juce::MouseEvent& e) override { setTooltip (theme::isDark() ? "Desk look is on. Click for the light look." : "Light look is on. Click for the desk look."); juce::Button::mouseEnter (e); }
 };
 
 /** Keeps a ThemeToggleButton in the top-right corner of a window's content area. Call from the window's resized(). */
@@ -495,7 +522,7 @@ public:
         const bool on = getToggleState();
         g.setColour ((on ? juce::Colour (0xff2f7fd8) : down ? theme::grid : over ? theme::button.brighter (0.15f) : theme::button).withAlpha (0.92f)); g.fillRoundedRectangle (b, 4.0f);
         g.setColour (on ? juce::Colour (0xff9fcbff) : theme::border); g.drawRoundedRectangle (b, 4.0f, 1.0f);
-        g.setColour (on ? juce::Colours::white : theme::text);
+        g.setColour (on ? juce::Colours::white : theme::inkOn (theme::button));
         auto c = b.getCentre();
         juce::Path pin;                                           // a drawing pin seen from the side, tilted
         pin.addRoundedRectangle (-4.0f, -7.0f, 8.0f, 3.5f, 1.0f);   // the head
@@ -504,6 +531,49 @@ public:
         g.fillPath (pin, juce::AffineTransform::rotation (0.6f).translated (c.x, c.y));
     }
 };
+
+/** The wood of the desk look: the side panels of every window and the rail along the bottom of the main window. */
+namespace wood
+{
+constexpr int kCheekW = 20;                       // the width of a wooden side panel
+constexpr int kBottomH = 16;                      // the wooden strip along the bottom of a window
+
+inline void paintCheek (juce::Graphics& g, juce::Rectangle<int> r, bool leftSide)
+{
+    juce::ColourGradient gr (juce::Colour (0xff7a4a28), (float) r.getX(), 0.0f, juce::Colour (0xff6b3f20), (float) r.getRight(), 0.0f, false);
+    gr.addColour (0.45, juce::Colour (0xff8c5a32));
+    g.setGradientFill (gr); g.fillRect (r);
+    g.setColour (juce::Colour (0x33321808));
+    for (int x = r.getX() + 2; x < r.getRight(); x += 4) g.fillRect (x, r.getY(), 1, r.getHeight());           // the grain
+    g.setColour (juce::Colour (0x4dffe1b4)); g.fillRect (leftSide ? r.getRight() - 1 : r.getX(), r.getY(), 1, r.getHeight());   // a lit edge towards the panel
+    g.setColour (juce::Colour (0x59000000)); g.fillRect (leftSide ? r.getX() : r.getRight() - 1, r.getY(), 1, r.getHeight());
+    if (r.getHeight() < 60) return;
+    auto screw = [&] (float cy)
+    {
+        const float cx = (float) r.getCentreX();
+        g.setColour (juce::Colour (0xff8a6a1f)); g.fillEllipse (cx - 4.0f, cy - 4.0f, 8.0f, 8.0f);
+        g.setColour (juce::Colour (0xfff0dc9a)); g.fillEllipse (cx - 2.6f, cy - 2.6f, 5.2f, 5.2f);
+        g.setColour (juce::Colour (0xff8a6a1f)); g.drawLine (cx - 2.0f, cy + 1.0f, cx + 2.0f, cy - 1.0f, 1.0f);
+    };
+    screw ((float) r.getY() + 14.0f);
+    screw ((float) r.getBottom() - 14.0f);
+}
+/** The wooden strip along the bottom of a window: square along the top, rounded at the bottom corners, the grain running along it. */
+inline void paintBottom (juce::Graphics& g, juce::Rectangle<int> r, float corner = 6.0f)
+{
+    juce::Path shape; shape.addRoundedRectangle ((float) r.getX(), (float) r.getY() - corner - 2.0f, (float) r.getWidth(), (float) r.getHeight() + corner + 2.0f, corner);
+    g.saveState();
+    g.reduceClipRegion (r);
+    g.reduceClipRegion (shape);
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff8c5a32), 0.0f, (float) r.getY(), juce::Colour (0xff6b3f20), 0.0f, (float) r.getBottom(), false));
+    g.fillRect (r);
+    g.setColour (juce::Colour (0x33321808));
+    for (int y = r.getY() + 3; y < r.getBottom(); y += 4) g.fillRect (r.getX(), y, r.getWidth(), 1);
+    g.setColour (juce::Colour (0x61ffe1b4)); g.fillRect (r.getX(), r.getY(), r.getWidth(), 1);                  // a lit top edge
+    g.setColour (juce::Colour (0x47000000)); g.fillRect (r.getX(), r.getBottom() - 2, r.getWidth(), 2);
+    g.restoreState();
+}
+} // namespace wood
 
 class ToolWindow : public juce::DocumentWindow
 {
@@ -596,6 +666,25 @@ public:
     ThemeToggleButton themeToggle;
     PinButton pinButton;
     bool adjusting = false;
+    /** Wooden side panels left and right of the content (the desk look only). */
+    bool woodSides = true;
+    juce::BorderSize<int> getContentComponentBorder() const override
+    {
+        auto b = juce::DocumentWindow::getContentComponentBorder();
+        if (woodSides && theme::isDark()) { b.setLeft (b.getLeft() + wood::kCheekW); b.setRight (b.getRight() + wood::kCheekW); b.setBottom (b.getBottom() + wood::kBottomH); }
+        return b;
+    }
+    void paint (juce::Graphics& g) override
+    {
+        g.saveState();
+        juce::DocumentWindow::paint (g);                  // (it narrows the drawing to the title bar and does not put that back)
+        g.restoreState();
+        if (! (woodSides && theme::isDark())) return;
+        const auto inner = getContentComponentBorder().subtractedFrom (getLocalBounds());
+        wood::paintCheek (g, { inner.getX() - wood::kCheekW, inner.getY(), wood::kCheekW, inner.getHeight() }, true);
+        wood::paintCheek (g, { inner.getRight(), inner.getY(), wood::kCheekW, inner.getHeight() }, false);
+        wood::paintBottom (g, { inner.getX() - wood::kCheekW, inner.getBottom(), inner.getWidth() + 2 * wood::kCheekW, wood::kBottomH });
+    }
     /** When this window was last the active one (a counter): used to put the windows back in the same order in front of the main window. */
     int lastActive = 0;
     void activeWindowStatusChanged() override
@@ -807,10 +896,10 @@ enum class Icon { Start, Rewind, Play, Stop, Forward, End, Record, Trim, Bounce,
                   ExportProc, ImportMulti, Markers, FeedbackMarkers, SlipLeft, SlipRight, Shuffle, InsertFlag, NextAtEnd,
                   Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search };
 
-inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area)
+inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area, juce::Colour ink = theme::text)
 {
     using juce::Colour; using P = juce::Path;
-    const Colour W = theme::text, Rd (0xffe5484d), Bl (0xff6fb3ff), Ye (0xffe8b923), Dk (0xff2d3340);
+    const Colour W = ink, Rd (0xffe5484d), Bl (0xff6fb3ff), Ye (0xffe8b923), Dk (0xff2d3340);
     const float sc = juce::jmin (area.getWidth(), area.getHeight()) / 24.0f;
     g.saveState();
     g.addTransform (juce::AffineTransform::scale (sc).translated (area.getCentreX() - 12.0f * sc, area.getCentreY() - 12.0f * sc));
@@ -1113,7 +1202,7 @@ public:
         if ((ic == Icon::Play || ic == Icon::Record) && (txt.startsWithIgnoreCase ("stop"))) ic = Icon::Stop;
         const bool dim = ! isEnabled();
         if (dim) g.beginTransparencyLayer (0.4f);
-        drawIcon (g, ic, b.reduced (3.0f, 2.0f));
+        drawIcon (g, ic, b.reduced (3.0f, 2.0f), theme::inkOn (base));          // dark pictures on the light keys, light ones on a lit key
         if (dim) g.endTransparencyLayer();
     }
 private:

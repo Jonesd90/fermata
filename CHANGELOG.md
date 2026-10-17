@@ -6,6 +6,19 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.59.0
+- **The desk look in every window.** The Take, Edit, Trim and Mixer windows (and the other windows: Project Designer, Mastering, Media, Audio settings ...) now have the same blue desk as the main window: blue-grey panels, dark waveform lanes and displays, and keys lighter than the panel with dark writing and pictures, so they stand out. Every window has wooden side panels and a wooden strip along the bottom. The mixers have blue strips with light keys. The sun / moon button still switches to the light look (without the wood).
+- **The colour you choose follows everywhere.** Project > Colour theme now changes every window at once (and is used from the start the next time Fermata opens), not only the main window.
+- **The main window fits a laptop screen without scrolling** (1080 lines at 125 %: the window opens 1440 x 790):
+  - **One line along the top:** the Fermata mark and name, the project name, the driver and recording state, and DRIVER INPUTS, with thin lines between them. The "E / S / S-L / T = monitoring" note is gone.
+  - **The stage speaker boxes (top right) are small squares with knobs** instead of faders: a level knob (and a pan knob for each talkback mic) ringed with lit segments. Drag up / down, double-click to type a value, Ctrl + click for 0 dB / centre.
+  - **The talkback key at the bottom of each input strip is smaller and plain:** a red outline round a light key with TALK in black; when the input is a talkback mic it goes all red with TALK in white.
+  - **The preamp keys show their names under the pictures** (MIC / LINE, 48V, LC, PAD, BOOST; Ø and Z HI stay as words).
+  - **The output strips are shorter:** which mixer feeds an output is now written inside its black display, under its name, and the meter sits straight under the driver name and the TB key.
+  - **The audition buttons** (with the headphones) sit on the DRIVER OUTPUTS line.
+- **The menu bar always stays on one line.** The entries sit closer together with thin lines between them; on a narrow screen the writing gets smaller instead of the bar wrapping onto a second line.
+- **The wooden rail along the bottom of the main window is thinner** (44 pixels), square along the top and rounded at the bottom corners, with "fermata" and the mark pressed into its right-hand end.
+
 ## 2.58.0
 - **A new look for the main window: the blue desk.** The Driver Inputs are now a row of vertical strips along the top and the Driver Outputs a row of strips below (each row scrolls sideways when there are more than fit). A strip has a coloured bar top and bottom, a black display with your own second name and the driver's name, the gain as a knob ringed with 21 lit segments (drag up or down; double-click for 20 dB; double-click the number under it to type a gain; the mouse wheel still never changes it), the preamp keys, a live meter with its dB scale, the E / S / S-L / T monitor keys and the talkback mic key. The panel is light blue-grey with wooden side panels and a thick wooden rail along the bottom (the minimised windows sit on it as cream tabs). Everything else about the controls works as before.
 - **Little pictures on the preamp keys:** a microphone (MIC) or a jack plug (LINE), a lightning bolt (48V), a ramp (LC), a pillow (PAD) and a rocket (BOOST), each over a small caption; phase and Z HI stay as words. The TB key has a megaphone, the audition buttons a pair of headphones, and the talkback mic key is a large-diaphragm studio microphone with a red TALK under it. The keys have 10 pixel rounded corners and are lighter than the panel so they stand out; a lit key goes dark with a coloured line along its bottom (red for 48V, amber for the rest, green / orange for monitoring, purple for talkback).

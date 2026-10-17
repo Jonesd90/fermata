@@ -19,25 +19,14 @@ struct Palette
 inline const char* themeName (int i) { static const char* n[] { "Blue", "Red", "Orange", "Yellow", "Green", "Purple" }; return n[juce::jlimit (0, 5, i)]; }
 constexpr int kThemes = 6;
 
-/** Moves the blue colours of the panel to another hue (the other colours, such as meters and channel colours, are not touched). */
-inline juce::Colour tint (juce::Colour c, int theme)
-{
-    if (theme <= 0) return c;
-    static const float hue[] { 0.0f, 0.985f, 0.07f, 0.125f, 0.385f, 0.75f };
-    static const float satMul[] { 1.0f, 1.5f, 1.6f, 1.6f, 0.95f, 1.3f };
-    const float h = c.getHue(), s = c.getSaturationHSL(), l = c.getLightness();
-    if (h > 0.52f && h < 0.68f && s > 0.08f)
-        return juce::Colour::fromHSL (hue[juce::jlimit (0, 5, theme)], juce::jmin (0.6f, s * satMul[juce::jlimit (0, 5, theme)]), l, c.getFloatAlpha());
-    return c;
-}
-
-inline int& themeIndex() { static int i = 0; return i; }
+inline juce::Colour tint (juce::Colour c, int theme) { return theme::deskTint (c, theme); }
+inline int& themeIndex() { return theme::deskIndex(); }
 
 inline Palette makePalette (int t)
 {
     auto k = [t] (juce::uint32 argb) { return tint (juce::Colour (argb), t); };
     Palette p;
-    p.window = k (0xff566b82);   p.strip = k (0xff617890);  p.stripEdge = k (0xff2f3e50); p.key = k (0xff8fa5ba);  p.keyEdge = k (0xff3d5066);
+    p.window = k (0xff566b82);   p.strip = k (0xff617890);  p.stripEdge = k (0xff2f3e50); p.key = k (0xff96abc0);  p.keyEdge = k (0xff3d5066);
     p.keyOn = juce::Colour (0xff1a2a32);
     p.ink = k (0xff1b2a3a);      p.cream = juce::Colour (0xffe2d9c0);
     p.disp = juce::Colour (0xff05080c); p.dispEdge = k (0xff33465a); p.ringOff = k (0xff47596e);
@@ -45,7 +34,8 @@ inline Palette makePalette (int t)
     return p;
 }
 
-inline Palette& pal() { static Palette p = makePalette (0); return p; }
+inline Palette& pal() { static Palette p = makePalette (themeIndex()); return p; }
+/** Sets the desk colour (the palette of the whole program follows: see ThemeSwitch.h, refreshTheme). */
 inline void setTheme (int t) { themeIndex() = juce::jlimit (0, kThemes - 1, t); pal() = makePalette (themeIndex()); }
 inline juce::Colour swatchColour (int t) { return tint (juce::Colour (0xff617890), t); }
 
@@ -122,40 +112,42 @@ private:
 //==============================================================================================================================
 // the wood
 //==============================================================================================================================
-inline void paintCheek (juce::Graphics& g, juce::Rectangle<int> r, bool leftSide)
-{
-    juce::ColourGradient gr (juce::Colour (0xff7a4a28), (float) r.getX(), 0.0f, juce::Colour (0xff6b3f20), (float) r.getRight(), 0.0f, false);
-    gr.addColour (0.45, juce::Colour (0xff8c5a32));
-    g.setGradientFill (gr); g.fillRect (r);
-    g.setColour (juce::Colour (0x33321808));
-    for (int x = r.getX() + 2; x < r.getRight(); x += 4) g.fillRect (x, r.getY(), 1, r.getHeight());           // the grain
-    g.setColour (juce::Colour (0x4dffe1b4)); g.fillRect (leftSide ? r.getRight() - 1 : r.getX(), r.getY(), 1, r.getHeight());   // a lit edge towards the panel
-    g.setColour (juce::Colour (0x59000000)); g.fillRect (leftSide ? r.getX() : r.getRight() - 1, r.getY(), 1, r.getHeight());
-    auto screw = [&] (float cy)
-    {
-        const float cx = (float) r.getCentreX();
-        g.setColour (juce::Colour (0xff8a6a1f)); g.fillEllipse (cx - 4.0f, cy - 4.0f, 8.0f, 8.0f);
-        g.setColour (juce::Colour (0xfff0dc9a)); g.fillEllipse (cx - 2.6f, cy - 2.6f, 5.2f, 5.2f);
-        g.setColour (juce::Colour (0xff8a6a1f)); g.drawLine (cx - 2.0f, cy + 1.0f, cx + 2.0f, cy - 1.0f, 1.0f);
-    };
-    screw ((float) r.getY() + 14.0f);
-    screw ((float) r.getBottom() - 14.0f);
-}
+inline void paintCheek (juce::Graphics& g, juce::Rectangle<int> r, bool leftSide) { wood::paintCheek (g, r, leftSide); }
 
-/** The rail along the bottom, thick like the arm rest of a real desk. */
+/** The rail along the bottom of the main window, like the arm rest of a real desk: square along the top, rounded at the bottom corners. */
 inline void paintRail (juce::Graphics& g, juce::Rectangle<int> r)
 {
     juce::ColourGradient gr (juce::Colour (0xff8c5a32), 0.0f, (float) r.getY(), juce::Colour (0xff6b3f20), 0.0f, (float) r.getBottom(), false);
-    g.setGradientFill (gr);
-    juce::Path shape; shape.addRoundedRectangle ((float) r.getX(), (float) r.getY(), (float) r.getWidth(), (float) r.getHeight() + 12.0f, 10.0f);
+    juce::Path shape; shape.addRoundedRectangle ((float) r.getX(), (float) r.getY() - 12.0f, (float) r.getWidth(), (float) r.getHeight() + 12.0f, 10.0f);
     g.saveState(); g.reduceClipRegion (r);
-    g.fillPath (shape);
+    g.setGradientFill (gr); g.fillPath (shape);
+    g.reduceClipRegion (shape);
     g.setColour (juce::Colour (0x33321808));
-    for (int y = r.getY() + 5; y < r.getBottom(); y += 4) g.fillRect (r.getX() + 6, y, r.getWidth() - 12, 1);
-    g.setColour (juce::Colour (0x61ffe1b4)); g.fillRect (r.getX() + 8, r.getY() + 1, r.getWidth() - 16, 3);          // the lit rounded top
-    g.setColour (juce::Colour (0x2e000000)); g.fillRect (r.getX() + 8, r.getY() + 4, r.getWidth() - 16, 2);
-    g.setColour (juce::Colour (0x47000000)); g.fillRect (r.getX(), r.getBottom() - 4, r.getWidth(), 4);
+    for (int y = r.getY() + 4; y < r.getBottom(); y += 4) g.fillRect (r.getX(), y, r.getWidth(), 1);              // the grain runs along the rail
+    g.setColour (juce::Colour (0x61ffe1b4)); g.fillRect (r.getX(), r.getY(), r.getWidth(), 2);                      // a lit top edge
+    g.setColour (juce::Colour (0x2e000000)); g.fillRect (r.getX(), r.getY() + 2, r.getWidth(), 1);
+    g.setColour (juce::Colour (0x47000000)); g.fillRect (r.getX(), r.getBottom() - 3, r.getWidth(), 3);
     g.restoreState();
+}
+
+/** "fermata" and the mark, in one line, pressed into the wood of the rail like a maker's name. Returns the width it took. */
+inline int paintNameplate (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    const float h = (float) area.getHeight();
+    const juce::Font f (juce::FontOptions ("Georgia", h * 0.78f, juce::Font::bold));
+    const int textW = juce::roundToInt (juce::GlyphArrangement::getStringWidth (f, "fermata")) + 6;
+    const int markW = juce::roundToInt (h * 1.5f);
+    const int total = markW + 6 + textW;
+    auto r = area.withLeft (area.getRight() - total);
+    auto mark = r.removeFromLeft (markW).toFloat().reduced (0.0f, h * 0.08f);
+    r.removeFromLeft (6);
+    const juce::Colour brass (0xffe6cf8e), shadow (0x99301a08);
+    drawFermataLogo (g, mark.translated (0.0f, 1.0f), shadow, shadow);
+    drawFermataLogo (g, mark, brass, brass.brighter (0.2f));
+    g.setFont (f);
+    g.setColour (shadow); g.drawText ("fermata", r.translated (0, 1), juce::Justification::centredLeft, false);
+    g.setColour (brass);  g.drawText ("fermata", r, juce::Justification::centredLeft, false);
+    return total;
 }
 
 //==============================================================================================================================
@@ -199,11 +191,11 @@ public:
         const auto ink = (on ? juce::Colours::white : p.ink).withMultipliedAlpha (alpha);
         const auto text = getButtonText();
         auto area = getLocalBounds().toFloat().reduced (2.0f, 2.0f);
-        if (icon != Ic::None && text.isNotEmpty() && area.getHeight() >= 30.0f)             // tall key: the picture over a small caption
+        if (icon != Ic::None && text.isNotEmpty() && area.getHeight() >= 26.0f && area.getWidth() < 3.0f * area.getHeight())   // tall key: the picture over a small caption
         {
-            auto cap = area.removeFromBottom (11.0f);
-            drawPicture (g, icon, area.reduced (0.0f, 1.0f), on, alpha);
-            g.setColour (ink); g.setFont (juce::FontOptions (9.0f, juce::Font::bold));
+            auto cap = area.removeFromBottom (10.0f);
+            drawPicture (g, icon, area.reduced (0.0f, 0.5f), on, alpha);
+            g.setColour (ink); g.setFont (juce::FontOptions (8.5f, juce::Font::bold));
             g.drawText (text, cap.toNearestInt(), juce::Justification::centred, false);
         }
         else if (icon != Ic::None && text.isNotEmpty())                                      // wide, short key: the picture beside the text
@@ -273,6 +265,73 @@ public:
 
 private:
     juce::Colour ring { 0xff2fd0e8 };
+};
+
+/** A small knob ringed with lit segments: the level and pan knobs of the stage speaker boxes. A pan knob lights from the middle outwards. */
+class RingPot : public valueentry::TypedSlider
+{
+public:
+    explicit RingPot (bool isBipolar = false) : bipolar (isBipolar)
+    {
+        setSliderStyle (juce::Slider::RotaryVerticalDrag);
+        setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        setRotaryParameters (juce::degreesToRadians (-135.0f), juce::degreesToRadians (135.0f), true);
+        setMouseDragSensitivity (160);
+    }
+    void setRing (juce::Colour c) { ring = c; customRing = true; repaint(); }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto& p = pal();
+        const auto ringCol = customRing ? ring : p.cyan;                                // unless told otherwise, the desk's own light colour
+        auto b = getLocalBounds().toFloat();
+        const float cx = b.getCentreX(), cy = b.getCentreY();
+        const float f = juce::jlimit (0.0f, 1.0f, (float) valueToProportionOfLength (getValue()));
+        const float R = juce::jmin (b.getWidth(), b.getHeight()) * 0.5f - 2.5f;
+        const int n = juce::jlimit (9, 21, (int) (R * 0.6f) | 1);                        // an odd number, so a pan knob has a middle segment
+        const float pitch = 270.0f / (float) n, seg = pitch * 0.7f;
+        const int on = (int) std::round (f * (float) (n - 1)), mid = n / 2;
+        for (int i = 0; i < n; ++i)
+        {
+            const bool lit = bipolar ? (on >= mid ? (i >= mid && i <= on) : (i <= mid && i >= on)) : (i <= on && f > 0.001f);
+            const float a0 = -135.0f + (float) i * pitch + (pitch - seg) * 0.5f;
+            juce::Path arc;
+            arc.addCentredArc (cx, cy, R, R, 0.0f, juce::degreesToRadians (a0), juce::degreesToRadians (a0 + seg), true);
+            g.setColour (lit ? ringCol : p.ringOff);
+            g.strokePath (arc, juce::PathStrokeType (3.0f));
+        }
+        const float kr = R * 0.6f;
+        juce::ColourGradient gr (juce::Colour (0xff363d45), cx, cy - kr * 0.45f, juce::Colour (0xff14171a), cx, cy + kr, true);
+        g.setGradientFill (gr); g.fillEllipse (cx - kr, cy - kr, kr * 2.0f, kr * 2.0f);
+        g.setColour (p.knobEdge); g.drawEllipse (cx - kr, cy - kr, kr * 2.0f, kr * 2.0f, 1.0f);
+        juce::Path pointer; pointer.addRoundedRectangle (-1.0f, -(kr - 2.0f), 2.0f, kr * 0.55f, 1.0f);
+        g.setColour (juce::Colours::white);
+        g.fillPath (pointer, juce::AffineTransform::rotation (juce::degreesToRadians (-135.0f + f * 270.0f)).translated (cx, cy));
+    }
+private:
+    bool bipolar, customRing = false;
+    juce::Colour ring { 0xff2fd0e8 };
+};
+
+/** The talkback key at the bottom of each input strip: a red outline round the light key with TALK in black; when the input is a talkback mic it is all red with
+    TALK in white. */
+class TalkKey : public juce::Button
+{
+public:
+    TalkKey() : juce::Button ("TALK") { setClickingTogglesState (true); setWantsKeyboardFocus (false); }
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        const bool on = getToggleState();
+        const juce::Colour red (0xffe0302a);
+        auto r = getLocalBounds().toFloat().reduced (1.0f);
+        auto fill = on ? red : pal().key;
+        if (down) fill = fill.darker (0.2f); else if (over) fill = fill.brighter (0.1f);
+        g.setColour (fill.withMultipliedAlpha (isEnabled() ? 1.0f : 0.5f)); g.fillRoundedRectangle (r, 4.0f);
+        g.setColour (on ? red.darker (0.35f) : red); g.drawRoundedRectangle (r.reduced (0.5f), 4.0f, on ? 1.0f : 2.0f);
+        g.setColour (on ? juce::Colours::white : juce::Colours::black);
+        g.setFont (juce::FontOptions (juce::jmin (12.5f, r.getHeight() * 0.6f), juce::Font::bold));
+        g.drawText ("TALK", getLocalBounds(), juce::Justification::centred, false);
+    }
 };
 
 /** A small black display with a value in it ("38.5 dB"). Double-click it to type the value. */

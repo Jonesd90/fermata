@@ -100,10 +100,12 @@ public:
         if (! b.isEnabled()) c = c.withMultipliedAlpha (0.5f);
         else if (down) c = c.darker (0.25f);
         else if (highlighted) c = c.brighter (0.18f);
+        const auto rf = r.toFloat().reduced (0.5f);
+        const float rad = theme::isDark() ? juce::jmin (4.0f, rf.getHeight() * 0.3f) : 0.0f;     // the desk's keys have softly rounded corners
         g.setColour (c);
-        g.fillRect (r);
+        g.fillRoundedRectangle (rf, rad);
         g.setColour (b.getToggleState() ? c.brighter (0.4f) : theme::border);
-        g.drawRect (r, 1);
+        g.drawRoundedRectangle (rf, rad, 1.0f);
     }
 
     void drawToggleButton (juce::Graphics& g, juce::ToggleButton& b, bool highlighted, bool) override
@@ -225,7 +227,7 @@ public:
     {
         auto r = b.getActiveArea();
         const bool front = b.isFrontTab();
-        g.setColour (front ? juce::Colour (0xff3a404a) : theme::panel.darker (over || down ? 0.08f : 0.0f));
+        g.setColour (front ? theme::window.brighter (0.12f) : theme::panel.darker (over || down ? 0.08f : 0.0f));
         g.fillRect (r);
         g.setColour (theme::border); g.drawRect (r, 1);
         if (front) { g.setColour (theme::accent); g.fillRect (r.getX(), r.getY(), r.getWidth(), 3); }

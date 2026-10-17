@@ -1538,7 +1538,7 @@ private:
 MixerComponent::MixerComponent (AppContext& a, const juce::Uuid& id) : app (a), mixerId (id), holder (new MixerStripsHolder())
 {
     setMixDark (theme::isDark());                           // the mixers follow the program-wide dark / light look
-    shownDark = mixTheme().dark;
+    shownDark = mixTheme().dark; shownGen = theme::generation();
     mixLook.apply();
     viewport.setLookAndFeel (&mixLook);
 
@@ -1552,7 +1552,7 @@ MixerComponent::MixerComponent (AppContext& a, const juce::Uuid& id) : app (a), 
         m.fall = st->getIntValue ("meterFall", m.fall); m.hold = st->getIntValue ("meterHold", m.hold);
     }
 
-    themeButton.setTooltip ("Switch the whole program between the light look and the dark console look");
+    themeButton.setTooltip ("Switch the whole program between the light look and the desk look");
     themeButton.onClick = [] { if (themeSwitchHook()) themeSwitchHook() (! theme::isDark()); };
     addAndMakeVisible (themeButton);
 
@@ -1942,9 +1942,9 @@ void MixerComponent::resized()
 
 void MixerComponent::timerCallback()
 {
-    if (shownDark != mixTheme().dark)                             // the look was switched (here or in another mixer window)
+    if (shownDark != mixTheme().dark || shownGen != theme::generation())   // the look or the desk colour was changed (here or in another window)
     {
-        shownDark = mixTheme().dark;
+        shownDark = mixTheme().dark; shownGen = theme::generation();
         mixLook.apply();
         rebuild(); updateAuditionButton(); resized();
         viewport.sendLookAndFeelChange();
