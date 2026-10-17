@@ -26,6 +26,8 @@ public:
     /** True when there is anything to mix (a CR input or a TB pair). */
     bool wanted() const { return ! app.project.crMicInputs.empty() || ! app.project.tbOutputs.empty(); }
     int wantedWidth() const { return (int) strips.size() * (kStripW + 2) + kGap + 8; }
+    /** The place the main window always keeps for these boxes (one talkback mic, Playback and Output), shown or not. */
+    static int reservedWidth() { return 3 * (kStripW + 2) + kGap + 8; }
 
     /** Called whenever the project changes: rebuilds the strips if the CR inputs, the TB pairs or the names changed. */
     void rebuildIfNeeded()

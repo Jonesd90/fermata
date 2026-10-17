@@ -627,7 +627,7 @@ void MainComponent::resized()
     layoutMenuBar();                                                    // the menu bar: always one line
     // ---- does everything fit at full size? If not (a 16:9 screen at 150 %, say) the rail gets thinner and the input strips shrink to fit
     const bool showStage = stagePanel.wanted();
-    const int headH = showStage ? StageSpeakerPanel::kHeight : 58;
+    const int headH = StageSpeakerPanel::kHeight;                      // always the stage speaker boxes' height, so the top row never moves when they come and go
     const int innerW = getWidth() - 2 * (kCheekW + 10);
     const bool outScroll = (int) outputRows.size() * (OutputRow::kStripW + 2) > innerW;
     const bool inScroll  = (int) inputRows.size()  * (InputRow::kStripW + 2)  > innerW;
@@ -653,10 +653,10 @@ void MainComponent::resized()
     headerSeps.clear();
     stagePanel.setVisible (showStage);
     auto head = r.removeFromTop (headH);
-    if (showStage)
-    {
-        const int pw = juce::jmin (stagePanel.wantedWidth(), head.getWidth() / 3);
-        stagePanel.setBounds (head.removeFromRight (pw));
+    {   // the stage speaker boxes' place is kept free even when they are not shown (room for a talkback mic, Playback and Output; more boxes scroll sideways)
+        const int pw = juce::jmin (StageSpeakerPanel::reservedWidth(), head.getWidth() / 3);
+        auto place = head.removeFromRight (pw);
+        if (showStage) stagePanel.setBounds (place.removeFromRight (juce::jmin (pw, stagePanel.wantedWidth())));
         head.removeFromRight (10);
     }
     headerLine = head;

@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.61.1
+- **The top row of the main window no longer moves** when a talkback mic or a talkback output is chosen (or taken away). The place for the stage speaker boxes at the top right is always kept, at the same height and width, whether they are shown or not (room for a talkback mic, Playback and Output; with more talkback mics the boxes scroll sideways inside that place).
+
 ## 2.61.0
 - **Fermata opens maximised every time** (filling the screen, with the title bar and the taskbar still showing). "Restore" on the title bar goes back to the usual size.
 - **Listening copies: all the pieces in one file.** The Listening copy tab in Mastering has a new choice, Files: "One file for each piece" (as before) or "All the pieces in one file". The single file is named after the album title on the Virtual Master tab (or the project when there is none), for example "Brahms Requiem - listening copy.html". The listener sees a list of the pieces with their lengths (and how many comments they have made on each), clicks one to listen, and it plays straight on into the next piece like a CD; the previous / next buttons sit either side of the play controls. Their comments are listed piece by piece, and when you import them each piece's comments go onto that piece's own edit. The tab shows roughly how big the file will be.
