@@ -9,7 +9,8 @@ namespace td
 /** Reserved CPU cores ("ring-fencing", in the spirit of Pyramix MassCore, but done the way Windows allows a normal program to do it).
 
     What it does (Windows 10 and later, through "CPU sets"):
-      - the audio engine's own threads (the driver's audio callback, the disk writer, the playback readers) are placed on the reserved cores only;
+      - the audio engine's threads with a deadline every block (the driver's audio callback and the mixer helpers) are placed on the reserved cores only;
+        the disk writer and the playback reader, which work seconds ahead, run on the other cores at high priority, out of their way;
       - everything else in Fermata (windows, plug-in scanning, exports ...) is kept on the other cores;
       - optionally, the other programs on the PC are asked to stay off the reserved cores as well (what Process Lasso does);
       - the audio callback joins the Windows "Pro Audio" scheduling class (MMCSS), and Fermata is told not to be throttled for power saving.
@@ -79,7 +80,7 @@ public:
     void audioThreadCheck() noexcept;
     /** How many logical processors are reserved for the audio right now (0 = none: the reservation is off or not in force). Any thread. */
     int reservedLogicalProcessors() const noexcept { return audioLogicalCount.load (std::memory_order_relaxed); }
-    /** A thread of the audio engine that is not the callback (disk writer, playback reader). Call after it has started; unregister before it is deleted. */
+    /** A thread of the audio engine that is not the callback (a mixer helper). Call after it has started; unregister before it is deleted. */
     void registerAudioThread (juce::Thread::ThreadID id);
     void unregisterAudioThread (juce::Thread::ThreadID id);
 

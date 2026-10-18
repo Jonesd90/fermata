@@ -195,6 +195,17 @@ public:
     }
     bool ltcOutActive() const noexcept { return ltcOutCh.load() >= 0 && ltcOutRunning.load(); }
 
+    // --- how hard the audio thread works (the load meter and the timing log) ---
+    /** What the audio callback did since the last call (message thread; reading starts a new count). Load = time spent in the callback as a share
+        of the time the block lasts (its length at the sample rate): 100% means the PC only just keeps up. */
+    struct LoadStats
+    {
+        float average = 0.0f, peak = 0.0f;   // percent
+        int blocks = 0, late = 0;             // callbacks, and how many of them took longer than their block lasts (a dropout is likely)
+        float recordBufferPeak = 0.0f;        // percent: the fullest any recording buffer got (100% = an overrun)
+    };
+    LoadStats takeLoadStats() noexcept;
+
     // --- metering (message thread) ---
     float takeInputPeak (int inputIndex) noexcept;   // returns peak since last call, then resets
     float takeOutputPeak (int outputIndex) noexcept; // same, for what is sent to the driver outputs
@@ -359,6 +370,11 @@ private:
     std::atomic<juce::int64> samplePosition { 0 };
     std::atomic<float> inputPeak[kMaxInputs];
     std::atomic<float> outputPeak[kMaxInputs];
+
+    std::atomic<double> loadBusy { 0.0 }, loadSpan { 0.0 };   // audio thread adds, message thread takes: seconds spent in the callback / seconds of audio
+    std::atomic<float> loadPeakPct { 0.0f };
+    std::atomic<int> loadBlocks { 0 }, loadLate { 0 };
+    std::atomic<float> recBufPeakPct { 0.0f };
 
     std::atomic<const void*> scopeSource { nullptr };
     std::vector<float> scopeRing = std::vector<float> ((size_t) (2 * kScopeFrames), 0.0f);

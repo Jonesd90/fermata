@@ -4453,6 +4453,57 @@ int main()
         CHECK (e.setMixerThreads (0));
     }
 
+    SECTION ("2.67: playback read buffers share a budget; the load meter; quick saves use the plug-ins' cached state");
+    {
+        CHECK (PlaybackSession::bufferBytesFor (1) == (1 << 20) && PlaybackSession::bufferBytesFor (96) == (1 << 20));
+        CHECK (PlaybackSession::bufferBytesFor (960) == (96 << 20) / 960 && PlaybackSession::bufferBytesFor (100000) == (32 << 10));
+
+        // the load meter: what the callback measures comes back once, then starts again
+        {
+            Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear();
+            q.addTrack ("A", TrackFormat::Mono, 0);
+            AudioEngine e (q);
+            e.prepare (48000.0, 256);
+            std::vector<float> i0 (256, 0.1f), o0 (256), o1 (256);
+            const float* in[1] = { i0.data() }; float* out[2] = { o0.data(), o1.data() };
+            juce::AudioIODeviceCallbackContext ctx;
+            for (int b = 0; b < 20; ++b) e.audioDeviceIOCallbackWithContext (in, 1, out, 2, 256, ctx);
+            const auto st = e.takeLoadStats();
+            CHECK (st.blocks == 20 && st.average > 0.0f && st.peak >= st.average && st.late >= 0 && st.recordBufferPeak == 0.0f);
+            const auto again = e.takeLoadStats();
+            CHECK (again.blocks == 0 && again.peak == 0.0f && again.average == 0.0f);
+        }
+
+        // quick saves: a plug-in may hand over its cached state; a full save always asks for a fresh one
+        struct StateCounter : InsertProcessor
+        {
+            void prepare (double, int, int) override {}
+            void process (juce::AudioBuffer<float>&) override {}
+            juce::String getName() const override { return "Counter"; }
+            juce::String getDescription() const override { return "<PLUGIN name=\"Counter\"/>"; }
+            juce::String getStateBase64() const override { ++(*fresh); return "FRESH"; }
+            juce::String getStateBase64Quick() const override { ++(*quick); return "CACHED"; }
+            int* fresh = nullptr; int* quick = nullptr;
+        };
+        int fresh = 0, quick = 0;
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear();
+        const auto ta = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        q.projectFile = tmp.getChildFile ("quick").getChildFile ("Quick.fermata");
+        auto sc = std::make_unique<StateCounter>(); sc->fresh = &fresh; sc->quick = &quick;
+        q.mixers.front()->stripFor (ta)->slots[0].set (std::move (sc), 48000.0, 512, 2);
+        juce::String err;
+        CHECK (q.save (err, true));
+        CHECK (quick == 1 && fresh == 0);
+        CHECK (q.save (err));
+        CHECK (quick == 1 && fresh == 1);
+        const auto text = q.projectFile.getParentDirectory().findChildFiles (juce::File::findFiles, true, "*.fermata*");
+        bool sawFresh = false;
+        for (auto& f : text) sawFresh = sawFresh || f.loadFileAsString().contains ("FRESH");
+        for (auto& f : q.projectFile.getParentDirectory().findChildFiles (juce::File::findFiles, true)) sawFresh = sawFresh || f.loadFileAsString().contains ("FRESH");
+        CHECK (sawFresh);
+        (void) q.toVar(); CHECK (fresh == 2);                                  // anything other than a quick save (a render's copy, say) asks afresh
+    }
+
     tmp.deleteRecursively();
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;

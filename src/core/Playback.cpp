@@ -24,16 +24,20 @@ PlaybackSession::PlaybackSession (std::vector<int> counts, std::vector<PlaySegme
 
 PlaybackSession::~PlaybackSession()
 {
-    CoreReservation::get().unregisterAudioThread (getThreadId());
     stopThread (3000);
 }
 
 juce::String PlaybackSession::open()
 {
     readers.clear();
+    // Each file is read through a buffer, so the disk is asked for big pieces instead of a small read for every few thousand samples (kinder to a
+    // hard drive, and far fewer calls into Windows). An edit can have thousands of segments, each with its own reader, so the buffers share a budget.
+    const int bufBytes = bufferBytesFor (segments.size());
     for (auto& s : segments)
     {
-        std::unique_ptr<juce::AudioFormatReader> r (formats.createReaderFor (s.file));
+        std::unique_ptr<juce::AudioFormatReader> r;
+        if (auto fis = std::make_unique<juce::FileInputStream> (s.file); fis->openedOk())
+            r.reset (formats.createReaderFor (std::make_unique<juce::BufferedInputStream> (fis.release(), bufBytes, true)));
         if (r == nullptr) return "Cannot read " + s.file.getFullPathName();
         if (std::abs (r->sampleRate - sampleRate) > 0.5)
             return s.file.getFileName() + " is " + juce::String (r->sampleRate, 0) + " Hz but the audio device is running at " + juce::String (sampleRate, 0) + " Hz";
@@ -44,8 +48,7 @@ juce::String PlaybackSession::open()
 
 void PlaybackSession::start()
 {
-    startThread (juce::Thread::Priority::high);
-    CoreReservation::get().registerAudioThread (getThreadId());          // (kept on the reserved cores, when there are any)
+    startThread (juce::Thread::Priority::high);          // (on the ordinary cores, like the disk writer: it reads seconds ahead, so the reserved cores are left to the callback and the mixer helpers)
     const auto deadline = juce::Time::getMillisecondCounter() + 3000;
     const int preload = looping.load() ? 16384 : kRing / 2;                // a loop keeps less in hand (see run()), so it needs less to start
     while (! renderDone.load() && fifo.getNumReady() < preload && juce::Time::getMillisecondCounter() < deadline)

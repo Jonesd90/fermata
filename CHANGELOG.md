@@ -6,6 +6,16 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.67.0
+The speed and stability items left from the 2.66 review, and a load meter so they can be measured on the real PC.
+
+- **Load meter.** The main window's status line shows how hard the audio thread works: **DSP 23% (peak 61%)** = the share of each block's time it needed over the last second (100% = the PC only just keeps up). Blocks that took longer than they last are shown as **LATE BLOCKS: n** (a dropout is then likely).
+- **Timing log.** Every minute while the audio runs, and at the end of every take, `fermata-log.txt` gets one line: average and peak load, late blocks, buffer size and sample rate, the driver's xrun count, the number of mixer helpers, how full the recording buffers got, playback underruns and the reserved processors. Send these lines after a test session.
+- **Playback reads in big pieces.** Every file played (takes, edits, the trim window) is read through a buffer of up to 1 MB, instead of small reads every few thousand samples: far fewer calls into Windows and much kinder to a hard drive. An edit with thousands of pieces shares 96 MB between them (never less than 32 KB each).
+- **The disk writer and the playback reader no longer run on the reserved CPU cores.** Those cores are now kept for the work with a deadline every block (the audio callback and the mixer helpers); the disk threads work seconds ahead, so they run on the other cores at high priority, out of the way.
+- **Automatic saves no longer ask every plug-in for its whole state each time.** A plug-in hands over the state it gave last time unless it has reported a change since, its window is open, or a minute has passed. Saving from the menu, closing and Save and quit still ask every plug-in afresh. (A big convolution reverb can take a noticeable moment to answer; the automatic save asked every few seconds.) Recording start and stop use the quick save too, so pressing Record never waits on the plug-ins.
+- Tests: the read-buffer budget, the load meter, quick versus full saves.
+
 ## 2.66.0
 The audio-thread and recording review of 2.65 (every finding checked against the code, the engine run under the thread, address and undefined-behaviour sanitizers, plus a new stress test), and its fixes. Nothing new to learn: the program records and plays as before, it just tells you when something is wrong and loses nothing it can keep.
 

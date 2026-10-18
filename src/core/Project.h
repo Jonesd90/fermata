@@ -248,7 +248,8 @@ public:
         their file size alone, so a project with thousands of recordings opens quickly. */
     juce::StringArray repairInterruptedRecordings();
     juce::File takeFolder (const TakeWindowDef&) const;
-    bool save (juce::String& error);
+    /** quick: an automatic save (plug-ins hand over their last state unless it may have changed: see InsertProcessor::getStateBase64Quick). */
+    bool save (juce::String& error, bool quick = false);
     bool saveAs (const juce::File&, juce::String& error);
     bool load (const juce::File&, juce::String& error);
 

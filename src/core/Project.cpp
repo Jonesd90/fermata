@@ -53,6 +53,9 @@ void feedbackFromVar (const var& v, std::vector<FeedbackNote>& list)
 }
 void put (var& o, const char* k, const var& v) { o.getDynamicObject()->setProperty (k, v); }
 
+/** True while a quick (automatic) save writes the project: the plug-ins may hand over a cached state. */
+thread_local bool quickPluginState = false;
+
 var slotsToVar (const InsertSlot* slots, int count = kNumSlots)
 {
     juce::Array<var> arr;
@@ -62,7 +65,7 @@ var slotsToVar (const InsertSlot* slots, int count = kNumSlots)
         if (auto* p = slots[i].getProcessorUnsafe())
         {
             put (s, "desc", p->getDescription());
-            put (s, "state", p->getStateBase64());
+            put (s, "state", quickPluginState ? p->getStateBase64Quick() : p->getStateBase64());
         }
         else
         {
@@ -1434,12 +1437,14 @@ bool Project::saveAs (const juce::File& f, juce::String& error)
     return save (error);
 }
 
-bool Project::save (juce::String& error)
+bool Project::save (juce::String& error, bool quick)
 {
     if (projectFile == juce::File()) { error = "No project file chosen"; return false; }
     projectFile.getParentDirectory().createDirectory();
     juce::TemporaryFile tmp (projectFile);
+    quickPluginState = quick;
     var root = toVar();
+    quickPluginState = false;
     splitWindowFiles (root);                              // the edits and take windows go to their own files (if that fails the project is written whole, as before)
     if (! tmp.getFile().replaceWithText (juce::JSON::toString (root, false)) || ! tmp.overwriteTargetFileWithTemporary())
     {

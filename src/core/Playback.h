@@ -110,6 +110,12 @@ public:
     static void renderSegments (std::vector<std::unique_ptr<juce::AudioFormatReader>>& readers, const std::vector<PlaySegment>& segs,
                                 juce::int64 from, int n, std::vector<juce::AudioBuffer<float>>& out, juce::AudioBuffer<float>& scratch);
     std::vector<std::unique_ptr<juce::AudioFormatReader>>& getReaders() { return readers; }
+    /** The read buffer of each file's reader: 1 MB, less when there are many segments (96 MB between them all), never under 32 KB. */
+    static int bufferBytesFor (size_t numSegments) noexcept
+    {
+        const auto share = (juce::int64) (96 << 20) / (juce::int64) juce::jmax ((size_t) 1, numSegments);
+        return (int) juce::jlimit ((juce::int64) (32 << 10), (juce::int64) (1 << 20), share);
+    }
     const std::vector<PlaySegment>& getSegments() const { return segments; }
 
 private:

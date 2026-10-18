@@ -36,9 +36,11 @@ AppContext::AppContext()
     project.structure.addChangeListener (this);
     devices.addChangeListener (this);
     startTimer (4000);
-    project.onNewWindow = [this] { juce::MessageManager::callAsync ([this] { if (project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording()) saveNow(); }); };      // a new edit / take window / mixer gets its file at once
+    project.onNewWindow = [this] { juce::MessageManager::callAsync ([this] { if (project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording()) saveNow (true); }); };      // a new edit / take window / mixer gets its file at once
     watcher.fn = [this] { if (engine.playbackFinished()) stopPlayback(); };   // tidy up when a play-through reaches its end
     watcher.startTimer (100);
+    loadTicker.fn = [this] { tickLoad(); };
+    loadTicker.startTimer (1000);
     undoTicker.fn = [this] { if (undoHold <= 0) project.undoTick (engine.isRecording()); };
     undoTicker.startTimer (250);
     peakPoller.fn = [this]
@@ -311,8 +313,39 @@ void AppContext::timerCallback()
     // of the screen's time, and doing it every few seconds while you mix made the moving playhead hitch. Stopping saves straight away (stopPlayback).
     if (engine.isPlaying() && ++savesHeldWhilePlaying < 15) return;
     if (project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording())
-        saveNow();
+        saveNow (true);
     savesHeldWhilePlaying = 0;
+}
+
+void AppContext::tickLoad()
+{
+    lastLoad = engine.takeLoadStats();
+    if (! engine.isRunning() || lastLoad.blocks == 0) { minuteSeconds = 0; minuteLoad = {}; return; }
+    // gather the minute: the average is weighted by blocks, the peaks are the highest
+    const int nb = minuteLoad.blocks + lastLoad.blocks;
+    minuteLoad.average = nb > 0 ? (minuteLoad.average * (float) minuteLoad.blocks + lastLoad.average * (float) lastLoad.blocks) / (float) nb : 0.0f;
+    minuteLoad.blocks = nb;
+    minuteLoad.peak = juce::jmax (minuteLoad.peak, lastLoad.peak);
+    minuteLoad.late += lastLoad.late;
+    minuteLoad.recordBufferPeak = juce::jmax (minuteLoad.recordBufferPeak, lastLoad.recordBufferPeak);
+    const bool rec = engine.isRecording();
+    const bool takeEnded = loadWasRecording && ! rec;
+    loadWasRecording = rec;
+    if (++minuteSeconds >= 60 || takeEnded)
+    {
+        auto* dev = devices.getCurrentAudioDevice();
+        juce::String line;
+        line << "Timing (last " << minuteSeconds << " s" << (takeEnded ? ", to the end of the take" : "") << "): audio thread load average "
+             << juce::String (minuteLoad.average, 1) << "%, peak " << juce::String (minuteLoad.peak, 1) << "%, "
+             << minuteLoad.late << " of " << minuteLoad.blocks << " blocks late";
+        if (dev != nullptr) line << ", buffer " << dev->getCurrentBufferSizeSamples() << " at " << juce::String (dev->getCurrentSampleRate(), 0) << " Hz, driver xruns " << dev->getXRunCount();
+        line << ", mixer helpers " << engine.mixerThreads();
+        if (minuteLoad.recordBufferPeak > 0.0f || rec || takeEnded) line << ", recording buffer peak " << juce::String (minuteLoad.recordBufferPeak, 1) << "% full";
+        if (engine.isPlaying()) line << ", playback underruns " << engine.playbackUnderruns();
+        if (CoreReservation::get().active()) line << ", " << CoreReservation::get().reservedLogicalProcessors() << " reserved processors";
+        juce::Logger::writeToLog (line);
+        minuteSeconds = 0; minuteLoad = {};
+    }
 }
 
 void AppContext::undoStep()
@@ -331,12 +364,12 @@ void AppContext::redoStep()
     if (refreshTitles) refreshTitles();
 }
 
-void AppContext::saveNow()
+void AppContext::saveNow (bool quick)
 {
     juce::String err;
     if (project.projectFile != juce::File())
     {
-        if (! project.save (err)) showError ("Could not save project", err);
+        if (! project.save (err, quick)) showError ("Could not save project", err);
         props.getUserSettings()->setValue ("lastProject", project.projectFile.getFullPathName());
         props.saveIfNeeded();
     }
@@ -688,7 +721,7 @@ void AppContext::toggleRecord (const juce::Uuid& takeWindowId)
     if (engine.isRecording())
     {
         engine.stopRecording();
-        saveNow();
+        saveNow (true);
         return;
     }
     if (! hasProject()) { setNotice ("First choose where the project is saved (New project or Open project)."); return; }
@@ -698,7 +731,7 @@ void AppContext::toggleRecord (const juce::Uuid& takeWindowId)
     recordTarget = takeWindowId;
     auto err = engine.startRecording (*w);
     if (err.isNotEmpty()) showError ("Cannot record", err);
-    else saveNow();   // write the project at once so the new take is never lost
+    else saveNow (true);   // write the project at once so the new take is never lost
 }
 
 // ---------------------------------------------------------------------------- playback
@@ -953,7 +986,7 @@ void AppContext::stopPlayback()
     {
         savesHeldWhilePlaying = 0;
         if (project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording())
-            juce::MessageManager::callAsync ([this] { if (project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording()) saveNow(); });
+            juce::MessageManager::callAsync ([this] { if (project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording()) saveNow (true); });
     }
 }
 

@@ -14,7 +14,8 @@ AudioEngine::AudioEngine (Project& p) : project (p)
     for (auto& x : stagePrevL) x = 1.0f;
     for (auto& x : stagePrevR) x = 1.0f;
     writerThread.startThread (juce::Thread::Priority::high);
-    CoreReservation::get().registerAudioThread (writerThread.getThreadId());          // (kept on the reserved cores, when there are any)
+    // (the disk writer is NOT put on the reserved cores: they are kept for the work with a deadline every block - the audio callback and the mixer
+    // helpers. The writer has seconds of buffer in hand, so it runs on the other cores, at high priority, out of their way.)
     // helpers for running the mixers side by side: one fewer than the physical cores the audio can use, leaving a core or two for everything else
     mixerWorkers.start (juce::jlimit (0, 6, juce::SystemStats::getNumPhysicalCpus() - 2));
 }
@@ -22,7 +23,6 @@ AudioEngine::AudioEngine (Project& p) : project (p)
 AudioEngine::~AudioEngine()
 {
     mixerWorkers.stop();
-    CoreReservation::get().unregisterAudioThread (writerThread.getThreadId());
     if (isRecording()) stopRecording();
     stopPlayback();
     running = false;
@@ -59,7 +59,31 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* in, int 
     const int reserved = cores.reservedLogicalProcessors();
     mixerWorkers.setLimit (reserved > 0 ? reserved - 1 : 1 << 20);
     juce::ScopedNoDenormals noDenormals;
+    const auto t0 = juce::Time::getHighResolutionTicks();
     process (in, numIn, out, numOut, numSamples);
+    // the load meter: time spent here as a share of how long the block lasts
+    const double busy = juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - t0);
+    const double span = sampleRate > 0.0 ? (double) numSamples / sampleRate : 0.0;
+    if (span > 0.0)
+    {
+        const float pct = (float) (100.0 * busy / span);
+        loadBusy.store (loadBusy.load (std::memory_order_relaxed) + busy, std::memory_order_relaxed);      // (only this thread adds; the reader exchanges)
+        loadSpan.store (loadSpan.load (std::memory_order_relaxed) + span, std::memory_order_relaxed);
+        if (pct > loadPeakPct.load (std::memory_order_relaxed)) loadPeakPct.store (pct, std::memory_order_relaxed);
+        loadBlocks.fetch_add (1, std::memory_order_relaxed);
+        if (busy > span) loadLate.fetch_add (1, std::memory_order_relaxed);
+    }
+}
+
+AudioEngine::LoadStats AudioEngine::takeLoadStats() noexcept
+{
+    LoadStats st;
+    const double busy = loadBusy.exchange (0.0), span = loadSpan.exchange (0.0);
+    st.average = span > 0.0 ? (float) (100.0 * busy / span) : 0.0f;
+    st.peak = loadPeakPct.exchange (0.0f);
+    st.blocks = loadBlocks.exchange (0); st.late = loadLate.exchange (0);
+    st.recordBufferPeak = recBufPeakPct.exchange (0.0f);
+    return st;
 }
 
 void AudioEngine::prepare (double sr, int block)
@@ -530,6 +554,12 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
         if (! silenceOk) rs->overruns.fetch_add (1);
         rs->samples.fetch_add (numSamples);
         writerThread.notify();                                              // once for all the files
+    }
+    if (rs != nullptr)                                                      // how full the recording buffers are (the timing log)
+    {
+        float fill = 0.0f;
+        for (auto& rt : rs->tracks) fill = juce::jmax (fill, rt.writer->fillPercent());
+        if (fill > recBufPeakPct.load (std::memory_order_relaxed)) recBufPeakPct.store (fill, std::memory_order_relaxed);
     }
     if (pr != nullptr) pr->writePos.store (wp + numSamples, std::memory_order_release);
 

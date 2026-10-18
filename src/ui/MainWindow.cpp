@@ -845,6 +845,9 @@ void MainComponent::timerCallback()
         else if (! rec) problemNoticed = false;
         if (auto* x = dynamic_cast<juce::AudioIODevice*> (dev); x != nullptr && dev->getXRunCount() > 0)
             s += "   xruns: " + juce::String (dev->getXRunCount());
+        if (app.lastLoad.blocks > 0)                                    // the load meter: how much of each block's time the audio thread needs
+            s += "   DSP " + juce::String (juce::roundToInt (app.lastLoad.average)) + "% (peak " + juce::String (juce::roundToInt (app.lastLoad.peak)) + "%)"
+                 + (app.lastLoad.late > 0 ? "  LATE BLOCKS: " + juce::String (app.lastLoad.late) : juce::String());
     }
     else s = "No audio device - open Audio settings";
     if (rec && ! s.startsWith ("DISK") && ! s.startsWith ("RECORDING HAS")) s = "RECORDING  -  " + s;

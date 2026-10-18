@@ -258,7 +258,9 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
         written (what was saved automatically as you worked stays). False if it cannot close now (recording). */
     bool closeProject (bool save);
     std::function<void()> closeAllWindows;            // (set by the application) closes every project window
-    void saveNow();
+    AudioEngine::LoadStats lastLoad;                  // the load meter: the audio thread's last second (see tickLoad)
+    /** quick: an automatic save (see Project::save). Save from the menu, closing, Save and quit: a full one. */
+    void saveNow (bool quick = false);
     bool skipFinalSave = false;                       // "Quit without saving": the last save when closing is left out
     void restoreLastProject();
     /** Has a project been chosen (new or opened)? Until then nothing is saved or recorded. */
@@ -281,6 +283,12 @@ public:
     void setNotice (const juce::String& t) { notice = t; noticeUntil = juce::Time::getMillisecondCounter() + 3500; }
 private:
     struct PlaybackWatcher : juce::Timer { std::function<void()> fn; void timerCallback() override { if (fn) fn(); } } watcher;
+    /** The load meter (once a second) and the timing log (a line in fermata-log.txt every minute while the audio runs, and at the end of each take). */
+    struct LoadTicker : juce::Timer { std::function<void()> fn; void timerCallback() override { if (fn) fn(); } } loadTicker;
+    AudioEngine::LoadStats minuteLoad;                // gathered for the next log line
+    int minuteSeconds = 0;
+    bool loadWasRecording = false;
+    void tickLoad();
     void timerCallback() override;                   // autosave
     void changeListenerCallback (juce::ChangeBroadcaster*) override;   // re-plan the engine after structural edits
     int savesHeldWhilePlaying = 0;                   // automatic saves put off while the music plays (see timerCallback)

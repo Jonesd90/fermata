@@ -7,13 +7,13 @@ namespace td
 /** Wraps a loaded plug-in as an insert. Always runs the plug-in as a stereo effect. It is also the plug-in's play head: it tells the plug-in
     whether Fermata is playing / recording and where on the timeline it is (see HostTransport), which plug-ins that listen while the host
     plays (Auto-Align 2 ...) need. */
-class Vst3Insert : public InsertProcessor, private juce::AudioPlayHead
+class Vst3Insert : public InsertProcessor, private juce::AudioPlayHead, private juce::AudioProcessorListener
 {
 public:
     Vst3Insert (std::unique_ptr<juce::AudioPluginInstance> p, juce::PluginDescription d)
-        : plugin (std::move (p)), description (std::move (d)) { plugin->setPlayHead (this); }
+        : plugin (std::move (p)), description (std::move (d)) { plugin->setPlayHead (this); plugin->addListener (this); }
 
-    ~Vst3Insert() override { if (prepared) plugin->releaseResources(); plugin->setPlayHead (nullptr); }
+    ~Vst3Insert() override { plugin->removeListener (this); if (prepared) plugin->releaseResources(); plugin->setPlayHead (nullptr); }
 
     void prepare (double sr, int maxBlock, int) override
     {
@@ -79,7 +79,21 @@ public:
 
     juce::String getName() const override { return description.name; }
     juce::String getDescription() const override { if (auto x = description.createXml()) return x->toString(); return {}; }
-    juce::String getStateBase64() const override { juce::MemoryBlock mb; plugin->getStateInformation (mb); return mb.toBase64Encoding(); }
+    juce::String getStateBase64() const override
+    {
+        stateChanged.store (false);                                           // (before asking: a change made while it answers marks it again)
+        juce::MemoryBlock mb; plugin->getStateInformation (mb);
+        cachedState = mb.toBase64Encoding(); cachedAt = juce::Time::getMillisecondCounter();
+        return cachedState;
+    }
+    /** The automatic save: the last state, unless the plug-in reported a change since, its window is open (some plug-ins change things there
+        without reporting them: a reverb's impulse loaded from a file, say), or it is a minute old. */
+    juce::String getStateBase64Quick() const override
+    {
+        const bool fresh = cachedAt != 0 && ! stateChanged.load() && plugin->getActiveEditor() == nullptr
+                           && juce::Time::getMillisecondCounter() - cachedAt < 60000;
+        return fresh ? cachedState : getStateBase64();
+    }
 
     int numParams() const override { return plugin->getParameters().size(); }
     juce::String paramName (int i) const override
@@ -100,16 +114,24 @@ public:
     void setParamNorm (int i, float v) override
     {
         auto& ps = plugin->getParameters();
-        if (juce::isPositiveAndBelow (i, ps.size())) ps[i]->setValue (juce::jlimit (0.0f, 1.0f, v));
+        if (juce::isPositiveAndBelow (i, ps.size())) { ps[i]->setValue (juce::jlimit (0.0f, 1.0f, v)); stateChanged.store (true); }     // (automation: setValue tells no listener)
     }
 
     juce::AudioPluginInstance& getPlugin() { return *plugin; }
+    /** The state was set from outside (a project load, a copy): what is cached is no longer it. */
+    void stateWasSet() noexcept { stateChanged.store (true); }
 
 private:
+    // AudioProcessorListener (any thread, the audio thread included: only a flag is set)
+    void audioProcessorParameterChanged (juce::AudioProcessor*, int, float) override { stateChanged.store (true); }
+    void audioProcessorChanged (juce::AudioProcessor*, const ChangeDetails&) override { stateChanged.store (true); }
     std::unique_ptr<juce::AudioPluginInstance> plugin;
     juce::PluginDescription description;
     juce::AudioBuffer<float> work;
     juce::MidiBuffer midi;
+    mutable juce::String cachedState;                                         // message thread
+    mutable juce::uint32 cachedAt = 0;
+    mutable std::atomic<bool> stateChanged { true };
     int chans = 2;
     bool monoOut = false;
     bool prepared = false;
@@ -222,7 +244,10 @@ InsertFactory PluginHost::makeFactory (std::function<double()> sampleRate, std::
         if (p == nullptr) return nullptr;
         juce::MemoryBlock mb;
         if (state.isNotEmpty() && mb.fromBase64Encoding (state))
+        {
             static_cast<Vst3Insert*> (p.get())->getPlugin().setStateInformation (mb.getData(), (int) mb.getSize());
+            static_cast<Vst3Insert*> (p.get())->stateWasSet();
+        }
         return p;
     };
 }

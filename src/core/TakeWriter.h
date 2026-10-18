@@ -87,6 +87,8 @@ public:
     juce::int64 samplesLost() const noexcept   { return lostTotal.load (std::memory_order_relaxed); }
     juce::int64 samplesWritten() const noexcept { return written.load (std::memory_order_relaxed); }
     int bufferSamples() const noexcept         { return fifo.getTotalSize() - 1; }
+    /** How full the buffer is, in percent (100 = the next block would not fit). */
+    float fillPercent() const noexcept         { return 100.0f * (float) fifo.getNumReady() / (float) juce::jmax (1, fifo.getTotalSize() - 1); }
     /** Frames the buffer can take right now (audio thread). */
     int freeSpace() const noexcept             { return fifo.getFreeSpace(); }
     /** Frames the file's header said the last time it was written (0 until the first refresh). */

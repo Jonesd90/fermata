@@ -15,6 +15,10 @@ public:
     virtual int          getLatencySamples() const          { return 0; }
     virtual juce::String getDescription() const  { return {}; }       // for saving
     virtual juce::String getStateBase64() const  { return {}; }       // for saving
+    /** For the automatic saves: the last state fetched, when nothing says the plug-in has changed since (it reported no parameter change,
+        its window is closed, and it is less than a minute old); otherwise a fresh one. Asking a big plug-in (a convolution reverb) for its whole
+        state can take a noticeable moment, and the automatic save asked every one of them every few seconds. */
+    virtual juce::String getStateBase64Quick() const { return getStateBase64(); }
 
     // Automatable parameters (normalised 0..1). setParamNorm may be called from the audio thread (inside the slot's try-lock).
     virtual int          numParams() const                  { return 0; }

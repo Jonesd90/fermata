@@ -29,7 +29,7 @@ public:
     explicit CpuCoresPanel (AppContext& a) : app (a)
     {
         auto& cr = CoreReservation::get();
-        intro.setText ("Keeps some CPU cores for Fermata's audio only (the driver's audio callback, the disk writer and the playback reader), and keeps the rest of Fermata - and, if you tick the last box, "
+        intro.setText ("Keeps some CPU cores for Fermata's audio only (the driver's audio callback and the mixer helpers; the disk writer and the playback reader work seconds ahead and stay on the other cores), and keeps the rest of Fermata - and, if you tick the last box, "
                        "the other programs too - on the remaining cores. That stops ordinary programs from taking the processor away in the middle of a take.\n\n"
                        "It cannot stop Windows' own driver work (DPCs and interrupts from the network, USB, graphics or Wi-Fi) on a core that the driver has chosen for it. "
                        "So pick the QUIETEST cores: 'Find the quietest cores' measures how much interrupt work each core is doing for three seconds and ticks the best ones. "
