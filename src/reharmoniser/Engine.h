@@ -13,8 +13,15 @@ struct Params
 {
     double strength = 1.0, smooth = 0.25, ease = 0.10, hold = 0.25, fadeOut = 0.35, bw = 45.0;
     double sepWindow = 0.20;                  // seconds: the window of the fit that keeps the note apart from the voices beside it
+    // a voice on its own (no other voice found beside it): the band round each overtone is flat and as wide as the note's own wobble, so the room's
+    // ring-out (spread round the OLD pitch) moves with the note instead of being left behind as a ghost; and the correction follows the ring-out after the note
+    bool   lone = true;                       // off = the old narrow Gaussian bands (as 2.56), for comparison
+    double loneMargin = 20.0;                 // cents added either side of the wobble the band must cover
+    double loneMaxHalf = 75.0;                // cents: the band never reaches further than this from the line (a neighbouring semitone is 100 c away)
+    double tailMax = 1.5;                     // seconds: how long after the box the room's ring-out is still corrected (it stops early when the ring-out has died, or when a new sound starts there)
     int nharm = 10;
     bool match = true;
+    bool trendFit = true;                     // the note's pitch (what the wobble is measured from) as a fitted trend; false = the prototype's plain smoothing
     double a4 = 440.0, move = 0.0, snap = 0.0, keep = 0.0;
 };
 
@@ -103,7 +110,7 @@ struct VoiceSet
 VoiceSet detectVoices (const std::vector<Span>& seg, int sr, double tSeg0, double t0, double t1, int midi, double a4, const Vec& visGainDb = {}, const Hooks& hooks = {});
 /** Moves each voice j by offs[j] cents (0 = leave alone), in every channel the same way. */
 Block retuneVoices (const Block& seg, int sr, double tSeg0, double fT, const Vec& ts, const std::vector<Vec>& C, const Vec& offs, double tA, double tB, const VoiceInputs& trk,
-                    const Hooks& hooks = {}, int H = 12, double bwMax = 45.0, double fade = 0.15, double bwLow = 0.8);
+                    const Hooks& hooks = {}, int H = 12, double bwMax = 45.0, double fade = 0.15, double bwLow = 0.8, bool jointFit = true);
 
 // ---------------------------------------------------------------------------------------------------- Ensemble ReCentre (the choir's own A4)
 struct RefPoints { Vec T, D, W; };

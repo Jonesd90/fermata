@@ -374,6 +374,27 @@ CVec lowpassGaussian (const CVec& z, double sr, double bw)
     return out;
 }
 
+CVec lowpassFlat (const CVec& z, double sr, double flatHz, double rollHz)
+{
+    const size_t L = z.size();
+    const size_t nfft = nextFastLen (L + (size_t) (0.3 * sr));
+    CVec f (nfft, cplx (0.0, 0.0));
+    std::copy (z.begin(), z.end(), f.begin());
+    fftComplex (f, false);
+    const double roll = std::max (1.0, rollHz);
+    for (size_t k = 0; k < nfft; ++k)
+    {
+        const double freq = (double) std::min (k, nfft - k) * sr / (double) nfft;
+        double g = 1.0;
+        if (freq > flatHz) { const double u = (freq - flatHz) / roll; g = u >= 1.0 ? 0.0 : 0.5 * (1.0 + std::cos (kPi * u)); }
+        f[k] *= g;
+    }
+    fftComplex (f, true);
+    CVec out (L);
+    for (size_t i = 0; i < L; ++i) out[i] = f[i] * 2.0;
+    return out;
+}
+
 void parallelFor (size_t count, const std::function<void (size_t)>& fn)
 {
     unsigned hw = std::thread::hardware_concurrency();

@@ -49,6 +49,7 @@ int main (int argc, char** argv)
         check ("refined f0 (Hz)", maxDiff (f0r, d64 ("refined_f0")), 0.1);
         check ("partial hint", detectPartial (chans, tk.weights, sr, s0, tr.ts, f0r) == (int) K ("hint") ? 0 : 1, 0);
         Params p; p.smooth = 0.25; p.ease = 0.1; p.strength = 1.0; p.snap = 0.8; p.keep = 0.2; p.move = 0.0; p.a4 = a4;
+        p.lone = false; p.trendFit = false;                  // (the golden results are the Python prototype's narrow bands)
         const Plan pl = planCurve (tr.ts, f0r, p, midi);
         check ("plan off (cents)", maxDiff (pl.off, d64 ("plan_off")), 0.3);
         const Vec pyF0 = d64 ("refined_f0"), pyOff = d64 ("plan_off");
@@ -72,7 +73,7 @@ int main (int argc, char** argv)
             check ("voice offsets", maxDiff (offs, d64 ("voice_offs")), 0.05);
             double s04; Block seg4 = seg (K ("va"), K ("vb"), s04);
             const VoiceInputs trk = voiceInputs (spansOf (seg4), sr, fT);
-            check ("voices retuned (rel)", blockRel (retuneVoices (seg4, sr, s04, fT, sc.ts, C, offs, t0, t1, trk), d64 ("voices_retuned"), nch), 5e-3);
+            check ("voices retuned (rel)", blockRel (retuneVoices (seg4, sr, s04, fT, sc.ts, C, offs, t0, t1, trk, {}, 12, 45.0, 0.15, 0.8, false /* the prototype's per-voice bands */), d64 ("voices_retuned"), nch), 5e-3);
         }
         const RefPoints rp = refPoints (spansOf (data), sr, 0.0);
         const auto gT = d64 ("ref_T");

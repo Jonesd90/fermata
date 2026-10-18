@@ -121,22 +121,77 @@ int main()
     const double ta = m.ts.front() - 0.45, tb = m.ts.back() + p.hold + p.fadeOut + 0.3;
     const size_t i0 = (size_t) std::max (0.0, ta * kSr), i1 = std::min (n, (size_t) (tb * kSr));
     auto cut = [&] (const Block& b) { Block o (b.size()); for (size_t c = 0; c < b.size(); ++c) o[c].assign (b[c].begin() + (long) i0, b[c].begin() + (long) i1); return o; };
-    auto run = [&] (const std::vector<Vec>& nb) { Block done = retuneSegment (cut (mix), kSr, (double) i0 / kSr, m.ts, m.f0, pl.off, p, {}, nb); Block full = mix; for (size_t c = 0; c < full.size(); ++c) std::copy (done[c].begin(), done[c].end(), full[c].begin() + (long) i0); return full; };
-    const Block withNb = run (m.nb), without = run ({});
+    auto run = [&] (const std::vector<Vec>& nb, bool lone) { Params q = p; q.lone = lone; Block done = retuneSegment (cut (mix), kSr, (double) i0 / kSr, m.ts, m.f0, pl.off, q, {}, nb); Block full = mix; for (size_t c = 0; c < full.size(); ++c) std::copy (done[c].begin(), done[c].end(), full[c].begin() + (long) i0); return full; };
+    const Block withNb = run (m.nb, true), without = run ({}, true), withoutNarrow = run ({}, false);
     const size_t a = (size_t) ((t0 + 0.3) * kSr), e = (size_t) ((t1 - 0.3) * kSr);
-    for (int pass = 0; pass < 2; ++pass)
+    for (int pass = 0; pass < 3; ++pass)
     {
-        const Block& out = pass == 0 ? withNb : without;
+        const Block& out = pass == 0 ? withNb : pass == 1 ? without : withoutNarrow;
         const double landing = db (lineEnergy (out, fTnew, a, e) / lineEnergy (ideal, fTnew, a, e));
         const double ghost = db (lineEnergy (out, fT, a, e) / lineEnergy (mix, fT, a, e));
         const double nbMove = db (lineEnergy (out, fN, a, e) / lineEnergy (mix, fN, a, e));
-        std::printf ("  %s: landing %+.2f dB, old pitch left %+.1f dB, neighbour %+.2f dB\n", pass == 0 ? "narrow band, neighbour peeled" : "old wide band (no neighbour lines)", landing, ghost, nbMove);
+        std::printf ("  %s: landing %+.2f dB, old pitch left %+.1f dB, neighbour %+.2f dB\n", pass == 0 ? "neighbour found: fitted together" : pass == 1 ? "neighbour missed, lone bands (as wide as the wobble)" : "neighbour missed, narrow Gaussian bands (2.56)", landing, ghost, nbMove);
         if (pass == 0)
         {
             expect ("retuned note lands at the new pitch (level error)", std::abs (landing) < 1.0, landing, "dB");
             expect ("the old pitch is gone from it", ghost < -12.0, ghost, "dB");
             expect ("the voice beside it is left as it was", std::abs (nbMove) < 0.5, nbMove, "dB");
         }
+    }
+
+    // ------------------------------------------------------------------ a voice on its own in a room: the ring-out must move with it, nothing left at the old pitch
+    {
+        // the room: what the voice sang up to 0.4 s ago rings on (a hundred delayed, decaying copies), so the room's sound is spread over the whole vibrato
+        const size_t n2 = (size_t) (3.4 * kSr);
+        const Voice lone { 30.0, 22.0, 5.8, 0.2, 1.0 };                  // 30 cents sharp, a big vibrato
+        const Vec cL = voiceCents (lone, n2), cLnew = voiceCents (lone, n2, -30.0);
+        const Vec fL = voiceHz (cL, fRef), fLnew = voiceHz (cLnew, fRef);
+        Block dry (3, std::vector<float> (n2, 0.0f)), dryNew (3, std::vector<float> (n2, 0.0f));
+        addVoice (dry, fL, lone.level, cg); addVoice (dryNew, fLnew, lone.level, cg);
+        auto withRoom = [&] (const Block& d)
+        {
+            Block o = d; Lcg r;
+            for (size_t c = 0; c < o.size(); ++c)
+                for (int k = 0; k < 100; ++k)
+                {
+                    const size_t delay = (size_t) ((0.01 + 0.39 * (r.next() + 0.5)) * kSr); const double gain = 0.12 * (r.next() + 0.5) * std::exp (-3.0 * (double) delay / (0.4 * kSr));
+                    for (size_t i = delay; i < n2; ++i) o[c][i] += (float) (gain * d[c][i - delay]);
+                }
+            for (auto& ch : o) for (auto& v : ch) v += (float) (0.003 * r.next());
+            return o;
+        };
+        const Block room = withRoom (dry), roomIdeal = withRoom (dryNew);
+        const double lo2 = fRef * std::pow (2.0, -40.0 / 1200.0), hi2 = fRef * std::pow (2.0, 90.0 / 1200.0);
+        const Tracking tk2 = trackingInputs (spansOf (room), kSr, lo2, hi2);
+        std::vector<Span> ch2; for (int c : tk2.channels) ch2.push_back ({ room[(size_t) c].data(), room[(size_t) c].size() });
+        const NoteMeasure m2 = measureNote (ch2, tk2.weights, kSr, 0.0, t0, t1, lo2, hi2);
+        expect ("a voice on its own: no other voice is found beside it", m2.nb.empty(), (double) m2.nb.size());
+        Params p2; p2.a4 = 440.0; p2.move = -30.0; p2.snap = 0.0; p2.ease = 0.0;
+        const Plan pl2 = planCurve (m2.ts, m2.f0, p2, 74);
+        const double ta2 = m2.ts.front() - 0.45, tb2 = m2.ts.back() + p2.hold + p2.fadeOut + p2.tailMax + 0.3;
+        const size_t j0 = (size_t) std::max (0.0, ta2 * kSr), j1 = std::min (n2, (size_t) (tb2 * kSr));
+        auto run2 = [&] (bool loneBands)
+        {
+            Params q = p2; q.lone = loneBands;
+            Block seg (room.size()); for (size_t c = 0; c < seg.size(); ++c) seg[c].assign (room[c].begin() + (long) j0, room[c].begin() + (long) j1);
+            Block done = retuneSegment (seg, kSr, (double) j0 / kSr, m2.ts, m2.f0, pl2.off, q);
+            Block full = room; for (size_t c = 0; c < full.size(); ++c) std::copy (done[c].begin(), done[c].end(), full[c].begin() + (long) j0); return full;
+        };
+        const Block wide = run2 (true), narrow = run2 (false);
+        const size_t a2 = (size_t) ((t0 + 0.3) * kSr), e2 = (size_t) ((t1 - 0.3) * kSr);
+        double ghostWide = 0, ghostNarrow = 0;
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            const Block& out = pass == 0 ? wide : narrow;
+            const double landing = db (lineEnergy (out, fLnew, a2, e2) / lineEnergy (roomIdeal, fLnew, a2, e2));
+            const double ghost = db (lineEnergy (out, fL, a2, e2) / lineEnergy (room, fL, a2, e2));
+            // the room's sound round the old pitch (+-45 cents, all of it) against what an in-tune voice would have left there
+            const double spread = db (lineEnergy (out, fL, a2, e2, 0.045 * fRef) / lineEnergy (roomIdeal, fL, a2, e2, 0.045 * fRef));
+            std::printf ("  %s: landing %+.2f dB, old pitch left %+.1f dB, room round the old pitch vs ideal %+.1f dB\n", pass == 0 ? "flat bands as wide as the wobble" : "narrow Gaussian bands (2.56)", landing, ghost, spread);
+            if (pass == 0) { ghostWide = ghost; expect ("lone voice: lands at the new pitch (level error)", std::abs (landing) < 1.5, landing, "dB"); expect ("lone voice: the old pitch is gone", ghost < -18.0, ghost, "dB"); expect ("lone voice: the room round the old pitch is as an in-tune voice leaves it", std::abs (spread) < 3.0, spread, "dB"); }
+            else ghostNarrow = ghost;
+        }
+        expect ("lone voice: the wide bands leave far less of the old pitch than the narrow ones", ghostWide < ghostNarrow - 6.0, ghostWide - ghostNarrow, "dB");
     }
     std::printf (failures == 0 ? "ALL OK\n" : "%d FAILED\n", failures);
     return failures == 0 ? 0 : 1;

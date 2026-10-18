@@ -74,6 +74,9 @@ std::vector<int> findPeaks (const Vec& x, double prominence = -1.0, double heigh
 
 /** The zero-phase Gaussian low-pass of the prototype (_lowpass): z is filtered with a Gaussian of full width ~bw Hz. */
 CVec lowpassGaussian (const CVec& z, double sr, double bw);
+/** A zero-phase FLAT low-pass: everything within +-flatHz passes as it is, then a cosine roll-off to +-(flatHz + rollHz). (lowpassGaussian's skirts let a
+    third of a partial that sits a little off the line through; this takes the whole of it.) */
+CVec lowpassFlat (const CVec& z, double sr, double flatHz, double rollHz);
 
 /** Runs fn (0) .. fn (count - 1), on several threads when there is more than one (the jobs must not touch each other's data). */
 void parallelFor (size_t count, const std::function<void (size_t)>& fn);

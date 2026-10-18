@@ -65,6 +65,7 @@ int main (int argc, char** argv)
     check ("partial hint", detectPartial (chans, tk.weights, sr, s0, tr.ts, f0r) == 1 ? 0 : 1, 0);
 
     Params p; p.smooth = 0.25; p.ease = 0.10; p.strength = 1.0; p.snap = 0.8; p.keep = 0.2; p.move = 0.0;
+    p.lone = false; p.trendFit = false;                      // (the golden results are the Python prototype's: its narrow bands; the lone-voice bands of 2.63 are tested in reharmoniser_voices_test)
     const Plan pl = planCurve (tr.ts, f0r, p, 57);
     check ("plan c (cents)", maxAbsDiff (pl.c, d64 ("plan_c.f64")), 0.05);
     check ("plan wob", maxAbsDiff (pl.wob, d64 ("plan_wob.f64")), 0.05);
@@ -104,7 +105,7 @@ int main (int argc, char** argv)
     check ("voice offsets", maxAbsDiff (offs, d64 ("voice_offs.f64")), 0.05);
     double s04; Block seg4 = seg (std::max (0.0, t0 - 0.8), std::min (dur, t1 + 0.8), s04);
     const VoiceInputs trk = voiceInputs (spansOf (seg4), sr, fT);
-    const Block vr = retuneVoices (seg4, sr, s04, fT, sc.ts, C, offs, t0, t1, trk);
+    const Block vr = retuneVoices (seg4, sr, s04, fT, sc.ts, C, offs, t0, t1, trk, {}, 12, 45.0, 0.15, 0.8, false /* the prototype's per-voice bands */);
     check ("voices retuned (relative)", blockRel (vr, d64 ("voices_retuned.f64"), nch), 5e-3);
 
     // brush

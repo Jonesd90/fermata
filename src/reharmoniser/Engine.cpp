@@ -739,7 +739,30 @@ Plan planCurve (const Vec& ts, const Vec& f0, const Params& p, int midi, const V
     for (size_t i = 0; i < n; ++i) pl.c[i] = 1200.0 * std::log2 (f0[i] / pl.refHz);
     double hop = 0.02;
     if (ts.size() > 1) { Vec d (ts.size() - 1); for (size_t i = 0; i + 1 < ts.size(); ++i) d[i] = ts[i + 1] - ts[i]; hop = median (d); }
-    const Vec base = gaussianFilter1d (pl.c, std::max (0.5, p.smooth / hop), Edge::Nearest);
+    Vec base;
+    if (p.trendFit)
+    {
+        // the note's pitch (its slow drift): a straight line fitted through the points near each moment (Gaussian weights, p.smooth wide), which follows a
+        // rising or falling note right to its ends. (A plain smoothing lagged at the ends and was pulled down by the scoop a note often starts with, so
+        // the "wobble" it left had an offset in it, and "Keep wobble" then kept part of that offset: the note came out sharp or flat.)
+        // The first moment of the box (the ease-in) hardly counts: that is where the scoop is.
+        base.resize (n);
+        const double sig = std::max (hop, p.smooth);
+        for (size_t i = 0; i < n; ++i)
+        {
+            double sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+            for (size_t j = 0; j < n; ++j)
+            {
+                const double dx = ts[j] - ts[i];
+                double w = std::exp (-0.5 * (dx / sig) * (dx / sig));
+                if (p.ease > 0 && ts[j] - ts[0] < p.ease) w *= 0.05;
+                sw += w; sx += w * dx; sy += w * pl.c[j]; sxx += w * dx * dx; sxy += w * dx * pl.c[j];
+            }
+            const double det = sw * sxx - sx * sx;
+            base[i] = std::abs (det) > 1e-12 ? (sxx * sy - sx * sxy) / det : (sw > 0 ? sy / sw : pl.c[i]);     // the fitted line's value at ts[i]
+        }
+    }
+    else base = gaussianFilter1d (pl.c, std::max (0.5, p.smooth / hop), Edge::Nearest);
     pl.wob.resize (n); pl.off.resize (n); pl.planned.resize (n);
     const bool hasPull = pull.size() == ts.size() && ! pull.empty();
     const double s = clip (p.snap, 0, 1);
@@ -910,6 +933,145 @@ bool activeRange (const Vec& w, size_t& lo, size_t& hi)
 Vec timeAxis (size_t n, double tSeg0, double sr) { Vec t (n); for (size_t i = 0; i < n; ++i) t[i] = tSeg0 + (double) i / sr; return t; }
 } // namespace
 
+namespace
+{
+/** A voice on its own: how far (cents) the note's line wanders from where it was over the last 0.6 s (the room's ring-out lags the voice by that much),
+    so the band round each overtone can hold the ring-out too. One figure for the whole note (the 95th percentile). */
+double loneSpreadCents (const Vec& ts, const Vec& f0)
+{
+    const size_t n = f0.size();
+    if (n < 2) return 0.0;
+    Vec c (n); for (size_t i = 0; i < n; ++i) c[i] = 1200.0 * std::log2 (std::max (1.0, f0[i]));
+    Vec spread;
+    for (size_t i = 0; i < n; ++i)
+    {
+        if (ts[i] - ts.front() < 0.2) continue;                                       // (the first moment of a note is often a scoop: not its wobble)
+        double sp = 0;
+        for (size_t j = i; j-- > 0 && ts[i] - ts[j] <= 0.6;) if (ts[j] - ts.front() >= 0.2) sp = std::max (sp, std::abs (c[j] - c[i]));
+        spread.push_back (sp);
+    }
+    return spread.empty() ? 0.0 : percentile (spread, 95.0);
+}
+
+/** A voice on its own, before its band is made as wide as its wobble: is there another sound close by that the band would catch? The sound round the note's
+    line is looked at (its overtones 1..4, each window of 0.25 s, all channels, in cents from the line): the note and its room make one hump round 0; another
+    voice makes a second hump further out. The band is then kept short of that hump. Returns the half-width (cents) the band may have, at most 'wantCents'. */
+double loneBandLimit (const std::vector<Vec>& x, int sr, const Vec& fTrack, size_t lo, size_t hi, double wantCents, double ownSpread)
+{
+    const size_t m = hi - lo, nch = x.size();
+    if (m < (size_t) (0.3 * sr)) return wantCents;
+    const Vec fSeg (fTrack.begin() + (long) lo, fTrack.begin() + (long) hi);
+    const Vec phi = cumPhase (fSeg, sr);
+    const double fmean = median (fSeg);
+    const double span = 160.0;                                                         // cents either side looked at
+    const int nb = 161; Vec prof (nb, 0.0);                                             // 2 c per bin
+    const size_t W = (size_t) (0.25 * sr), hop = W / 2;
+    const Vec win = hanning (W);
+    const size_t nfft = nextFastLen (W * 4);
+    CVec buf (nfft);
+    for (int h = 1; h <= 4; ++h)
+    {
+        if ((double) h * fmean * std::pow (2.0, span / 1200.0) > 0.45 * sr) break;
+        const CVec base = phasor (phi, h, -1.0);
+        for (size_t c = 0; c < nch; ++c)
+            for (size_t st = 0; st + W <= m; st += hop)
+            {
+                std::fill (buf.begin(), buf.end(), cplx (0, 0));
+                for (size_t k = 0; k < W; ++k) buf[k] = x[c][lo + st + k] * base[st + k] * win[k];
+                fftComplex (buf, false);
+                for (int b = 0; b < nb; ++b)
+                {
+                    const double cents = -span + 2.0 * b;
+                    const double offHz = (double) h * fmean * (std::pow (2.0, cents / 1200.0) - 1.0);
+                    long k = (long) std::llround (offHz / sr * (double) nfft); k = ((k % (long) nfft) + (long) nfft) % (long) nfft;
+                    prof[(size_t) b] += std::norm (buf[(size_t) k]) / (double) h;          // (the lower overtones count most)
+                }
+            }
+    }
+    const double own = maxOf (prof); if (own <= 0) return wantCents;
+    const int centre = nb / 2;
+    // out from the line on each side, the sound should only fall away. Where it turns UP again (by 2.5 dB over what it had fallen to) another sound
+    // starts: the band stops before it. (The note's own hump is smeared by its vibrato, so this is read on the smoothed profile.)
+    Vec sm (nb); for (int b = 0; b < nb; ++b) { double acc = 0; int cnt = 0; for (int q = std::max (0, b - 2); q <= std::min (nb - 1, b + 2); ++q) { acc += prof[(size_t) q]; ++cnt; } sm[(size_t) b] = acc / cnt; }
+    double limit = wantCents;
+    for (int side = -1; side <= 1; side += 2)
+    {
+        double runMin = sm[(size_t) centre]; int minAt = centre;
+        for (int b = centre + side; b > 0 && b < nb - 1 && std::abs (-span + 2.0 * b) <= wantCents + 30.0; b += side)
+        {
+            if (sm[(size_t) b] < runMin) { runMin = sm[(size_t) b]; minAt = b; }
+            else if (sm[(size_t) b] > runMin * 1.78 && sm[(size_t) b] > 0.05 * own) { limit = std::min (limit, std::abs (-span + 2.0 * minAt) - 4.0); break; }
+        }
+    }
+    // and beyond the note's own hump it must be quiet (under -15 dB): where other sound lies there, whatever it is, the band stays close to the hump
+    for (int side = -1; side <= 1; side += 2)
+    {
+        double loudest = 0;
+        for (int b = centre + side * (int) std::ceil ((ownSpread + 15.0) / 2.0); b >= 0 && b < nb && std::abs (-span + 2.0 * b) <= ownSpread + 60.0; b += side) loudest = std::max (loudest, sm[(size_t) b]);
+        if (loudest > 0.03 * own) limit = std::min (limit, ownSpread + 5.0);
+    }
+    return std::max (limit, 15.0);
+}
+
+/** Where the correction of a voice on its own should stop: the room's ring-out after the box is followed (the sound round the last pitch, its overtones 1..3,
+    on all channels) until it has died away (40 dB down), or something new starts there (the band's level turns up again), or tailMax. Returns the time the
+    fade-out should END (at least tEnd + hold + fadeOut). */
+double ringOutEnd (const std::vector<Vec>& x, int sr, double t0, const Vec& fTrack, double tEnd, double hold, double& fadeOut, double tailMax, double flat1, double roll1)
+{
+    const size_t m = x[0].size(), nch = x.size();
+    const double tLast = t0 + (double) (m - 1) / sr;
+    const double least = tEnd + hold + fadeOut;
+    if (tailMax <= 0.0 || least >= tLast) return std::min (least, tLast);
+    const Vec phi = cumPhase (fTrack, sr);
+    Vec env (m, 0.0), all (m, 0.0);
+    for (size_t c = 0; c < nch; ++c) for (size_t k = 0; k < m; ++k) all[k] += x[c][k] * x[c][k];
+    for (int h = 1; h <= 3; ++h)
+    {
+        const CVec base = phasor (phi, h, -1.0);
+        for (size_t c = 0; c < nch; ++c)
+        {
+            CVec z (m); for (size_t k = 0; k < m; ++k) z[k] = x[c][k] * base[k];
+            const CVec a = lowpassFlat (z, sr, flat1 * h, roll1 * h);
+            for (size_t k = 0; k < m; ++k) env[k] += std::norm (a[k]);
+        }
+    }
+    auto smooth = [&] (Vec& v)
+    {   // smoothed over 60 ms (a running average, twice: a gaussianFilter1d this wide would take seconds)
+        const size_t half = (size_t) (0.03 * sr);
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            Vec cs (m + 1, 0.0); for (size_t k = 0; k < m; ++k) cs[k + 1] = cs[k] + v[k];
+            for (size_t k = 0; k < m; ++k) { const size_t a = k > half ? k - half : 0, b = std::min (m, k + half + 1); v[k] = (cs[b] - cs[a]) / (double) (b - a); }
+        }
+    };
+    smooth (env); smooth (all);
+    auto at = [&] (double t) { return (size_t) std::min<double> ((double) m - 1, std::max (0.0, (t - t0) * sr)); };
+    double e0 = 0.0, a0 = 0.0; for (size_t k = at (tEnd - 0.1); k <= at (tEnd); ++k) { e0 = std::max (e0, env[k]); a0 = std::max (a0, all[k]); }
+    if (e0 <= 0.0) return least;
+    // the singer moving straight on to the next note (legato): the sound leaves this pitch while the voice goes on. Then there is no ring-out to follow,
+    // and holding the correction would catch the glide to the next note: the correction fades out as the voice leaves, over the box's last moment instead
+    const double share0 = e0 / std::max (a0, 1e-30);                                         // how much of the sound was on this pitch at the end of the box
+    for (size_t k = at (tEnd + 0.03); k <= at (tEnd + 0.3) && k < m; ++k)
+        if (all[k] > 0.1 * a0 && env[k] < 0.2 * share0 * all[k])                               // the voice goes on (within 10 dB), but no longer on this pitch
+        {
+            const double tau = t0 + (double) k / sr - tEnd;
+            fadeOut = std::max (0.04, tau);
+            return tEnd + tau;
+        }
+    double runMin = e0, tStop = std::min (tLast, tEnd + tailMax);
+    for (size_t k = at (tEnd + hold); k < m; ++k)
+    {
+        const double t = t0 + (double) k / sr;
+        if (t >= tEnd + tailMax) { tStop = t; break; }
+        runMin = std::min (runMin, env[k]);
+        if (env[k] < e0 * 1e-4) { tStop = t; break; }                                         // the ring-out has died away
+        if (env[k] > 2.5 * runMin && env[k] > e0 * 1e-3) { tStop = t; break; }                // something new has started on this pitch: stop before it
+        if (env[k] > e0 * std::pow (10.0, -0.8 * (t - tEnd - hold))) { tStop = t; break; }   // not dying away (at least 8 dB a second): other voices go on there, not a ring-out
+    }
+    return std::max (least, std::min (tLast, tStop));
+}
+} // namespace
+
 Block retuneSegment (const Block& seg, int sr, double tSeg0, const Vec& ts, const Vec& f0, const Vec& off, const Params& p, const Hooks& hooks, const std::vector<Vec>& nb)
 {
     const size_t nch = seg.size(), n = seg[0].size();
@@ -917,11 +1079,42 @@ Block retuneSegment (const Block& seg, int sr, double tSeg0, const Vec& ts, cons
     const Vec f0t = interp (t, ts, f0), offt = interp (t, ts, off);
     Vec f0n (n);
     for (size_t i = 0; i < n; ++i) f0n[i] = f0t[i] * std::pow (2.0, offt[i] / 1200.0);
-    const double fi = 0.15, fo = p.fadeOut, hold = p.hold;
+    const double fi = 0.15, hold = p.hold;
+    double fo = p.fadeOut;
+    const bool lone = p.lone && nb.empty();
+    // a voice on its own: flat bands as wide as the note's own wobble (plus a margin), so the room's ring-out moves with the note
+    const double f0mean = median (f0), f0min = minOf (f0);
+    const double ownSpread = lone ? loneSpreadCents (ts, f0) : 0.0;
+    double halfCents = lone ? clip (ownSpread + p.loneMargin, 35.0, p.loneMaxHalf) : 0.0;
+    if (lone)
+    {   // another sound close by that the finder did not take for a voice (not steady enough): the band stops short of it
+        size_t lo0, hi0; Vec w0 (n, 0.0);
+        const double from = ts.back() - ts.front() > 0.6 ? ts.front() + 0.2 : ts.front();        // (not the scoop at the start, when the note is long enough to spare it)
+        for (size_t i = 0; i < n; ++i) if (t[i] >= from && t[i] <= ts.back()) w0[i] = 1.0;
+        if (activeRange (w0, lo0, hi0))
+        {
+            std::vector<Vec> xs (nch, Vec (n)); for (size_t c = 0; c < nch; ++c) for (size_t k = 0; k < n; ++k) xs[c][k] = (double) seg[c][k];
+            halfCents = loneBandLimit (xs, sr, f0t, lo0, hi0, halfCents, ownSpread);
+        }
+    }
+    double flat1 = lone ? f0mean * (std::pow (2.0, halfCents / 1200.0) - 1.0) : 0.0;
+    double roll1 = lone ? std::max (4.0, 0.35 * flat1) : 0.0;
+    if (lone && flat1 + roll1 > 0.45 * f0min) { const double k = 0.45 * f0min / (flat1 + roll1); flat1 *= k; roll1 *= k; }     // never reaching the next overtone
+    // the window of the correction: a fade in before the box, the box, a hold after it, then the fade out (for a voice on its own: after the ring-out)
+    double tFadeEnd = ts.back() + hold + fo;
+    std::vector<Vec> xAll;
+    if (lone && p.tailMax > 0.0)
+    {
+        hooks.report ("Following the ring-out", 0.05);
+        xAll.assign (nch, Vec (n));
+        for (size_t c = 0; c < nch; ++c) for (size_t k = 0; k < n; ++k) xAll[c][k] = (double) seg[c][k];
+        tFadeEnd = ringOutEnd (xAll, sr, tSeg0, f0t, ts.back(), hold, fo, p.tailMax, flat1, roll1);       // (fo may come back shorter: a legato note)
+        xAll.clear();
+    }
     Vec w (n);
     for (size_t i = 0; i < n; ++i)
     {
-        double v = clip ((t[i] - (ts.front() - fi)) / fi, 0, 1) * clip (((ts.back() + hold + fo) - t[i]) / fo, 0, 1);
+        double v = clip ((t[i] - (ts.front() - fi)) / fi, 0, 1) * clip ((tFadeEnd - t[i]) / fo, 0, 1);
         const double s = std::sin (0.5 * kPi * v); w[i] = s * s;
     }
     size_t lo, hi;
@@ -956,7 +1149,7 @@ Block retuneSegment (const Block& seg, int sr, double tSeg0, const Vec& ts, cons
         {
             CVec z (m);
             for (size_t k = 0; k < m; ++k) z[k] = x[c][k] * base[k];
-            const CVec a = lowpassGaussian (z, sr, bw);
+            const CVec a = lone ? lowpassFlat (z, sr, flat1 * h, roll1 * h) : lowpassGaussian (z, sr, bw);
             for (size_t k = 0; k < m; ++k)
             {
                 const cplx ak = a[k] * w[lo + k];
@@ -1280,7 +1473,7 @@ VoiceSet detectVoices (const std::vector<Span>& seg, int sr, double tSeg0, doubl
 }
 
 Block retuneVoices (const Block& seg, int sr, double tSeg0, double fT, const Vec& ts, const std::vector<Vec>& C, const Vec& offs, double tA, double tB, const VoiceInputs& trk,
-                    const Hooks& hooks, int H, double bwMax, double fade, double bwLow)
+                    const Hooks& hooks, int H, double bwMax, double fade, double bwLow, bool jointFit)
 {
     const size_t nch = seg.size(), n = seg[0].size();
     const Vec t = timeAxis (n, tSeg0, sr);
@@ -1294,6 +1487,29 @@ Block retuneVoices (const Block& seg, int sr, double tSeg0, double fT, const Vec
     const Vec tt (t.begin() + (long) lo, t.begin() + (long) hi);
     std::vector<size_t> todo;
     for (size_t j = 0; j < C.size(); ++j) if (std::abs (offs[j]) >= 0.5) todo.push_back (j);
+    if (jointFit && ! todo.empty())
+    {
+        // every voice's line (refined where it can be), then one fit of ALL the voices together, window by window: the moved voices' own sound is taken
+        // out and put back at the new pitch, the others' is left exactly as it was (the same fit the note correction uses when voices are found beside the note).
+        // A narrow band per voice (the old way) could not hold a voice's vibrato without catching the voice beside it.
+        std::vector<Vec> lines (C.size()), newLines (C.size());
+        for (size_t j = 0; j < C.size(); ++j)
+        {
+            hooks.check();
+            hooks.report ("Following the voices", 0.05 + 0.25 * (double) j / (double) C.size());
+            Vec fj, ttj, f0 (len);
+            if (! refineVoice (trk, tSeg0, fT, ts, C, j, tA, tB, fj, ttj)) { const Vec cj = interp (tt, ts, C[j]); for (size_t k = 0; k < len; ++k) f0[k] = fT * std::pow (2.0, cj[k] / 1200.0); }
+            else f0 = interp (tt, ttj, fj);
+            lines[j] = f0;
+            if (std::abs (offs[j]) >= 0.5) { newLines[j].resize (len); for (size_t k = 0; k < len; ++k) newLines[j][k] = f0[k] * std::pow (2.0, offs[j] / 1200.0); }
+        }
+        std::vector<const Vec*> fp, fn;
+        for (size_t j = 0; j < C.size(); ++j) { fp.push_back (&lines[j]); fn.push_back (newLines[j].empty() ? nullptr : &newLines[j]); }
+        hooks.report ("Moving the voices", 0.3);
+        separateAndMove (x, sr, fp, fn, H, 0.2, rem, add, hooks);
+        for (size_t c = 0; c < nch; ++c) for (size_t k = 0; k < len; ++k) { rem[c][k] *= w[lo + k]; add[c][k] *= w[lo + k]; }
+        todo.clear();
+    }
     for (size_t nd = 0; nd < todo.size(); ++nd)
     {
         hooks.check();

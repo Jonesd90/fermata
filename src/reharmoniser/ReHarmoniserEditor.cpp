@@ -287,13 +287,17 @@ public:
     void rebuildImage (juce::Rectangle<int> pl);
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
     void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
     ReHarmoniserEditor& ed; juce::Image image; std::array<juce::Colour, 256> lut;
-    enum class Mode { none, box, keys, ruler, brush } mode = Mode::none;
+    enum class Mode { none, box, edge, keys, ruler, brush } mode = Mode::none;
     juce::Point<int> downPos, lastStroke; double anchorT = 0, anchorM = 0, panM0 = 0, panM1 = 0; bool moved = false;
+    /** The box's edge handles: which edge(s) of the note box the mouse is on (bit 1 left, 2 right, 4 top, 8 bottom), or 0. */
+    int edgeAt (juce::Point<int> p) const;
+    int edgeDrag = 0;                             // the edge(s) being dragged
 };
 
 void ReHarmoniserEditor::View::rebuildImage (juce::Rectangle<int> pl)
@@ -384,6 +388,16 @@ void ReHarmoniserEditor::View::paint (juce::Graphics& g)
             const juce::Rectangle<int> r (x0, y0, juce::jmax (2, x1 - x0), juce::jmax (2, y1 - y0));
             g.setColour (cAmber.withAlpha (0.12f)); g.fillRect (r);
             g.setColour (cAmber); g.drawRect (r, 1);
+            if (ed.cand.has && mode != Mode::box)                 // the handles: drag a side to make the box longer / shorter (or taller), a corner for both
+            {
+                const int hw = 5;
+                g.setColour (cAmber.withAlpha (0.9f));
+                g.fillRect (r.getX() - hw / 2, r.getCentreY() - 7, hw, 14); g.fillRect (r.getRight() - hw / 2 - 1, r.getCentreY() - 7, hw, 14);
+                g.fillRect (r.getCentreX() - 7, r.getY() - hw / 2, 14, hw); g.fillRect (r.getCentreX() - 7, r.getBottom() - hw / 2 - 1, 14, hw);
+                g.setColour (juce::Colours::black.withAlpha (0.6f));
+                g.drawRect (r.getX() - hw / 2, r.getCentreY() - 7, hw, 14, 1); g.drawRect (r.getRight() - hw / 2 - 1, r.getCentreY() - 7, hw, 14, 1);
+                g.drawRect (r.getCentreX() - 7, r.getY() - hw / 2, 14, hw, 1); g.drawRect (r.getCentreX() - 7, r.getBottom() - hw / 2 - 1, 14, hw, 1);
+            }
         }
         // the voices found on the note
         if (ed.vcand.has)
@@ -479,7 +493,31 @@ void ReHarmoniserEditor::View::mouseDown (const juce::MouseEvent& e)
         ed.strokePoint (juce::jlimit (0.0, ed.dur, xT (e.x)), midiHz (yM (e.y), ed.a4));
         return;
     }
+    if (hasSel && ed.cand.has && ! ed.brushMode())
+        if (const int edge = edgeAt (e.getPosition()); edge != 0)
+        {   // a side (or corner) of the box: drag it to lengthen / shorten the selection without drawing it again
+            mode = Mode::edge; edgeDrag = edge;
+            if (sT0 > sT1) std::swap (sT0, sT1);
+            if (sM0 > sM1) std::swap (sM0, sM1);
+            return;
+        }
     mode = Mode::box; anchorT = xT (e.x); anchorM = yM (e.y);
+}
+
+int ReHarmoniserEditor::View::edgeAt (juce::Point<int> p) const
+{
+    if (! hasSel) return 0;
+    const int x0 = tX (juce::jmin (sT0, sT1)), x1 = tX (juce::jmax (sT0, sT1)), y0 = mY (juce::jmax (sM0, sM1)), y1 = mY (juce::jmin (sM0, sM1));
+    const int grab = 6;
+    const bool inY = p.y >= y0 - grab && p.y <= y1 + grab, inX = p.x >= x0 - grab && p.x <= x1 + grab;
+    int edge = 0;
+    if (inY && std::abs (p.x - x0) <= grab) edge |= 1;
+    if (inY && std::abs (p.x - x1) <= grab) edge |= 2;
+    if (inX && std::abs (p.y - y0) <= grab) edge |= 4;
+    if (inX && std::abs (p.y - y1) <= grab) edge |= 8;
+    if ((edge & 3) == 3) edge &= ~(x1 - p.x < p.x - x0 ? 1 : 2);     // a very narrow box: the nearer side
+    if ((edge & 12) == 12) edge &= ~(y1 - p.y < p.y - y0 ? 4 : 8);
+    return edge;
 }
 
 void ReHarmoniserEditor::View::mouseDrag (const juce::MouseEvent& e)
@@ -499,6 +537,24 @@ void ReHarmoniserEditor::View::mouseDrag (const juce::MouseEvent& e)
     {
         hasSel = true; sT0 = anchorT; sT1 = juce::jlimit (0.0, ed.dur, xT (e.x)); sM0 = anchorM; sM1 = yM (e.y); repaint();
     }
+    else if (mode == Mode::edge && moved)
+    {
+        const double t = juce::jlimit (0.0, ed.dur, xT (e.x)), mm = yM (e.y);
+        if (edgeDrag & 1) sT0 = juce::jmin (t, sT1 - 0.15);
+        if (edgeDrag & 2) sT1 = juce::jmax (t, sT0 + 0.15);
+        if (edgeDrag & 4) sM1 = juce::jmax (mm, sM0 + 0.2);
+        if (edgeDrag & 8) sM0 = juce::jmin (mm, sM1 - 0.2);
+        repaint();
+    }
+}
+
+void ReHarmoniserEditor::View::mouseMove (const juce::MouseEvent& e)
+{
+    if (mode != Mode::none) return;
+    int cur = 0;
+    if (hasSel && ed.cand.has && ! ed.brushMode()) cur = edgeAt (e.getPosition());
+    setMouseCursor (cur == 0 ? (e.x < kKeys && e.y >= kRuler ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor)
+                    : (cur & 3) && (cur & 12) ? juce::MouseCursor::CrosshairCursor : (cur & 3) ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::UpDownResizeCursor);
 }
 
 void ReHarmoniserEditor::View::mouseUp (const juce::MouseEvent& e)
@@ -510,11 +566,11 @@ void ReHarmoniserEditor::View::mouseUp (const juce::MouseEvent& e)
     }
     else if (mode == Mode::brush) ed.strokeEnd();
     else if (mode == Mode::box && ! moved && e.x >= kKeys) { ed.cueT = juce::jlimit (0.0, ed.dur, xT (e.x)); repaint(); }       // a click puts the playhead there
-    else if (mode == Mode::box && moved && hasSel)
+    else if ((mode == Mode::box || mode == Mode::edge) && moved && hasSel)
     {
         ed.selectBox (juce::jmin (sT0, sT1), juce::jmax (sT0, sT1), midiHz (juce::jmin (sM0, sM1), ed.a4), midiHz (juce::jmax (sM0, sM1), ed.a4));
     }
-    mode = Mode::none;
+    mode = Mode::none; edgeDrag = 0;
 }
 
 void ReHarmoniserEditor::View::mouseDoubleClick (const juce::MouseEvent& e)
@@ -1008,7 +1064,7 @@ void ReHarmoniserEditor::measure()
         cand.has = true; inHistory = true; syncSliders(); inHistory = false; hist.clear(); hist.push_back ({ params }); histPos = 0;
         replan(); view->setSelection (cand.t0, cand.t1, midiOf (cand.fLo * partial, a4), midiOf (cand.fHi * partial, a4));
         view->showNote (cand.t0, cand.t1, cand.f0.empty() ? cand.fLo : median (cand.f0));
-        auditionStale = true; openSection (1); setStatus (juce::String ("Measured") + (res->nb.empty() ? "" : " (" + juce::String ((int) res->nb.size()) + (res->nb.size() == 1 ? " other voice" : " other voices") + " found beside it, they will be left as they are)") + ". Change Move whole note or Snap to note, then Audition (it gets ready; press Space to listen) and Apply correction.");
+        auditionStale = true; openSection (1); setStatus (juce::String ("Measured") + (res->nb.empty() ? " (no other voice beside it: the whole note moves, its room's ring-out with it)" : " (" + juce::String ((int) res->nb.size()) + (res->nb.size() == 1 ? " other voice" : " other voices") + " found beside it, they will be left as they are)") + ". Change Move whole note or Snap to note, then Audition (it gets ready; press Space to listen) and Apply correction.");
     });
 }
 
@@ -1034,7 +1090,9 @@ void ReHarmoniserEditor::updateInfo()
     Vec wob = cand.plan.wob; double wmax = 0; for (double v : wob) wmax = juce::jmax (wmax, std::abs (v));
     juce::String t = noteName (cand.midi) + "  " + juce::String (midiHz (cand.midi, a4), 1) + " Hz   (" + fmtTime (cand.t0) + " - " + fmtTime (cand.t1) + ")\n"
                    + "Sung " + juce::String (med, 1) + " c   Wobble +/-" + juce::String (wmax, 0) + " c\n"
-                   + "Planned " + juce::String (after, 1) + " c   (A4 " + juce::String (a4, 1) + " Hz)";
+                   + "Planned " + juce::String (after, 1) + " c   (A4 " + juce::String (a4, 1) + " Hz)\n"
+                   + (cand.nb.empty() ? juce::String ("On its own: the whole note and its room move together")
+                                      : juce::String ((int) cand.nb.size()) + (cand.nb.size() == 1 ? " voice beside it, kept apart" : " voices beside it, kept apart"));
     if (cand.plan.warning.size() > 0) t += "\n" + juce::String (cand.plan.warning);
     noteInfo.setText (t, juce::dontSendNotification);
     const bool tip = cand.hint > 1 && partial == 1;
@@ -1173,7 +1231,7 @@ bool correctionReaches (const Correction& c, double t0, double t1)
     {
         if (e.isVoices) { if (hit (e.vs.t0 - 0.8, e.vs.t1 + 0.8)) return true; continue; }
         if (e.isBrush) { const auto rg = brushRegion (e.brush); if (hit (rg.first - 0.3, rg.second + 0.3)) return true; continue; }
-        if (! e.ts.empty() && hit (e.ts.front() - 0.45, e.ts.back() + e.params.hold + e.params.fadeOut + 0.3)) return true;
+        if (! e.ts.empty() && hit (e.ts.front() - 0.45, e.ts.back() + e.params.hold + e.params.fadeOut + (e.params.lone && e.nb.empty() ? e.params.tailMax : 0.0) + 0.3)) return true;
     }
     return ! c.isoTs.empty() && hit (c.isoTs.front() - 0.5, c.isoTs.back() + 0.5);
 }
@@ -1218,7 +1276,7 @@ void renderCorrection (const Correction& c, Block& out, int rate, double origin,
             put (brushSegment (take (i0, i1), rate, origin + (double) i0 / rate, e.brush, 10, sub), i0);
             continue;
         }
-        if (e.ts.empty() || ! cut (e.ts.front() - 0.15 - 0.3, e.ts.back() + e.params.hold + e.params.fadeOut + 0.3, i0, i1)) continue;
+        if (e.ts.empty() || ! cut (e.ts.front() - 0.15 - 0.3, e.ts.back() + e.params.hold + e.params.fadeOut + (e.params.lone && e.nb.empty() ? e.params.tailMax : 0.0) + 0.3, i0, i1)) continue;    // (a voice on its own: room for the ring-out)
         put (retuneSegment (take (i0, i1), rate, origin + (double) i0 / rate, e.ts, e.f0, e.off, e.params, sub, e.nb), i0);
     }
     size_t i0 = 0, i1 = 0;
