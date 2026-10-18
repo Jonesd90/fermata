@@ -1307,7 +1307,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     markLabel.setColour (juce::Label::textColourId, theme::text);
 
     sendCaption.setText ("To edit goes into:", juce::dontSendNotification);
-    addAndMakeVisible (sendCaption); addAndMakeVisible (sendBox);
+    nameBlock.addPair (sendCaption, sendBox);                  // "To edit goes into:" and its box under the window's name, under a line, as wide as the name box
     sendBox.onChange = [this]
     {
         auto* w = def();
@@ -1375,19 +1375,32 @@ void TakeWindowComponent::resized()
     using grid::FlowItem;
     constexpr int IW = 34, IH = 26;                               // the picture buttons
     const int clockW = clock.getIdealWidth (kClockH) + 4;
+    // the picture buttons: to the right of the time readout, on as many lines as they need (two fit in the readout's height)
     const std::vector<FlowItem> items
     {
-        { &nameBlock, 200, 58, 10 }, { &takeBox, 84, 58, 6 },
-        { &recordButton, 84, 58, 6 }, { &timeLabel, 150, 28, 4 }, { &clock, clockW, kClockH, 14 },      // the time readout tucked in beside the take's length
         { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playMarkedButton }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
         { &editInButton, IW, IH, 2 }, { &editOutButton, IW, IH, 6 }, { &toEditButton, IW, IH, 2 }, { &toEditAtButton, IW, IH, 2 }, { &overdubBox, IW, IH, 6 }, { &markersToggle, IW, IH, 14 },
         { &editWindowButton, IW, IH, 2 }, { &bounceButton, IW, IH, 14 },
-        { &sendCaption, 120, grid::btnH, 2 }, { &sendBox, 200, grid::btnH, 14 },
         { &ltcButton, 74, grid::btnH, 14 }, { &armAllButton, IW, IH, 2 }, { &armNoneButton, IW, IH, 14 },
         { &importButton, IW, IH, 6 }, { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 6 }, { &exportProcButton, IW, IH, 2 }, { &undoFixButton, IW, IH, 14 }, { &barSearchButton, IW, IH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
-    r.removeFromTop (grid::flow (r, items, true, nullptr, true));     // everything on one line when there is room, otherwise it spills onto more (a group of buttons stays together)
+    // the head, left to right: the window's name and where "To edit" goes (one column, a line between them), Next Take, REC, the take's length, the time readout
+    constexpr int colW = 200;
+    const int y0 = r.getY() + 4;                                  // (the 58-high boxes sit 4 below the top, like a line of the old flowing bar)
+    int x = r.getX();
+    nameBlock.setBounds (x, y0, colW, nameBlock.idealHeight()); x += colW + 10;
+    takeBox.setBounds (x, y0, 84, 58);                            x += 84 + 6;
+    recordButton.setBounds (x, y0, 84, 58);                       x += 84 + 6;
+    timeLabel.setBounds (x, y0 + 15, 150, 28);                    x += 150 + 4;
+    clock.setBounds (x, y0, clockW, kClockH);                     x += clockW + 14;
+    int headH = juce::jmax (nameBlock.getBottom(), y0 + kClockH + 4) - r.getY();
+    const int btnRight = r.getRight() - grid::cornerReserve;      // (clear of the pin and sun / moon buttons in the corner)
+    if (btnRight - x >= 300)                                  // the buttons to the right of the readout, a group never split between two lines
+        headH = juce::jmax (headH, grid::flow (juce::Rectangle<int> (x, r.getY(), btnRight - x, headH), items, true, nullptr, true));
+    else                                                          // a narrow window: the buttons go under the head, across the whole width
+        headH += grid::flow (juce::Rectangle<int> (r.getX(), r.getY() + headH, r.getWidth(), 0), items, true, nullptr, true);
+    r.removeFromTop (headH + 2);
     auto info = r.removeFromTop (22);
     statusLabel.setBounds (info.removeFromRight (juce::jmin (330, info.getWidth() / 3)));
     markLabel.setBounds (info.reduced (4, 0));

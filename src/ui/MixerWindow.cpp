@@ -1578,7 +1578,7 @@ class MixerStripsHolder : public juce::Component
 public:
     static constexpr int kEdge = 6;                       // the dark border above and below the strips: as wide as the one on the left
     void paint (juce::Graphics& g) override { g.fillAll (mixTheme().bg); }
-    void clear() { strips.clear(); removeAllChildren(); }
+    void clear() { strips.clear(); widths.clear(); removeAllChildren(); }      // (the widths too: they used to be kept, so a rebuilt strip took the OLD strip's width)
     void add (StripBase* s, int width = -1) { strips.add (s); widths.add (width < 0 ? stripWidth() : width); addAndMakeVisible (s); }
     void layout (int height)
     {
@@ -2013,9 +2013,11 @@ void MixerComponent::timerCallback()
 {
     if (shownDark != mixTheme().dark || shownGen != theme::generation() || shownWidthGen != stripWidthGen())   // the look, the desk colour or the strip width changed (here or in another window)
     {
+        const bool widthChanged = shownWidthGen != stripWidthGen();
         shownDark = mixTheme().dark; shownGen = theme::generation(); shownWidthGen = stripWidthGen();
         mixLook.apply();
         rebuild(); updateAuditionButton(); resized();
+        if (widthChanged) fitWindowToStrips();              // the window takes the new width of the strips at once (as when it is opened)
         viewport.sendLookAndFeelChange();
         repaint();
     }

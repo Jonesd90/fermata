@@ -1706,9 +1706,9 @@ void EditWindowComponent::resized()
     using grid::FlowItem;
     constexpr int IW = 34, IH = 26;                               // the picture buttons
     const int clockW = clock.getIdealWidth (kClockH) + 4;
+    // the picture buttons: to the right of the time readout, on as many lines as they need (two fit in the readout's height)
     const std::vector<FlowItem> items
     {
-        { &nameBlock, 240, 58, 10 }, { &clock, clockW, kClockH, 14 },     // the time readout just after the edit's name
         { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
         { &trimButton, IW, IH, 2 }, { &deleteButton, IW, IH, 14 },
         { &leftButton, IW, IH, 2 }, { &rightButton, IW, IH, 6 }, { &endButton, IW, IH, 14 },
@@ -1719,7 +1719,18 @@ void EditWindowComponent::resized()
         { &slipLeftToggle, IW + 8, IH, 2 }, { &slipRightToggle, IW + 8, IH, 6 }, { &shuffleToggle, IW, IH, 2 }, { &insertFlagToggle, IW, IH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
-    r.removeFromTop (grid::flow (r, items, true, nullptr, true));     // (a group of buttons stays together when it spills onto another line)
+    // the head: the edit's name (its caption above it), then the time readout; the buttons to the right of the readout, a group never split between two lines
+    const int y0 = r.getY() + 4;
+    int x = r.getX();
+    nameBlock.setBounds (x, y0, 240, nameBlock.idealHeight()); x += 240 + 10;
+    clock.setBounds (x, y0, clockW, kClockH);                  x += clockW + 14;
+    int headH = juce::jmax (nameBlock.getBottom(), y0 + kClockH + 4) - r.getY();
+    const int btnRight = r.getRight() - grid::cornerReserve;      // (clear of the pin and sun / moon buttons in the corner)
+    if (btnRight - x >= 300)
+        headH = juce::jmax (headH, grid::flow (juce::Rectangle<int> (x, r.getY(), btnRight - x, headH), items, true, nullptr, true));
+    else                                                       // a narrow window: the buttons go under the head, across the whole width
+        headH += grid::flow (juce::Rectangle<int> (r.getX(), r.getY() + headH, r.getWidth(), 0), items, true, nullptr, true);
+    r.removeFromTop (headH + 2);
     {
         auto row = r.removeFromTop (22);
         if (refBox.isVisible())

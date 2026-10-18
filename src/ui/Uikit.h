@@ -96,6 +96,7 @@ inline juce::LookAndFeel_V4::ColourScheme scheme()
 namespace grid
 {
 constexpr int btnH = 24, gap = 6, btnW = 116, rowH = btnH + 8;
+constexpr int cornerReserve = 58;      // the pin and sun / moon buttons in a window's top-right corner: a top bar keeps this much clear at its right (inside the 6 px edge)
 /** Column 'col' (0-based) of a row; 'span' columns wide. */
 inline juce::Rectangle<int> cell (juce::Rectangle<int> row, int col, int span = 1)
 {
@@ -778,25 +779,40 @@ private:
     juce::Component& root;
 };
 
-/** A caption above its box, as one block of a flowing top bar (as tall as the Next Take box): the caption at the top, the box under it. */
+/** Captions above their boxes, as one block of a top bar: the first caption and box are as tall as the Next Take box (the box in line with its bottom);
+    each further pair (addPair) goes under a thin line. Every box is as wide as the block. */
 class StackedField : public juce::Component
 {
 public:
-    StackedField (juce::Label& caption, juce::Component& field) : cap (caption), fld (field)
+    static constexpr int kFirstH = 58, kPairH = 54;          // the first pair, and each one after it (the line, the caption, the box)
+    StackedField (juce::Label& caption, juce::Component& field) { addPair (caption, field); }
+    void addPair (juce::Label& caption, juce::Component& field)
     {
-        cap.setFont (juce::FontOptions (13.0f));
-        cap.setBorderSize (juce::BorderSize<int> (0, 2, 0, 0));
-        cap.setJustificationType (juce::Justification::bottomLeft);
-        addAndMakeVisible (cap); addAndMakeVisible (fld);
+        caption.setFont (juce::FontOptions (13.0f));
+        caption.setBorderSize (juce::BorderSize<int> (0, 2, 0, 0));
+        caption.setJustificationType (juce::Justification::bottomLeft);
+        addAndMakeVisible (caption); addAndMakeVisible (field);
+        pairs.push_back ({ &caption, &field });
+        resized();
     }
+    int idealHeight() const { return kFirstH + (int) (pairs.size() - 1) * kPairH; }
     void resized() override
     {
-        const int fh = grid::btnH, h = getHeight();
-        fld.setBounds (0, h - fh - 3, getWidth(), fh);                    // the box at the bottom (in line with the bottom of the Next Take box)
-        cap.setBounds (0, 0, getWidth(), h - fh - 6);                     // the words just above it
+        const int fh = grid::btnH, w = getWidth();
+        for (size_t i = 0; i < pairs.size(); ++i)
+        {
+            const int top = i == 0 ? 0 : kFirstH + (int) (i - 1) * kPairH + 6, bottom = i == 0 ? kFirstH : top + kPairH - 6;
+            pairs[i].second->setBounds (0, bottom - fh - 3, w, fh);       // the box at the bottom of its stretch
+            pairs[i].first->setBounds (0, top, w, bottom - fh - 6 - top); // the words just above it
+        }
+    }
+    void paint (juce::Graphics& g) override
+    {
+        g.setColour (theme::dimText.withAlpha (0.35f));
+        for (size_t i = 1; i < pairs.size(); ++i) g.fillRect (0, kFirstH + (int) (i - 1) * kPairH + 2, getWidth(), 1);   // the line between two pairs
     }
 private:
-    juce::Label& cap; juce::Component& fld;
+    std::vector<std::pair<juce::Label*, juce::Component*>> pairs;
 };
 
 /** The square "Next Take 4" / "This Take 4" box: green while idle, red while recording. Shown in the take window and on the main page. */

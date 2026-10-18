@@ -6,6 +6,12 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.64.3
+- **Fixed: the mixer strip width (- / + under STRIP WIDTH) now changes the strips at once**, in every open mixer, and the mixer window takes the new width straight away. The strips were rebuilt, but each kept the width of the strip it replaced, so the change only showed after closing and reopening the mixer.
+- **Take window top bar, rearranged:** on the left, one column: "Piece / Take Window Name:", the name box, a thin line, "To edit goes into:" and its box (exactly as wide as the name box). Then Next Take, REC, the take's length and the time readout. **All the picture buttons sit to the right of the time readout**, and when they don't fit on one line the rest goes on a second line under them (the two lines are as tall as the readout), never under the name or the readout.
+- **Edit window top bar, the same way:** the name, the time readout, and the buttons to the right of the readout on as many lines as they need.
+- The buttons of both windows stop short of the pin and sun / moon buttons in the top-right corner.
+
 ## 2.64.2
 - **Take and edit windows, the name of the window:** the caption now reads **Piece / Take Window Name:** (in the edit window **Piece / Edit Window Name:**) and sits above the name box, so the two together are as tall as the Next Take box (and the edit window's top bar gained the room the old "Edit:" caption took).
 - **The record button is the same size and shape as the Next Take box** beside it: "REC [R]" across the top and a big red dot under it (a square while recording, with "STOP [Space]").
