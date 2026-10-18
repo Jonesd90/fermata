@@ -229,6 +229,8 @@ public:
 
         const bool recordingHere = app.engine.isRecording() && w->findGroup (app.engine.currentTakeId()) != nullptr;
         const double playhead = app.playheadSeconds();
+        struct UseFlag { int x, y0, y1; bool isIn; int number; };
+        std::vector<UseFlag> useFlags;
         for (auto& grp : w->groups)
         {
             const bool live = recordingHere && grp.id == app.engine.currentTakeId();
@@ -334,24 +336,14 @@ public:
                 if (w->editIn >= 0)  flag (w->editIn, cin, "Mark 1", true);
                 if (w->editOut >= 0) flag (w->editOut, cout, "Mark 2", false);
             }
-            // where this take has been used: a small flag "In 3" where a piece of it starts in the edit and "Out 4" where it ends, numbered like the edit points
+            // where this take has been used: "In 3" where a piece of it starts in the edit, "Out 4" where it ends (drawn after all the takes, below)
             if (auto* usedEdit = app.project.findEdit (w->targetEdit))
                 for (size_t ri = 0; ri < usedEdit->regions.size(); ++ri)
                 {
                     const auto& rg = usedEdit->regions[ri];
                     if (rg.takeId != grp.id || rg.sampleRate <= 0) continue;
-                    auto used = [&] (double sec, bool isIn, int number)
-                    {
-                        const int x = x0 + (int) (sec * pixelsPerSecond);
-                        const auto c = isIn ? juce::Colour (0xff1a9c8a) : juce::Colour (0xff8a5cd0);
-                        g.setColour (c.withAlpha (0.55f)); g.fillRect (x, y0, 1, y1 - y0);
-                        const int fw = 38; juce::Rectangle<int> f (isIn ? x : x - fw, kRulerH + kLaneH - 13, fw, 11);       // its own row at the bottom of the strip, clear of mark 1 / 2s
-                        g.setColour (c); g.fillRect (f);
-                        g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (9.5f, juce::Font::bold));
-                        g.drawText ((isIn ? "In " : "Out ") + (number > 0 ? juce::String (number) : juce::String ("fx")), f, juce::Justification::centred);
-                    };
-                    used ((double) rg.srcIn / rg.sampleRate, true, usedEdit->editNumberAt ((int) ri));                  // the same numbers as the edit window shows
-                    used ((double) rg.srcOut / rg.sampleRate, false, usedEdit->editNumberAt ((int) ri + 1));
+                    useFlags.push_back ({ x0 + (int) ((double) rg.srcIn / rg.sampleRate * pixelsPerSecond), y0, y1, true, usedEdit->editNumberAt ((int) ri) });     // the same numbers as the edit window shows
+                    useFlags.push_back ({ x0 + (int) ((double) rg.srcOut / rg.sampleRate * pixelsPerSecond), y0, y1, false, usedEdit->editNumberAt ((int) ri + 1) });
                 }
             // playhead
             if (shownPhX != kNoLine && playhead >= 0 && app.playInfo.kind != AppContext::PlayInfo::Kind::Edit && ! app.playInfo.windowTimeline && app.playInfo.windowId == windowId && app.playInfo.id == grp.id)
@@ -365,6 +357,35 @@ public:
                 g.fillRect (x0 + (int) (len * pixelsPerSecond), kRulerH, 2, y1 - kRulerH);
             }
         }
+
+        // The In / Out flags of every take: all the Out flags first and the In flags over them, so an In flag is never hidden under the Out flag of the
+        // piece before it. A join with no edit number ("fx", only a crossfade) gets a small grey tag, "I fx" / "O fx", just big enough for its text.
+        for (int pass = 0; pass < 2; ++pass)
+            for (auto& u : useFlags)
+            {
+                if (u.isIn != (pass == 1)) continue;
+                if (u.number > 0)
+                {
+                    const auto c = u.isIn ? juce::Colour (0xff1a9c8a) : juce::Colour (0xff8a5cd0);
+                    g.setColour (c.withAlpha (0.55f)); g.fillRect (u.x, u.y0, 1, u.y1 - u.y0);
+                    const int fw = 38; juce::Rectangle<int> f (u.isIn ? u.x : u.x - fw, kRulerH + kLaneH - 13, fw, 11);       // its own row at the bottom of the strip, clear of mark 1 / 2s
+                    g.setColour (c); g.fillRect (f);
+                    g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (9.5f, juce::Font::bold));
+                    g.drawText ((u.isIn ? "In " : "Out ") + juce::String (u.number), f, juce::Justification::centred);
+                }
+                else
+                {
+                    const juce::Colour grey (0xff7d848c);
+                    g.setColour (grey.withAlpha (0.45f)); g.fillRect (u.x, u.y0, 1, u.y1 - u.y0);
+                    const juce::String t (u.isIn ? "I fx" : "O fx");
+                    const juce::FontOptions fo (8.5f, juce::Font::bold);
+                    const int fw = juce::GlyphArrangement::getStringWidthInt (fo, t) + 4;
+                    juce::Rectangle<int> f (u.isIn ? u.x : u.x - fw, kRulerH + kLaneH - 12, fw, 10);
+                    g.setColour (grey); g.fillRect (f);
+                    g.setColour (juce::Colours::white); g.setFont (fo);
+                    g.drawText (t, f, juce::Justification::centred, false);
+                }
+            }
 
         if (shownPhX != kNoLine && playhead >= 0 && app.playInfo.kind == AppContext::PlayInfo::Kind::Take && app.playInfo.windowTimeline && app.playInfo.windowId == windowId)
         {                                                                          // the whole window is playing: one moving line across every row
@@ -695,6 +716,15 @@ public:
         if (g == nullptr) return nullptr;
         secondsInTake = juce::jmax (0.0, at - g->startSeconds);
         return g;
+    }
+
+    /** What the window's time readout shows: the live position (recording here, or playing here, moving smoothly), otherwise the playhead. */
+    double clockSeconds() const
+    {
+        const double live = livePosition (true);
+        if (live >= 0.0) return live;
+        auto* w = const_cast<TakeTimeline*> (this)->def();
+        return w != nullptr ? w->playheadSeconds : 0.0;
     }
 
 private:
@@ -1265,7 +1295,15 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
                                                           &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &exportProcButton, &undoFixButton, &barSearchButton })
         b->setWantsKeyboardFocus (false);       // keep the keyboard shortcuts working after a button click
     timeLabel.setFont (juce::FontOptions (20.0f, juce::Font::bold));
+    timeLabel.setTooltip ("How long the take being recorded in this window is so far (it counts up from 0 while recording; dashes when nothing is recording here)");
     statusLabel.setColour (juce::Label::textColourId, theme::warn);
+
+    // the time readout: where this window's playhead is (moving while it plays or records here); white when stopped, blue while anything plays, red while recording
+    addAndMakeVisible (clock);
+    clock.follow ([this] { return timeline != nullptr ? timeline->clockSeconds() : 0.0; },
+                  [this] { return app.engine.isRecording() ? TimeReadout::State::recording : app.isPlaying() ? TimeReadout::State::playing : TimeReadout::State::stopped; });
+    clock.onJump = [this] (double s) { goTo (s); };
+    clock.onFormatChanged = [this] { resized(); };
     markLabel.setColour (juce::Label::textColourId, theme::text);
 
     sendCaption.setText ("To edit goes into:", juce::dontSendNotification);
@@ -1348,7 +1386,7 @@ void TakeWindowComponent::resized()
         { &importButton, IW, IH, 6 }, { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 6 }, { &exportProcButton, IW, IH, 2 }, { &undoFixButton, IW, IH, 14 }, { &barSearchButton, IW, IH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
-    r.removeFromTop (grid::flow (r, items));                           // everything on one line when there is room, otherwise it spills onto more
+    r.removeFromTop (grid::flowAroundCentre (r, items, clock, clock.getIdealWidth (kClockH) + 4, kClockH));   // the time readout in the middle, the rest either side (spilling onto more lines when needed)
     auto info = r.removeFromTop (22);
     statusLabel.setBounds (info.removeFromRight (juce::jmin (330, info.getWidth() / 3)));
     markLabel.setBounds (info.reduced (4, 0));
@@ -1606,6 +1644,7 @@ void TakeWindowComponent::timerCallback()
         if (auto* w = def()) { w->setPlayhead (recStart); app.project.changed(); }
     }
     recordButton.setEnabled (! rec || hereRec);
+    clock.setSampleRate (app.engine.getSampleRate());
     timeLabel.setText (hereRec ? formatTime (app.engine.recordedSeconds()) : juce::String ("--:--:--.---"), juce::dontSendNotification);
     statusLabel.setText (hereRec && app.engine.overruns() > 0 ? "DISK OVERRUN - audio may have been lost!" : "", juce::dontSendNotification);
     playButton.setButtonText (app.isPlaying() ? "Stop [Space]" : "Play [Space]");

@@ -809,6 +809,23 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     matchBox.onClick = [this] { sliderChanged(); }; matchBox.setWantsKeyboardFocus (false); addAndMakeVisible (matchBox);
     advancedBtn.setColour (juce::ToggleButton::textColourId, cText); advancedBtn.setColour (juce::ToggleButton::tickColourId, cAmber); advancedBtn.setWantsKeyboardFocus (false);
     advancedBtn.onClick = [this] { layoutSections(); }; addAndMakeVisible (advancedBtn);
+    // "One voice only": the user knows there is just one singer / instrument on the note, so nothing is looked for beside it and nothing is kept apart from it;
+    // the whole note (all its overtones, and the room's ring-out) moves together. Stays as it was for the next note.
+    static bool oneVoiceLast = false;
+    params.oneVoice = oneVoiceLast;
+    oneVoiceBox.setToggleState (oneVoiceLast, juce::dontSendNotification);
+    oneVoiceBox.setColour (juce::ToggleButton::textColourId, cText); oneVoiceBox.setColour (juce::ToggleButton::tickColourId, cAmber); oneVoiceBox.setWantsKeyboardFocus (false);
+    oneVoiceBox.setTooltip ("Tick when only ONE singer or instrument is on this note (a solo). Nothing is then looked for beside it, so the note can never be taken for "
+                            "two voices and half of it left behind (which sounds like a second singer a little off the first): the whole note, all its overtones "
+                            "and the room's ring-out move together. Leave it off in a choir or ensemble, where the voices beside the note must be kept apart from it.");
+    oneVoiceBox.onClick = [this]
+    {
+        oneVoiceLast = oneVoiceBox.getToggleState();
+        params.oneVoice = oneVoiceLast;
+        if (cand.has && ! busy) measure();                 // measured again: with or without the voices beside it
+        else replan();
+    };
+    addAndMakeVisible (oneVoiceBox);
     auditionBtn.setTooltip ("Hears the correction you are working on (the note, the voices or the brush stroke) from the playhead, without applying it. Original compares."); auditionBtn.onClick = [this] { auditionAny(); };
     applyBtn.onClick = [this] { applyCorrection(); }; deselectBtn.onClick = [this] { deselect(); }; clearBtn.onClick = [this] { clearChanges(); };
     undoBtn.onClick = [this] { undoStep(); }; redoBtn.onClick = [this] { redoStep(); };
@@ -821,7 +838,7 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     zoomPIn.onClick = [this] { view->zoomPitch (0.7, 0.5 * (view->vm0 + view->vm1)); }; zoomPOut.onClick = [this] { view->zoomPitch (1.4, 0.5 * (view->vm0 + view->vm1)); };
     loopClearBtn.onClick = [this] { loopIn = loopOut = -1.0; view->repaint(); };
     styleLabel (zoomCap, cText, 12.0f); addAndMakeVisible (zoomCap);
-    sections[1]->kids = { &moveRow.cap, &moveRow.s, &snapRow.cap, &snapRow.s, &advancedBtn, &applyBtn, &deselectBtn, &clearBtn, &undoBtn, &redoBtn };
+    sections[1]->kids = { &moveRow.cap, &moveRow.s, &snapRow.cap, &snapRow.s, &advancedBtn, &oneVoiceBox, &applyBtn, &deselectBtn, &clearBtn, &undoBtn, &redoBtn };
     sections[5]->kids = { &editsView };
     // -- See mixer: what the picture shows (not what you hear)
     seeView.setViewedComponent (&seeHolder, false); seeView.setScrollBarsShown (true, false); addChildComponent (seeView);
@@ -1021,6 +1038,7 @@ void ReHarmoniserEditor::measure()
 {
     if (orig == nullptr) return;
     const double t0 = cand.t0, t1 = cand.t1, fLo = cand.fLo, fHi = cand.fHi; const int mode = refModeId, part = partial; const double a4in = a4; const Vec vis = seeGainsDb();
+    const bool lookForOthers = ! params.oneVoice;
     auto audio = orig; const int rate = sr; const double total = dur;
     struct Res { Vec ts, f0; std::vector<Vec> nb; int hint = 1; double a4 = 440.0; bool refFound = false; };
     auto res = std::make_shared<Res>();
@@ -1049,12 +1067,12 @@ void ReHarmoniserEditor::measure()
         double s0; Block seg = slice (t0 - 0.8, t1 + 0.8, s0);
         const auto tk = trackingInputs (spansOf (seg), rate, fLo, fHi, vis);
         std::vector<Span> chans; for (int c : tk.channels) chans.push_back ({ seg[(size_t) c].data(), seg[(size_t) c].size() });
-        const auto nm = measureNote (chans, tk.weights, rate, s0, t0, t1, fLo, fHi, h);
+        const auto nm = measureNote (chans, tk.weights, rate, s0, t0, t1, fLo, fHi, h, 20.0, lookForOthers);
         res->f0 = nm.f0; res->ts = nm.ts; res->nb = nm.nb;
         res->hint = part == 1 ? detectPartial (chans, tk.weights, rate, s0, res->ts, res->f0) : 1;
         return {};
     },
-    [this, res] (const juce::String& err)
+    [this, res, lookForOthers] (const juce::String& err)
     {
         measuring = false;
         if (err.isNotEmpty()) { cand.has = false; view->clearSelection(); setStatus (err == "Cancelled." ? err : err, err != "Cancelled."); updateInfo(); view->repaint(); return; }
@@ -1064,7 +1082,8 @@ void ReHarmoniserEditor::measure()
         cand.has = true; inHistory = true; syncSliders(); inHistory = false; hist.clear(); hist.push_back ({ params }); histPos = 0;
         replan(); view->setSelection (cand.t0, cand.t1, midiOf (cand.fLo * partial, a4), midiOf (cand.fHi * partial, a4));
         view->showNote (cand.t0, cand.t1, cand.f0.empty() ? cand.fLo : median (cand.f0));
-        auditionStale = true; openSection (1); setStatus (juce::String ("Measured") + (res->nb.empty() ? " (no other voice beside it: the whole note moves, its room's ring-out with it)" : " (" + juce::String ((int) res->nb.size()) + (res->nb.size() == 1 ? " other voice" : " other voices") + " found beside it, they will be left as they are)") + ". Change Move whole note or Snap to note, then Audition (it gets ready; press Space to listen) and Apply correction.");
+        auditionStale = true; openSection (1); setStatus (juce::String ("Measured") + (! lookForOthers ? " (One voice only: the whole note moves, all its overtones and its room's ring-out with it)"
+                                                                                  : res->nb.empty() ? " (no other voice beside it: the whole note moves, its room's ring-out with it)" : " (" + juce::String ((int) res->nb.size()) + (res->nb.size() == 1 ? " other voice" : " other voices") + " found beside it, they will be left as they are)") + ". Change Move whole note or Snap to note, then Audition (it gets ready; press Space to listen) and Apply correction.");
     });
 }
 
@@ -1091,7 +1110,8 @@ void ReHarmoniserEditor::updateInfo()
     juce::String t = noteName (cand.midi) + "  " + juce::String (midiHz (cand.midi, a4), 1) + " Hz   (" + fmtTime (cand.t0) + " - " + fmtTime (cand.t1) + ")\n"
                    + "Sung " + juce::String (med, 1) + " c   Wobble +/-" + juce::String (wmax, 0) + " c\n"
                    + "Planned " + juce::String (after, 1) + " c   (A4 " + juce::String (a4, 1) + " Hz)\n"
-                   + (cand.nb.empty() ? juce::String ("On its own: the whole note and its room move together")
+                   + (params.oneVoice ? juce::String ("One voice only: the whole note and its room move together")
+                      : cand.nb.empty() ? juce::String ("On its own: the whole note and its room move together")
                                       : juce::String ((int) cand.nb.size()) + (cand.nb.size() == 1 ? " voice beside it, kept apart" : " voices beside it, kept apart"));
     if (cand.plan.warning.size() > 0) t += "\n" + juce::String (cand.plan.warning);
     noteInfo.setText (t, juce::dontSendNotification);
@@ -1171,6 +1191,7 @@ void ReHarmoniserEditor::syncSliders()
     smoothRow.s.setValue (params.smooth, juce::dontSendNotification); easeRow.s.setValue (params.ease, juce::dontSendNotification);
     holdRow.s.setValue (params.hold, juce::dontSendNotification); bwRow.s.setValue (params.bw, juce::dontSendNotification);
     matchBox.setToggleState (params.match, juce::dontSendNotification);
+    oneVoiceBox.setToggleState (params.oneVoice, juce::dontSendNotification);
 }
 
 // ---------------------------------------------------------------------------------------------------- rendering and the host
@@ -1231,7 +1252,7 @@ bool correctionReaches (const Correction& c, double t0, double t1)
     {
         if (e.isVoices) { if (hit (e.vs.t0 - 0.8, e.vs.t1 + 0.8)) return true; continue; }
         if (e.isBrush) { const auto rg = brushRegion (e.brush); if (hit (rg.first - 0.3, rg.second + 0.3)) return true; continue; }
-        if (! e.ts.empty() && hit (e.ts.front() - 0.45, e.ts.back() + e.params.hold + e.params.fadeOut + (e.params.lone && e.nb.empty() ? e.params.tailMax : 0.0) + 0.3)) return true;
+        if (! e.ts.empty() && hit (e.ts.front() - 0.45, e.ts.back() + e.params.hold + e.params.fadeOut + ((e.params.lone && e.nb.empty()) || e.params.oneVoice ? e.params.tailMax : 0.0) + 0.3)) return true;
     }
     return ! c.isoTs.empty() && hit (c.isoTs.front() - 0.5, c.isoTs.back() + 0.5);
 }
@@ -1276,7 +1297,7 @@ void renderCorrection (const Correction& c, Block& out, int rate, double origin,
             put (brushSegment (take (i0, i1), rate, origin + (double) i0 / rate, e.brush, 10, sub), i0);
             continue;
         }
-        if (e.ts.empty() || ! cut (e.ts.front() - 0.15 - 0.3, e.ts.back() + e.params.hold + e.params.fadeOut + (e.params.lone && e.nb.empty() ? e.params.tailMax : 0.0) + 0.3, i0, i1)) continue;    // (a voice on its own: room for the ring-out)
+        if (e.ts.empty() || ! cut (e.ts.front() - 0.15 - 0.3, e.ts.back() + e.params.hold + e.params.fadeOut + ((e.params.lone && e.nb.empty()) || e.params.oneVoice ? e.params.tailMax : 0.0) + 0.3, i0, i1)) continue;    // (a voice on its own: room for the ring-out)
         put (retuneSegment (take (i0, i1), rate, origin + (double) i0 / rate, e.ts, e.f0, e.off, e.params, sub, e.nb), i0);
     }
     size_t i0 = 0, i1 = 0;
@@ -1781,7 +1802,11 @@ void ReHarmoniserEditor::resized()
                 auto b = s.removeFromTop (juce::jmin (h, s.getHeight()));
                 auto rw = [&] (Row& rr) { auto q = b.removeFromTop (26); rr.cap.setBounds (q.removeFromLeft (112)); rr.s.setBounds (q); };
                 rw (moveRow); rw (snapRow);
-                advancedBtn.setBounds (b.removeFromTop (26).removeFromLeft (120));
+                {
+                    auto q = b.removeFromTop (26);
+                    advancedBtn.setBounds (q.removeFromLeft (110));
+                    oneVoiceBox.setBounds (q);
+                }
                 if (adv) { rw (strengthRow); rw (keepRow); rw (smoothRow); rw (easeRow); rw (holdRow); rw (bwRow); rw (isoPreRow); rw (isoPostRow); partialBox.setBounds (b.removeFromTop (26).reduced (0, 1)); matchBox.setBounds (b.removeFromTop (24)); }
                 b.removeFromTop (4);
                 auto b1 = b.removeFromTop (28); applyBtn.setBounds (b1.removeFromLeft (118)); b1.removeFromLeft (4); deselectBtn.setBounds (b1);

@@ -423,11 +423,17 @@ public:
         postButton.setToggleState (! send.pre.get(), juce::dontSendNotification);
         preButton.onClick  = [this] { send.pre.set (true);  app.project.markDirty(); if (onChanged) onChanged(); };
         postButton.onClick = [this] { send.pre.set (false); app.project.markDirty(); if (onChanged) onChanged(); };
+        followMute.setButtonText ("Follow mute");
+        followMute.setToggleState (send.followMute.get(), juce::dontSendNotification);
+        followMute.setTooltip ("Ticked: muting the channel mutes this send too, whether it is taken before or after the fader. "
+                               "Not ticked: the send carries on when the channel is muted (a solo elsewhere still silences it).");
+        followMute.onClick = [this] { send.followMute.set (followMute.getToggleState()); app.project.markDirty(); if (onChanged) onChanged(); };
+        addAndMakeVisible (followMute);
         insertsCaption.setText ("Inserts on this send only", juce::dontSendNotification);
         insertsCaption.setFont (juce::FontOptions (11.0f, juce::Font::bold));
         insertsCaption.setColour (juce::Label::textColourId, theme::dimText);
         addAndMakeVisible (insertsCaption); addAndMakeVisible (slots);
-        setSize (250, 196);
+        setSize (250, 222);
     }
     void paint (juce::Graphics& g) override { g.fillAll (theme::row); }
     void resized() override
@@ -440,13 +446,16 @@ public:
         auto pp = r.removeFromTop (28);
         preButton.setBounds (pp.removeFromLeft (pp.getWidth() / 2).reduced (1));
         postButton.setBounds (pp.reduced (1));
-        r.removeFromTop (8);
+        r.removeFromTop (2);
+        followMute.setBounds (r.removeFromTop (24));
+        r.removeFromTop (6);
         insertsCaption.setBounds (r.removeFromTop (16));
         slots.setBounds (r.removeFromTop (kSendSlots * 28));
     }
 private:
     AppContext& app; MixerState& mixer; juce::Uuid srcId, destId; std::function<void()> onChanged; SendState& send;
     juce::Label title, insertsCaption; juce::Slider fader; juce::TextButton preButton { "PRE" }, postButton { "POST" };
+    juce::ToggleButton followMute;
     SlotButtons slots;
 };
 
@@ -494,11 +503,12 @@ public:
         if ((juce::int64) knob.getProperties().getWithDefault ("arc", (juce::int64) 0) != arc) { knob.getProperties().set ("arc", arc); knob.repaint(); }
         if (! refused)
         {
-            label.setText (destName + (s != nullptr && s->pre.get() ? " (pre)" : ""), juce::dontSendNotification);
+            label.setText (destName + (s != nullptr && s->pre.get() ? " (pre)" : "") + (s != nullptr && ! s->followMute.get() ? " *" : ""), juce::dontSendNotification);
             label.setColour (juce::Label::textColourId, s != nullptr && s->active() ? mixTheme().text : mixTheme().dim);
         }
         knob.setTooltip ("Send to " + destName + ". Drag up / down to change, double-click for 0 dB (Ctrl + double-click to type a level), click once for pre / post fader, inserts and a fader. "
-                         + (s != nullptr && s->pre.get() ? "(Taken before the fader.)" : "(Taken after the fader.)"));
+                         + (s != nullptr && s->pre.get() ? "(Taken before the fader.)" : "(Taken after the fader.)")
+                         + (s != nullptr && ! s->followMute.get() ? " * = does not follow mute: it carries on when the channel is muted." : ""));
     }
     void resized() override
     {
@@ -634,9 +644,18 @@ public:
         if (appPtr != nullptr)
         {
             auto plate = plateRect();
-            g.setColour (c);                     g.fillRect (plate);
+            {   // the name plate at the bottom follows the rounded corners too (it used to be square and covered them)
+                juce::Path pp; pp.addRoundedRectangle ((float) plate.getX(), (float) plate.getY(), (float) plate.getWidth(), (float) plate.getHeight(), rad - 1.0f, rad - 1.0f,
+                                                        false, false, plate.getBottom() >= getHeight() - 1, plate.getBottom() >= getHeight() - 1);
+                g.setColour (c); g.fillPath (pp);
+            }
             g.setColour (c.brighter (0.45f));    g.fillRect (plate.getX(), plate.getY(), plate.getWidth(), 1);
-            g.setColour (c.darker (0.45f));      g.fillRect (plate.getX(), plate.getBottom() - 1, plate.getWidth(), 1);
+            g.setColour (c.darker (0.45f));      g.fillRect (plate.getX() + (int) rad, plate.getBottom() - 1, plate.getWidth() - 2 * (int) rad, 1);
+            {   // the strip's outline again over the plate, so its rounded bottom edge stays crisp
+                juce::Graphics::ScopedSaveState ss (g);
+                g.reduceClipRegion (plate.expanded (1, 1));
+                g.setColour (t.line); g.drawRoundedRectangle (b.toFloat().reduced (0.5f), rad, 1.0f);
+            }
             g.setColour (chan::textOn (c));      g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
             g.drawFittedText (plateText(), plate.reduced (3, 2), juce::Justification::centred, 2, 0.85f);
         }

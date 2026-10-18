@@ -191,6 +191,7 @@ private:
     struct SeeStrip { juce::Label name; juce::TextButton m { "M" }, s { "S" }; juce::Slider g; };
     std::vector<std::unique_ptr<SeeStrip>> seeStrips; juce::Component seeHolder; juce::Viewport seeView;
     juce::ComboBox partialBox; juce::ToggleButton matchBox { "Level smoothing" }; juce::ToggleButton advancedBtn { "Advanced" };
+    juce::ToggleButton oneVoiceBox { "One voice only" };     // only one singer / instrument on this note: nothing is looked for beside it
     juce::TextButton auditionBtn { "Audition" }, applyBtn { "Apply correction" }, deselectBtn { "Deselect" }, clearBtn { "Clear changes" }, undoBtn { "Undo" }, redoBtn { "Redo" };
     juce::TextButton zoomTIn { "+" }, zoomTOut { "-" }, zoomPIn { "+" }, zoomPOut { "-" }, loopClearBtn { "Clear loop" };
     juce::Label zoomCap { {}, "Zoom time" }, pitchCap { {}, "pitch" }, loopCap { {}, "Loop markers" }, detailCap { {}, "Detail" };

@@ -1,6 +1,7 @@
 #pragma once
 #include "AppContext.h"
 #include "Uikit.h"
+#include "TimeReadout.h"
 
 namespace td
 {
@@ -53,6 +54,8 @@ private:
     juce::Label nameLabel, timeLabel, statusLabel, markLabel;
     juce::TextEditor nameEditor;
     NextTakeBox takeBox;
+    TimeReadout clock;                                        // the big time readout in the middle of the top bar
+    static constexpr int kClockH = 58;                        // as tall as the Next Take box
     juce::Label sendCaption;
     juce::ComboBox sendBox;
     void fillSendBox();

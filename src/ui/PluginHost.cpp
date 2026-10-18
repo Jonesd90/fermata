@@ -1,4 +1,5 @@
 #include "PluginHost.h"
+#include "WinOwner.h"
 #include "../core/HostTransport.h"
 
 namespace td
@@ -57,17 +58,23 @@ public:
 
     void process (juce::AudioBuffer<float>& b) override
     {
-        const int n = b.getNumSamples(), nc = b.getNumChannels();
-        if (n > work.getNumSamples() || nc < 1) return;
-        work.copyFrom (0, 0, b, 0, 0, n);
-        work.copyFrom (1, 0, b, nc > 1 ? 1 : 0, 0, n);
-        for (int c = 2; c < chans; ++c) work.clear (c, 0, n);
-        juce::AudioBuffer<float> view (work.getArrayOfWritePointers(), chans, n);
-        midi.clear();
-        plugin->processBlock (view, midi);
-        if (monoOut) work.copyFrom (1, 0, work, 0, 0, n);                      // a mono-only plug-in: its output on both sides
-        b.copyFrom (0, 0, work, 0, 0, n);
-        if (nc > 1) b.copyFrom (1, 0, work, 1, 0, n);
+        const int total = b.getNumSamples(), nc = b.getNumChannels(), cap = work.getNumSamples();
+        if (nc < 1 || cap < 1) return;
+        // a block longer than the plug-in was prepared for goes through in pieces (it used to skip the plug-in altogether, so the sound went
+        // past it untouched: a reverb loaded with a project while the interface ran a bigger buffer than 512 did nothing)
+        for (int off = 0; off < total; off += cap)
+        {
+            const int n = juce::jmin (cap, total - off);
+            work.copyFrom (0, 0, b, 0, off, n);
+            work.copyFrom (1, 0, b, nc > 1 ? 1 : 0, off, n);
+            for (int c = 2; c < chans; ++c) work.clear (c, 0, n);
+            juce::AudioBuffer<float> view (work.getArrayOfWritePointers(), chans, n);
+            midi.clear();
+            plugin->processBlock (view, midi);
+            if (monoOut) work.copyFrom (1, 0, work, 0, 0, n);                  // a mono-only plug-in: its output on both sides
+            b.copyFrom (0, off, work, 0, 0, n);
+            if (nc > 1) b.copyFrom (1, off, work, 1, 0, n);
+        }
     }
 
     juce::String getName() const override { return description.name; }
@@ -108,7 +115,9 @@ private:
     bool prepared = false;
 };
 
-class PluginHost::EditorWindow : public juce::DocumentWindow
+/** A plug-in's own window. Space still plays / stops the take or edit window that was last in use, even while the plug-in's window has the keyboard
+    (the plug-in's editor is a window of its own inside this one and keeps the keys to itself, so the space bar is watched instead). */
+class PluginHost::EditorWindow : public juce::DocumentWindow, private juce::Timer
 {
 public:
     EditorWindow (PluginHost& h, Vst3Insert* i, juce::AudioProcessorEditor* editor)
@@ -121,6 +130,13 @@ public:
         centreWithSize (getWidth(), getHeight());
         if (host.adoptWindow) host.adoptWindow (*this);
         setVisible (true);
+        startTimerHz (40);
+    }
+    ~EditorWindow() override { stopTimer(); }
+    bool keyPressed (const juce::KeyPress& k) override
+    {
+        if (k.getKeyCode() == juce::KeyPress::spaceKey && ! k.getModifiers().isAnyModifierKeyDown()) return true;   // (the timer below acts on it, so it happens once)
+        return juce::DocumentWindow::keyPressed (k);
     }
     void closeButtonPressed() override
     {
@@ -129,6 +145,17 @@ public:
     }
     PluginHost& host;
     Vst3Insert* insert;
+private:
+    bool spaceWasDown = false;
+    void timerCallback() override
+    {
+        const bool down = juce::KeyPress::isKeyCurrentlyDown (juce::KeyPress::spaceKey) && ! juce::ModifierKeys::getCurrentModifiersRealtime().isAnyModifierKeyDown();
+        if (down && ! spaceWasDown && isVisible() && isForegroundWindow (*this))           // pressed (not held) while this window is the one in front
+            if (auto* t = ToolWindow::lastTransportWindow().getComponent())
+                if (t->isVisible())
+                    if (auto* c = t->getContentComponent()) c->keyPressed (juce::KeyPress (juce::KeyPress::spaceKey));
+        spaceWasDown = down;
+    }
 };
 
 PluginHost::PluginHost() : juce::Thread ("Plug-in scanner")

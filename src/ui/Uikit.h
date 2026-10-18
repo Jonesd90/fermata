@@ -6,6 +6,7 @@
 #include <map>
 #include <array>
 #include <algorithm>
+#include <limits>
 
 namespace td
 {
@@ -108,31 +109,81 @@ struct FlowItem
     int w = btnW, h = btnH, gapAfter = gap;
 };
 /** Puts the items on as few lines as possible, left to right, and starts a new line when the width runs out (so a wide window has one
-    line and a narrow one spills over onto two or three). Returns the height used. */
-inline int flow (juce::Rectangle<int> area, const std::vector<FlowItem>& items)
+    line and a narrow one spills over onto two or three). Returns the height used. With place = false nothing is moved (it only measures).
+    keepGroups: a group (the items up to one with a wide gap after it) that would be split at the end of a line starts on the next line instead,
+    when it fits on a line of its own (so the transport buttons stay together). */
+inline int flow (juce::Rectangle<int> area, const std::vector<FlowItem>& items, bool place = true, int* linesUsed = nullptr, bool keepGroups = false)
 {
     std::vector<std::vector<const FlowItem*>> lines (1);
     int x = 0;
-    for (auto& it : items)
+    for (size_t i = 0; i < items.size(); ++i)
     {
+        const auto& it = items[i];
+        if (keepGroups && x > 0 && (i == 0 || items[i - 1].gapAfter >= 10))       // a group starts here: how wide is it?
+        {
+            int gw = 0;
+            for (size_t j = i; j < items.size(); ++j) { gw += items[j].w; if (items[j].gapAfter >= 10) break; gw += items[j].gapAfter; }
+            if (x + gw > area.getWidth() && gw <= area.getWidth()) { lines.emplace_back(); x = 0; }
+        }
         if (x > 0 && x + it.w > area.getWidth()) { lines.emplace_back(); x = 0; }
         lines.back().push_back (&it);
         x += it.w + it.gapAfter;
     }
+    if (linesUsed != nullptr) *linesUsed = items.empty() ? 0 : (int) lines.size();
+    if (items.empty()) return 0;
     int y = area.getY();
     for (auto& line : lines)
     {
         int lh = rowH;
         for (auto* it : line) lh = juce::jmax (lh, it->h + 8);
         int px = area.getX();
-        for (auto* it : line)
-        {
-            it->c->setBounds (px, y + (lh - it->h) / 2, it->w, it->h);
-            px += it->w + it->gapAfter;
-        }
+        if (place)
+            for (auto* it : line)
+            {
+                it->c->setBounds (px, y + (lh - it->h) / 2, it->w, it->h);
+                px += it->w + it->gapAfter;
+            }
         y += lh;
     }
     return y - area.getY();
+}
+
+/** A top bar with one thing in the middle (the time readout, as in other DAWs): the items before it flow in the space on its left and the rest in the
+    space on its right, each side spilling onto more lines when it runs out of room. Where the items are divided between the two sides is chosen
+    among the groups (an item with a wide gap after it ends a group) so that the bar is as low as possible, then uses as few lines as possible, then is
+    as even as possible. A window too narrow for that gets the middle thing at the start of an ordinary flowing bar. Returns the height used. */
+inline int flowAroundCentre (juce::Rectangle<int> area, const std::vector<FlowItem>& items, juce::Component& centre, int centreW, int centreH)
+{
+    constexpr int side = 12;                      // the space either side of the middle thing
+    if (area.getWidth() < centreW + 2 * side + 2 * 300)
+    {
+        std::vector<FlowItem> all;
+        all.push_back ({ &centre, centreW, centreH, 14 });
+        all.insert (all.end(), items.begin(), items.end());
+        return flow (area, all);
+    }
+    const auto mid = juce::Rectangle<int> (area.getCentreX() - centreW / 2, area.getY() + 4, centreW, centreH);
+    const auto leftArea  = area.withRight (mid.getX() - side);
+    const auto rightArea = area.withLeft (mid.getRight() + side);
+    std::vector<size_t> splits { 0, items.size() };
+    for (size_t i = 0; i + 1 < items.size(); ++i) if (items[i].gapAfter >= 10) splits.push_back (i + 1);
+    size_t best = items.size(); long long bestCost = std::numeric_limits<long long>::max();
+    for (auto k : splits)
+    {
+        const std::vector<FlowItem> l (items.begin(), items.begin() + (long) k), r (items.begin() + (long) k, items.end());
+        int nl = 0, nr = 0;
+        const int hl = flow (leftArea, l, false, &nl, true), hr = flow (rightArea, r, false, &nr, true);
+        int wl = 0, wr = 0;
+        for (auto& it : l) wl += it.w + it.gapAfter;
+        for (auto& it : r) wr += it.w + it.gapAfter;
+        const int h = juce::jmax (hl, hr, centreH + 8);
+        const long long cost = (long long) h * 1000000 + (long long) (nl + nr) * 10000 + std::abs (wl - wr);
+        if (cost < bestCost) { bestCost = cost; best = k; }
+    }
+    const std::vector<FlowItem> l (items.begin(), items.begin() + (long) best), r (items.begin() + (long) best, items.end());
+    const int hl = flow (leftArea, l, true, nullptr, true), hr = flow (rightArea, r, true, nullptr, true);
+    centre.setBounds (mid);
+    return juce::jmax (hl, hr, centreH + 8);
 }
 }
 
@@ -744,6 +795,25 @@ public:
     static juce::Component::SafePointer<ToolWindow>& lastTransportWindow() { static juce::Component::SafePointer<ToolWindow> p; return p; }
 private:
     std::function<void (ToolWindow*)> closeCallback;
+};
+
+/** A click anywhere in 'root' outside the text box being typed in ends the typing there (the box keeps what was typed, as with Enter). In JUCE a click
+    on something that does not take the keyboard (a panel, a label, empty space) leaves the text box with the keyboard, so it looked as if it was still
+    being edited. Keep this alive as long as 'root'. */
+class ClickAwayEndsTyping : private juce::MouseListener
+{
+public:
+    explicit ClickAwayEndsTyping (juce::Component& r) : root (r) { root.addMouseListener (this, true); }
+    ~ClickAwayEndsTyping() override { root.removeMouseListener (this); }
+private:
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        auto* te = dynamic_cast<juce::TextEditor*> (juce::Component::getCurrentlyFocusedComponent());
+        if (te == nullptr || ! root.isParentOf (te)) return;
+        if (e.originalComponent == te || te->isParentOf (e.originalComponent)) return;        // a click in the box itself (or one that went to another box, which now has the keyboard)
+        te->giveAwayKeyboardFocus();
+    }
+    juce::Component& root;
 };
 
 /** The square "Next Take 4" / "This Take 4" box: green while idle, red while recording. Shown in the take window and on the main page. */

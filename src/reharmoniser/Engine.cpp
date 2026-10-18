@@ -599,7 +599,8 @@ std::vector<Vec> findNeighbours (const std::vector<Span>& chans, const Vec& ws, 
     return found;
 }
 
-NoteMeasure measureNote (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, double t0, double t1, double fLo, double fHi, const Hooks& hooks, double prior)
+NoteMeasure measureNote (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, double t0, double t1, double fLo, double fHi, const Hooks& hooks, double prior,
+                         bool lookForOthers)
 {
     NoteMeasure r;
     hooks.report ("Measuring the note", 0.05);
@@ -607,8 +608,8 @@ NoteMeasure measureNote (const std::vector<Span>& chans, const Vec& ws, int sr, 
     hooks.check(); hooks.report ("Measuring the note", 0.15);
     // 1) the line of the voice near the first guess, with wide windows to begin with so the swings of a big vibrato are caught
     Vec f0 = refineTrackLocked (chans, ws, sr, tSeg0, tr.ts, tr.f0, 20.0, true);
-    hooks.check(); hooks.report ("Looking for the voices beside it", 0.3);
-    std::vector<Vec> nbs = findNeighbours (chans, ws, sr, tSeg0, tr.ts, f0);
+    hooks.check(); hooks.report (lookForOthers ? "Looking for the voices beside it" : "Measuring the note", 0.3);
+    std::vector<Vec> nbs = lookForOthers ? findNeighbours (chans, ws, sr, tSeg0, tr.ts, f0) : std::vector<Vec>();       // "One voice only": nothing beside it
     // 2) With louder voices close by, that line can have gone over to one of them for a while, and the voice that was left is then found as a "neighbour" over the same
     //    stretch. The lines found together hold every voice, so the boxed one is picked again moment by moment: the line whose pitch (the middle value over 0.4 s, so a vibrato or a brief mix-up does not count)
     //    is nearest the middle of the box (a line is only given up for another that is clearly nearer: 8 cents). lines[0] is the boxed voice afterwards.
@@ -1081,13 +1082,13 @@ Block retuneSegment (const Block& seg, int sr, double tSeg0, const Vec& ts, cons
     for (size_t i = 0; i < n; ++i) f0n[i] = f0t[i] * std::pow (2.0, offt[i] / 1200.0);
     const double fi = 0.15, hold = p.hold;
     double fo = p.fadeOut;
-    const bool lone = p.lone && nb.empty();
+    const bool lone = p.oneVoice || (p.lone && nb.empty());           // ("One voice only": whatever is in nb is not kept apart)
     // a voice on its own: flat bands as wide as the note's own wobble (plus a margin), so the room's ring-out moves with the note
     const double f0mean = median (f0), f0min = minOf (f0);
     const double ownSpread = lone ? loneSpreadCents (ts, f0) : 0.0;
     double halfCents = lone ? clip (ownSpread + p.loneMargin, 35.0, p.loneMaxHalf) : 0.0;
-    if (lone)
-    {   // another sound close by that the finder did not take for a voice (not steady enough): the band stops short of it
+    if (lone && ! p.oneVoice)
+    {   // another sound close by that the finder did not take for a voice (not steady enough): the band stops short of it ("One voice only": there is none)
         size_t lo0, hi0; Vec w0 (n, 0.0);
         const double from = ts.back() - ts.front() > 0.6 ? ts.front() + 0.2 : ts.front();        // (not the scoop at the start, when the note is long enough to spare it)
         for (size_t i = 0; i < n; ++i) if (t[i] >= from && t[i] <= ts.back()) w0[i] = 1.0;
@@ -1100,6 +1101,13 @@ Block retuneSegment (const Block& seg, int sr, double tSeg0, const Vec& ts, cons
     double flat1 = lone ? f0mean * (std::pow (2.0, halfCents / 1200.0) - 1.0) : 0.0;
     double roll1 = lone ? std::max (4.0, 0.35 * flat1) : 0.0;
     if (lone && flat1 + roll1 > 0.45 * f0min) { const double k = 0.45 * f0min / (flat1 + roll1); flat1 *= k; roll1 *= k; }     // never reaching the next overtone
+    // the band of overtone h, in Hz either side of it: h times the band of the note, but never reaching half way to the next overtone (the bands grow with h, the
+    // overtones do not get further apart, so high up they would overlap and some sound would be moved twice)
+    auto loneBand = [&] (int h, double& fl, double& rl)
+    {
+        fl = flat1 * h; rl = roll1 * h;
+        if (fl + rl > 0.45 * f0min) { const double k = 0.45 * f0min / (fl + rl); fl *= k; rl *= k; }
+    };
     // the window of the correction: a fade in before the box, the box, a hold after it, then the fade out (for a voice on its own: after the ring-out)
     double tFadeEnd = ts.back() + hold + fo;
     std::vector<Vec> xAll;
@@ -1125,7 +1133,7 @@ Block retuneSegment (const Block& seg, int sr, double tSeg0, const Vec& ts, cons
     for (size_t c = 0; c < nch; ++c) for (size_t k = 0; k < m; ++k) x[c][k] = (double) seg[c][lo + k];
     std::vector<Vec> others;                                          // the voices beside the note, as lines over the samples of this stretch
     const Vec tLo (t.begin() + (long) lo, t.begin() + (long) hi);
-    for (const auto& line : nb) if (line.size() == ts.size()) others.push_back (interp (tLo, ts, line));
+    if (! p.oneVoice) for (const auto& line : nb) if (line.size() == ts.size()) others.push_back (interp (tLo, ts, line));
     const double fmaxNew = maxOf (Vec (f0n.begin() + (long) lo, f0n.begin() + (long) hi));
     if (! others.empty())
     {
@@ -1138,18 +1146,33 @@ Block retuneSegment (const Block& seg, int sr, double tSeg0, const Vec& ts, cons
         for (size_t c = 0; c < nch; ++c) for (size_t k = 0; k < m; ++k) { removed[c][k] *= w[lo + k]; added[c][k] *= w[lo + k]; }
     }
     else
-    for (int h = 1; h <= p.nharm; ++h)
+    {
+    // a voice on its own: its upper overtones are moved too (the first nharm only left the upper ones - the singer's ring, 2.5-4 kHz - at the old pitch,
+    // which sounded like a second singer a little off the first). "One voice only": every overtone up to loneTopHz. Found alone without being told: up to
+    // the overtone where its band would fill all the room between overtones (above that it would also move whatever else sounds there - another voice's
+    // or an accompaniment's upper overtones), at least nharm.
+    int hTop = p.nharm;
+    if (lone)
+    {
+        const int hMax = (int) std::floor (p.loneTopHz / std::max (1.0, fmaxNew));
+        int hFill = hMax;
+        if (! p.oneVoice && flat1 + roll1 > 0.0) hFill = (int) std::floor (0.45 * f0min / (flat1 + roll1));
+        hTop = std::max (p.nharm, std::min (hMax, hFill));
+    }
+    for (int h = 1; h <= hTop; ++h)
     {
         hooks.check();
-        hooks.report ("Correcting the note", 0.1 + 0.6 * (double) (h - 1) / (double) p.nharm);
+        hooks.report ("Correcting the note", 0.1 + 0.6 * (double) (h - 1) / (double) hTop);
         if (h * fmaxNew > 0.45 * sr) break;
         const CVec base = phasor (phi0, h, -1.0), up1 = phasor (phi1, h, 1.0);
         const double bw = p.bw * std::sqrt ((double) h);
+        double flH = 0.0, rlH = 0.0;
+        if (lone) loneBand (h, flH, rlH);
         parallelFor (nch, [&] (size_t c)
         {
             CVec z (m);
             for (size_t k = 0; k < m; ++k) z[k] = x[c][k] * base[k];
-            const CVec a = lone ? lowpassFlat (z, sr, flat1 * h, roll1 * h) : lowpassGaussian (z, sr, bw);
+            const CVec a = lone ? lowpassFlat (z, sr, flH, rlH) : lowpassGaussian (z, sr, bw);
             for (size_t k = 0; k < m; ++k)
             {
                 const cplx ak = a[k] * w[lo + k];
@@ -1157,6 +1180,7 @@ Block retuneSegment (const Block& seg, int sr, double tSeg0, const Vec& ts, cons
                 added[c][k] += (ak * up1[k]).real();
             }
         });
+    }
     }
     Vec g;
     if (p.match)

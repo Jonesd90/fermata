@@ -7,6 +7,9 @@ namespace td
     restored together with it, and has no taskbar button of its own. It is how Fermata's windows behave as parts of the main window.
     Returns false where this is not available (the caller then raises the windows by hand). Safe to call again and again. */
 bool makeOwnedBy (juce::Component& child, juce::Component& owner);
+/** True when this window is the one in front that has the keyboard (on Windows: the foreground window, even when a child window inside it, such as a
+    plug-in's own editor, has the keyboard focus). */
+bool isForegroundWindow (juce::Component&);
 /** Puts a window in the topmost band of the desktop again (in front of every program, without taking the keyboard). Does nothing where unavailable. */
 void keepTopmost (juce::Component&);
 

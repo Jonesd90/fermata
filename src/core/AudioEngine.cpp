@@ -64,6 +64,9 @@ void AudioEngine::prepare (double sr, int block)
     lastPlanSeen.store (nullptr);                  // (the audio thread is not running here: the plan it last saw may already be gone)
     sampleRate = sr;
     maxBlock = juce::jmax (16, block);
+    // plug-ins that a project (re)load or a mix copy starts from now on are prepared for what the device really runs at, not 48 kHz / 512
+    project.restoreSampleRate = sampleRate;
+    project.restoreBlock = maxBlock;
     zeros.assign ((size_t) juce::jmax (maxBlock * 4, 8192), 0.0f);
     ltcIn.prepare (sr); ltcGen.prepare (sr); ltcSeenRestart = -1;
     tbTap.assign (zeros.size() * 2, 0.0f);   // also the silence for the pre-roll hand-over (4096 samples at a time)
@@ -820,7 +823,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
         Node& nd = *ndp;
         float* L = mp.pre.getWritePointer (0);
         float* R = mp.pre.getWritePointer (1);
-        bool audible = true;
+        bool audible = true, soloOk = true;           // soloOk: not silenced by someone else's solo (the mute button left out)
         float faderGain = 1.0f;
         float* lastGain = nullptr; float* lastPre = nullptr;
         Param *meterL = nullptr, *meterR = nullptr;
@@ -908,7 +911,8 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                 for (int c = 0; c < nc; ++c)
                     juce::FloatVectorOperations::addWithMultiply ((c & 1) ? R : L, view.getReadPointer (c), k, n);
             }
-            audible = ! st->mute.get() && (! anySolo || st->solo.get() || nd.soloHeard);
+            soloOk = ! anySolo || st->solo.get() || nd.soloHeard;
+            audible = ! st->mute.get() && soloOk;
             faderGain = dbToGain (st->gainDb.get());
             if (const auto vm = st->vcaMask.load (std::memory_order_relaxed); vm != 0 && mp.mixer != nullptr) faderGain *= mp.mixer->vcaGain (vm);      // the VCAs of this strip add their gain
             lastGain = &st->lastGain; lastPre = &st->lastPre; meterL = &st->meterL; meterR = &st->meterR;
@@ -1000,9 +1004,9 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             for (int c = 0; c < 2; ++c) (*captureBufs)[(size_t) nd.tapIdx].addFrom (c, 0, *capSrc, c, 0, n);
         }
 
-        // sends (pre-fader ones still obey mute / solo, but not the fader)
+        // sends (pre-fader ones still obey mute / solo, but not the fader; a send whose "follow mute" is off ignores the mute button, still obeys solo)
         bool needPre = false;
-        for (auto& sp : nd.sends) needPre = needPre || (sp.st->pre.get() && (sp.st->active() || sp.st->lastGain > 0.0f));
+        for (auto& sp : nd.sends) needPre = needPre || (sp.st->pre.get() && sp.st->followMute.get() && (sp.st->active() || sp.st->lastGain > 0.0f));
         const float preTarget = audible ? 1.0f : 0.0f;
         if (needPre)
         {
@@ -1015,11 +1019,19 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             const float st1 = sd->active() ? dbToGain (sd->gainDb.get()) : 0.0f;
             if (st1 == 0.0f && sd->lastGain == 0.0f) continue;
             const juce::AudioBuffer<float>* src = sd->pre.get() ? &mp.preSend : &mp.post;
+            if (! sd->followMute.get())                           // carries on when the channel is muted: its own copy, before (1) or after (the fader) the fader
+            {
+                const float feed = soloOk ? (sd->pre.get() ? 1.0f : faderGain) : 0.0f;
+                for (int c = 0; c < 2; ++c) mp.sendTmp.copyFromWithRamp (c, 0, mp.pre.getReadPointer (c), n, sd->lastFeed, feed);
+                sd->lastFeed = feed;
+                src = &mp.sendTmp;
+            }
+            else sd->lastFeed = audible ? (sd->pre.get() ? 1.0f : faderGain) : 0.0f;     // (so switching "follow mute" off does not jump)
             bool hasInserts = false;
             for (auto& slot : sd->slots) hasInserts = hasInserts || slot.mightBeLoaded();
             if (hasInserts)                                       // the send's own inserts: these never touch the channel's own signal
             {
-                for (int c = 0; c < 2; ++c) mp.sendTmp.copyFrom (c, 0, *src, c, 0, n);
+                if (src != &mp.sendTmp) for (int c = 0; c < 2; ++c) mp.sendTmp.copyFrom (c, 0, *src, c, 0, n);
                 juce::AudioBuffer<float> view (mp.sendTmp.getArrayOfWritePointers(), 2, n);
                 for (auto& slot : sd->slots) slot.process (view);
                 src = &mp.sendTmp;

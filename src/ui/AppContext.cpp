@@ -3,6 +3,7 @@
 #include "TakeDisplay.h"
 #include "TalkbackGlow.h"
 #include "BusyWindow.h"
+#include "TimeReadout.h"
 
 namespace td
 {
@@ -30,6 +31,8 @@ AppContext::AppContext()
     props.setStorageParameters (o);
 
     project.insertFactory = plugins.makeFactory ([this] { return engine.getSampleRate(); }, [this] { return engine.getMaxBlock(); });
+    timereadout::shared().fromString (props.getUserSettings()->getValue ("timeReadout"));       // how the time readouts write the time (remembered on this computer)
+    timereadout::shared().addChangeListener (this);
     project.structure.addChangeListener (this);
     devices.addChangeListener (this);
     startTimer (4000);
@@ -81,6 +84,7 @@ AppContext::AppContext()
 
 AppContext::~AppContext()
 {
+    timereadout::shared().removeChangeListener (this);
     *anemanAlive = false;
     preampTicker.stopTimer();
     talkbackPoller.stopTimer();
@@ -154,6 +158,12 @@ void AppContext::applyTalkback()
 
 void AppContext::changeListenerCallback (juce::ChangeBroadcaster* source)
 {
+    if (source == &timereadout::shared())       // a time readout's mode / frame rate / start timecode changed: remember it
+    {
+        props.getUserSettings()->setValue ("timeReadout", timereadout::shared().toString());
+        props.saveIfNeeded();
+        return;
+    }
     if (source == &devices)     // remember the audio device choice for next launch
     {
         juce::Logger::writeToLog ("Audio device setup changed");

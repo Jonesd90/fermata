@@ -825,6 +825,18 @@ int main()
         CHECK (pre[2] > 0.2 && pre[0] < 1e-6 + post[0]);                                   // pre-fader: still there; Main is silent
         mixA.stripFor (violinId)->mute.set (true);
         CHECK (rig.measure (eng)[2] < 1e-6);                                              // but mute still silences it
+        {   // "follow mute" off (2.64): the send carries on when the channel is muted, pre or post fader; the fader still works on a post-fader one
+            auto* fb = mixA.stripFor (violinId)->sends.find (foldback);
+            fb->followMute.set (false);
+            CHECK (rig.measure (eng)[2] > 0.2);                                           // pre-fader, muted: still sent
+            fb->pre.set (false); mixA.stripFor (violinId)->gainDb.set (0.0f);
+            auto pm = rig.measure (eng);
+            CHECK (pm[2] > 0.2 && corr (rig.out[2], rig.in[0]) > 0.9 && pm[0] < 1e-6 + post[0]);   // post-fader, muted: still sent; the channel itself stays silent
+            mixA.stripFor (violinId)->gainDb.set (-100.0f);
+            CHECK (rig.measure (eng)[2] < 1e-6);                                          // ... and it still follows the fader
+            fb->followMute.set (true); fb->pre.set (true);
+            CHECK (rig.measure (eng)[2] < 1e-6);                                          // back on: mute silences it again
+        }
         mixA.stripFor (violinId)->mute.set (false);
         mixA.stripFor (violinId)->gainDb.set (0.0f);
         mixA.stripFor (violinId)->sends.find (foldback)->pre.set (false);
@@ -3457,7 +3469,10 @@ int main()
         const auto ob = q.addBus ("Out", true).id;
         auto& mq = q.addMixer ("M");
         AudioEngine e2 (q);
+        e2.prepare (96000.0, 1024);
+        CHECK (q.restoreSampleRate == 96000.0 && q.restoreBlock == 1024);      // plug-ins a reload starts are prepared for what the device runs at (2.64)
         e2.prepare (48000.0, 64);
+        CHECK (q.restoreSampleRate == 48000.0 && q.restoreBlock == 64);
         q.setSendLevel (mq, ta, ob, 0.0f); q.setSendLevel (mq, tb, ob, 0.0f);
         mq.busFor (ob)->outFirst.store (0);
         e2.rebuildPlan();

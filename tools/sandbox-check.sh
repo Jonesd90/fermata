@@ -31,3 +31,7 @@ $CXX -c "$HERE/src/core/CoreReservation.cpp" -o "$OUT/CoreReservation.o"
 $CXX -c "$HERE/tests/core_test.cpp" -o "$OUT/core_test.o"
 $CXX "$OUT"/*.o -o "$OUT/core_test" -lpthread -ldl -lrt
 "$OUT/core_test"
+# the time readout's formats and parsing (only needs juce_core and the LTC code)
+$CXX -c "$HERE/tests/timeformat_test.cpp" -o "$OUT/timeformat_test.o.x"
+$CXX "$OUT/timeformat_test.o.x" "$OUT/Ltc.o" "$OUT"/juce_*.o "$OUT/ct.o" -o "$OUT/timeformat_test" -lpthread -ldl -lrt
+"$OUT/timeformat_test"

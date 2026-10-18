@@ -294,6 +294,7 @@ private:
     void openProjectDialog();
     void showStartPanel();
     std::unique_ptr<juce::Component> startPanel;           // the "where do you want to save your project?" screen, until a project is chosen
+    ClickAwayEndsTyping clickAway { *this };               // a click outside an input / output name box ends the typing in it
 
     AppContext& app;
     MenuBarButton projectButton { "Project" }, audioButton { "Audio settings" }, preampsButton { "Preamps" }, designButton { "Project Designer" },

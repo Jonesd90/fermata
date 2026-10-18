@@ -102,6 +102,7 @@ var sendsToVar (const SendList& l, bool inserts)
         if (! s->active() && ! hasInserts) continue;
         var o = obj();
         put (o, "dest", s->dest.toString()); put (o, "gainDb", s->gainDb.get()); put (o, "pre", s->pre.get());
+        if (! s->followMute.get()) put (o, "followMute", false);          // (only written when off: on is how every send always was)
         if (inserts) put (o, "slots", slotsToVar (s->slots, kSendSlots));
         arr.add (o);
     }
@@ -116,7 +117,7 @@ void sendsFromVar (SendList& l, const var& v, const InsertFactory& factory, doub
         for (auto& sv : *a)
         {
             auto* s = l.get (juce::Uuid (sv["dest"].toString()));
-            if (levels) { s->gainDb.set ((float) (double) sv["gainDb"]); s->pre.set ((bool) sv["pre"]); }
+            if (levels) { s->gainDb.set ((float) (double) sv["gainDb"]); s->pre.set ((bool) sv["pre"]); s->followMute.set (sv.hasProperty ("followMute") ? (bool) sv["followMute"] : true); }
             if (inserts) slotsFromVar (s->slots, sv["slots"], factory, sr, block, kSendSlots);
             seen.push_back (s);
         }

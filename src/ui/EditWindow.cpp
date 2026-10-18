@@ -1527,6 +1527,17 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
 
     nameCaption.setText ("Edit:", juce::dontSendNotification);
     addAndMakeVisible (nameCaption); addAndMakeVisible (nameEditor); addAndMakeVisible (infoLabel);
+
+    // the time readout: where this edit's playhead is (moving while the edit plays); white when stopped, blue while anything plays, red while recording
+    addAndMakeVisible (clock);
+    clock.follow ([this]
+                  {
+                      if (app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId) return juce::jmax (0.0, app.playheadSecondsSmooth());
+                      return transportNow();
+                  },
+                  [this] { return app.engine.isRecording() ? TimeReadout::State::recording : app.isPlaying() ? TimeReadout::State::playing : TimeReadout::State::stopped; });
+    clock.onJump = [this] (double s) { goTo (s); };
+    clock.onFormatChanged = [this] { resized(); };
     nameEditor.setText (edit() ? edit()->name : "", false);
     auto commitEditName = [this]
     {
@@ -1707,7 +1718,7 @@ void EditWindowComponent::resized()
         { &slipLeftToggle, IW + 8, IH, 2 }, { &slipRightToggle, IW + 8, IH, 6 }, { &shuffleToggle, IW, IH, 2 }, { &insertFlagToggle, IW, IH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
-    r.removeFromTop (grid::flow (r, items));
+    r.removeFromTop (grid::flowAroundCentre (r, items, clock, clock.getIdealWidth (kClockH) + 4, kClockH));   // the time readout in the middle, the rest either side
     {
         auto row = r.removeFromTop (22);
         if (refBox.isVisible())
@@ -2237,6 +2248,7 @@ void EditWindowComponent::timerCallback()
     playButton.setButtonText (app.isPlaying() ? "Stop [Space]" : "Play [Space]");
     if (playheadMode.getToggleState() != app.playheadFollows) playheadMode.setToggleState (app.playheadFollows, juce::dontSendNotification);
     if (waveColourBtn.getToggleState() != app.waveColour) { waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification); repaint(); }
+    clock.setSampleRate (app.engine.getSampleRate());
     if (auto* e = edit())
         infoLabel.setText (juce::String (takesInEdit (*e)) + (takesInEdit (*e) == 1 ? " Take" : " Takes") + (e->overdubs.empty() ? juce::String() : ", " + juce::String ((int) e->overdubs.size()) + " overdub(s)") + ", " + formatTime (e->lengthSeconds()).substring (3, 8)
                            + (e->fixIn >= 0 ? "   [1] " + formatTime (e->fixIn).substring (3, 11) : juce::String())

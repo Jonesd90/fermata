@@ -150,8 +150,10 @@ struct SendState
     juce::Uuid dest;                  // the audio track / bus it goes to (message thread)
     Param gainDb { -100.0f };         // <= kSendOffDb means off
     Flag  pre;                        // true: taken before the channel fader
+    Flag  followMute { true };        // true: muting the channel mutes this send too (pre or post fader); false: the send carries on when the channel is muted
     InsertSlot slots[kSendSlots];
     float lastGain = 0.0f;            // audio thread only
+    float lastFeed = 0.0f;            // audio thread only: the gain of a send that does not follow mute, before its own level (fader or 1), last block
     bool active() const noexcept      { return gainDb.get() > kSendOffDb; }
 };
 

@@ -27,6 +27,18 @@ bool makeOwnedBy (juce::Component& child, juce::Component& owner)
 #endif
 }
 
+bool isForegroundWindow (juce::Component& c)
+{
+    auto* pc = c.getPeer();
+    if (pc == nullptr) return false;
+#if JUCE_WINDOWS
+    return GetForegroundWindow() == (HWND) pc->getNativeHandle();
+#else
+    if (auto* tl = dynamic_cast<juce::TopLevelWindow*> (&c)) return tl->isActiveWindow();
+    return pc->isFocused();
+#endif
+}
+
 void keepTopmost (juce::Component& c)
 {
 #if JUCE_WINDOWS

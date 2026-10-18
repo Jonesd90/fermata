@@ -36,7 +36,13 @@ public:
             if (idx >= (int) app.project.inputs.size()) return;
             app.project.setInputName (idx, alias.getText());
         };
-        alias.onReturnKey = commit; alias.onFocusLost = commit;
+        alias.onReturnKey = [this, commit] { commit(); alias.giveAwayKeyboardFocus(); };       // Enter: done (the box no longer has the keyboard)
+        alias.onEscapeKey = [this]
+        {
+            if (idx < (int) app.project.inputs.size()) alias.setText (app.project.inputs[(size_t) idx].name, juce::dontSendNotification);
+            alias.giveAwayKeyboardFocus();
+        };
+        alias.onFocusLost = commit;
         for (auto* c : std::initializer_list<juce::Component*> { &driver, &alias, &meter, &scale, &readout }) addAndMakeVisible (c);
 
         gain.setRange (0.0, 66.0, 0.5);
@@ -284,7 +290,13 @@ public:
             if (idx >= (int) app.project.outputs.size()) return;
             if (app.project.outputs[(size_t) idx].name != alias.getText()) { app.project.outputs[(size_t) idx].name = alias.getText(); app.project.changed(); }
         };
-        alias.onReturnKey = commit; alias.onFocusLost = commit;
+        alias.onReturnKey = [this, commit] { commit(); alias.giveAwayKeyboardFocus(); };
+        alias.onEscapeKey = [this]
+        {
+            if (idx < (int) app.project.outputs.size()) alias.setText (app.project.outputs[(size_t) idx].name, juce::dontSendNotification);
+            alias.giveAwayKeyboardFocus();
+        };
+        alias.onFocusLost = commit;
         fedBy.setColour (juce::Label::textColourId, desk::pal().cyan.withMultipliedBrightness (0.85f));
         fedBy.setFont (juce::FontOptions (10.5f));
         fedBy.setBorderSize (juce::BorderSize<int> (0));

@@ -19,6 +19,10 @@ struct Params
     double loneMargin = 20.0;                 // cents added either side of the wobble the band must cover
     double loneMaxHalf = 75.0;                // cents: the band never reaches further than this from the line (a neighbouring semitone is 100 c away)
     double tailMax = 1.5;                     // seconds: how long after the box the room's ring-out is still corrected (it stops early when the ring-out has died, or when a new sound starts there)
+    double loneTopHz = 8000.0;                // a voice on its own: its overtones are moved up to this frequency (not only the first nharm), so none is left at the old pitch
+    // "One voice only" (the user says only one singer / instrument is on this note): nothing is looked for beside it and nothing found there is kept apart,
+    // the band is never narrowed for a sound close by, and the whole note moves as a voice on its own
+    bool   oneVoice = false;
     int nharm = 10;
     bool match = true;
     bool trendFit = true;                     // the note's pitch (what the wobble is measured from) as a fitted trend; false = the prototype's plain smoothing
@@ -56,7 +60,9 @@ Vec refineTrackPeeled (const std::vector<Span>& chans, const Vec& ws, int sr, do
 std::vector<Vec> findNeighbours (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, const Vec& ts, const Vec& f0, double span = 110.0, int maxVoices = 2);
 /** Everything the editor measures about a boxed note: its line (Hz) on the grid ts, and the lines of the voices beside it (empty when it is alone). */
 struct NoteMeasure { Vec ts, f0; std::vector<Vec> nb; };
-NoteMeasure measureNote (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, double t0, double t1, double fLo, double fHi, const Hooks& hooks = {}, double prior = 20.0);
+/** lookForOthers = false ("One voice only"): no voices are looked for beside the note (nb stays empty). */
+NoteMeasure measureNote (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, double t0, double t1, double fLo, double fHi, const Hooks& hooks = {}, double prior = 20.0,
+                         bool lookForOthers = true);
 /** Does the measured line look like an overtone? Returns k (2..4) when it probably is the k-th partial, else 1. */
 int detectPartial (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, const Vec& ts, const Vec& f0);
 

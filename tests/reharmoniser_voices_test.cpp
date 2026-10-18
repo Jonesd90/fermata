@@ -193,6 +193,70 @@ int main()
         }
         expect ("lone voice: the wide bands leave far less of the old pitch than the narrow ones", ghostWide < ghostNarrow - 6.0, ghostWide - ghostNarrow, "dB");
     }
+
+    // ------------------------------------------------------------------ "One voice only" (2.64)
+    {
+        // on the two-voice mix: nothing is looked for beside the note, and a line handed in anyway is not kept apart
+        const NoteMeasure m1 = measureNote (chans, tk.weights, kSr, s0, t0, t1, fLo, fHi, {}, 20.0, false);
+        expect ("one voice only: nothing is looked for beside the note", m1.nb.empty(), (double) m1.nb.size());
+        Params q = p; q.oneVoice = true;
+        const Block a1 = retuneSegment (cut (mix), kSr, (double) i0 / kSr, m.ts, m.f0, pl.off, q, {}, m.nb);
+        const Block b1 = retuneSegment (cut (mix), kSr, (double) i0 / kSr, m.ts, m.f0, pl.off, q, {}, {});
+        bool same = true; for (size_t c = 0; c < a1.size() && same; ++c) same = a1[c] == b1[c];
+        expect ("one voice only: a line found beside it is not kept apart", same, same ? 1.0 : 0.0);
+
+        // a voice with a strong upper spectrum (24 overtones): ALL of them must move, not only the first ten (the upper ones left at the old pitch sound like a second
+        // singer a little off the first)
+        const double fR = 300.0; const size_t n3 = (size_t) (3.0 * kSr);
+        const Voice v3 { 30.0, 15.0, 5.5, 0.7, 1.0 };
+        const Vec c3 = voiceCents (v3, n3), c3new = voiceCents (v3, n3, -30.0);
+        const Vec f3 = voiceHz (c3, fR), f3new = voiceHz (c3new, fR);
+        auto addRich = [&] (Block& b, const Vec& f)
+        {
+            double ph = 0.0;
+            for (size_t i = 0; i < f.size(); ++i)
+            {
+                ph += 2.0 * kPi * f[i] / kSr;
+                double sm = 0; for (int h = 1; h <= 24; ++h) sm += std::sin ((double) h * ph) / std::pow ((double) h, 0.7);
+                for (size_t c = 0; c < b.size(); ++c) b[c][i] += (float) (0.3 * cg[c] * sm);
+            }
+        };
+        Block rich (2, std::vector<float> (n3, 0.0f)); addRich (rich, f3);
+        { Lcg r; for (auto& ch : rich) for (auto& v : ch) v += (float) (0.002 * r.next()); }
+        const double lo3 = fR * std::pow (2.0, -40.0 / 1200.0), hi3 = fR * std::pow (2.0, 90.0 / 1200.0);
+        const Tracking tk3 = trackingInputs (spansOf (rich), kSr, lo3, hi3);
+        std::vector<Span> ch3; for (int c : tk3.channels) ch3.push_back ({ rich[(size_t) c].data(), rich[(size_t) c].size() });
+        const NoteMeasure m3 = measureNote (ch3, tk3.weights, kSr, 0.0, 0.6, 2.4, lo3, hi3, {}, 20.0, false);
+        Params p3; p3.a4 = 440.0; p3.move = -30.0; p3.snap = 0.0; p3.ease = 0.0; p3.oneVoice = true;
+        const Plan pl3 = planCurve (m3.ts, m3.f0, p3, 62);
+        // the energy of overtones hA..hB along a line, in a band 20 Hz wide whatever the overtone (the old and new lines are 50-90 Hz apart up there)
+        auto upper = [&] (const Block& b, const Vec& f, size_t a, size_t e, int hA, int hB)
+        {
+            const size_t len = e - a; double ph = 0; Vec phi (len); for (size_t i = 0; i < len; ++i) { ph += 2.0 * kPi * f[a + i] / kSr; phi[i] = ph; }
+            double tot = 0;
+            for (int h = hA; h <= hB; ++h) for (size_t c = 0; c < b.size(); ++c)
+            {
+                CVec z (len); for (size_t i = 0; i < len; ++i) z[i] = (double) b[c][a + i] * std::polar (1.0, -(double) h * phi[i]);
+                const CVec lp = lowpassGaussian (z, kSr, 20.0); for (size_t i = 0; i < len; ++i) tot += std::norm (lp[i]);
+            }
+            return tot;
+        };
+        const size_t a3 = (size_t) (0.9 * kSr), e3 = (size_t) (2.1 * kSr);
+        auto run3 = [&] (double topHz)
+        {
+            Params q3 = p3; q3.loneTopHz = topHz;
+            return retuneSegment (rich, kSr, 0.0, m3.ts, m3.f0, pl3.off, q3);
+        };
+        const Block all = run3 (8000.0), ten = run3 (0.0);
+        const double ghostAll = db (upper (all, f3, a3, e3, 12, 22) / upper (rich, f3, a3, e3, 12, 22));
+        const double ghostTen = db (upper (ten, f3, a3, e3, 12, 22) / upper (rich, f3, a3, e3, 12, 22));
+        Block rich3new (2, std::vector<float> (n3, 0.0f)); addRich (rich3new, f3new);
+        const double landAll = db (upper (all, f3new, a3, e3, 12, 22) / upper (rich3new, f3new, a3, e3, 12, 22));
+        std::printf ("  overtones 12-22 at the old pitch: %+.1f dB moving them all, %+.1f dB moving only the first ten; landing %+.2f dB\n", ghostAll, ghostTen, landAll);
+        expect ("one voice only: the upper overtones leave the old pitch", ghostAll < -15.0, ghostAll, "dB");
+        expect ("one voice only: and land at the new pitch (level error)", std::abs (landAll) < 2.0, landAll, "dB");
+        expect ("(with only the first ten moved they stayed behind)", ghostTen > -3.0, ghostTen, "dB");
+    }
     std::printf (failures == 0 ? "ALL OK\n" : "%d FAILED\n", failures);
     return failures == 0 ? 0 : 1;
 }

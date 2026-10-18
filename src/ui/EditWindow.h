@@ -1,6 +1,7 @@
 #pragma once
 #include "AppContext.h"
 #include "Uikit.h"
+#include "TimeReadout.h"
 
 namespace td
 {
@@ -54,6 +55,8 @@ private:
     AppContext& app;
     juce::Uuid editId;
     juce::Label nameCaption, infoLabel;
+    TimeReadout clock;                                        // the big time readout in the middle of the top bar
+    static constexpr int kClockH = 58;
     // the Buses / VCAs view: an audio track's waveform drawn behind the automation lanes, for reference
     juce::Label refCaption; juce::ComboBox refBox; std::vector<juce::Uuid> refIds; juce::String refSig;
     void fillRefBox();
