@@ -106,6 +106,9 @@ private:
     juce::TextEditor nameEditor;
     MixIconButton themeButton { MixIconButton::Kind::Look }, copyButton { MixIconButton::Kind::CopyMix }, altButton { MixIconButton::Kind::AltDeck };
     juce::TextButton auditionButton, deleteButton { "Delete this mixer" };
+    juce::ToggleButton followBox { "Follow Processing Mixer" };    // a cue mixer: plays the processing mixer's main mix instead of its own (which is kept)
+    std::unique_ptr<juce::Component> followCover;               // over the strips while it follows (they rest, untouchable, until it is unticked)
+    void updateFollow();
     int slotCount = 1;                    // insert slots shown on every strip: one more than the highest one in use
     int slotsNeeded();
     int topBarMinWidth() const;

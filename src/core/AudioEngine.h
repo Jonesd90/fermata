@@ -223,6 +223,7 @@ private:
         int latency = 0;                        // the longest path through the mixer (samples): all Ext Bus outputs are this late
         int tapLatency = 0;                     // offline render: the captured signals are this late
         bool wasPlaying = false;                // audio thread
+        bool resumeClear = false;               // audio thread: it rested (a cue mixer following the processing mixer): empty its delay lines when it runs again
         // the tail: after playback stops, the mixer that was playing goes on running (with silence going in) until its reverbs have died away,
         // like outboard gear after the tape stops (audio thread only)
         bool ranLive = false;                   // it ran as a live mixer in the last block
@@ -238,12 +239,13 @@ private:
     };
     struct TrackPlan { int numCh = 1; int inputs[kMaxTrackChannels] {}; std::shared_ptr<TrackLive> live; };
     /** One mixer to run in this block, and how. */
-    struct MixerJob { MixerPlan* mp = nullptr; bool silenceOwnOutput = false; int alsoToFirst = -1; bool strict = false; };
+    struct MixerJob { MixerPlan* mp = nullptr; bool silenceOwnOutput = false; int alsoToFirst = -1; bool strict = false; bool capMain = false; };   // capMain: copy its main output aside (for the cue mixers that follow it)
     struct Plan
     {
         std::vector<TrackPlan> tracks;
         std::vector<std::unique_ptr<MixerPlan>> mixers;
         std::vector<MixerJob> jobs;                             // audio thread: the mixers that run in this block (room for all of them)
+        std::vector<MixerPlan*> followers;                      // audio thread: the cue mixers that follow the processing mixer in this block (room for all)
         int outChannels = 0;                                    // driver outputs the mixers' outScratch buffers have room for
         std::vector<const juce::AudioBuffer<float>*> disk;      // per track: the audio to play instead of the live input (audio thread fills it)
     };
@@ -296,7 +298,8 @@ private:
     };
 
     void processMixer (const Plan& pl, MixerPlan&, const float* const* in, int numIn, int offset, int n, float* const* out, int numOut, bool playing,
-                       bool silenceOwnOutput, int alsoToFirst, bool playbackOnly = false, float* tapL = nullptr, float* tapR = nullptr);
+                       bool silenceOwnOutput, int alsoToFirst, bool playbackOnly = false, float* tapL = nullptr, float* tapR = nullptr,
+                       float* mainL = nullptr, float* mainR = nullptr);
     /** The audio thread has just picked up a new plan: the sound that is on its way through the old one's delay lines (delay compensation) is moved
         into the new one, so a rebuild (starting or stopping a recording, a routing change) never puts a gap or a click into what you hear. */
     static void carryOver (Plan& from, Plan& to) noexcept;
@@ -304,7 +307,8 @@ private:
     static bool mixerHasOutput (const MixerPlan&) noexcept;
     /** Runs one mixer of the block on whichever thread takes it (see MixerWorkers). */
     static void runMixerJob (void* engine, int index) noexcept;
-    struct BlockJobs { Plan* plan = nullptr; const float* const* in = nullptr; int numIn = 0; float* const* out = nullptr; int numOut = 0, n = 0; bool playing = false; float* tapL = nullptr; float* tapR = nullptr; };
+    struct BlockJobs { Plan* plan = nullptr; const float* const* in = nullptr; int numIn = 0; float* const* out = nullptr; int numOut = 0, n = 0; bool playing = false; float* tapL = nullptr; float* tapR = nullptr;
+                       float* mainL = nullptr; float* mainR = nullptr; };
     BlockJobs blockJobs;                            // audio thread: what the mixer jobs of this block work on
     std::atomic<juce::uint64> parallelBlocks { 0 };
     std::atomic<Plan*> lastPlanSeen { nullptr };    // audio thread: the plan of the previous block (see carryOver)
@@ -364,6 +368,7 @@ private:
     std::atomic<bool> crOn { false }, tbPlay { false };
     float crGain = 0.0f;                            // audio thread: the CR mic's own fade (no click when it opens or closes)
     std::vector<float> tbTap;                       // audio thread: the playback-only main output of the processing mixer, left then right
+    std::vector<float> mainCap;                     // audio thread: the processing mixer's main output, left then right, for the cue mixers that follow it
     std::unique_ptr<RecordingSession> session;      // owned by the message thread
     juce::TimeSliceThread writerThread { "Disk writer" };
     juce::WavAudioFormat wav;

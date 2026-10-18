@@ -3345,7 +3345,8 @@ static void openReharmoniser (AppContext& app, const juce::Uuid& eid, juce::Comp
         if (auto* mx = app.project.mixerOfEdit (eid))
         {
             auto outOf = [&] (const juce::Uuid& busId) { for (auto& b : mx->busPool) if (b->busId == busId) return b->outFirst.load(); return -1; };
-            int f = outOf (mx->mainBus);
+            int f = -1;
+            for (auto& b : app.project.buses) if (b.external && mx->busFor (b.id)->isMain.get()) { f = outOf (b.id); if (f >= 0) break; }     // a main output first
             if (f < 0) for (auto& b : app.project.buses) if (b.external) { f = outOf (b.id); if (f >= 0) break; }
             if (f >= 0) outFirst = f;
         }

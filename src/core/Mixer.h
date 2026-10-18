@@ -208,6 +208,8 @@ struct BusState
     Param gainDb { 0.0f };
     Flag  mute, solo;                 // solo: Int Bus only (soloing a bus keeps everything that feeds it open)
     std::atomic<int> outFirst { -1 }; // Ext Bus only: first driver output of its stereo pair (-1 = goes nowhere)
+    Flag  isMain { false };           // Ext Bus only: one of this mixer's MAIN outputs. Strips whose output is 'Main' go to every Ext Bus ticked so (several may be),
+                                      // which also play whatever is sent to them. None ticked: 'Main' goes nowhere.
     Flag  outOn { false };             // Int Bus only: its output (after the fader) is connected to outDest
     juce::Uuid outDest = juce::Uuid::null();               // Int Bus only: an Int Bus or Ext Bus of this mixer; null = the mixer's main Ext Bus
     SendState outSend;
@@ -235,7 +237,8 @@ struct MixerState
     juce::Uuid id;
     juce::String name { "Mixer" };
     juce::Uuid editId = juce::Uuid::null();                // set: this is the mixer of one Edit (it plays only that Edit, and is made, named and removed with it)
-    juce::Uuid mainBus = juce::Uuid::null();               // the Ext Bus designated as this mixer's main output (null or not found = the first Ext Bus)
+    juce::Uuid mainBus = juce::Uuid::null();               // (projects before 2.65 only: the one main Ext Bus, null = the first; now each BusState has isMain)
+    Flag followProcessing { false };                       // a cue mixer only: its own mix rests (kept as it is) and its Ext buses play the processing mixer's main output
     std::atomic<bool> monoCheck { false };                 // audition switch (not saved): the Ext bus outputs carry (L+R)/2 on both sides, to hear mono-compatibility problems
     std::atomic<int> ditherBits { 24 };                    // dither on this mixer's driver outputs: 0 = off, 24 or 16 bit TPDF (what the converter / next device keeps)
 

@@ -70,6 +70,7 @@ void AudioEngine::prepare (double sr, int block)
     zeros.assign ((size_t) juce::jmax (maxBlock * 4, 8192), 0.0f);
     ltcIn.prepare (sr); ltcGen.prepare (sr); ltcSeenRestart = -1;
     tbTap.assign (zeros.size() * 2, 0.0f);   // also the silence for the pre-roll hand-over (4096 samples at a time)
+    mainCap.assign (zeros.size() * 2, 0.0f);
     for (auto& m : project.mixers)                // plug-ins must know the new sample rate / block size
     {
         for (auto& st : m->stripPool) { for (auto& slot : st->slots) slot.reprepare (sampleRate, maxBlock, 2);
@@ -124,24 +125,21 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
                 if (d >= 0 && d != (int) i && s->active()) edges.push_back ({ (int) i, d, s.get() });
             }
         }
-        // the outputs: every Audio Track / Int Bus whose output is on goes (after its fader, at unity) to its chosen bus, or to the mixer's main Ext Bus
+        // the outputs: every Audio Track / Int Bus whose output is on goes (after its fader, at unity) to its chosen bus, or - set to 'Main' - to EVERY Ext Bus
+        // ticked as a main output of this mixer (none ticked: nowhere). A main Ext Bus also plays whatever is sent to it.
         {
-            juce::Uuid mainId = m->mainBus;
-            if (indexOfId (mainId) < 0 || nodes[(size_t) indexOfId (mainId)]->kind != NodeKind::ExtBus)
-            {
-                mainId = {};
-                for (auto& n : nodes) if (n->kind == NodeKind::ExtBus) { mainId = n->bus->busId; break; }
-            }
-            if (const int mi = indexOfId (mainId); mi >= 0 && nodes[(size_t) mi]->kind == NodeKind::ExtBus) nodes[(size_t) mi]->isMainOut = true;
+            std::vector<int> mains;
+            for (size_t i = 0; i < nodes.size(); ++i) if (nodes[i]->kind == NodeKind::ExtBus && nodes[i]->bus->isMain.get()) mains.push_back ((int) i);
+            if (! mains.empty()) nodes[(size_t) mains.front()]->isMainOut = true;   // the first one is "the" main output (talkback playback, a cue mixer that follows)
             for (size_t i = 0; i < nodes.size(); ++i)
             {
                 Flag* on = nullptr; const juce::Uuid* dest = nullptr; SendState* st = nullptr;
                 if (nodes[i]->kind == NodeKind::Track)       { on = &nodes[i]->strip->outOn; dest = &nodes[i]->strip->outDest; st = &nodes[i]->strip->outSend; }
                 else if (nodes[i]->kind == NodeKind::IntBus) { on = &nodes[i]->bus->outOn;   dest = &nodes[i]->bus->outDest;   st = &nodes[i]->bus->outSend; }
                 if (on == nullptr || ! on->get()) continue;
-                int d = indexOfId (dest->isNull() ? mainId : *dest);
-                if (d < 0 && ! dest->isNull()) d = indexOfId (mainId);       // the chosen bus is gone: fall back to main
-                if (d >= 0 && d != (int) i) edges.push_back ({ (int) i, d, st });
+                const int d = dest->isNull() ? -1 : indexOfId (*dest);
+                if (d >= 0) { if (d != (int) i) edges.push_back ({ (int) i, d, st }); continue; }
+                for (int mi : mains) if (mi != (int) i) edges.push_back ({ (int) i, mi, st });   // 'Main' (or the chosen bus is gone): every main output
             }
         }
         // put the channels in an order where every channel follows the ones that feed it (ties keep the list order)
@@ -228,6 +226,7 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
         p->mixers.push_back (std::move (mp));
     }
     p->jobs.resize (p->mixers.size());
+    p->followers.assign (p->mixers.size(), nullptr);
     p->outChannels = juce::jmax (8, deviceOutputs);
     return p;
 }
@@ -411,7 +410,7 @@ void AudioEngine::runMixerJob (void* engine, int index) noexcept
     for (int k = 0; k < mp.numTouched; ++k) juce::FloatVectorOperations::clear (mp.outScratch.getWritePointer (mp.touched[(size_t) k]), b.n);
     for (int c = 0; c < b.numOut && c < (int) mp.outPtrs.size(); ++c) mp.outPtrs[(size_t) c] = b.out[c] != nullptr ? mp.outScratch.getWritePointer (c) : nullptr;
     e.processMixer (*b.plan, mp, b.in, b.numIn, 0, b.n, mp.outPtrs.data(), b.numOut, b.playing, job.silenceOwnOutput, job.alsoToFirst,
-                    job.strict, job.strict ? b.tapL : nullptr, job.strict ? b.tapR : nullptr);
+                    job.strict, job.strict ? b.tapL : nullptr, job.strict ? b.tapR : nullptr, job.capMain ? b.mainL : nullptr, job.capMain ? b.mainR : nullptr);
 }
 
 /** Moves a delay line's contents across when both plans have the same delay there (a changed delay starts empty: it cannot be helped). */
@@ -568,11 +567,31 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
                     { monitorOut = nd->bus->outFirst.load (std::memory_order_relaxed); break; }
                 if (monitorOut < 0) audActive = false;          // the engineer has nowhere to hear it: leave everything as it is
             }
+            // cue mixers that follow the processing mixer: their own mix rests; each of their Ext buses plays the main output of the processing mixer
+            // (or of the Edit mixer that plays instead of it), copied aside as that mixer runs
+            const MixerPlan* srcPlan = editMixerPlays ? editPlan : (pl->mixers.empty() ? nullptr : pl->mixers.front().get());
+            int nFollow = 0;
+            const bool canFollow = srcPlan != nullptr && (size_t) numSamples <= zeros.size() && mainCap.size() >= zeros.size() * 2;
+            float* const mainL = mainCap.data();
+            float* const mainR = mainCap.data() + zeros.size();
+            if (canFollow)
+                for (auto& mp : pl->mixers)
+                {
+                    if (mp.get() == pl->mixers.front().get() || ! mp->mixer->editId.isNull() || ! mp->mixer->followProcessing.get()) continue;
+                    if (! mixerIsLive (*mp->mixer, false, ps, editMixerPlays)) continue;
+                    const bool audited = audActive && mp->mixer == aud;
+                    if (! audited && ! mixerHasOutput (*mp)) continue;
+                    if (nFollow < (int) pl->followers.size()) pl->followers[(size_t) nFollow++] = mp.get();
+                }
+            if (nFollow > 0) { juce::FloatVectorOperations::clear (mainL + offset, n); juce::FloatVectorOperations::clear (mainR + offset, n); }
             // the mixers that run in this block: an Edit mixer sleeps unless its own Edit plays, and a mixer whose Ext buses go to no driver output
             // is not run at all (nothing of it could be heard), unless it is being auditioned or feeds the talkback playback
             int nJobs = 0;
             for (auto& mp : pl->mixers)
             {
+                bool following = false;
+                for (int f = 0; f < nFollow; ++f) following = following || pl->followers[(size_t) f] == mp.get();
+                if (following) { mp->resumeClear = true; continue; }     // (its outputs are filled below from the processing mixer's)
                 if (mixerIsLive (*mp->mixer, mp.get() == pl->mixers.front().get(), ps, editMixerPlays))
                 {
                     mp->ranLive = true; mp->tailNow = false; mp->tailLeft = 0;
@@ -586,9 +605,10 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
                 }
                 const bool strict = tbPlayNow && mp.get() == (editMixerPlays ? editPlan : pl->mixers.front().get());       // the processing mixer (or the playing Edit's mixer)
                 const bool audited = audActive && mp->mixer == aud;
-                if (! strict && ! audited && ! mixerHasOutput (*mp)) continue;
+                const bool capMain = nFollow > 0 && mp.get() == srcPlan;
+                if (! strict && ! audited && ! capMain && ! mixerHasOutput (*mp)) continue;
                 if (nJobs >= (int) pl->jobs.size()) break;
-                pl->jobs[(size_t) nJobs++] = { mp.get(), audActive && mp->mixer == eng, audited ? monitorOut : -1, strict };
+                pl->jobs[(size_t) nJobs++] = { mp.get(), audActive && mp->mixer == eng, audited ? monitorOut : -1, strict, capMain };
             }
             const bool playingNow = ps != nullptr && ! direct;
             for (int j = 0; j < nJobs; ++j) pl->jobs[(size_t) j].mp->outPeak = 0.0f;
@@ -596,7 +616,7 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
             // order (so the result is exactly what running them one after another gives).
             if (nJobs >= 2 && mixerWorkers.size() > 0 && offset == 0 && n == numSamples && numOut <= pl->outChannels)
             {
-                blockJobs = { pl, in, numIn, out, numOut, n, playingNow, tapL, tapR };
+                blockJobs = { pl, in, numIn, out, numOut, n, playingNow, tapL, tapR, mainL, mainR };
                 mixerWorkers.run (nJobs, &AudioEngine::runMixerJob, this);
                 parallelBlocks.fetch_add (1, std::memory_order_relaxed);
                 for (int j = 0; j < nJobs; ++j)
@@ -614,8 +634,29 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
                 {
                     const auto& job = pl->jobs[(size_t) j];
                     processMixer (*pl, *job.mp, in, numIn, offset, n, out, numOut, playingNow, job.silenceOwnOutput, job.alsoToFirst,
-                                  job.strict, job.strict ? tapL : nullptr, job.strict ? tapR : nullptr);
+                                  job.strict, job.strict ? tapL : nullptr, job.strict ? tapR : nullptr, job.capMain ? mainL : nullptr, job.capMain ? mainR : nullptr);
                 }
+            for (int f = 0; f < nFollow; ++f)                    // the following cue mixers: the main output on each of their Ext buses' driver outputs
+            {
+                const auto& fp = *pl->followers[(size_t) f];
+                const bool audited = audActive && fp.mixer == aud;
+                float pk = 0.0f;
+                for (int c = 0; c < 2; ++c) { const auto mm = juce::FloatVectorOperations::findMinAndMax ((c == 0 ? mainL : mainR) + offset, n); pk = juce::jmax (pk, std::abs (mm.getStart()), std::abs (mm.getEnd())); }
+                auto addPair = [&] (int first)
+                {
+                    for (int c = 0; c < 2; ++c)
+                        if (first >= 0 && first + c < numOut && out[first + c] != nullptr)
+                            juce::FloatVectorOperations::add (out[first + c] + offset, (c == 0 ? mainL : mainR) + offset, n);
+                };
+                for (auto& nd : fp.order)
+                    if (nd->kind == NodeKind::ExtBus)
+                    {
+                        addPair (nd->bus->outFirst.load (std::memory_order_relaxed));
+                        if (pk > nd->bus->meterL.get()) nd->bus->meterL.set (pk);
+                        if (pk > nd->bus->meterR.get()) nd->bus->meterR.set (pk);
+                    }
+                if (audited) addPair (monitorOut);              // auditioned by the engineer: heard on the engineer's pair too
+            }
             for (int j = 0; j < nJobs; ++j)                     // the tails: stop once the outputs have stayed below -90 dB for half a second (or after 30 s)
             {
                 auto& mp = *pl->jobs[(size_t) j].mp;
@@ -782,7 +823,7 @@ static void panGains (float pan, bool stereoSource, float& gL, float& gR) noexce
 
 void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* const* in, int numIn, int offset, int n,
                                 float* const* out, int numOut, bool playing, bool silenceOwnOutput, int alsoToFirst,
-                                bool playbackOnly, float* tapL, float* tapR)
+                                bool playbackOnly, float* tapL, float* tapR, float* mainL, float* mainR)
 {
     currentHostTransport() = &transport;                    // the plug-ins in this mixer read the transport from here (on whichever thread runs it)
     bool anySolo = false;
@@ -803,10 +844,10 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
 
     for (auto& nd : mp.order) if (nd->receives) nd->incoming.clear (0, n);
     const bool playingForDelays = playing && ! mp.tailNow;
-    if (playingForDelays != mp.wasPlaying)                 // playing starts (or jumps): old audio must not come out of the delay lines. When it stops they are
+    if (playingForDelays != mp.wasPlaying || mp.resumeClear)    // playing starts (or jumps): old audio must not come out of the delay lines. When it stops they are
     {                                                      // left alone, so what is on its way through (a reverb's input, say) still comes out: the tail
-        const bool starts = playingForDelays;
-        mp.wasPlaying = playingForDelays;
+        const bool starts = playingForDelays || mp.resumeClear;     // (or the mixer rested while it followed the processing mixer: what is in them is old)
+        mp.wasPlaying = playingForDelays; mp.resumeClear = false;
         if (starts)
         for (auto& nd : mp.order)
         {
@@ -1063,6 +1104,11 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             {
                 juce::FloatVectorOperations::copy (tapL + offset, outBuf->getReadPointer (0), n);
                 juce::FloatVectorOperations::copy (tapR + offset, outBuf->getReadPointer (1), n);
+            }
+            if (mainL != nullptr && nd.isMainOut)                                 // the main output, for the cue mixers that follow this mixer
+            {
+                juce::FloatVectorOperations::copy (mainL + offset, outBuf->getReadPointer (0), n);
+                juce::FloatVectorOperations::copy (mainR + offset, outBuf->getReadPointer (1), n);
             }
             for (int c = 0; c < 2; ++c)
             {

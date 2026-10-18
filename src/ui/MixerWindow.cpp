@@ -696,8 +696,8 @@ protected:
     std::vector<std::pair<juce::String, juce::Rectangle<int>>> sections;
 };
 
-/** The output of a strip, after its fader: an on / off button and the place it goes to (the mixer's main Ext Bus, or any Int / Ext Bus).
-    On an Ext Bus strip the same spot holds the tick box that makes it the mixer's main output. */
+/** The output of a strip, after its fader: an on / off button and the place it goes to ('Main' = every Ext Bus ticked as Main out, or any Int / Ext Bus).
+    On an Ext Bus strip the same spot holds the tick box that makes it one of the mixer's main outputs. */
 class StripOutputRow : public juce::Component
 {
 public:
@@ -707,11 +707,13 @@ public:
         if (ext)
         {
             mainBox.setButtonText ("Main out");
-            mainBox.setTooltip ("Tick to make this Ext Bus the main output of this mixer. Strips whose output is set to 'Main' go here.");
+            mainBox.setTooltip ("Ticked: this Ext Bus is a main output of this mixer - every strip whose output is set to 'Main' goes here, as well as whatever is "
+                                "sent to it. Several Ext Buses can be ticked: each gets the main mix (plus its own extra sends, e.g. a performer's main mix with more of "
+                                "themselves). None ticked: 'Main' goes nowhere.");
             mainBox.onClick = [this]
             {
                 if (updating) return;
-                mixer.mainBus = id;
+                mixer.busFor (id)->isMain.set (mainBox.getToggleState());
                 app.engine.rebuildPlan(); app.project.markDirty(); app.project.changed();
             };
             addAndMakeVisible (mainBox);
@@ -722,7 +724,7 @@ public:
             button.setTooltip ("Send the output of this strip (after the fader) to the place chosen on the right");
             button.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff2b9e6a));
             button.onClick = [this] { if (! updating) { on->set (button.getToggleState()); app.engine.rebuildPlan(); app.project.markDirty(); } };
-            box.setTooltip ("Where the output of this strip (after the fader) goes: the main Ext Bus, or any Int / Ext Bus of this mixer");
+            box.setTooltip ("Where the output of this strip (after the fader) goes: 'Main' (every Ext Bus ticked as Main out), or any Int / Ext Bus of this mixer");
             box.onChange = [this] { if (! updating) choose(); };
             addAndMakeVisible (button); addAndMakeVisible (box);
         }
@@ -730,7 +732,7 @@ public:
     }
     void fill()
     {
-        if (ext) return;
+        if (ext) { refresh(); return; }                                   // (an Ext Bus: only its Main out tick to show - it used to be left unticked whatever the mixer did)
         juce::String sig;                                                  // rebuild the list only when the buses changed, so an open drop-down is not torn down 3 times a second
         for (auto& b : app.project.buses) sig << b.id.toString() << b.name << (b.external ? "E" : "I") << "|";
         sig << id.toString();
@@ -751,7 +753,7 @@ public:
         updating = true;
         if (ext)
         {
-            mainBox.setToggleState (effectiveMain() == id, juce::dontSendNotification);
+            mainBox.setToggleState (mixer.busFor (id)->isMain.get(), juce::dontSendNotification);
         }
         else
         {
@@ -759,9 +761,8 @@ public:
             int want = 1;
             for (size_t i = 0; i < ids.size(); ++i) if (! dest->isNull() && ids[i] == *dest) want = (int) i + 2;
             if (box.getSelectedId() != want) box.setSelectedId (want, juce::dontSendNotification);
-            const auto mainId = effectiveMain();
-            const auto* mb = app.project.findBus (mainId);
-            box.setTooltip ("Where the output of this strip goes (after the fader). 'Main' = " + (mb != nullptr ? mb->name : juce::String ("no Ext Bus yet")));
+            const auto mains = mainNames();
+            box.setTooltip ("Where the output of this strip goes (after the fader). 'Main' = " + (mains.isNotEmpty() ? mains : juce::String ("nowhere: no Ext Bus is ticked as Main out")));
         }
         updating = false;
     }
@@ -773,12 +774,12 @@ public:
         box.setBounds (r.reduced (0, 1));
     }
 private:
-    juce::Uuid effectiveMain() const
+    /** The Ext Buses ticked as Main out in this mixer, by name ("Main L-R, Cans 1"). */
+    juce::String mainNames() const
     {
-        const auto* mb = app.project.findBus (mixer.mainBus);
-        if (mb != nullptr && mb->external) return mixer.mainBus;
-        for (auto& b : app.project.buses) if (b.external) return b.id;
-        return juce::Uuid::null();
+        juce::StringArray n;
+        for (auto& b : app.project.buses) if (b.external && mixer.busFor (b.id)->isMain.get()) n.add (b.name);
+        return n.joinIntoString (", ");
     }
     void choose()
     {
@@ -1648,6 +1649,16 @@ MixerComponent::MixerComponent (AppContext& a, const juce::Uuid& id) : app (a), 
     };
     addChildComponent (deleteButton);
 
+    followBox.setTooltip ("Ticked: this cue mixer plays exactly what the processing mixer sends to its main output (plug-ins, automation and all), on every one of "
+                          "this mixer's Ext Bus outputs. This mixer's own mix is kept as it is, untouched, and comes back the moment you untick it.");
+    followBox.setColour (juce::ToggleButton::textColourId, theme::text);
+    followBox.onClick = [this]
+    {
+        if (auto* m = mixer()) { m->followProcessing.set (followBox.getToggleState()); app.project.markDirty(); }
+        updateFollow();
+    };
+    addChildComponent (followBox);
+
     nameCaption.setText ("Mixer name:", juce::dontSendNotification);
     addAndMakeVisible (nameCaption);
     nameEditor.setTooltip ("Type a new name and press Enter to rename this mixer");
@@ -1690,7 +1701,7 @@ int MixerComponent::topBarMinWidth() const
 {
     auto* m = mixer();
     const bool other = m != nullptr && ! app.isEngineerMixer (m->id);
-    return 84 + 180 + 76 + 140 + (other ? 410 : 0);                // name, the two icons, a little room for messages
+    return 84 + 180 + 76 + 140 + (other ? 600 : 0);                // name, the two icons, a little room for messages (a cue mixer: audition, delete, follow)
 }
 int MixerComponent::slotsNeeded()
 {
@@ -1862,6 +1873,8 @@ void MixerComponent::updateAuditionButton()
     const bool on = m != nullptr && app.isAuditioning (m->id);
     auditionButton.setVisible (other);
     deleteButton.setVisible (other);
+    if (followBox.isVisible() != other) { followBox.setVisible (other); resized(); }
+    if (m != nullptr && (followBox.getToggleState() != m->followProcessing.get() || (followCover != nullptr) != (other && m->followProcessing.get()))) updateFollow();
     altButton.setVisible (other);
     altButton.setGlow (other && m != nullptr && app.project.altMixer == m->id);
     auditionButton.setButtonText ((on ? "AUDITIONING: " : "") + (m != nullptr ? m->name : juce::String()) + " Audition");
@@ -1876,6 +1889,39 @@ void MixerComponent::updateAuditionButton()
     }
     themeButton.setDarkLook (mixTheme().dark);
     themeButton.setTooltip (mixTheme().dark ? "Dark look is on (the desk a shade darker). Click for the light look." : "Light look is on. Click for the dark look (the same colours, a shade darker).");
+}
+
+/** While a cue mixer follows the processing mixer: a cover over its strips, which rest (kept as they were) until the box is unticked. */
+namespace
+{
+class FollowCover : public juce::Component
+{
+public:
+    FollowCover() { setInterceptsMouseClicks (true, true); }      // (the strips under it can't be touched while they rest)
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (mixTheme().bg.withAlpha (0.82f));
+        auto r = getLocalBounds().reduced (24).withSizeKeepingCentre (juce::jmin (620, getWidth() - 48), 120);
+        g.setColour (theme::accent.withAlpha (0.18f)); g.fillRoundedRectangle (r.toFloat(), 8.0f);
+        g.setColour (theme::accent); g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 8.0f, 1.5f);
+        g.setColour (mixTheme().text);
+        g.setFont (juce::FontOptions (17.0f, juce::Font::bold));
+        g.drawText ("Following the processing mixer", r.removeFromTop (48).withTrimmedTop (14), juce::Justification::centred, false);
+        g.setFont (juce::FontOptions (13.0f));
+        g.drawFittedText ("Every Ext Bus output of this mixer plays the processing mixer's main mix.\nThis mixer's own mix is kept as it was: untick \"Follow Processing Mixer\" to use it again.",
+                          r.reduced (16, 4), juce::Justification::centredTop, 3);
+    }
+};
+}
+
+void MixerComponent::updateFollow()
+{
+    auto* m = mixer();
+    const bool other = m != nullptr && ! app.isEngineerMixer (m->id) && m->editId.isNull();
+    const bool on = other && m->followProcessing.get();
+    followBox.setToggleState (on, juce::dontSendNotification);
+    if (on && followCover == nullptr) { followCover = std::make_unique<FollowCover>(); addAndMakeVisible (*followCover); followCover->setBounds (viewport.getBounds()); }
+    if (! on && followCover != nullptr) followCover.reset();      // (the engine reads the flag at every block: nothing else to do)
 }
 
 namespace
@@ -1998,12 +2044,14 @@ void MixerComponent::resized()
     if (pasteButton.isVisible()) { pasteButton.setBounds (top.removeFromRight (64).reduced (2, 3)); }
     if (altButton.isVisible()) { altButton.setBounds (top.removeFromRight (34).withSizeKeepingCentre (30, 24)); top.removeFromRight (2); }
     if (deleteButton.isVisible()) deleteButton.setBounds (top.removeFromRight (150).reduced (3));
+    if (followBox.isVisible()) followBox.setBounds (top.removeFromRight (190).reduced (2, 3));
     if (auditionButton.isVisible()) auditionButton.setBounds (top.removeFromRight (260).reduced (3));
     nameCaption.setBounds (top.removeFromLeft (84).reduced (4, 0));
     nameEditor.setBounds (top.removeFromLeft (180).reduced (0, 3));
     statusLabel.setBounds (top.reduced (8, 0));
     // Big enough for every strip: no scroll bars at all (never one that is only there because the other one takes some room). Smaller: bars.
     viewport.setBounds (r);
+    if (followCover != nullptr) followCover->setBounds (r);
     if (! inApply && holder->getNumStrips() > 0) applyHeight();
     updateBars();
     if (! inLimits) { inLimits = true; updateWindowLimits(); inLimits = false; }

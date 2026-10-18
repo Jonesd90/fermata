@@ -6,6 +6,14 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.65.0
+- **Mixer: "Main out" is now a tick box on every Ext Bus, and several can be ticked at once.** A strip whose output is set to **Main** goes to every Ext Bus ticked as Main out, so the main mix can feed several outputs. A ticked Ext Bus also plays whatever is sent to it (a send, or a strip's output set to that bus): for example a performer's feed that is the main mix plus more of themselves, without making a cue mix for them.
+  - **Nothing ticked means Main goes nowhere.** Until now an unticked mixer still sent Main to the first Ext Bus, which was confusing. (Part of that was a display fault: the Main out box on an Ext Bus strip was never updated, so it always looked unticked even where Main was going.)
+  - **A new mixer starts with its first Ext Bus ticked**, and so does a mixer that gets its first Ext Bus. An Ext Bus added later starts unticked.
+  - **Projects made before 2.65** open with the bus that was their main output ticked (or their first Ext Bus, which is where Main went).
+  - The strip's output box tooltip names the buses "Main" goes to.
+- **Cue mixers: "Follow Processing Mixer".** A tick box at the top of every cue mixer. Ticked, every Ext Bus output of that mixer plays exactly what the processing mixer sends to its main output (plug-ins, automation and all; while an edit plays through its own mixer, that mixer's main output). The cue mixer's own mix is not changed: it rests, kept as it was, under a cover saying it is following, and comes back the moment you untick the box. Saved with the project. (If you audition a following cue mixer, you hear the main mix on your own outputs too.)
+
 ## 2.64.4
 - **Take window, the column at the top left moved up and closed up:** "Piece / Take Window Name:" now starts at the very top (level with the top of the Next Take box), with the name box right under it, then the line, "To edit goes into:" and its box, all as close together as they can be.
 - **The take's length (--:--:--.---) is only as wide as its digits and sits right against the time readout**, so the readout and the buttons beside it move left and the buttons get more room on the top line.

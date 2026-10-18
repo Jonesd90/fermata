@@ -165,7 +165,7 @@ var busToVar (const BusState& s, const juce::Uuid& busId, bool inserts, bool wit
     put (o, "bus", busId.toString()); put (o, "gainDb", s.gainDb.get()); put (o, "mute", s.mute.get()); put (o, "solo", s.solo.get());
     if (s.inGainDb.get() != 0.0f) put (o, "inGainDb", s.inGainDb.get());
     if (s.pan.get() != 0.0f) put (o, "pan", s.pan.get());
-    if (withOutput) put (o, "outFirst", s.outFirst.load());
+    if (withOutput) { put (o, "outFirst", s.outFirst.load()); if (s.isMain.get()) put (o, "main", true); }
     put (o, "outOn", s.outOn.get()); put (o, "outDest", s.outDest.toString());
     if (const auto vm = s.vcaMask.load(); vm != 0) put (o, "vcaMask", (juce::int64) vm);
     put (o, "sendList", sendsToVar (s.sends, inserts));
@@ -181,6 +181,7 @@ void busFromVar (BusState& s, const var& v, const InsertFactory& factory, double
         s.inGainDb.set (v.hasProperty ("inGainDb") ? (float) (double) v["inGainDb"] : 0.0f);
         s.gainDb.set ((float) (double) v["gainDb"]); s.mute.set ((bool) v["mute"]); s.solo.set ((bool) v["solo"]);
         if (withOutput && v.hasProperty ("outFirst")) s.outFirst.store ((int) v["outFirst"]);
+        if (withOutput) s.isMain.set ((bool) v.getProperty ("main", false));
         s.outOn.set (v.hasProperty ("outOn") ? (bool) v["outOn"] : false);
         s.outDest = juce::Uuid (v["outDest"].toString());
         s.vcaMask.store ((juce::uint32) (juce::int64) v.getProperty ("vcaMask", (juce::int64) 0));
@@ -643,14 +644,13 @@ MixerState& Project::makeEditMixer (const EditDef& e)
     {
         if (! src->editId.isNull()) continue;
         applyMix (mx, mixSnapshot (*src, true), restoreSampleRate, restoreBlock);
-        mx.mainBus = src->mainBus;
         mx.ditherBits.store (src->ditherBits.load());
         for (auto& b : buses)
             if (b.external)
             {
                 const BusState* sb = nullptr;
                 for (auto& p : src->busPool) if (p->busId == b.id) sb = p.get();
-                if (sb != nullptr) mx.busFor (b.id)->outFirst.store (sb->outFirst.load());
+                if (sb != nullptr) { mx.busFor (b.id)->outFirst.store (sb->outFirst.load()); mx.busFor (b.id)->isMain.set (sb->isMain.get()); }
             }
         break;                                           // (the first mixer that is not an Edit mixer is the processing mixer)
     }
@@ -727,11 +727,14 @@ void Project::syncMixers()
             auto* st = m->stripFor (t.id);
             if (m->stripPool.size() != n && newStripsToMain) st->outOn.set (true);     // a new track is heard straight away
         }
+        bool hasExt = false;                                // does this mixer have an Ext Bus already? (its first one becomes its main output)
+        for (auto& f : buses) if (f.external) for (auto& p : m->busPool) if (p->busId == f.id) hasExt = true;
         for (auto& f : buses)
         {
             const auto n = m->busPool.size();
             auto* bs = m->busFor (f.id);
             if (m->busPool.size() != n && newStripsToMain && ! f.external) bs->outOn.set (true);
+            if (m->busPool.size() != n && f.external && ! hasExt) { bs->isMain.set (true); hasExt = true; }       // the mixer's first Ext Bus: ticked as its main output
         }
     }
 }
@@ -905,7 +908,8 @@ var Project::mixerToVar (const MixerState& mref) const
         if (s != nullptr) strips.add (stripToVar (*s, t.id, true));
     }
     put (o, "strips", strips);
-    put (o, "mainBus", m->mainBus.toString());
+    put (o, "mainFlags", true);                            // (the main outputs are the Ext buses' own "main" ticks; older projects had one "mainBus")
+    if (m->followProcessing.get()) put (o, "followProcessing", true);
     put (o, "ditherBits", m->ditherBits.load());
     juce::Array<var> fxs;
     for (auto& f : buses)
@@ -1199,6 +1203,14 @@ bool Project::fromVar (const var& root)
                     for (auto& fv : *fs)
                         busFromVar (*m->busFor (juce::Uuid (fv.hasProperty ("bus") ? fv["bus"].toString() : fv["fx"].toString())), fv, insertFactory, restoreSampleRate, restoreBlock, true, true);
             vcaStatesFromVar (*m, v["vcaStates"]);
+            if (! v.hasProperty ("mainFlags"))                // a project from before 2.65: its one main bus (or the first Ext Bus) becomes the ticked one
+            {
+                auto mainId = juce::Uuid::null();               // (a default juce::Uuid is a NEW random id, not "none")
+                for (auto& b : buses) if (b.external && b.id == m->mainBus) mainId = b.id;
+                if (mainId.isNull()) for (auto& b : buses) if (b.external) { mainId = b.id; break; }
+                if (! mainId.isNull()) m->busFor (mainId)->isMain.set (true);
+            }
+            m->followProcessing.set ((bool) v.getProperty ("followProcessing", false) && m->editId.isNull());
             mixers.push_back (std::move (m));
         }
 

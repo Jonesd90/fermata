@@ -472,9 +472,9 @@ int main()
         mq.stripFor (vId)->outDest = fold;
         e2.rebuildPlan(); r2.measure (e2);
         CHECK (corr (r2.out[0], r2.in[0]) < 0.1 && corr (r2.out[2], r2.in[0]) > 0.9);   // sent to the chosen Ext Bus instead
-        mq.stripFor (vId)->outDest = juce::Uuid::null(); mq.mainBus = fold;
+        mq.stripFor (vId)->outDest = juce::Uuid::null(); mq.busFor (outB)->isMain.set (false); mq.busFor (fold)->isMain.set (true);
         e2.rebuildPlan(); r2.measure (e2);
-        CHECK (corr (r2.out[0], r2.in[0]) < 0.1 && corr (r2.out[2], r2.in[0]) > 0.9);   // 'main' now means the designated bus
+        CHECK (corr (r2.out[0], r2.in[0]) < 0.1 && corr (r2.out[2], r2.in[0]) > 0.9);   // 'main' now means the bus ticked as main
         const auto via = q.addBus ("Via", false).id;                                     // through an Int Bus on the way
         q.syncMixers();
         mq.stripFor (vId)->outDest = via; mq.busFor (via)->outDest = outB; mq.busFor (via)->outOn.set (true);
@@ -482,7 +482,7 @@ int main()
         CHECK (corr (r2.out[0], r2.in[0]) > 0.9);
         Project back; CHECK (back.fromVar (q.toVar()));
         MixerState* bm = back.mixers.empty() ? nullptr : back.mixers.front().get();
-        CHECK (bm != nullptr && bm->mainBus == fold && bm->stripFor (vId)->outDest == via && bm->stripFor (vId)->outOn.get() && ! bm->stripFor (wId)->outOn.get());
+        CHECK (bm != nullptr && bm->busFor (fold)->isMain.get() && ! bm->busFor (outB)->isMain.get() && bm->stripFor (vId)->outDest == via && bm->stripFor (vId)->outOn.get() && ! bm->stripFor (wId)->outOn.get());
         CHECK (bm != nullptr && bm->busFor (via)->outDest == outB);
     }
 
@@ -3455,6 +3455,99 @@ int main()
         std::vector<std::vector<juce::File>> out; std::vector<int> nums { 1, 2 };
         CHECK (copyImportFiles (fm2, lp, tmp.getChildFile ("linkout"), "P", nums, out, nullptr, true).isEmpty());
         CHECK (out.size() == 2 && out[0].size() == 2 && out[0][0].getParentDirectory() == dir && ! tmp.getChildFile ("linkout").findChildFiles (juce::File::findFiles, false).size());
+    }
+
+    SECTION ("main outputs: every Ext Bus ticked as main (several, or none), main plus extra sends, a cue mixer that follows the processing mixer (2.65)");
+    {
+        Project q;
+        q.projectFile = tmp.getChildFile ("Mains.fermata");
+        q.setInputCount (2); q.setOutputCount (6);
+        q.tracks.clear();
+        const auto ta = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        const auto tb = q.addTrack ("B", TrackFormat::Mono, 1).id;
+        q.retireAllMixers();
+        const auto mainB = q.addBus ("Main", true).id;
+        const auto cans = q.addBus ("Cans", true).id;
+        auto& mp = q.addMixer ("Processing");
+        auto& mc = q.addMixer ("Cue");
+        CHECK (mp.busFor (mainB)->isMain.get() && ! mp.busFor (cans)->isMain.get());          // a new mixer: its first Ext Bus is ticked as main, the others are not
+        CHECK (mc.busFor (mainB)->isMain.get() && ! mc.busFor (cans)->isMain.get());
+        const auto later = q.addBus ("Later", true).id;
+        CHECK (! mp.busFor (later)->isMain.get());                                              // an Ext Bus added later is not ticked
+        AudioEngine e2 (q);
+        e2.prepare (48000.0, 64);
+        for (auto* m : { &mp, &mc })
+            for (auto id : { ta, tb }) { auto* st = m->stripFor (id); st->outOn.set (true); st->outDest = juce::Uuid::null(); st->gainDb.set (0.0f); st->pan.set (0.0f); }
+        mp.busFor (mainB)->outFirst.store (0); mp.busFor (cans)->outFirst.store (2);
+        mc.busFor (mainB)->outFirst.store (-1); mc.busFor (cans)->outFirst.store (4);
+        e2.rebuildPlan();
+        auto rmsOut = [&]
+        {
+            std::vector<double> acc (6, 0.0); int cnt = 0; double ph = 0.0;
+            for (int blk = 0; blk < 40; ++blk)
+            {
+                std::vector<float> i0 (64), i1 (64, 0.0f); std::vector<std::vector<float>> o (6, std::vector<float> (64, 0.0f));
+                for (int k = 0; k < 64; ++k) { i0[(size_t) k] = (float) (0.5 * std::sin (ph)); ph += 2.0 * juce::MathConstants<double>::pi * 440.0 / 48000.0; }
+                const float* in[2] = { i0.data(), i1.data() }; float* out[6]; for (int c = 0; c < 6; ++c) out[c] = o[(size_t) c].data();
+                e2.process (in, 2, out, 6, 64);
+                if (blk >= 10) { for (int c = 0; c < 6; ++c) for (float v : o[(size_t) c]) acc[(size_t) c] += (double) v * v; cnt += 64; }
+            }
+            for (auto& a : acc) a = std::sqrt (a / cnt);
+            return acc;
+        };
+        auto r = rmsOut();
+        CHECK (r[0] > 0.1 && r[2] < 1e-6 && r[4] < 1e-6);                        // Main is the ticked bus only; the cue mixer's Main goes to no output, its Cans has nothing
+        mp.busFor (cans)->isMain.set (true); e2.rebuildPlan();
+        r = rmsOut();
+        CHECK (r[0] > 0.1 && std::abs (r[2] - r[0]) < 1e-4);                     // two buses ticked: both get the main mix
+        mp.busFor (mainB)->isMain.set (false); mp.busFor (cans)->isMain.set (false); e2.rebuildPlan();
+        r = rmsOut();
+        CHECK (r[0] < 1e-6 && r[2] < 1e-6);                                       // none ticked: 'Main' goes nowhere (it used to fall back to the first Ext Bus)
+        mp.busFor (mainB)->isMain.set (true); mp.busFor (cans)->isMain.set (true);
+        q.setSendLevel (mp, ta, cans, -6.0f); e2.rebuildPlan();
+        r = rmsOut();
+        CHECK (r[2] > r[0] * 1.3);                                               // a main bus also plays what is sent to it: the main mix plus more of A
+        q.setSendLevel (mp, ta, cans, -100.0f); mp.busFor (cans)->isMain.set (false); e2.rebuildPlan();
+
+        // the cue mixer follows the processing mixer: its Ext buses play the processing mixer's main output; its own mix is kept and comes back
+        mc.stripFor (ta)->gainDb.set (-20.0f);
+        const auto base = rmsOut();
+        mc.followProcessing.set (true);
+        r = rmsOut();
+        CHECK (r[4] > 0.1 && std::abs (r[4] - base[0]) < 1e-3 && std::abs (r[0] - base[0]) < 1e-4);     // the cue's Cans pair carries exactly the processing main mix
+        CHECK (std::abs (mc.stripFor (ta)->gainDb.get() + 20.0f) < 1e-6f);                                // and its own mix is untouched
+        mc.followProcessing.set (false);
+        r = rmsOut();
+        CHECK (r[4] < 1e-6);                                                     // unticked: its own mix again (nothing goes to its Cans)
+
+        // saved and read back; a project from before 2.65 (one "mainBus") gets that bus ticked
+        mc.followProcessing.set (true); mp.busFor (cans)->isMain.set (true);
+        juce::String err;
+        CHECK (q.save (err));
+        {
+            Project q2; CHECK (q2.load (q.projectFile, err));
+            CHECK (q2.mixers.size() == 2 && q2.mixers[0]->busFor (mainB)->isMain.get() && q2.mixers[0]->busFor (cans)->isMain.get() && ! q2.mixers[0]->busFor (later)->isMain.get());
+            CHECK (q2.mixers[1]->followProcessing.get() && ! q2.mixers[0]->followProcessing.get());
+        }
+        {
+            auto v = q.toVar();                                   // made to look like a 2.64 project: one "mainBus", no "main" ticks
+            int edited = 0;
+            if (auto* ms = v["mixers"].getArray())
+                for (auto& m : *ms)
+                {
+                    if (auto* obj = m.getDynamicObject()) { obj->removeProperty ("mainFlags"); obj->setProperty ("mainBus", cans.toString()); ++edited; }
+                    for (const char* key : { "busStates", "fxReturns" })
+                        if (auto* bsA = m[key].getArray()) for (auto& b : *bsA) if (auto* bo = b.getDynamicObject()) bo->removeProperty ("main");
+                }
+            CHECK (edited == 2);
+            Project q3; CHECK (q3.fromVar (v));
+            CHECK (q3.mixers.size() == 2 && q3.mixers[0]->busFor (cans)->isMain.get() && ! q3.mixers[0]->busFor (mainB)->isMain.get());
+            if (auto* ms = v["mixers"].getArray()) for (auto& m : *ms) if (auto* obj = m.getDynamicObject()) obj->setProperty ("mainBus", juce::Uuid::null().toString());
+            Project q4; CHECK (q4.fromVar (v));                   // no main bus chosen (2.64 then used the first Ext Bus): the first Ext Bus is ticked
+            CHECK (q4.mixers.size() == 2 && q4.mixers[0]->busFor (mainB)->isMain.get() && ! q4.mixers[0]->busFor (cans)->isMain.get() && q4.mixers[1]->busFor (mainB)->isMain.get());
+            size_t pool = 0; for (auto& m : q4.mixers) pool += m->busPool.size();
+            CHECK (pool == 6);                                    // (and no stray bus states were made)
+        }
     }
 
     SECTION ("delay compensation: a plug-in that delays one track does not put it out of time with the others");
