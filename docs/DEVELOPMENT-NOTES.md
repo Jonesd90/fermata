@@ -508,5 +508,15 @@ Mixer window size, found from the log: Windows applied the window's biggest-size
 - Import: `feedback::Parsed::parts` (one per piece with notes); EditWindow::importFeedbackFiles puts each part on its edit (by id, else by edit name; skipped and reported if neither exists). The chooser lists *.fmnotes first.
 - Main window: `setFullScreen (true)` after it is shown (native title bar = maximised).
 
+## Host transport for plug-ins (2.62)
+- `src/core/HostTransport.h`: `HostTransport {playing, recording, samplePos, sampleRate}` and a thread_local `currentHostTransport()`. AudioEngine fills `transport` per chunk in process() (playback timeline position, or the recording's sample count; stays put when stopped) and per step in renderOffline() (`offlinePos`); processMixer() points the running thread at it, so it works on the helper threads too. Vst3Insert is the plug-in's AudioPlayHead (120 bpm, 4/4, 25 fps placeholders).
+- Vst3Insert::prepare sets the main buses to stereo with setBusesLayout (other buses as the plug-in has them), hands over as many channels as the plug-in uses (extra ones silent), and copies a mono-only output to both sides.
+- Mixer: `valueentry::ReadoutClick` makes a read-out label open the value box (fader level: double-click; pan: click). Fader caps and pan sliders reset on double-click (TypedSlider without onDoubleClick).
+- Tails: MixerPlan `ranLive / tailNow / tailLeft / quietFor / outPeak`. A mixer that stops being live (mixerIsLive) keeps running as a job with `tailNow` (no disk audio, no live inputs) until its Ext Bus peak has stayed under -90 dB for 0.5 s, at most 30 s. processMixer clears the delay lines only when playing STARTS (not at stop). carryOver copies the tail state.
+- Mixer strips: `kStripWidths[6]`, `stripWidthLevel()` (setting `mixerStripWidth`), `stripWidthGen()` makes every open MixerComponent rebuild; FaderBlock squeezes its gap / scale / slot in narrow strips. StripBase::paint rounds the corners (6 px). `MixTheme::ringTrack` = the dark-look groove for dial rings in both looks.
+- ToolWindow::keepTitleBarClear: a maximised window that overlaps the floating menu bar at all is un-maximised and fitted below it.
+- Edit window bus view: `EditTimeline::refTrack` + `refBox` (filled from editTracks, LTC left out, first track by default) draws that track's clips faintly behind every bus / VCA row.
+- Main window header: logo | displays | status (as wide as its text, `statusWidthFor`) | DRIVER INPUTS | stage speaker boxes in all the rest (right-aligned; they scroll only when they need more).
+
 ## Version numbers
 - MAJOR.MINOR.PATCH, defined once as `FERMATA_VERSION` at the top of `CMakeLists.txt`; history in `CHANGELOG.md`. Every delivery bumps it (fix = PATCH, feature = MINOR, big change = MAJOR) and adds a CHANGELOG entry. 1.0.0 is the stable base before the CPU-core work (kept as the GitHub branch `stable-1.0` and as a full source zip); 2.0.0 is the first build with the CPU cores window.

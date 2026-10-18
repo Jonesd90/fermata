@@ -6,6 +6,25 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.62.0
+- **Plug-ins are told what the transport is doing.** Every plug-in in every mixer now knows whether Fermata is playing or recording, where on the timeline it is, and the sample rate (as in other hosts). Plug-ins that listen while the host plays and work when it stops, such as **Auto-Align 2** (the plain VST3 version), can now capture and analyse: press Align, play the passage (30 seconds or more), press Stop. A bounce or mastering render counts as playing too, so a fast offline pass captures the whole piece. When nothing plays (live input only) the plug-ins are told the transport is stopped. It costs next to nothing (a few numbers per block).
+- **Plug-ins are set up as stereo the proper VST3 way** (instead of being told the channel count informally). A plug-in with a side-chain input gets a silent side-chain; a plug-in that only works in mono has its output put on both sides.
+- **Mixer faders and pans, quicker to reset and to type:**
+  - double-click a fader cap: back to 0 dB;
+  - double-click the level under a fader (e.g. "-3.0"): type a level;
+  - double-click a pan slider: back to C (on a stereo track its two pans go back to hard left / hard right);
+  - click the pan read-out beside it (e.g. "L30"): type a position.
+  - (Ctrl + click still resets, as before.)
+- **Reverb tails ring on after Stop**, like outboard gear fed from a tape machine. When playback stops, the mixer that was playing (an edit's own mixer too) carries on running with silence going in, so its reverbs and delays die away naturally instead of being cut dead. It stops by itself once its outputs have been below -90 dB for half a second (at most 30 seconds). The delay-compensation lines are no longer emptied at Stop, only when playback starts again.
+- **Mixer strips:**
+  - **Six strip widths:** - and + under STRIP WIDTH in the METERS strip (below + Strip...) make every strip narrower or wider, from a little thinner than before to a little wider. All the mixers follow; the choice is remembered on this computer.
+  - **Rounded corners** on every strip.
+  - **The send dials' rings are easier to see:** the unlit part of the ring is as dark in the light look as in the dark look, and the coloured part is a little thicker.
+  - **The output box at the bottom of a strip shows the bus's name first** ("Strings (Int)", "Main L-R (Ext)"), so a narrow box shows the name instead of a row of "Int".
+- **A maximised window stops just below the main window's menu bar**, so the menu bar can always be seen.
+- **A reference waveform behind the bus / VCA automation:** in the edit window's Buses / VCAs view, "Reference waveform" (at the right, above the timeline) picks one of the edit's audio tracks (the first one to start with); its waveform is drawn faintly behind every bus and VCA row while you write their automation. "No reference" switches it off.
+- **The talkback boxes get all the room they can:** DRIVER INPUTS now sits just after the driver line (device, buffer, ins / outs), and the stage speaker boxes use all the space to its right, so several talkback mics fit before a scroll bar is needed.
+
 ## 2.61.1
 - **The top row of the main window no longer moves** when a talkback mic or a talkback output is chosen (or taken away). The place for the stage speaker boxes at the top right is always kept, at the same height and width, whether they are shown or not (room for a talkback mic, Playback and Output; with more talkback mics the boxes scroll sideways inside that place).
 

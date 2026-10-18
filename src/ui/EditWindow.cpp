@@ -70,6 +70,7 @@ public:
         return rowsCache;
     }
     bool busView = false;                 // true: the rows are the Int Buses and VCAs (automation only), not the audio tracks
+    juce::Uuid refTrack;                  // the bus view: the audio track whose waveform is drawn behind every row, for reference (null = none)
     bool lanesOn (const EditDef& e) const { return busView || e.automationOn; }
     void setBusView (bool on) { busView = on; selectedRegion = juce::Uuid::null(); selectedRegions.clear(); updateSize(); repaint(); }
     mutable std::vector<TrackDef> rowsCache;
@@ -259,6 +260,24 @@ public:
                 g.setColour (selected ? juce::Colour (0xffc26500) : tc.withAlpha (0.9f));         // the selected piece gets an orange frame
                 g.drawRect (rr, selected ? 2 : 1);
             }
+            if (busView && ! refTrack.isNull())                    // the bus view: the reference track's waveform, faint, behind every bus / VCA row
+                for (auto& f : r.files)
+                {
+                    if (f.trackId != refTrack) continue;
+                    const auto tc = chan::of (app.project, refTrack);
+                    const double a = (double) (r.srcIn - f.fileStart) / rate, b = (double) (r.srcOut - f.fileStart) / rate;
+                    for (size_t ti = 0; ti < tracks.size(); ++ti)
+                    {
+                        const auto rr = juce::Rectangle<int> (x0, top + (int) ti * rowH + 3, wpx, rowH - 6);
+                        g.setColour (chan::clipFill (tc).withMultipliedAlpha (0.45f)); g.fillRect (rr);
+                        setWaveColour (g, chan::waveColour (tc).withMultipliedAlpha (0.55f));
+                        juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (rr.reduced (1));
+                        const auto wcd = app.waveColourOf (f.file);
+                        if (! directWave.draw (g, rr.reduced (1), f.file, a, b, app.waveZoom, wcd.get()))
+                            if (auto* th = thumbnailFor (f.file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, a, b, app.waveZoom, wcd.get());
+                    }
+                    break;
+                }
 
 
             // this piece's fades: fade-in (yellow) and fade-out (orange)
@@ -1560,7 +1579,21 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     busViewButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff7a5bc4));
     busViewButton.setTooltip ("Switch the rows between the audio tracks and the Int Buses and VCAs. In the bus view every Int Bus and every VCA has its own automation lane: "
                               "Gain, Fader and Pan for the buses (plus sends and plug-in parameters), Fader for the VCAs. Use the label on the left of a row to choose what it shows.");
-    busViewButton.onClick = [this] { timeline->setBusView (busViewButton.getToggleState()); };
+    busViewButton.onClick = [this]
+    {
+        timeline->setBusView (busViewButton.getToggleState());
+        fillRefBox(); refCaption.setVisible (timeline->busView); refBox.setVisible (timeline->busView); resized();
+    };
+    refCaption.setText ("Reference waveform", juce::dontSendNotification); refCaption.setFont (juce::FontOptions (12.0f));
+    refCaption.setColour (juce::Label::textColourId, theme::dimText); refCaption.setJustificationType (juce::Justification::centredRight);
+    refBox.setTooltip ("An audio track of this edit whose waveform is drawn behind every bus / VCA row, so you can see where the music is while you write the automation");
+    refBox.onChange = [this]
+    {
+        const int i = refBox.getSelectedId() - 1;
+        timeline->refTrack = juce::isPositiveAndBelow (i, (int) refIds.size()) ? refIds[(size_t) i] : juce::Uuid::null();
+        timeline->repaint();
+    };
+    addChildComponent (refCaption); addChildComponent (refBox);
     // With no 1 / 2 flags set, a piece that was selected whole (Ctrl + click) is loaded in full into the process window.
     auto withWholePiece = [this] (std::function<void()> run)
     {
@@ -1675,7 +1708,15 @@ void EditWindowComponent::resized()
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
     r.removeFromTop (grid::flow (r, items));
-    infoLabel.setBounds (r.removeFromTop (22).reduced (4, 0));
+    {
+        auto row = r.removeFromTop (22);
+        if (refBox.isVisible())
+        {
+            refBox.setBounds (row.removeFromRight (220).reduced (0, 1));
+            refCaption.setBounds (row.removeFromRight (130));
+        }
+        infoLabel.setBounds (row.reduced (4, 0));
+    }
     r.removeFromTop (4);
     if (viewportOwner != nullptr) { viewportOwner->setBounds (r); if (timeline != nullptr) timeline->updateSize(); }
 }
@@ -2163,8 +2204,32 @@ bool EditWindowComponent::keyPressed (const juce::KeyPress& k)
 
 void EditWindowComponent::changeListenerCallback (juce::ChangeBroadcaster*) { repaint(); }
 
+void EditWindowComponent::fillRefBox()
+{
+    auto* e = edit();
+    juce::String sig;
+    std::vector<const TrackDef*> list;
+    if (e != nullptr) for (auto* t : app.project.editTracks (*e)) if (! t->isLtc) { list.push_back (t); sig << t->id.toString() << t->name << "|"; }
+    if (sig == refSig && refBox.getNumItems() > 0) return;
+    refSig = sig;
+    const auto keep = timeline->refTrack;
+    refBox.clear (juce::dontSendNotification); refIds.clear();
+    int sel = list.empty() ? 0 : 1;                               // the first track (mono or stereo) unless the one chosen before is still there
+    for (size_t i = 0; i < list.size(); ++i)
+    {
+        refIds.push_back (list[i]->id);
+        refBox.addItem (list[i]->name + (list[i]->format == TrackFormat::Stereo ? "  (stereo)" : ""), (int) i + 1);
+        if (list[i]->id == keep) sel = (int) i + 1;
+    }
+    refBox.addItem ("No reference", (int) list.size() + 1);
+    refBox.setSelectedId (sel == 0 ? (int) list.size() + 1 : sel, juce::dontSendNotification);
+    timeline->refTrack = sel > 0 ? refIds[(size_t) sel - 1] : juce::Uuid::null();
+    timeline->repaint();
+}
+
 void EditWindowComponent::timerCallback()
 {
+    if (timeline->busView) fillRefBox();                          // (only rebuilt when the edit's tracks changed)
     if (auto* fc = juce::Component::getCurrentlyFocusedComponent(); fc != nullptr && isParentOf (fc)) app.setTransportHandler (this, [this] { togglePlay(); });
     if (insertFlagToggle.getToggleState() != app.showInsertFlag) insertFlagToggle.setToggleState (app.showInsertFlag, juce::dontSendNotification);
     if (slipLeftToggle.getToggleState() != app.trimSlipLeft)   { slipLeftToggle.setToggleState (app.trimSlipLeft, juce::dontSendNotification);   timeline->slipLeft = app.trimSlipLeft; }

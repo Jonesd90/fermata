@@ -367,6 +367,8 @@ void AudioEngine::renderOffline (const std::vector<juce::AudioBuffer<float>>& tr
     n = juce::jmin (n, maxBlock, captures[0].getNumSamples());
     for (size_t i = 0; i < pl->disk.size(); ++i) pl->disk[i] = i < trackAudio.size() ? &trackAudio[i] : nullptr;
     captureBufs = &captures;
+    transport.playing = true; transport.recording = false; transport.samplePos = offlinePos; transport.sampleRate = sampleRate > 0.0 ? sampleRate : 48000.0;
+    offlinePos += n;
     for (auto& mp : pl->mixers)
         if (mp->mixer->id == offlineMixerId)
             processMixer (*pl, *mp, nullptr, 0, 0, n, nullptr, 0, true, false, -1);
@@ -423,6 +425,7 @@ void AudioEngine::carryOver (Plan& from, Plan& to) noexcept
         for (auto& m : from.mixers) if (m->mixer == tm->mixer) { fm = m.get(); break; }
         if (fm == nullptr) continue;
         tm->wasPlaying = fm->wasPlaying;
+        tm->ranLive = fm->ranLive; tm->tailLeft = fm->tailLeft; tm->quietFor = fm->quietFor;
         auto same = [] (const Node& a, const Node& b) { return a.kind == b.kind && a.strip == b.strip && a.bus == b.bus; };
         for (size_t i = 0; i < tm->order.size(); ++i)
         {
@@ -539,6 +542,12 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
         {
             const int n = juce::jmin (maxBlock, numSamples - offset);
             if (ps != nullptr && ps->automation != nullptr) ps->automation->apply (ps->getTimelinePosition());     // an edit's automation moves the faders
+            // what the plug-ins are told: playing while something plays back or records; the place on the timeline (stays put when stopped)
+            transport.playing = ps != nullptr || rs != nullptr;
+            transport.recording = rs != nullptr;
+            if (ps != nullptr) transport.samplePos = ps->getTimelinePosition();
+            else if (rs != nullptr) transport.samplePos = rs->samples.load (std::memory_order_relaxed) + offset;
+            transport.sampleRate = sampleRate > 0.0 ? sampleRate : 48000.0;
             if (ps != nullptr) ps->pull (n);          // disk audio replaces the live inputs while playing
             const bool direct = ps != nullptr && ps->directOut >= 0;      // a finished stereo mix: straight to the outputs, the mixers do not touch it
             for (size_t i = 0; i < pl->disk.size(); ++i) pl->disk[i] = (ps != nullptr && ! direct && (int) i < ps->numTracks()) ? &ps->trackBuffer ((int) i) : nullptr;
@@ -561,7 +570,17 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
             int nJobs = 0;
             for (auto& mp : pl->mixers)
             {
-                if (! mixerIsLive (*mp->mixer, mp.get() == pl->mixers.front().get(), ps, editMixerPlays)) continue;
+                if (mixerIsLive (*mp->mixer, mp.get() == pl->mixers.front().get(), ps, editMixerPlays))
+                {
+                    mp->ranLive = true; mp->tailNow = false; mp->tailLeft = 0;
+                }
+                else
+                {   // it has just stopped (its edit stopped playing): it goes on a while for the tail of its reverbs
+                    if (mp->ranLive) { mp->tailLeft = (int) juce::jmin (30.0 * sampleRate, 1.0e9); mp->quietFor = 0; }
+                    mp->ranLive = false;
+                    if (mp->tailLeft <= 0) { mp->tailNow = false; continue; }
+                    mp->tailNow = true;
+                }
                 const bool strict = tbPlayNow && mp.get() == (editMixerPlays ? editPlan : pl->mixers.front().get());       // the processing mixer (or the playing Edit's mixer)
                 const bool audited = audActive && mp->mixer == aud;
                 if (! strict && ! audited && ! mixerHasOutput (*mp)) continue;
@@ -569,6 +588,7 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
                 pl->jobs[(size_t) nJobs++] = { mp.get(), audActive && mp->mixer == eng, audited ? monitorOut : -1, strict };
             }
             const bool playingNow = ps != nullptr && ! direct;
+            for (int j = 0; j < nJobs; ++j) pl->jobs[(size_t) j].mp->outPeak = 0.0f;
             // Two or more mixers: they run side by side on the helper threads, each into its own outputs, which are then added up here in the usual
             // order (so the result is exactly what running them one after another gives).
             if (nJobs >= 2 && mixerWorkers.size() > 0 && offset == 0 && n == numSamples && numOut <= pl->outChannels)
@@ -593,6 +613,14 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
                     processMixer (*pl, *job.mp, in, numIn, offset, n, out, numOut, playingNow, job.silenceOwnOutput, job.alsoToFirst,
                                   job.strict, job.strict ? tapL : nullptr, job.strict ? tapR : nullptr);
                 }
+            for (int j = 0; j < nJobs; ++j)                     // the tails: stop once the outputs have stayed below -90 dB for half a second (or after 30 s)
+            {
+                auto& mp = *pl->jobs[(size_t) j].mp;
+                if (! mp.tailNow) continue;
+                mp.quietFor = mp.outPeak < 3.2e-5f ? mp.quietFor + n : 0;
+                mp.tailLeft -= n;
+                if (mp.quietFor >= (int) (0.5 * sampleRate)) mp.tailLeft = 0;
+            }
             if (direct && ps->numTracks() > 0)
             {
                 const auto& mix = ps->trackBuffer (0);
@@ -753,6 +781,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                                 float* const* out, int numOut, bool playing, bool silenceOwnOutput, int alsoToFirst,
                                 bool playbackOnly, float* tapL, float* tapR)
 {
+    currentHostTransport() = &transport;                    // the plug-ins in this mixer read the transport from here (on whichever thread runs it)
     bool anySolo = false;
     const juce::uint32 vcaSolo = mp.mixer != nullptr ? mp.mixer->vcaSoloMask() : 0u;      // a soloed VCA keeps every strip it controls open
     for (auto& nd : mp.order)
@@ -770,9 +799,12 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
         }
 
     for (auto& nd : mp.order) if (nd->receives) nd->incoming.clear (0, n);
-    if (playing != mp.wasPlaying)                          // playing starts or stops (or jumps): old audio must not come out of the delay lines
-    {
-        mp.wasPlaying = playing;
+    const bool playingForDelays = playing && ! mp.tailNow;
+    if (playingForDelays != mp.wasPlaying)                 // playing starts (or jumps): old audio must not come out of the delay lines. When it stops they are
+    {                                                      // left alone, so what is on its way through (a reverb's input, say) still comes out: the tail
+        const bool starts = playingForDelays;
+        mp.wasPlaying = playingForDelays;
+        if (starts)
         for (auto& nd : mp.order)
         {
             nd->srcDelay.clear(); nd->outDelay.clear(); nd->tapDelay.clear(); nd->tapDelayPre.clear();
@@ -800,7 +832,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             const int nc = route.numCh;
 
             // which sources reach this strip (see Monitor): the recording played from disk, and/or the live input
-            const juce::AudioBuffer<float>* diskBuf = plan_->disk[(size_t) nd.trackIndex];
+            const juce::AudioBuffer<float>* diskBuf = mp.tailNow ? nullptr : plan_->disk[(size_t) nd.trackIndex];      // (a tail: silence goes in)
             const bool fromDisk = diskBuf != nullptr;
             bool liveOn = true;
             if (route.live != nullptr)
@@ -811,7 +843,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                     case Monitor::SessionLive: liveOn = true; break;
                     case Monitor::Talkback:    liveOn = ! recordingNow; break;
                 }
-            if (playbackOnly) liveOn = false;                   // talkback playback: this pass may only contain recorded audio
+            if (playbackOnly || mp.tailNow) liveOn = false;     // talkback playback: this pass may only contain recorded audio; a tail: nothing new goes in
             for (int c = 0; c < nc; ++c)
             {
                 auto* dst = mp.chanBuf.getWritePointer (c);
@@ -930,6 +962,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             auto* meter = c == 0 ? meterL : meterR;
             if (pk > meter->get()) meter->set (pk);
             if (nd.kind == NodeKind::Track) { auto& lp = c == 0 ? nd.strip->livePkL : nd.strip->livePkR; if (pk > lp.get()) lp.set (pk); }
+            if (nd.kind == NodeKind::ExtBus && pk > mp.outPeak) mp.outPeak = pk;
         }
         {   // RMS (about 300 ms), for the meter settings
             float& ms0 = nd.kind == NodeKind::Track ? nd.strip->msL : nd.bus->msL;

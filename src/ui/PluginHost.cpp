@@ -1,24 +1,56 @@
 #include "PluginHost.h"
+#include "../core/HostTransport.h"
 
 namespace td
 {
-/** Wraps a loaded plug-in as an insert. Always runs the plug-in as a stereo effect. */
-class Vst3Insert : public InsertProcessor
+/** Wraps a loaded plug-in as an insert. Always runs the plug-in as a stereo effect. It is also the plug-in's play head: it tells the plug-in
+    whether Fermata is playing / recording and where on the timeline it is (see HostTransport), which plug-ins that listen while the host
+    plays (Auto-Align 2 ...) need. */
+class Vst3Insert : public InsertProcessor, private juce::AudioPlayHead
 {
 public:
     Vst3Insert (std::unique_ptr<juce::AudioPluginInstance> p, juce::PluginDescription d)
-        : plugin (std::move (p)), description (std::move (d)) {}
+        : plugin (std::move (p)), description (std::move (d)) { plugin->setPlayHead (this); }
 
-    ~Vst3Insert() override { if (prepared) plugin->releaseResources(); }
+    ~Vst3Insert() override { if (prepared) plugin->releaseResources(); plugin->setPlayHead (nullptr); }
 
     void prepare (double sr, int maxBlock, int) override
     {
         if (prepared) plugin->releaseResources();
-        plugin->setPlayConfigDetails (2, 2, sr, maxBlock);
+        // the main input and output as stereo, the proper VST3 way (other buses, a side-chain say, are left as the plug-in has them)
+        auto layout = plugin->getBusesLayout();
+        bool change = false;
+        if (! layout.inputBuses.isEmpty() && layout.inputBuses.getReference (0) != juce::AudioChannelSet::stereo()) { layout.inputBuses.getReference (0) = juce::AudioChannelSet::stereo(); change = true; }
+        if (! layout.outputBuses.isEmpty() && layout.outputBuses.getReference (0) != juce::AudioChannelSet::stereo()) { layout.outputBuses.getReference (0) = juce::AudioChannelSet::stereo(); change = true; }
+        if (change) plugin->setBusesLayout (layout);                         // (a plug-in that refuses keeps its own)
+        plugin->setRateAndBufferSizeDetails (sr, maxBlock);
         plugin->prepareToPlay (sr, maxBlock);
-        work.setSize (2, maxBlock);
+        // the buffer handed to the plug-in has as many channels as it uses (at least 2); the ones past the first two (a side-chain) are silent
+        chans = juce::jmax (2, plugin->getTotalNumInputChannels(), plugin->getTotalNumOutputChannels());
+        monoOut = plugin->getMainBusNumOutputChannels() == 1;
+        work.setSize (chans, maxBlock);
         midi.ensureSize (256);
         prepared = true;
+    }
+
+    juce::Optional<juce::AudioPlayHead::PositionInfo> getPosition() const override
+    {
+        juce::AudioPlayHead::PositionInfo info;
+        const auto* t = currentHostTransport();
+        const double sr = t != nullptr && t->sampleRate > 0.0 ? t->sampleRate : 48000.0;
+        const juce::int64 pos = t != nullptr ? juce::jmax<juce::int64> (0, t->samplePos) : 0;
+        const double secs = (double) pos / sr;
+        info.setIsPlaying (t != nullptr && t->playing);
+        info.setIsRecording (t != nullptr && t->recording);
+        info.setIsLooping (false);
+        info.setTimeInSamples (pos);
+        info.setTimeInSeconds (secs);
+        info.setBpm (120.0);                                                   // (classical recordings have no tempo map: a plain 120, 4/4)
+        info.setTimeSignature (juce::AudioPlayHead::TimeSignature { 4, 4 });
+        info.setPpqPosition (secs * 2.0);
+        info.setPpqPositionOfLastBarStart (std::floor (secs * 2.0 / 4.0) * 4.0);
+        info.setFrameRate (juce::AudioPlayHead::fps25);
+        return info;
     }
 
     int getLatencySamples() const override { return plugin != nullptr ? plugin->getLatencySamples() : 0; }
@@ -29,9 +61,11 @@ public:
         if (n > work.getNumSamples() || nc < 1) return;
         work.copyFrom (0, 0, b, 0, 0, n);
         work.copyFrom (1, 0, b, nc > 1 ? 1 : 0, 0, n);
-        juce::AudioBuffer<float> view (work.getArrayOfWritePointers(), 2, n);
+        for (int c = 2; c < chans; ++c) work.clear (c, 0, n);
+        juce::AudioBuffer<float> view (work.getArrayOfWritePointers(), chans, n);
         midi.clear();
         plugin->processBlock (view, midi);
+        if (monoOut) work.copyFrom (1, 0, work, 0, 0, n);                      // a mono-only plug-in: its output on both sides
         b.copyFrom (0, 0, work, 0, 0, n);
         if (nc > 1) b.copyFrom (1, 0, work, 1, 0, n);
     }
@@ -69,6 +103,8 @@ private:
     juce::PluginDescription description;
     juce::AudioBuffer<float> work;
     juce::MidiBuffer midi;
+    int chans = 2;
+    bool monoOut = false;
     bool prepared = false;
 };
 

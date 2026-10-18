@@ -641,7 +641,10 @@ public:
         const int titleH = juce::jmax (30, frame ? (*frame).getTop() : 0);
         const auto b = getBounds();
         const juce::Rectangle<int> title (b.getX(), b.getY() - titleH, b.getWidth(), titleH);
-        if (! title.intersects (avoid)) return;
+        // a maximised window must not cover the bar at all (its title bar sits over the main window's, and its content over the menu bar);
+        // any other window only needs its title bar clear of it
+        const bool covers = isFullScreen() ? title.getUnion (b).intersects (avoid) || b.getY() < avoid.getBottom() : title.intersects (avoid);
+        if (! covers) return;
         juce::Component::SafePointer<ToolWindow> safe (this);
         juce::MessageManager::callAsync ([safe, avoid, titleH]
         {

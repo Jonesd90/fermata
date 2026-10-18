@@ -9,6 +9,7 @@ struct MixTheme
     bool dark = false;                 // the dark look (the desk a shade darker)
     bool ground = true;                // drawn on the desk's dark wells (always, in both looks)
     juce::Colour bg, strip, well, line, soft, text, dim, field, insertOn, insertByp, groove, key;
+    juce::Colour ringTrack;            // the unlit part of a dial's ring: always as dark as in the dark look, so the coloured part stands out
 };
 
 inline MixTheme makeMixTheme (bool dark)
@@ -21,6 +22,7 @@ inline MixTheme makeMixTheme (bool dark)
     t.line = k (0xff2f3e50, 0.7f);      t.soft = k (0xff47596e, 0.7f);   t.text = juce::Colour (0xffeef2f6);
     t.dim = juce::Colour (0xffc3ccd6);  t.field = juce::Colour (0xff05080c); t.insertOn = juce::Colour (0xff2b6a4c);
     t.insertByp = juce::Colour (0xff7a6420); t.groove = juce::Colour (0xff0c1118); t.key = k (0xff96abc0, 0.8f);
+    t.ringTrack = theme::deskShade (theme::desk (0xff2f3e50), true, 0.7f);
     return t;
 }
 
@@ -142,8 +144,9 @@ public:
         juce::Path track, value;
         track.addCentredArc (cx, cy, r - 0.5f, r - 0.5f, 0.0f, startA, endA, true);
         value.addCentredArc (cx, cy, r - 0.5f, r - 0.5f, 0.0f, startA, a, true);
-        g.setColour (t.soft);  g.strokePath (track, juce::PathStrokeType (2.0f));
-        g.setColour (arc);     g.strokePath (value, juce::PathStrokeType (2.0f));
+        // the ring: a dark groove (as dark in the light look as in the dark look) with the coloured part over it, a little thicker so it shows
+        g.setColour (t.ringTrack); g.strokePath (track, juce::PathStrokeType (3.0f));
+        g.setColour (t.dark ? arc : arc.withMultipliedBrightness (0.85f).withMultipliedSaturation (1.15f)); g.strokePath (value, juce::PathStrokeType (2.5f));
         const float br = r * 0.66f;
         g.setColour (t.ground ? juce::Colour (0xff3d424b) : juce::Colours::white); g.fillEllipse (cx - br, cy - br, br * 2.0f, br * 2.0f);
         g.setColour (t.line);                                                    g.drawEllipse (cx - br, cy - br, br * 2.0f, br * 2.0f, 1.0f);

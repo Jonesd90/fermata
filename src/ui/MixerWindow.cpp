@@ -6,7 +6,12 @@ namespace td
 {
 namespace
 {
-constexpr int kStripW = 90;
+constexpr int kStripW = 90;                                        // the usual strip width (level 3 of the six below)
+/** The width of the mixer strips: six steps, chosen with - / + in the METERS strip (shared by all the mixers, remembered on this computer). */
+constexpr int kStripWidths[] = { 66, 74, 82, 90, 104, 118 };
+int& stripWidthLevel() { static int level = 3; return level; }
+int& stripWidthGen()   { static int gen = 0; return gen; }        // goes up when the width changes, so every open mixer lays itself out again
+int stripWidth() { return kStripWidths[juce::jlimit (0, 5, stripWidthLevel())]; }
 constexpr int kBandH = 16, kPlateH = 26, kInputRowH = 19, kSlotH = 16, kSendCellH = 50, kPanRowH = 30, kMSH = 24, kFaderH = 280, kFaderMin = 110, kOutRowH = 20, kSecH = 11, kToTrackH = 20, kLatH = 13;
 
 /** A small recessed read-out field (peak value, fader value, pan position). */
@@ -46,8 +51,7 @@ public:
         slider.setRange (-80.0, 12.0, 0.1);
         slider.setSkewFactorFromMidPoint (-20.0);
         slider.setSliderSnapsToMousePosition (false);          // grab the cap; clicking the slot does not make it jump
-        slider.setDoubleClickReturnValue (true, 0.0, juce::ModifierKeys::ctrlModifier);       // Ctrl + click = back to 0 dB; a double-click opens the box to type a level
-        slider.onDoubleClick = [this] { askValue(); };
+        slider.setDoubleClickReturnValue (true, 0.0, juce::ModifierKeys::ctrlModifier);       // double-click (or Ctrl + click) the cap = back to 0 dB; double-click the number under it to type a level
         slider.getProperties().set ("fader", true);
         slider.setValue (initialDb <= -99.0f ? -80.0 : (double) initialDb, juce::dontSendNotification);
         slider.onValueChange = [this] { const float db = (float) slider.getValue(); updateLabel(); changed (db <= -79.5f ? -100.0f : db); };
@@ -57,7 +61,8 @@ public:
         styleField (label, 10.5f);
         styleField (peakLabel, 9.5f);
         peakLabel.setTooltip ("Highest peak so far. Held for 10 seconds, or until 'Reset peaks' if it went above -2 dBFS.");
-        label.setTooltip ("Fader level in dB. Double-click the fader to type a level (Ctrl + click goes back to 0).");
+        label.setTooltip ("Fader level in dB. Double-click here to type a level. (Double-click the fader cap to go back to 0 dB.)");
+        labelClick = std::make_unique<valueentry::ReadoutClick> (label, true, [this] { askValue(); });
         updateLabel();
     }
     /** The cap of the fader takes the channel's colour. */
@@ -89,7 +94,7 @@ public:
         const auto& t = mixTheme();
         const float top = (float) travelTop, bottom = (float) travelBottom, span = bottom - top;
         auto yOf = [&] (float db) { return bottom - span * LevelMeter::faderFrac (db); };
-        g.setFont (juce::FontOptions (8.5f));
+        g.setFont (juce::FontOptions (scaleRect.getWidth() < 19 ? 7.0f : 8.5f));          // (smaller numbers in a narrow strip, so "+12" still fits)
         for (int db : LevelMeter::faderScaleDbs())                                       // numbered marks
         {
             const int y = (int) std::round (yOf ((float) db));
@@ -112,7 +117,13 @@ public:
         label.setBounds (r.removeFromBottom (15).withSizeKeepingCentre (62, 15));
         peakLabel.setBounds (r.removeFromTop (14).withSizeKeepingCentre (62, 14));
         r.removeFromTop (3); r.removeFromBottom (3);
-        const int scaleW = 20, sliderW = 28, meterW = 8, gap = 1, between = 5;
+        int scaleW = 20, sliderW = 28, between = 5;
+        const int meterW = 8, gap = 1;
+        {   // a narrow strip: the gap, the scale and the slot give a little each, so everything still fits
+            int over = scaleW + sliderW + between + meterW * 2 + gap - r.getWidth();
+            auto give = [&over] (int& v, int least) { const int d = juce::jlimit (0, juce::jmax (0, v - least), over); v -= d; over -= d; };
+            give (between, 2); give (sliderW, 22); give (scaleW, 16);
+        }
         const int total = scaleW + sliderW + between + meterW * 2 + gap;
         const int x0 = r.getX() + juce::jmax (0, (r.getWidth() - total) / 2);
         scaleRect  = { x0, r.getY(), scaleW, r.getHeight() };
@@ -150,6 +161,7 @@ private:
         label.setText (v <= -79.5 ? juce::String ("-inf") : juce::String (v, 1), juce::dontSendNotification);
     }
     valueentry::TypedSlider slider; LevelMeter meterL, meterR; juce::Label label, peakLabel;
+    std::unique_ptr<valueentry::ReadoutClick> labelClick;
     std::function<void (float)> changed;
     juce::Colour accent { 0 };
     juce::Rectangle<int> scaleRect, sliderRect; int travelTop = 0, travelBottom = 0;
@@ -571,7 +583,8 @@ public:
         const auto& t = mixTheme();
         auto b = getLocalBounds();
         const auto c0 = colour();
-        g.setColour (t.strip.interpolatedWith (c0, t.ground ? 0.22f : 0.16f)); g.fillRect (b);                      // the strip itself is tinted with the channel colour
+        const float rad = 6.0f;                                                                                   // the strips have rounded corners
+        g.setColour (t.strip.interpolatedWith (c0, t.ground ? 0.22f : 0.16f)); g.fillRoundedRectangle (b.toFloat(), rad);   // the strip itself is tinted with the channel colour
         for (auto& w : wells) { g.setColour (t.well.interpolatedWith (c0, t.ground ? 0.13f : 0.10f)); g.fillRect (w); g.setColour (t.soft.interpolatedWith (c0, 0.3f)); g.drawRect (w, 1); }
         g.setFont (juce::FontOptions (8.5f, juce::Font::bold));
         for (auto& s : sections)
@@ -580,12 +593,16 @@ public:
             g.setColour (t.dim); g.drawText (s.first, s.second.getX(), s.second.getY(), tw + 2, s.second.getHeight(), juce::Justification::centredLeft, false);
             g.setColour (t.soft.interpolatedWith (c0, 0.3f)); g.fillRect (s.second.getX() + tw + 6, s.second.getCentreY(), juce::jmax (0, s.second.getWidth() - tw - 6), 1);
         }
-        g.setColour (t.line); g.drawRect (b, 1);
+        g.setColour (t.line); g.drawRoundedRectangle (b.toFloat().reduced (0.5f), rad, 1.0f);
 
         const auto c = c0;
         auto band = bandRect();
-        g.setColour (c);                         g.fillRect (band);
-        g.setColour (c.brighter (0.45f));        g.fillRect (band.getX(), band.getY(), band.getWidth(), 1);
+        {   // the coloured bar at the top follows the rounded corners
+            juce::Path bp; bp.addRoundedRectangle ((float) band.getX(), (float) band.getY(), (float) band.getWidth(), (float) band.getHeight(), rad - 1.0f, rad - 1.0f,
+                                                    band.getY() <= 1, band.getY() <= 1, false, false);
+            g.setColour (c); g.fillPath (bp);
+        }
+        g.setColour (c.brighter (0.45f));        g.fillRect (band.getX() + 3, band.getY(), band.getWidth() - 6, 1);
         g.setColour (c.darker (0.45f));          g.fillRect (band.getX(), band.getBottom() - 1, band.getWidth(), 1);
         g.setColour (chan::textOn (c));          g.setFont (juce::FontOptions (9.0f, juce::Font::bold));
         g.drawText (bandText(), band.reduced (4, 0), juce::Justification::centredLeft, true);
@@ -705,8 +722,8 @@ public:
         ids.clear();
         box.addItem ("Main", 1);
         int next = 2;
-        for (auto& b : app.project.buses) if (! b.external && b.id != id) { ids.push_back (b.id); box.addItem ("Int  " + b.name, next++); }
-        for (auto& b : app.project.buses) if (b.external)                 { ids.push_back (b.id); box.addItem ("Ext  " + b.name, next++); }
+        for (auto& b : app.project.buses) if (! b.external && b.id != id) { ids.push_back (b.id); box.addItem (b.name + "  (Int)", next++); }     // the name first: a narrow box still shows it
+        for (auto& b : app.project.buses) if (b.external)                 { ids.push_back (b.id); box.addItem (b.name + "  (Ext)", next++); }
         updating = false;
         refresh();
     }
@@ -733,7 +750,7 @@ public:
     {
         auto r = getLocalBounds();
         if (ext) { mainBox.setBounds (r); return; }
-        button.setBounds (r.removeFromLeft (34).reduced (0, 1)); r.removeFromLeft (3);
+        button.setBounds (r.removeFromLeft (r.getWidth() < 70 ? 26 : 34).reduced (0, 1)); r.removeFromLeft (r.getWidth() < 40 ? 2 : 3);
         box.setBounds (r.reduced (0, 1));
     }
 private:
@@ -810,10 +827,10 @@ public:
             s->setRange (-1.0, 1.0, 0.01);
             s->getProperties().set ("pan", true);
             const double def = numCh == 2 ? (c == 0 ? -1.0 : 1.0) : 0.0;
-            s->setDoubleClickReturnValue (true, def, juce::ModifierKeys::ctrlModifier);
+            s->setDoubleClickReturnValue (true, def, juce::ModifierKeys::ctrlModifier);          // double-click (or Ctrl + click) = home: C (a stereo track's two pans: hard left / hard right)
             {
                 juce::Component::SafePointer<juce::Slider> safeS (s);
-                s->onDoubleClick = [safeS]
+                panClicks.add (new valueentry::ReadoutClick (*v, false, [safeS]
                 {
                     if (safeS == nullptr) return;
                     valueentry::ask (*safeS, "Pan (L30, C, R45 ...)", panText ((float) safeS->getValue()), [safeS] (const juce::String& t)
@@ -821,14 +838,15 @@ public:
                         double pv = 0.0;
                         if (safeS != nullptr && valueentry::parsePan (t, pv)) safeS->setValue (pv, juce::sendNotificationSync);
                     });
-                };
+                }));
+                v->setTooltip ("Click to type a position (L30, C, R45 ...)");
             }
             Param& p = numCh == 2 ? (c == 0 ? strip.panL : strip.panR) : strip.pan;
             s->setValue (p.get(), juce::dontSendNotification);
             v->setText (panText (p.get()), juce::dontSendNotification);
             s->setTooltip (numCh == 2 ? juce::String (c == 0 ? "Where the LEFT channel of this track is placed (left .. right). " : "Where the RIGHT channel of this track is placed (left .. right). ")
-                                            + "Double-click to type a position (Ctrl + click resets)."
-                                      : juce::String ("Pan (left .. right). Double-click to type a position (Ctrl + click centres)."));
+                                            + "Double-click goes back to hard " + (c == 0 ? "left" : "right") + "; click the read-out beside it to type a position."
+                                      : juce::String ("Pan (left .. right). Double-click centres it; click the read-out beside it to type a position."));
             s->onValueChange = [this, s, v, &p] { p.set ((float) s->getValue()); v->setText (panText ((float) s->getValue()), juce::dontSendNotification); app.project.markDirty(); };
             addAndMakeVisible (s);
         }
@@ -1018,6 +1036,7 @@ private:
     juce::OwnedArray<SendDial> dials;
     juce::TextButton toTrackButton;
     juce::OwnedArray<juce::Slider> pans; juce::OwnedArray<juce::Label> panLabels, panValues;
+    juce::OwnedArray<valueentry::ReadoutClick> panClicks;            // (after panValues: they go first)
     juce::OwnedArray<juce::TextButton> toggles;
     juce::TextButton *mute = nullptr, *solo = nullptr;
     SlotButtons slots; FaderBlock fader; StripOutputRow outRow;
@@ -1055,15 +1074,16 @@ public:
             panSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
             panSlider.setRange (-1.0, 1.0, 0.01);
             panSlider.getProperties().set ("pan", true);
-            panSlider.setDoubleClickReturnValue (true, 0.0, juce::ModifierKeys::ctrlModifier);
-            panSlider.onDoubleClick = [this]
+            panSlider.setDoubleClickReturnValue (true, 0.0, juce::ModifierKeys::ctrlModifier);       // double-click (or Ctrl + click) = C
+            panClick = std::make_unique<valueentry::ReadoutClick> (panValue, false, [this]
             {
                 valueentry::ask (panSlider, "Balance (L30, C, R45 ...)", ChannelStrip::panText ((float) panSlider.getValue()), [this] (const juce::String& t)
                 { double pv = 0.0; if (valueentry::parsePan (t, pv)) panSlider.setValue (pv, juce::sendNotificationSync); });
-            };
+            });
+            panValue.setTooltip ("Click to type a position (L30, C, R45 ...)");
             panSlider.setValue (st.pan.get(), juce::dontSendNotification);
             panValue.setText (ChannelStrip::panText (st.pan.get()), juce::dontSendNotification);
-            panSlider.setTooltip ("Balance of this bus's stereo pair: moving it turns the opposite side down. Double-click to type a position (Ctrl + click centres). Automatable.");
+            panSlider.setTooltip ("Balance of this bus's stereo pair: moving it turns the opposite side down. Double-click centres it; click the read-out beside it to type a position. Automatable.");
             panSlider.onValueChange = [this] { st.pan.set ((float) panSlider.getValue()); panValue.setText (ChannelStrip::panText ((float) panSlider.getValue()), juce::dontSendNotification); app.project.markDirty(); };
             addAndMakeVisible (panSlider);
         }
@@ -1193,6 +1213,7 @@ private:
     juce::OwnedArray<SendDial> dials; juce::TextButton toTrackButton;
     juce::OwnedArray<juce::TextButton> toggles; juce::TextButton *mute = nullptr, *solo = nullptr;
     juce::Label panLabel, panValue; valueentry::TypedSlider panSlider;
+    std::unique_ptr<valueentry::ReadoutClick> panClick;
 };
 
 /** Which audio tracks and Int Buses a VCA controls in one mixer: a tick box for each. Opens from the strip's Assign button; every tick takes effect at once. */
@@ -1427,6 +1448,14 @@ public:
         addStripButton.setTooltip ("Add a strip to the project: an Int Bus, an Ext Bus or a VCA (a fader that controls the level of other strips). Int and Ext Buses are added to the whole project (every mixer); a VCA is added to this mixer.");
         addStripButton.onClick = [this] { chooseNewStrip(); };
         addAndMakeVisible (addStripButton);
+        styleCaption (widthCap, "STRIP WIDTH"); addAndMakeVisible (widthCap);
+        narrowerButton.setButtonText ("-"); widerButton.setButtonText ("+");
+        narrowerButton.setTooltip ("Make every strip narrower (fits more strips in the window)");
+        widerButton.setTooltip ("Make every strip wider");
+        narrowerButton.onClick = [this] { stepWidth (-1); };
+        widerButton.onClick = [this] { stepWidth (+1); };
+        addAndMakeVisible (narrowerButton); addAndMakeVisible (widerButton);
+        showWidth();
     }
     void resized() override
     {
@@ -1447,10 +1476,28 @@ public:
         monoButton.setBounds (r.removeFromTop (26).reduced (0, 1));
         r.removeFromTop (8);
         addStripButton.setBounds (r.removeFromTop (26).reduced (0, 1));
+        r.removeFromTop (8);
+        widthCap.setBounds (r.removeFromTop (12));
+        auto row = r.removeFromTop (26).reduced (0, 1);
+        narrowerButton.setBounds (row.removeFromLeft (row.getWidth() / 2).reduced (0, 0).withTrimmedRight (2));
+        widerButton.setBounds (row.withTrimmedLeft (2));
     }
 protected:
     juce::String bandText() const override { return "METERS"; }
 private:
+    void showWidth()
+    {
+        widthCap.setText ("STRIP WIDTH " + juce::String (stripWidthLevel() + 1) + " / 6", juce::dontSendNotification);
+        narrowerButton.setEnabled (stripWidthLevel() > 0); widerButton.setEnabled (stripWidthLevel() < 5);
+    }
+    void stepWidth (int d)
+    {
+        const int lv = juce::jlimit (0, 5, stripWidthLevel() + d);
+        if (lv == stripWidthLevel()) return;
+        stripWidthLevel() = lv; ++stripWidthGen();
+        if (auto* st = app.props.getUserSettings()) { st->setValue ("mixerStripWidth", lv); app.props.saveIfNeeded(); }
+        showWidth();
+    }
     void chooseNewStrip()
     {
         auto* mx = mixerState();
@@ -1501,7 +1548,8 @@ private:
         return nullptr;
     }
     AppContext& app; juce::Uuid mixer; std::function<void()> onReset;
-    juce::TextButton resetButton, scopeButton, monoButton, addStripButton;
+    juce::TextButton resetButton, scopeButton, monoButton, addStripButton, narrowerButton, widerButton;
+    juce::Label widthCap;
     juce::ComboBox ditherBox, modeBox, riseBox, fallBox, holdBox;
     juce::Label ditherCap, modeCap, riseCap, fallCap, holdCap;
 };
@@ -1512,7 +1560,7 @@ public:
     static constexpr int kEdge = 6;                       // the dark border above and below the strips: as wide as the one on the left
     void paint (juce::Graphics& g) override { g.fillAll (mixTheme().bg); }
     void clear() { strips.clear(); removeAllChildren(); }
-    void add (StripBase* s, int width = kStripW) { strips.add (s); widths.add (width); addAndMakeVisible (s); }
+    void add (StripBase* s, int width = -1) { strips.add (s); widths.add (width < 0 ? stripWidth() : width); addAndMakeVisible (s); }
     void layout (int height)
     {
         int x = 6;
@@ -1550,7 +1598,9 @@ MixerComponent::MixerComponent (AppContext& a, const juce::Uuid& id) : app (a), 
         auto& m = meterSettings();
         m.mode = st->getIntValue ("meterMode", m.mode); m.rise = st->getIntValue ("meterRise", m.rise);
         m.fall = st->getIntValue ("meterFall", m.fall); m.hold = st->getIntValue ("meterHold", m.hold);
+        stripWidthLevel() = juce::jlimit (0, 5, st->getIntValue ("mixerStripWidth", stripWidthLevel()));
     }
+    shownWidthGen = stripWidthGen();
 
     themeButton.setTooltip ("Switch the whole program between the light look and the dark look (the same colours, a shade darker)");
     themeButton.onClick = [] { if (themeSwitchHook()) themeSwitchHook() (! theme::isDark()); };
@@ -1942,9 +1992,9 @@ void MixerComponent::resized()
 
 void MixerComponent::timerCallback()
 {
-    if (shownDark != mixTheme().dark || shownGen != theme::generation())   // the look or the desk colour was changed (here or in another window)
+    if (shownDark != mixTheme().dark || shownGen != theme::generation() || shownWidthGen != stripWidthGen())   // the look, the desk colour or the strip width changed (here or in another window)
     {
-        shownDark = mixTheme().dark; shownGen = theme::generation();
+        shownDark = mixTheme().dark; shownGen = theme::generation(); shownWidthGen = stripWidthGen();
         mixLook.apply();
         rebuild(); updateAuditionButton(); resized();
         viewport.sendLookAndFeelChange();

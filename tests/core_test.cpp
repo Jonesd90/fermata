@@ -4056,6 +4056,50 @@ int main()
         CHECK (steady.size() == rebuilt.size() && worst < 1.0e-6f);
     }
 
+    SECTION ("plug-ins are told the transport (playing, recording, place, rate), also when their mixer runs on a helper thread");
+    {
+        struct Probe : InsertProcessor
+        {
+            void prepare (double, int, int) override {}
+            void process (juce::AudioBuffer<float>&) override
+            {
+                const auto* t = currentHostTransport();
+                seen = t != nullptr; if (t != nullptr) { playing = t->playing; rate = t->sampleRate; }
+                ++calls;
+            }
+            juce::String getName() const override { return "probe"; }
+            std::atomic<bool> seen { false }, playing { true }; std::atomic<double> rate { 0.0 }; std::atomic<int> calls { 0 };
+        };
+        Project q;
+        q.projectFile = tmp.getChildFile ("Transport.fermata");
+        q.setInputCount (2); q.setOutputCount (4);
+        q.tracks.clear();
+        const auto ta = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        q.retireAllMixers();
+        const auto ob = q.addBus ("Out", true).id;
+        auto& m1 = q.addMixer ("M1"); auto& m2 = q.addMixer ("M2");
+        AudioEngine e (q);
+        e.setMixerThreads (2);
+        e.prepare (96000.0, 64);
+        Probe* probes[2] = { nullptr, nullptr }; int k = 0;
+        for (auto* mx : { &m1, &m2 })
+        {
+            q.setSendLevel (*mx, ta, ob, 0.0f); mx->busFor (ob)->outFirst.store (k * 2);
+            auto pr = std::make_unique<Probe>(); probes[k] = pr.get();
+            mx->stripFor (ta)->slots[0].set (std::move (pr), 96000.0, 64, 2); ++k;
+        }
+        e.rebuildPlan();
+        e.setRunningForTests (true);
+        for (int blk = 0; blk < 20; ++blk)
+        {
+            std::vector<float> i0 (64, 0.1f), i1 (64, 0.0f), o[4] = { std::vector<float> (64), std::vector<float> (64), std::vector<float> (64), std::vector<float> (64) };
+            const float* in[2] = { i0.data(), i1.data() }; float* out[4] = { o[0].data(), o[1].data(), o[2].data(), o[3].data() };
+            e.process (in, 2, out, 4, 64);
+        }
+        e.setRunningForTests (false);
+        for (auto* pr : probes) CHECK (pr != nullptr && pr->calls.load() == 20 && pr->seen.load() && ! pr->playing.load() && pr->rate.load() == 96000.0);
+    }
+
     SECTION ("the second recording drive: each file is copied while it records, and the copy is identical once the take stops");
     {
         const auto backup = tmp.getChildFile ("Second drive");

@@ -19,6 +19,23 @@ public:
     }
 };
 
+/** Makes a read-out (a label) open the value box when it is clicked, or double-clicked. Keep it alive as long as the label (declare it after the label). */
+class ReadoutClick : private juce::MouseListener
+{
+public:
+    ReadoutClick (juce::Label& l, bool needsDoubleClick, std::function<void()> fn) : label (l), dbl (needsDoubleClick), action (std::move (fn))
+    {
+        label.setInterceptsMouseClicks (true, false);
+        label.setMouseCursor (juce::MouseCursor::IBeamCursor);
+        label.addMouseListener (this, false);
+    }
+    ~ReadoutClick() override { label.removeMouseListener (this); }
+private:
+    void mouseUp (const juce::MouseEvent& e) override { if (! dbl && e.mouseWasClicked() && ! e.mods.isPopupMenu() && action) action(); }
+    void mouseDoubleClick (const juce::MouseEvent& e) override { if (dbl && ! e.mods.isPopupMenu() && action) action(); }
+    juce::Label& label; bool dbl; std::function<void()> action;
+};
+
 /** The little box that opens beside a control: Enter applies what was typed, Escape or a click elsewhere leaves the value alone. */
 class Box : public juce::Component
 {

@@ -5,6 +5,7 @@
 #include "Ltc.h"
 #include "MixerWorkers.h"
 #include "BackupCopier.h"
+#include "HostTransport.h"
 
 namespace td
 {
@@ -222,6 +223,13 @@ private:
         int latency = 0;                        // the longest path through the mixer (samples): all Ext Bus outputs are this late
         int tapLatency = 0;                     // offline render: the captured signals are this late
         bool wasPlaying = false;                // audio thread
+        // the tail: after playback stops, the mixer that was playing goes on running (with silence going in) until its reverbs have died away,
+        // like outboard gear after the tape stops (audio thread only)
+        bool ranLive = false;                   // it ran as a live mixer in the last block
+        bool tailNow = false;                   // this block it runs only for its tail: no disk audio, no live inputs
+        int tailLeft = 0;                       // samples of tail still allowed (at most 30 s)
+        int quietFor = 0;                       // how long its outputs have been below -90 dB
+        float outPeak = 0.0f;                   // the loudest Ext Bus output in this block
         // running side by side with the other mixers: this mixer writes its driver outputs here, and the audio thread adds them up afterwards
         juce::AudioBuffer<float> outScratch;
         std::vector<float*> outPtrs;            // per driver output: where this mixer writes it (into outScratch), or nullptr
@@ -300,6 +308,8 @@ private:
     BlockJobs blockJobs;                            // audio thread: what the mixer jobs of this block work on
     std::atomic<juce::uint64> parallelBlocks { 0 };
     std::atomic<Plan*> lastPlanSeen { nullptr };    // audio thread: the plan of the previous block (see carryOver)
+    HostTransport transport;                          // what the plug-ins are told (filled per block on the audio thread, or per offline render step)
+    juce::int64 offlinePos = 0;                       // offline render: the timeline position the plug-ins are told
     MixerWorkers mixerWorkers;
     BackupCopier backupCopier;
     juce::File backupRoot;

@@ -472,7 +472,7 @@ MainComponent::MainComponent (AppContext& a) : app (a)
     statusLabel.setFont (juce::FontOptions (12.5f));
     addAndMakeVisible (statusLabel);
     inputsCaption.setText ("DRIVER INPUTS", juce::dontSendNotification);
-    inputsCaption.setJustificationType (juce::Justification::centredRight);
+    inputsCaption.setJustificationType (juce::Justification::centredLeft);
     outputsCaption.setText ("DRIVER OUTPUTS", juce::dontSendNotification);
     for (auto* l : { &inputsCaption, &outputsCaption })
     {
@@ -653,14 +653,9 @@ void MainComponent::resized()
     headerSeps.clear();
     stagePanel.setVisible (showStage);
     auto head = r.removeFromTop (headH);
-    {   // the stage speaker boxes' place is kept free even when they are not shown (room for a talkback mic, Playback and Output; more boxes scroll sideways)
-        const int pw = juce::jmin (StageSpeakerPanel::reservedWidth(), head.getWidth() / 3);
-        auto place = head.removeFromRight (pw);
-        if (showStage) stagePanel.setBounds (place.removeFromRight (juce::jmin (pw, stagePanel.wantedWidth())));
-        head.removeFromRight (10);
-    }
     headerLine = head;
-    {
+    {   // left to right: the mark, the displays, the driver line, DRIVER INPUTS; everything to the right of that is the stage speaker boxes' room
+        // (they sit at the right-hand end and only scroll sideways when they fill all of it)
         auto line = head;
         logo.setBounds (line.removeFromLeft (148).withSizeKeepingCentre (148, 40));
         line.removeFromLeft (12);
@@ -671,10 +666,13 @@ void MainComponent::resized()
         col.removeFromTop (6);
         for (auto* b : { &rateBox, &depthBox, &diskBox }) { b->setBounds (col.removeFromLeft (b->wantedWidth()).withSizeKeepingCentre (b->wantedWidth(), 22)); col.removeFromLeft (12); }
         line.removeFromLeft (12);
-        auto cap = line.removeFromRight (122);
-        inputsCaption.setBounds (cap.withSizeKeepingCentre (cap.getWidth(), 24));
-        line.removeFromRight (10);
-        statusLabel.setBounds (line.withSizeKeepingCentre (line.getWidth(), 24));
+        const int minStage = juce::jmin (StageSpeakerPanel::reservedWidth(), line.getWidth() / 3);          // the boxes always have at least this much
+        const int statusW = juce::jmin (statusWidth(), juce::jmax (60, line.getWidth() - minStage - 10 - 122 - 12));
+        statusLabel.setBounds (line.removeFromLeft (statusW).withSizeKeepingCentre (statusW, 24));
+        line.removeFromLeft (14);
+        inputsCaption.setBounds (line.removeFromLeft (112).withSizeKeepingCentre (112, 24));
+        line.removeFromLeft (10);
+        if (showStage) stagePanel.setBounds (line.removeFromRight (juce::jmin (line.getWidth(), stagePanel.wantedWidth())));
         projectName.setBounds ({});
     }
     headerLineY = head.getBottom() + 3;                                // the line that separates the top row from the strips (in the middle of the gap)
@@ -822,6 +820,7 @@ void MainComponent::timerCallback()
     const bool noticeOn = juce::Time::getMillisecondCounter() < app.noticeUntil;
     if (noticeOn) s = app.notice;
     statusLabel.setText (s, juce::dontSendNotification);
+    if (const int w = statusWidthFor (s); w != lastStatusTextW) { lastStatusTextW = w; resized(); }                                   // DRIVER INPUTS follows the end of the driver line
     if (noticeOn) statusLabel.setColour (juce::Label::textColourId, juce::Colour (0xff3ee0c0)); else
     statusLabel.setColour (juce::Label::textColourId, rec ? juce::Colour (0xffff5555) : s.startsWith ("DISK") || s.startsWith ("No audio") ? theme::warn : desk::pal().cream.withAlpha (0.8f));
 }
