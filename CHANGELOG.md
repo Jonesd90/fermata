@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.64.4
+- **Take window, the column at the top left moved up and closed up:** "Piece / Take Window Name:" now starts at the very top (level with the top of the Next Take box), with the name box right under it, then the line, "To edit goes into:" and its box, all as close together as they can be.
+- **The take's length (--:--:--.---) is only as wide as its digits and sits right against the time readout**, so the readout and the buttons beside it move left and the buttons get more room on the top line.
+
 ## 2.64.3
 - **Fixed: the mixer strip width (- / + under STRIP WIDTH) now changes the strips at once**, in every open mixer, and the mixer window takes the new width straight away. The strips were rebuilt, but each kept the width of the strip it replaced, so the change only showed after closing and reopening the mixer.
 - **Take window top bar, rearranged:** on the left, one column: "Piece / Take Window Name:", the name box, a thin line, "To edit goes into:" and its box (exactly as wide as the name box). Then Next Take, REC, the take's length and the time readout. **All the picture buttons sit to the right of the time readout**, and when they don't fit on one line the rest goes on a second line under them (the two lines are as tall as the readout), never under the name or the readout.

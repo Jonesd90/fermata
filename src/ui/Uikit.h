@@ -780,12 +780,15 @@ private:
 };
 
 /** Captions above their boxes, as one block of a top bar: the first caption and box are as tall as the Next Take box (the box in line with its bottom);
-    each further pair (addPair) goes under a thin line. Every box is as wide as the block. */
+    each further pair (addPair) goes under a thin line. Every box is as wide as the block.
+    Top-aligned (setTopAligned): the first caption starts at the very top and every pair is as close as it can be (the take window's column). */
 class StackedField : public juce::Component
 {
 public:
     static constexpr int kFirstH = 58, kPairH = 54;          // the first pair, and each one after it (the line, the caption, the box)
+    static constexpr int kCapH = 18, kTightPairH = 44, kTightGap = 9;   // top-aligned: a caption, the box 2 under it; the space with the line between two pairs
     StackedField (juce::Label& caption, juce::Component& field) { addPair (caption, field); }
+    void setTopAligned (bool on) { topAligned = on; resized(); repaint(); }
     void addPair (juce::Label& caption, juce::Component& field)
     {
         caption.setFont (juce::FontOptions (13.0f));
@@ -795,10 +798,24 @@ public:
         pairs.push_back ({ &caption, &field });
         resized();
     }
-    int idealHeight() const { return kFirstH + (int) (pairs.size() - 1) * kPairH; }
+    int idealHeight() const
+    {
+        const int n = (int) pairs.size();
+        return topAligned ? n * kTightPairH + (n - 1) * kTightGap : kFirstH + (n - 1) * kPairH;
+    }
     void resized() override
     {
         const int fh = grid::btnH, w = getWidth();
+        if (topAligned)
+        {
+            for (size_t i = 0; i < pairs.size(); ++i)
+            {
+                const int top = (int) i * (kTightPairH + kTightGap);
+                pairs[i].first->setBounds (0, top, w, kCapH);
+                pairs[i].second->setBounds (0, top + kTightPairH - fh, w, fh);
+            }
+            return;
+        }
         for (size_t i = 0; i < pairs.size(); ++i)
         {
             const int top = i == 0 ? 0 : kFirstH + (int) (i - 1) * kPairH + 6, bottom = i == 0 ? kFirstH : top + kPairH - 6;
@@ -809,10 +826,12 @@ public:
     void paint (juce::Graphics& g) override
     {
         g.setColour (theme::dimText.withAlpha (0.35f));
-        for (size_t i = 1; i < pairs.size(); ++i) g.fillRect (0, kFirstH + (int) (i - 1) * kPairH + 2, getWidth(), 1);   // the line between two pairs
+        for (size_t i = 1; i < pairs.size(); ++i)                                                   // the line between two pairs
+            g.fillRect (0, topAligned ? (int) i * (kTightPairH + kTightGap) - kTightGap / 2 - 1 : kFirstH + (int) (i - 1) * kPairH + 2, getWidth(), 1);
     }
 private:
     std::vector<std::pair<juce::Label*, juce::Component*>> pairs;
+    bool topAligned = false;
 };
 
 /** The square "Next Take 4" / "This Take 4" box: green while idle, red while recording. Shown in the take window and on the main page. */

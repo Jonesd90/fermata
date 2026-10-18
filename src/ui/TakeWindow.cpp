@@ -1295,6 +1295,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
                                                           &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &exportProcButton, &undoFixButton, &barSearchButton })
         b->setWantsKeyboardFocus (false);       // keep the keyboard shortcuts working after a button click
     timeLabel.setFont (juce::FontOptions (20.0f, juce::Font::bold));
+    timeLabel.setJustificationType (juce::Justification::centredRight);     // snug against the time readout beside it (the dashes are narrower than the digits)
     timeLabel.setTooltip ("How long the take being recorded in this window is so far (it counts up from 0 while recording; dashes when nothing is recording here)");
     statusLabel.setColour (juce::Label::textColourId, theme::warn);
 
@@ -1308,6 +1309,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
 
     sendCaption.setText ("To edit goes into:", juce::dontSendNotification);
     nameBlock.addPair (sendCaption, sendBox);                  // "To edit goes into:" and its box under the window's name, under a line, as wide as the name box
+    nameBlock.setTopAligned (true);                            // the column starts at the very top, every row as close as it can be
     sendBox.onChange = [this]
     {
         auto* w = def();
@@ -1392,7 +1394,8 @@ void TakeWindowComponent::resized()
     nameBlock.setBounds (x, y0, colW, nameBlock.idealHeight()); x += colW + 10;
     takeBox.setBounds (x, y0, 84, 58);                            x += 84 + 6;
     recordButton.setBounds (x, y0, 84, 58);                       x += 84 + 6;
-    timeLabel.setBounds (x, y0 + 15, 150, 28);                    x += 150 + 4;
+    const int tlW = juce::GlyphArrangement::getStringWidthInt (timeLabel.getFont(), "00:00:00.000") + 12;      // the take's length: just as wide as its digits
+    timeLabel.setBounds (x, y0 + 15, tlW, 28);                    x += tlW + 6;
     clock.setBounds (x, y0, clockW, kClockH);                     x += clockW + 14;
     int headH = juce::jmax (nameBlock.getBottom(), y0 + kClockH + 4) - r.getY();
     const int btnRight = r.getRight() - grid::cornerReserve;      // (clear of the pin and sun / moon buttons in the corner)
