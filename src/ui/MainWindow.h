@@ -323,6 +323,9 @@ private:
     InfoBox projectBox, rateBox { "RATE" }, depthBox { "DEPTH" }, diskBox { "DISK FREE" };
     int headerLineY = -1;                              // the line under the top row
     juce::uint32 lastDiskCheck = 0;
+    int lastDiskW = 0;
+    juce::String diskAlarm;                    // while recording: "DISK NEARLY FULL ..." when the drive has only minutes left
+    bool problemNoticed = false;               // the notice about a file that stopped taking data was shown for this recording
     DockBar dock;
     juce::Label projectName, timeLabel, recStatus, statusLabel, inputsCaption, outputsCaption;
     // Driver inputs (left) and outputs (right) are always shown; the divider between them can be dragged

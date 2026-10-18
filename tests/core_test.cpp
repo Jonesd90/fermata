@@ -12,6 +12,7 @@
 #include "../src/core/Dither.h"
 #include "../src/core/CoreReservation.h"
 #include "../src/core/WavRepair.h"
+#include "../src/core/TakeWriter.h"
 #include "../src/core/ProjectCopy.h"
 #include "../src/core/Ltc.h"
 #include "../src/core/Aaf.h"
@@ -4251,6 +4252,207 @@ int main()
     }
 
     eng.rebuildPlan();
+    SECTION ("TakeWriter: 24-bit words come back exactly as they went in");
+    {
+        // every word a converter can make, through the writer and back: the old JUCE path wrote the positive ones above -6 dBFS one step low
+        juce::TimeSliceThread tst ("test writer"); tst.startThread();
+        auto f = tmp.getChildFile ("exact.wav");
+        {
+            juce::WavAudioFormat fmt; std::unique_ptr<juce::OutputStream> os (new juce::FileOutputStream (f, 1024));
+            auto w = fmt.createWriterFor (os, juce::AudioFormatWriterOptions().withSampleRate (48000.0).withNumChannels (1).withBitsPerSample (24));
+            TakeWriter tw (std::move (w), tst, 1 << 16, 0);
+            std::vector<float> x (4096);
+            for (int k = -8388608; k < 8388608; k += 4096)
+            {
+                for (int i = 0; i < 4096; ++i) x[(size_t) i] = (float) (k + i) / 8388608.0f;
+                const float* p = x.data();
+                while (tw.freeSpace() < 4096) juce::Thread::sleep (1);    // (the buffer is small: let the disk thread catch up)
+                CHECK (tw.write (&p, 4096));
+                tst.notify();
+            }
+            CHECK (tw.overruns() == 0);
+        }
+        juce::AudioFormatManager afm; afm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> rd (afm.createReaderFor (f));
+        CHECK (rd != nullptr && rd->lengthInSamples == 16777216);
+        if (rd != nullptr)
+        {
+            std::vector<int> ints (65536); int* ip[1] = { ints.data() };
+            long wrong = 0;
+            for (juce::int64 pos = 0; pos < rd->lengthInSamples; pos += 65536)
+            {
+                rd->read (ip, 1, pos, 65536, false);
+                for (int i = 0; i < 65536; ++i) if ((ints[(size_t) i] >> 8) != (int) (pos + i) - 8388608) ++wrong;
+            }
+            CHECK (wrong == 0);
+        }
+        CHECK (TakeWriter::toInt24 (1.0f) == (8388607 << 8) && TakeWriter::toInt24 (-1.0f) == std::numeric_limits<int>::min() && TakeWriter::toInt24 (0.0f) == 0
+               && TakeWriter::toInt24 (-1.0f / 8388608.0f) == -256 && TakeWriter::toInt24 (2.0f) == (8388607 << 8));
+        tst.stopThread (1000);
+    }
+
+    SECTION ("TakeWriter: a block that does not fit becomes silence in its place, and the file keeps its length");
+    {
+        juce::TimeSliceThread tst ("test writer 2");                       // not started: nothing is written until the writer closes
+        auto f = tmp.getChildFile ("dropped.wav");
+        {
+            juce::WavAudioFormat fmt; std::unique_ptr<juce::OutputStream> os (new juce::FileOutputStream (f, 1024));
+            auto w = fmt.createWriterFor (os, juce::AudioFormatWriterOptions().withSampleRate (48000.0).withNumChannels (2).withBitsPerSample (24));
+            TakeWriter tw (std::move (w), tst, 4096, 0);                     // room for four blocks of 1024
+            CHECK (tw.bufferSamples() == 4096);
+            std::vector<float> l (1024), r (1024);
+            auto block = [&] (int number) { for (int i = 0; i < 1024; ++i) { l[(size_t) i] = (float) number / 64.0f; r[(size_t) i] = -(float) number / 64.0f; } };
+            const float* p[2] = { l.data(), r.data() };
+            for (int b = 1; b <= 4; ++b) { block (b); CHECK (tw.write (p, 1024)); }
+            block (5); CHECK (! tw.write (p, 1024));                          // the fifth does not fit: lost, its time owed as silence
+            block (6); CHECK (! tw.write (p, 1024));                          // nor the sixth
+            CHECK (tw.overruns() == 2 && tw.samplesLost() == 2048);
+            tw.skip (512);                                                    // a block that could not even be offered
+            CHECK (tw.samplesLost() == 2560);
+            // the disk thread catches up a little (the test drains by hand through a short-lived thread run)
+            tst.startThread(); juce::Thread::sleep (200); tst.notify(); juce::Thread::sleep (200); tst.stopThread (1000);
+            block (7); CHECK (tw.write (p, 1024));                            // accepted again: the silence is marked to go before it
+            tst.startThread(); tst.notify(); juce::Thread::sleep (200); tst.stopThread (1000);
+            block (8); CHECK (tw.write (p, 1024));
+            block (9); CHECK (tw.write (p, 1024));
+        }                                                                     // closing writes what is left, in order
+        juce::AudioFormatManager afm; afm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> rd (afm.createReaderFor (f));
+        CHECK (rd != nullptr && rd->lengthInSamples == 1024 * 9 + 512);          // nine blocks' worth of time plus the skipped 512: nothing moved
+        if (rd != nullptr)
+        {
+            juce::AudioBuffer<float> b (2, (int) rd->lengthInSamples);
+            rd->read (&b, 0, (int) rd->lengthInSamples, 0, true, true);
+            auto at = [&] (int frame) { return b.getSample (0, frame); };
+            auto near = [] (float a, float v) { return std::abs (a - v) < 1e-5f; };
+            CHECK (near (at (0), 1.0f / 64) && near (at (1023), 1.0f / 64) && near (at (3 * 1024), 4.0f / 64));
+            CHECK (near (at (4 * 1024), 0.0f) && near (at (4 * 1024 + 2048 + 511), 0.0f));                      // blocks 5 and 6 and the skip: silence, where they belonged
+            CHECK (near (at (4 * 1024 + 2560), 7.0f / 64) && near (at (5 * 1024 + 2560), 8.0f / 64) && near (at (6 * 1024 + 2560), 9.0f / 64));
+            CHECK (near (b.getSample (1, 4 * 1024 + 2560), -7.0f / 64));
+        }
+    }
+
+    SECTION ("TakeWriter: a drive that stops taking data is reported, and the file keeps a good header");
+    {
+        /** A file stream that refuses everything written past a certain point (a full drive), while the header at the start can still be written. */
+        struct FullDrive : public juce::OutputStream
+        {
+            FullDrive (const juce::File& f, juce::int64 lim) : inner (f), limit (lim) {}
+            void flush() override { inner.flush(); }
+            bool setPosition (juce::int64 p) override { return inner.setPosition (p); }
+            juce::int64 getPosition() override { return inner.getPosition(); }
+            bool write (const void* d, size_t n) override { if (inner.getPosition() + (juce::int64) n > limit) return false; return inner.write (d, n); }
+            juce::FileOutputStream inner; juce::int64 limit;
+        };
+        juce::TimeSliceThread tst ("test writer 3"); tst.startThread();
+        auto f = tmp.getChildFile ("full.wav");
+        bool failedSeen = false; juce::int64 writtenBefore = 0;
+        {
+            juce::WavAudioFormat fmt; std::unique_ptr<juce::OutputStream> os (new FullDrive (f, 2000 + 3 * 48000));      // room for about a second
+            auto w = fmt.createWriterFor (os, juce::AudioFormatWriterOptions().withSampleRate (48000.0).withNumChannels (1).withBitsPerSample (24));
+            TakeWriter tw (std::move (w), tst, 1 << 17, 0);
+            std::vector<float> x (4800, 0.1f); const float* p = x.data();
+            for (int b = 0; b < 40 && ! tw.failed(); ++b) { tw.write (&p, 4800); tst.notify(); juce::Thread::sleep (10); }
+            for (int w2 = 0; w2 < 200 && ! tw.failed(); ++w2) { tst.notify(); juce::Thread::sleep (5); }
+            failedSeen = tw.failed(); writtenBefore = tw.samplesWritten();
+            CHECK (tw.write (&p, 4800));                                      // after the failure nothing is counted against the drive any more
+            CHECK (tw.overruns() == 0);
+        }
+        CHECK (failedSeen);
+        auto r = wavrepair::inspect (f, false);
+        CHECK (r.ok && ! r.wasBroken && r.frames > 0 && r.frames <= writtenBefore && r.frames * 3 + 100 >= f.getSize() - 500);   // the header matches what reached the "disk"
+        tst.stopThread (1000);
+    }
+
+    SECTION ("TakeWriter: the header is refreshed while recording, so a crash leaves a readable file");
+    {
+        juce::TimeSliceThread tst ("test writer 4"); tst.startThread();
+        auto f = tmp.getChildFile ("refreshed.wav");
+        juce::WavAudioFormat fmt; std::unique_ptr<juce::OutputStream> os (new juce::FileOutputStream (f, 1024));
+        auto w = fmt.createWriterFor (os, juce::AudioFormatWriterOptions().withSampleRate (48000.0).withNumChannels (1).withBitsPerSample (24));
+        auto tw = std::make_unique<TakeWriter> (std::move (w), tst, 1 << 16, 2048);          // the header every 2048 frames
+        std::vector<float> x (1024, 0.2f); const float* p = x.data();
+        auto block = [&] (int n) { tw->write (&p, 1024); tst.notify(); for (int w2 = 0; w2 < 400 && tw->samplesWritten() < n * 1024; ++w2) juce::Thread::sleep (5); };
+        block (1); block (2);
+        for (int w2 = 0; w2 < 400 && tw->samplesInHeader() < 2048; ++w2) juce::Thread::sleep (5);
+        CHECK (tw->samplesWritten() == 2048 && tw->samplesInHeader() == 2048);
+        {   // the file is still open for writing, as it would be at a crash: its header already says 2048 frames
+            juce::AudioFormatManager afm; afm.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> rd (afm.createReaderFor (f));
+            CHECK (rd != nullptr && rd->lengthInSamples == 2048);
+        }
+        block (3);                                                             // one more block: the header is stale by that block ...
+        CHECK (tw->samplesWritten() == 3072 && tw->samplesInHeader() == 2048);
+        auto stale = wavrepair::inspect (f, false, false); CHECK (stale.ok && ! stale.wasBroken && stale.frames == 2048);
+        auto ext = wavrepair::inspect (f, false, true); CHECK (ext.ok && ext.wasBroken && ext.frames == 3072);     // ... which the repair of an interrupted take takes in
+        tw.reset();
+        tst.stopThread (1000);
+        CHECK (wavrepair::inspect (f, false, true).frames == 3072 && ! wavrepair::inspect (f, false, true).wasBroken);
+    }
+
+    SECTION ("WavRepair: a file of more than 4 GB gets an RF64 header (and reads back whole)");
+    {
+        auto f = tmp.getChildFile ("huge.wav");
+        {
+            juce::WavAudioFormat fmt; std::unique_ptr<juce::OutputStream> os (f.createOutputStream().release());
+            auto w = fmt.createWriterFor (os, juce::AudioFormatWriterOptions().withSampleRate (96000.0).withNumChannels (2).withBitsPerSample (24));
+            juce::AudioBuffer<float> b (2, 96); for (int i = 0; i < 96; ++i) { b.setSample (0, i, 0.5f); b.setSample (1, i, -0.25f); }
+            w->writeFromAudioSampleBuffer (b, 0, 96);
+        }
+        int dpos = -1;
+        {   // as if the program died after 4.4 GB: the header says 0 bytes of audio, and the file is that long (a sparse file: it costs no disk space here)
+            juce::MemoryBlock mb; f.loadFileAsData (mb);
+            for (int i = 12; i < 300; ++i) if (std::memcmp ((const char*) mb.getData() + i, "data", 4) == 0) { dpos = i; break; }
+            CHECK (dpos > 0);
+            juce::FileOutputStream fo (f); fo.setPosition (4); fo.writeInt (0); fo.setPosition (dpos + 4); fo.writeInt (0);
+            const juce::int64 frames = 4400000000LL / 6;
+            fo.setPosition ((juce::int64) dpos + 8 + frames * 6 - 6); fo.writeInt (0); fo.writeShort (0);
+            fo.flush();
+            CHECK (f.getSize() == (juce::int64) dpos + 8 + frames * 6);
+        }
+        auto r = wavrepair::inspect (f, true, false);
+        CHECK (r.ok && r.wasBroken && r.rf64 && r.frames == 4400000000LL / 6);
+        auto again = wavrepair::inspect (f, false, false);
+        CHECK (again.ok && ! again.wasBroken && again.rf64 && again.frames == 4400000000LL / 6);
+        juce::AudioFormatManager afm; afm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> rd (afm.createReaderFor (f));
+        CHECK (rd != nullptr && rd->lengthInSamples == 4400000000LL / 6 && rd->numChannels == 2 && (int) rd->sampleRate == 96000);
+        if (rd != nullptr)
+        {
+            juce::AudioBuffer<float> b (2, 96); rd->read (&b, 0, 96, 0, true, true);
+            CHECK (std::abs (b.getSample (0, 10) - 0.5f) < 1e-6f && std::abs (b.getSample (1, 10) + 0.25f) < 1e-6f);
+            juce::AudioBuffer<float> e (2, 8); rd->read (&e, 0, 8, rd->lengthInSamples - 8, true, true);
+            CHECK (e.getSample (0, 7) == 0.0f);                                // the far end of the file is readable (and silent)
+        }
+        rd.reset();
+        f.deleteFile();
+    }
+
+    SECTION ("mixer helpers: a limit on how many take part, and no replacing them while the audio runs");
+    {
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear();
+        const auto ta = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        q.retireAllMixers();
+        const auto ob = q.addBus ("Out", true).id;
+        auto& m0 = q.addMixer ("M0"); auto& m1 = q.addMixer ("M1"); auto& m2 = q.addMixer ("M2");
+        AudioEngine e (q);
+        CHECK (e.setMixerThreads (2));
+        e.prepare (48000.0, 256);
+        for (auto* m : { &m0, &m1, &m2 }) { q.setSendLevel (*m, ta, ob, -3.0f); m->busFor (ob)->outFirst.store (0); }
+        e.rebuildPlan();
+        e.setRunningForTests (true);
+        CHECK (! e.setMixerThreads (4));                                      // refused while running (the helpers cannot be replaced under a block)
+        CHECK (e.mixerThreads() == 2);
+        std::vector<float> i0 (256, 0.1f), o0 (256), o1 (256);
+        const float* in[1] = { i0.data() }; float* out[2] = { o0.data(), o1.data() };
+        const auto pb0 = e.parallelBlockCount();
+        e.process (in, 1, out, 2, 256);
+        CHECK (e.parallelBlockCount() == pb0 + 1);                            // three mixers: run side by side
+        CHECK (e.mixerHelperLimit() >= 2);                                    // no cores reserved here: every helper may take part
+        e.setRunningForTests (false);
+        CHECK (e.setMixerThreads (0));
+    }
+
     tmp.deleteRecursively();
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;

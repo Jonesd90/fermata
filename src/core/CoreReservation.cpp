@@ -362,9 +362,11 @@ void CoreReservation::configure (const CoreReservationSettings& s)
 #if FERMATA_CPU_WINDOWS
     impl->applyNow();
     isActive.store (impl->active);
+    audioLogicalCount.store (impl->active ? (int) impl->plan.audioLogical.size() : 0);
 #else
     impl->plan = CorePlan();
     isActive.store (false);
+    audioLogicalCount.store (0);
 #endif
 }
 
@@ -390,8 +392,8 @@ void CoreReservation::audioThreadCheck() noexcept
     const unsigned g = impl->generation.load (std::memory_order_acquire);
     if (g == seen) return;
     if (! impl->applyToThread (GetCurrentThread(), true)) return;           // the ids were being changed: try again at the next block
-    if (isActive.load() && ! inMmcss && impl->avSetMmThreadCharacteristics != nullptr)
-    {
+    if (! inMmcss && impl->avSetMmThreadCharacteristics != nullptr)         // whether or not cores are reserved: a mixer helper outside "Pro Audio" can be
+    {                                                                       // pre-empted by any busy program while the audio thread waits for it
         DWORD taskIndex = 0;
         impl->avSetMmThreadCharacteristics (L"Pro Audio", &taskIndex);       // (fails harmlessly if the driver has already done it)
         inMmcss = true;

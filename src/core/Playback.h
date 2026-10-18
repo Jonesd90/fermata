@@ -125,7 +125,8 @@ private:
 
     static constexpr int kRing = 1 << 17;
     juce::AbstractFifo fifo { kRing };
-    std::vector<juce::AudioBuffer<float>> ring, chunk, trackBuf;
+    std::vector<std::vector<std::vector<float>>> ring;           // [track][channel][kRing]: plain arrays, so no juce::AudioBuffer flag is shared between the two threads
+    std::vector<juce::AudioBuffer<float>> chunk, trackBuf;
     juce::AudioBuffer<float> scratch;
     std::atomic<bool> renderDone { false }, finished { false }, looping { false };
     std::atomic<juce::int64> position { 0 };

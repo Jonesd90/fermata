@@ -125,10 +125,13 @@ public:
         if (sl.isLocked() && proc != nullptr && index < proc->numParams()) proc->setParamNorm (index, v);
     }
 
-    bool isLoaded() const        { const juce::SpinLock::ScopedLockType sl (lock); return proc != nullptr; }
+    /** Message thread only (like getProcessorUnsafe): it is the only thread that ever changes 'proc', so no lock is taken. (These used to take the
+        lock, and the mixer window asked every slot its name three times a second: each time the audio thread's try-lock met it, the plug-in was
+        skipped for a block and the sound went past it dry.) */
+    bool isLoaded() const noexcept        { return proc != nullptr; }
     /** Lock-free hint for the audio thread: true if something is (or is about to be) loaded in this slot. */
     bool mightBeLoaded() const noexcept { return loadedHint.load (std::memory_order_relaxed); }
-    juce::String getName() const { const juce::SpinLock::ScopedLockType sl (lock); return proc != nullptr ? proc->getName() : juce::String(); }
+    juce::String getName() const { return proc != nullptr ? proc->getName() : juce::String(); }
 
     /** Message thread only. */
     InsertProcessor* getProcessorUnsafe() const noexcept { return proc.get(); }

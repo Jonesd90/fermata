@@ -29,11 +29,23 @@ struct TakeGroup
     double       fadeInSeconds = kDefaultEdgeFade, fadeOutSeconds = kDefaultEdgeFade;   // short fades when the take is played / bounced (the files are untouched)
     std::vector<TakeFile> files;
     bool         dud = false;               // marked with D: nothing good in this take
+    int          overruns = 0;              // blocks that did not reach the disk buffer in time while it was recorded (their time is silence in the files)
+    juce::int64  lostSamples = 0;           // how much audio those overruns cost (the most on any one file)
+    bool         writeFailed = false;       // a file stopped taking data while recording (the drive was full, or gone): the take is cut short
     std::vector<WaitingPiece> waiting;      // parts sent out to be processed in other software, waiting for the corrected files
     int          barIn = 0, barOut = 0;     // the bars of the music this take starts and ends in (0 = not entered); it contains those bars and all the ones between
 
     double lengthSeconds() const { return sampleRate > 0 ? (double) lengthSamples / sampleRate : 0.0; }
 };
+
+/** "0.3 s", "12 s", "2 min 05 s": how much audio a number of samples is, for the overrun warnings. */
+inline juce::String lostText (juce::int64 samples, double rate)
+{
+    const double secs = rate > 0 ? (double) samples / rate : 0.0;
+    if (secs < 10.0) return juce::String (secs, 1) + " s";
+    if (secs < 60.0) return juce::String ((int) secs) + " s";
+    return juce::String ((int) (secs / 60.0)) + " min " + juce::String ((int) secs % 60).paddedLeft ('0', 2) + " s";
+}
 
 /** Does a take (or piece) that runs from bar 'in' to bar 'out' contain bar 'bar'? (Everything from 'in' to 'out' counts; 'in' = 0 means no bars were entered.) */
 inline bool barsContain (int in, int out, int bar) { return in > 0 && bar >= in && bar <= (out > in ? out : in); }

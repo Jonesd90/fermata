@@ -1088,6 +1088,8 @@ var Project::toVar (bool editorialOnly) const
             put (go, "start", g.startSeconds); put (go, "length", (juce::int64) g.lengthSamples);
             put (go, "rate", g.sampleRate); put (go, "time", g.recordedAt.toMilliseconds());
             put (go, "fadeIn", g.fadeInSeconds); put (go, "fadeOut", g.fadeOutSeconds); put (go, "dud", g.dud); put (go, "barIn", g.barIn); put (go, "barOut", g.barOut);
+            if (g.overruns > 0) { put (go, "overruns", g.overruns); put (go, "lost", (juce::int64) g.lostSamples); }
+            if (g.writeFailed) put (go, "writeFailed", true);
             juce::Array<var> fs;
             for (auto& f : g.files)
             {
@@ -1241,6 +1243,7 @@ bool Project::fromVar (const var& root)
                     if (gv.hasProperty ("fadeOut")) g.fadeOutSeconds = juce::jmax (0.0, (double) gv["fadeOut"]);
                     if (g.fadeOutSeconds <= 0.0011 && g.fadeOutSeconds > 0.0) g.fadeOutSeconds = kDefaultEdgeFade;
                     g.dud = (bool) gv["dud"]; g.barIn = juce::jmax (0, (int) gv["barIn"]); g.barOut = juce::jmax (0, (int) gv["barOut"]);
+                    g.overruns = juce::jmax (0, (int) gv["overruns"]); g.lostSamples = juce::jmax<juce::int64> (0, (juce::int64) gv["lost"]); g.writeFailed = (bool) gv["writeFailed"];
                     if (auto* fs = gv["files"].getArray())
                         for (auto& fv : *fs)
                         {
@@ -1482,10 +1485,12 @@ juce::StringArray Project::repairInterruptedRecordings()
             }
             if (! look) continue;
             bool mended = false; juce::int64 longest = 0;
+            const bool wasRecording = g.lengthSamples <= 0;                                // (saved so when Record was pressed; Stop writes the length)
             for (auto& f : g.files)
             {
                 if (! f.file.existsAsFile()) continue;
-                const auto r = wavrepair::inspect (f.file, true);
+                const bool ours = inside != juce::File() && f.file.isAChildOf (inside);
+                const auto r = wavrepair::inspect (f.file, true, wasRecording && ours);
                 if (! r.ok) continue;
                 if (r.wasBroken) mended = true;
                 longest = juce::jmax (longest, r.frames);

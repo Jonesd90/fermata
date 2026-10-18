@@ -14,10 +14,10 @@ PlaybackSession::PlaybackSession (std::vector<int> counts, std::vector<PlaySegme
     for (int c : channelCounts)
     {
         const int ch = juce::jlimit (1, kMaxTrackChannels, c);
-        ring.emplace_back (ch, kRing);
+        ring.emplace_back ((size_t) ch, std::vector<float> ((size_t) kRing, 0.0f));
         chunk.emplace_back (ch, 8192);
         trackBuf.emplace_back (ch, maxBlock);
-        ring.back().clear(); chunk.back().clear(); trackBuf.back().clear();
+        chunk.back().clear(); trackBuf.back().clear();
     }
     position = 0;
 }
@@ -71,10 +71,10 @@ void PlaybackSession::run()
         int s1, z1, s2, z2;
         fifo.prepareToWrite (n, s1, z1, s2, z2);
         for (size_t t = 0; t < ring.size(); ++t)
-            for (int c = 0; c < ring[t].getNumChannels(); ++c)
+            for (size_t c = 0; c < ring[t].size(); ++c)
             {
-                if (z1 > 0) ring[t].copyFrom (c, s1, chunk[t], c, 0, z1);
-                if (z2 > 0) ring[t].copyFrom (c, s2, chunk[t], c, z1, z2);
+                if (z1 > 0) juce::FloatVectorOperations::copy (ring[t][c].data() + s1, chunk[t].getReadPointer ((int) c), z1);
+                if (z2 > 0) juce::FloatVectorOperations::copy (ring[t][c].data() + s2, chunk[t].getReadPointer ((int) c) + z1, z2);
             }
         fifo.finishedWrite (z1 + z2);
         renderPos += z1 + z2;
@@ -92,8 +92,9 @@ void PlaybackSession::pull (int n) noexcept
         auto& dst = trackBuf[t];
         for (int c = 0; c < dst.getNumChannels(); ++c)
         {
-            if (z1 > 0) dst.copyFrom (c, 0, ring[t], c, s1, z1);
-            if (z2 > 0) dst.copyFrom (c, z1, ring[t], c, s2, z2);
+            const float* src = ring[t][(size_t) c].data();
+            if (z1 > 0) dst.copyFrom (c, 0, src + s1, z1);
+            if (z2 > 0) dst.copyFrom (c, z1, src + s2, z2);
             if (got < n) dst.clear (c, got, n - got);
         }
     }

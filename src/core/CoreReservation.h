@@ -73,8 +73,12 @@ public:
     /** A sentence for the user: what is in force now, or why nothing is. */
     juce::String statusText() const;
 
-    /** The top of the audio callback. Cheap (one atomic read) unless the settings have just changed, or it is the first block on this thread. */
+    /** The top of the audio callback (and of a mixer helper's work). Cheap (one atomic read) unless the settings have just changed, or it is the first
+        block on this thread: then the thread is moved to the reserved cores (when any) and joins Windows' "Pro Audio" scheduling class (always: a helper
+        that is not in it can be pre-empted by any busy program while the audio thread waits for it). */
     void audioThreadCheck() noexcept;
+    /** How many logical processors are reserved for the audio right now (0 = none: the reservation is off or not in force). Any thread. */
+    int reservedLogicalProcessors() const noexcept { return audioLogicalCount.load (std::memory_order_relaxed); }
     /** A thread of the audio engine that is not the callback (disk writer, playback reader). Call after it has started; unregister before it is deleted. */
     void registerAudioThread (juce::Thread::ThreadID id);
     void unregisterAudioThread (juce::Thread::ThreadID id);
@@ -95,5 +99,6 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl;
     std::atomic<bool> isActive { false };
+    std::atomic<int> audioLogicalCount { 0 };
 };
 } // namespace td

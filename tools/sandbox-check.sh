@@ -31,6 +31,10 @@ $CXX -c "$HERE/src/core/CoreReservation.cpp" -o "$OUT/CoreReservation.o"
 $CXX -c "$HERE/tests/core_test.cpp" -o "$OUT/core_test.o"
 $CXX "$OUT"/*.o -o "$OUT/core_test" -lpthread -ldl -lrt
 "$OUT/core_test"
+# the concurrency stress test: a pretend audio thread against a pretend user, for a few seconds (longer: stress_test 30)
+$CXX -c "$HERE/tests/stress_test.cpp" -o "$OUT/stress_test.o.x"
+$CXX "$OUT/stress_test.o.x" $(ls "$OUT"/*.o | grep -v core_test.o) -o "$OUT/stress_test" -lpthread -ldl -lrt
+"$OUT/stress_test" 3
 # the time readout's formats and parsing (only needs juce_core and the LTC code)
 $CXX -c "$HERE/tests/timeformat_test.cpp" -o "$OUT/timeformat_test.o.x"
 $CXX "$OUT/timeformat_test.o.x" "$OUT/Ltc.o" "$OUT"/juce_*.o "$OUT/ct.o" -o "$OUT/timeformat_test" -lpthread -ldl -lrt

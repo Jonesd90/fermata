@@ -53,7 +53,11 @@ void AudioEngine::audioDeviceStopped()
 void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* in, int numIn, float* const* out, int numOut,
                                                     int numSamples, const juce::AudioIODeviceCallbackContext&)
 {
-    CoreReservation::get().audioThreadCheck();                 // first block on this thread, or the reserved cores just changed: move this thread to them
+    auto& cores = CoreReservation::get();
+    cores.audioThreadCheck();                                  // first block on this thread, or the reserved cores just changed: move this thread to them
+    // with cores reserved, no more helpers than the reserved processors can run beside this thread (two audio threads on one processor would wait for each other)
+    const int reserved = cores.reservedLogicalProcessors();
+    mixerWorkers.setLimit (reserved > 0 ? reserved - 1 : 1 << 20);
     juce::ScopedNoDenormals noDenormals;
     process (in, numIn, out, numOut, numSamples);
 }
@@ -245,15 +249,15 @@ void AudioEngine::rebuildPlan()
     ensurePreRoll();                                 // a track patched to a new input starts being kept for the pre-roll
 }
 
-juce::int64 AudioEngine::latencySignature (bool refresh) const
+juce::uint64 AudioEngine::latencySignature (bool refresh) const
 {
-    juce::int64 sig = 17;
+    juce::uint64 sig = 17;                                  // (unsigned: the multiplication is meant to wrap)
     auto one = [&] (InsertSlot* sl, int count)
     {
         for (int i = 0; i < count; ++i)
         {
             if (refresh) sl[i].refreshLatency();
-            sig = sig * 1000003 + sl[i].latencySamples() + (sl[i].mightBeLoaded() ? 5 : 3) + (sl[i].bypass.get() ? 11 : 0);
+            sig = sig * 1000003u + (juce::uint64) (sl[i].latencySamples() + (sl[i].mightBeLoaded() ? 5 : 3) + (sl[i].bypass.get() ? 11 : 0));
         }
     };
     for (auto& m : project.mixers)
@@ -344,6 +348,7 @@ void AudioEngine::deliverFromRing (RecordingSession& rs, juce::int64 from, juce:
         }
         from += len;
     }
+    writerThread.notify();                          // once for all the files (not once per file per block)
 }
 
 bool AudioEngine::waitForAudioThread()
@@ -517,11 +522,14 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
                 const int idx = rt.route.inputs[c];
                 ptrs[c] = (idx >= 0 && idx < numIn && in[idx] != nullptr) ? in[idx] : silence;
             }
-            if (silenceOk && ! rt.writer->write (ptrs, numSamples))
+            if (! silenceOk) rt.writer->skip (numSamples);                 // (a block far bigger than the device said: its time is kept as silence)
+            else if (! rt.writer->write (ptrs, numSamples))
                 rs->overruns.fetch_add (1);
-            rt.peaks->add (ptrs, rt.route.numCh, numSamples);
+            if (silenceOk) rt.peaks->add (ptrs, rt.route.numCh, numSamples);
         }
+        if (! silenceOk) rs->overruns.fetch_add (1);
         rs->samples.fetch_add (numSamples);
+        writerThread.notify();                                              // once for all the files
     }
     if (pr != nullptr) pr->writePos.store (wp + numSamples, std::memory_order_release);
 
@@ -1170,6 +1178,7 @@ juce::String AudioEngine::startRecording (TakeWindowDef& window)
     group.recordedAt = juce::Time::getCurrentTime();
     const auto label = window.labelFor (group);
     const auto now = juce::Time::getCurrentTime();
+    double bytesPerSecond = 0.0;
 
     for (auto* t : armed)
     {
@@ -1196,11 +1205,15 @@ juce::String AudioEngine::startRecording (TakeWindowDef& window)
                         .withMetadata (juce::WavAudioFormat::bwavOriginationDate, now.formatted ("%Y-%m-%d"))
                         .withMetadata (juce::WavAudioFormat::bwavOriginationTime, now.formatted ("%H:%M:%S"));
 
-        std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (file);
+        std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (file, 1024);     // (a small buffer: see TakeWriter)
         if (static_cast<juce::FileOutputStream*> (stream.get())->failedToOpen()) return "Cannot create " + file.getFullPathName();
         auto w = wav.createWriterFor (stream, opts);
         if (w == nullptr) return "Cannot create a 24-bit WAV writer for " + t->name;
-        rt.writer = std::make_unique<juce::AudioFormatWriter::ThreadedWriter> (w.release(), writerThread, ringNow != nullptr ? 1 << 19 : 1 << 18);
+        // the buffer holds kRecordBufferSeconds of audio whatever the sample rate (the disk may stall that long); session mode hands the pre-roll over
+        // faster than real time, so it gets more room. The header is written again every 10 s, so a file cut short by a crash is readable as it is.
+        const int bufFrames = (int) std::lround (kRecordBufferSeconds * sampleRate * (ringNow != nullptr ? 1.5 : 1.0));
+        rt.writer = std::make_unique<TakeWriter> (std::move (w), writerThread, bufFrames, (int) std::lround (10.0 * sampleRate));
+        bytesPerSecond += sampleRate * 3.0 * (double) rt.info.numChannels;
         if (backupRoot != juce::File())                    // the second drive: the same file, in a folder named after the project (copied while it records)
         {
             const auto projFolder = project.projectFolder();
@@ -1222,6 +1235,8 @@ juce::String AudioEngine::startRecording (TakeWindowDef& window)
     window.nextNumber++;
 
     session = std::move (rs);
+    recFolder = folder;
+    recBytesPerSecond.store (bytesPerSecond, std::memory_order_relaxed);
     rec.store (session.get(), std::memory_order_release);
     project.changed();
     return {};
@@ -1231,7 +1246,17 @@ juce::Uuid AudioEngine::stopRecording()
 {
     if (session == nullptr) return juce::Uuid::null();
     rec.store (nullptr, std::memory_order_release);
-    waitForAudioThread();
+    recBytesPerSecond.store (0.0, std::memory_order_relaxed);
+    if (! waitForAudioThread())
+    {   // the audio callback has not moved for half a second (a plug-in hung it?): it may still be inside the session, so the session is left in
+        // memory rather than freed under it. The files keep their data; their headers are mended when the project is next opened.
+        const auto gid = session->groupId;
+        if (auto* w = project.findTakeWindow (session->windowId))
+            if (auto* g = w->findGroup (gid)) g->lengthSamples = session->samples.load();
+        (void) session.release();
+        project.changed();
+        return gid;
+    }
 
     if (session->useRing && session->startPos >= 0)                    // hand over whatever the audio thread had not delivered yet
     {
@@ -1243,11 +1268,16 @@ juce::Uuid AudioEngine::stopRecording()
     const auto gid = session->groupId;
     std::vector<std::shared_ptr<BackupCopier::Job>> copies;
     for (auto& rt : session->tracks) if (rt.backup != nullptr) copies.push_back (rt.backup);
-    session->tracks.clear();          // destroys the ThreadedWriters: flushes everything to disk
+    int overrunTotal = session->overruns.load(); juce::int64 lost = 0; bool anyFailed = false;
+    for (auto& rt : session->tracks) { lost = juce::jmax (lost, rt.writer->samplesLost()); anyFailed = anyFailed || rt.writer->failed(); }
+    session->tracks.clear();          // destroys the writers: everything left in their buffers goes to disk, then the headers are finished
     for (auto& c : copies) BackupCopier::finish (c);      // the second drive's copies finish by themselves, in the background
     if (auto* w = project.findTakeWindow (session->windowId))
         if (auto* g = w->findGroup (gid))
+        {
             g->lengthSamples = length;
+            g->overruns = overrunTotal; g->lostSamples = lost; g->writeFailed = anyFailed;
+        }
 
     session.reset();
     ensurePreRoll();                                  // session mode was switched off (or the patching changed) while recording
@@ -1265,6 +1295,24 @@ int AudioEngine::overruns() const
 {
     auto* s = rec.load();
     return s != nullptr ? s->overruns.load() : 0;
+}
+
+juce::int64 AudioEngine::samplesLost() const
+{
+    juce::int64 lost = 0;
+    if (auto* s = rec.load())
+        for (auto& rt : s->tracks) lost = juce::jmax (lost, rt.writer->samplesLost());
+    return lost;
+}
+
+juce::String AudioEngine::recordingProblem() const
+{
+    auto* s = rec.load (std::memory_order_acquire);
+    if (s == nullptr) return {};
+    int bad = 0;
+    for (auto& rt : s->tracks) if (rt.writer->failed()) ++bad;
+    if (bad == 0) return {};
+    return juce::String (bad) + (bad == 1 ? " file has" : " files have") + " stopped taking data: the recording drive is full, or has gone";
 }
 
 void AudioEngine::LivePeaks::add (const float* const* chans, int numChans, int n) noexcept

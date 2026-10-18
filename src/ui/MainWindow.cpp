@@ -780,6 +780,7 @@ void MainComponent::timerCallback()
         if (auditionButtons[i]->getToggleState() != on) { auditionButtons[i]->setToggleState (on, juce::dontSendNotification); auditionButtons[i]->setButtonText ((on ? "AUDITIONING: " : "") + m.name + " Audition"); }
     }
     const bool rec = app.engine.isRecording();
+    const auto now2 = juce::Time::getMillisecondCounter();
     { int n = 1; const bool tr = app.takeBoxInfo (n); takeBox.set (tr, n); }
     {   // the displays in the top row
         const auto pn = app.project.name.toUpperCase().replace (" - ", juce::String (juce::CharPointer_UTF8 (" \xc2\xb7 ")));
@@ -793,12 +794,27 @@ void MainComponent::timerCallback()
         if (now - lastDiskCheck > 2000 || lastDiskCheck == 0)              // the free space on the project's drive (asked every 2 seconds)
         {
             lastDiskCheck = now;
-            const auto folder = app.project.projectFile.getParentDirectory();
+            auto folder = app.project.projectFile.getParentDirectory();
+            if (rec && app.engine.recordingFolder() != juce::File()) folder = app.engine.recordingFolder();     // (while recording: the drive the take goes to)
+            diskAlarm.clear();
             if (app.hasProject() && folder.isDirectory())
             {
-                const double gb = (double) folder.getBytesFreeOnVolume() / (1024.0 * 1024.0 * 1024.0);
-                diskBox.setText (gb >= 1000.0 ? juce::String (gb / 1024.0, 1) + " TB" : juce::String (juce::roundToInt (gb)) + " GB", gb < 10.0 ? juce::Colour (0xffff5a4a) : juce::Colour());
-                diskBox.setTooltip ("Free space on the drive of the project (" + folder.getFullPathName() + ")" + (gb < 10.0 ? ": nearly full!" : ""));
+                const auto freeBytes = folder.getBytesFreeOnVolume();
+                const double gb = (double) freeBytes / (1024.0 * 1024.0 * 1024.0);
+                juce::String txt = gb >= 1000.0 ? juce::String (gb / 1024.0, 1) + " TB" : juce::String (juce::roundToInt (gb)) + " GB";
+                juce::String tip = "Free space on the drive of the project (" + folder.getFullPathName() + ")";
+                bool warn = gb < 10.0;
+                if (const double bps = app.engine.recordingBytesPerSecond(); rec && bps > 0.0)
+                {   // while recording: how long the drive can go on at this rate
+                    const double left = (double) freeBytes / bps;
+                    const int mins = (int) (left / 60.0);
+                    txt << (mins >= 60 ? "  " + juce::String (mins / 60) + " h " + juce::String (mins % 60).paddedLeft ('0', 2) + " min" : "  " + juce::String (mins) + " min") << " left";
+                    tip << " - about " << juce::String (mins) << " minutes of recording left at this rate";
+                    warn = warn || left < 15.0 * 60.0;
+                    if (left < 5.0 * 60.0) diskAlarm = "DISK NEARLY FULL - about " + juce::String (mins) + " min of recording left";
+                }
+                diskBox.setText (txt, warn ? juce::Colour (0xffff5a4a) : juce::Colour());
+                diskBox.setTooltip (tip + (warn ? ": nearly full!" : ""));
             }
             else diskBox.setText ("-");
             // the second recording drive: say so if a copy could not be made
@@ -808,7 +824,7 @@ void MainComponent::timerCallback()
                 app.setNotice ("Second drive: " + problems[0] + (problems.size() > 1 ? "  (and " + juce::String (problems.size() - 1) + " more files of this take)" : juce::String())
                                + ". The main recording is not affected.");
         }
-        if (projectBox.wantedWidth() != before) resized();
+        if (projectBox.wantedWidth() != before || diskBox.wantedWidth() != lastDiskW) { lastDiskW = diskBox.wantedWidth(); resized(); }
     }
 
     juce::String s;
@@ -819,12 +835,19 @@ void MainComponent::timerCallback()
             + " / out " + juce::String (dev->getActiveOutputChannels().countNumberOfSetBits());
         if (app.engine.getBackupFolder() != juce::File()) s += "   2nd drive on";
         if (dev->getTypeName() != "ASIO") s += "  (not ASIO)";
-        if (rec && app.engine.overruns() > 0) s = "DISK OVERRUN - audio may have been lost!   " + s;
+        if (rec && app.engine.overruns() > 0) s = "DISK OVERRUN - " + lostText (app.engine.samplesLost(), app.engine.getSampleRate()) + " of audio lost (silence in its place)   " + s;
+        if (rec && diskAlarm.isNotEmpty()) s = diskAlarm + "   " + s;
+        if (const auto problem = app.engine.recordingProblem(); rec && problem.isNotEmpty())
+        {
+            s = "RECORDING HAS STOPPED REACHING THE DISK - " + problem + "   " + s;
+            if (! problemNoticed) { problemNoticed = true; app.setNotice ("RECORDING PROBLEM: " + problem + ". Stop, free space or change drive, then record again."); juce::Logger::writeToLog ("Recording: " + problem); }
+        }
+        else if (! rec) problemNoticed = false;
         if (auto* x = dynamic_cast<juce::AudioIODevice*> (dev); x != nullptr && dev->getXRunCount() > 0)
             s += "   xruns: " + juce::String (dev->getXRunCount());
     }
     else s = "No audio device - open Audio settings";
-    if (rec && ! s.startsWith ("DISK")) s = "RECORDING  -  " + s;
+    if (rec && ! s.startsWith ("DISK") && ! s.startsWith ("RECORDING HAS")) s = "RECORDING  -  " + s;
     if (app.crMicOpen() || app.tbPlaybackOn())
         s = juce::String (app.crMicOpen() ? "CR MIC OPEN  " : "") + (app.tbPlaybackOn() ? "TB PLAYBACK ON  " : "") + "-  " + s;
     else if (! app.talkbackReady() && (app.crWanted || app.tbWanted))
@@ -835,6 +858,7 @@ void MainComponent::timerCallback()
     if (const int w = statusWidthFor (s); w != lastStatusTextW) { lastStatusTextW = w; resized(); }                                   // DRIVER INPUTS follows the end of the driver line
     if (noticeOn) statusLabel.setColour (juce::Label::textColourId, juce::Colour (0xff3ee0c0)); else
     statusLabel.setColour (juce::Label::textColourId, rec ? juce::Colour (0xffff5555) : s.startsWith ("DISK") || s.startsWith ("No audio") ? theme::warn : desk::pal().cream.withAlpha (0.8f));
+    if (rec && (s.startsWith ("DISK") || s.startsWith ("RECORDING HAS"))) statusLabel.setColour (juce::Label::textColourId, ((now2 / 500) & 1) ? juce::Colour (0xffff5555) : juce::Colours::white);     // (flashes)
 }
 
 void MainComponent::showProjectMenu()

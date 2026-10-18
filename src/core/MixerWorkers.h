@@ -42,11 +42,17 @@ public:
     }
     int size() const noexcept { return workers.size(); }
 
+    /** Any thread: at most this many helpers take part in a block (the rest sleep). With CPU cores reserved for the audio, it is the number of
+        reserved logical processors less one (the audio thread itself), so no two audio threads ever share a processor; a helper pre-empted in the
+        middle of a job would hold the whole block up. A big number = all of them. */
+    void setLimit (int maxHelpers) noexcept { limit.store (juce::jmax (0, maxHelpers), std::memory_order_relaxed); }
+    int  limit_() const noexcept { return limit.load (std::memory_order_relaxed); }
+
     /** Audio thread: runs fn (ctx, 0), fn (ctx, 1) ... fn (ctx, count - 1), using the helpers and this thread. Returns when every job has finished. */
     void run (int count, JobFn fn, void* ctx) noexcept
     {
         if (count <= 0) return;
-        const int helpers = juce::jmin (workers.size(), count - 1);
+        const int helpers = juce::jmin (workers.size(), count - 1, limit.load (std::memory_order_relaxed));
         if (helpers <= 0) { for (int i = 0; i < count; ++i) fn (ctx, i); return; }
         jobFn.store (fn, std::memory_order_relaxed);
         jobCtx.store (ctx, std::memory_order_relaxed);
@@ -95,7 +101,7 @@ private:
             {
                 wake.wait (-1);
                 if (threadShouldExit()) break;
-                CoreReservation::get().audioThreadCheck();                           // the reserved cores and the "Pro Audio" class, as for the audio thread
+                CoreReservation::get().audioThreadCheck();                           // the reserved cores (when any) and Windows' "Pro Audio" class, as for the audio thread
                 const auto g = (juce::uint32) (owner.ticket.load (std::memory_order_acquire) >> 40);
                 int idx = 0;
                 while (owner.claim (g, idx))
@@ -114,6 +120,7 @@ private:
     std::atomic<int> done { 0 };
     std::atomic<JobFn> jobFn { nullptr };
     std::atomic<void*> jobCtx { nullptr };
+    std::atomic<int> limit { 1 << 20 };
     juce::uint32 gen = 0;                       // audio thread only
 };
 } // namespace td

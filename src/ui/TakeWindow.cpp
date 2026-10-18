@@ -290,18 +290,23 @@ public:
                         }
                 g.setColour (live ? theme::text.withAlpha (0.7f) : tc.withAlpha (picked ? 1.0f : 0.85f));
                 g.drawRect (r, picked ? 2 : 1);
-                if ((grp.barIn > 0 || grp.dud) && r.getWidth() > 50 && r.getHeight() >= 22)       // "DUD   Bar 17 - 39" along the bottom of the take (DUD in red)
+                // "DUD   LOST 0.3 s   Bar 17 - 39" along the bottom of the take (DUD in red; LOST: a disk overrun while it was recorded, that much silence is in
+                // the files; CUT SHORT: a file stopped taking data, the drive was full or gone)
+                const juce::String lost = grp.writeFailed ? juce::String ("CUT SHORT") : grp.lostSamples > 0 ? "LOST " + lostText (grp.lostSamples, grp.sampleRate) : juce::String();
+                if ((grp.barIn > 0 || grp.dud || lost.isNotEmpty()) && r.getWidth() > 50 && r.getHeight() >= 22)
                 {
                     const auto bars = barsLabel (grp.barIn, grp.barOut);
                     g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
                     const auto font = g.getCurrentFont();
-                    const int dudW = grp.dud ? juce::GlyphArrangement::getStringWidthInt (font, "DUD") + (bars.isNotEmpty() ? 10 : 0) : 0;
+                    const int dudW = grp.dud ? juce::GlyphArrangement::getStringWidthInt (font, "DUD") + ((bars.isNotEmpty() || lost.isNotEmpty()) ? 10 : 0) : 0;
+                    const int lostW = lost.isNotEmpty() ? juce::GlyphArrangement::getStringWidthInt (font, lost) + (bars.isNotEmpty() ? 10 : 0) : 0;
                     const int barsW = bars.isNotEmpty() ? juce::GlyphArrangement::getStringWidthInt (font, bars) : 0;
-                    const int tw = juce::jmin (r.getWidth() - 4, dudW + barsW + 10);
+                    const int tw = juce::jmin (r.getWidth() - 4, dudW + lostW + barsW + 10);
                     auto strip = juce::Rectangle<int> (r.getX() + 2, r.getBottom() - 16, tw, 14);
                     g.setColour (juce::Colour (0xcc000000)); g.fillRect (strip);
                     auto t = strip.reduced (5, 0);
                     if (grp.dud) { g.setColour (juce::Colour (0xffff3b3b)); g.drawText ("DUD", t.removeFromLeft (dudW), juce::Justification::centredLeft); }
+                    if (lost.isNotEmpty()) { g.setColour (grp.writeFailed ? juce::Colour (0xffff3b3b) : juce::Colour (0xffffa030)); g.drawText (lost, t.removeFromLeft (lostW), juce::Justification::centredLeft); }
                     if (bars.isNotEmpty()) { g.setColour (juce::Colour (0xff3ee0c0)); g.drawText (bars, t, juce::Justification::centredLeft); }
                 }
             }
@@ -1663,7 +1668,15 @@ void TakeWindowComponent::timerCallback()
     recordButton.setEnabled (! rec || hereRec);
     clock.setSampleRate (app.engine.getSampleRate());
     timeLabel.setText (hereRec ? formatTime (app.engine.recordedSeconds()) : juce::String ("--:--:--.---"), juce::dontSendNotification);
-    statusLabel.setText (hereRec && app.engine.overruns() > 0 ? "DISK OVERRUN - audio may have been lost!" : "", juce::dontSendNotification);
+    {
+        juce::String st;
+        if (hereRec)
+        {
+            if (const auto problem = app.engine.recordingProblem(); problem.isNotEmpty()) st = "RECORDING HAS STOPPED REACHING THE DISK - " + problem;
+            else if (app.engine.overruns() > 0) st = "DISK OVERRUN - " + lostText (app.engine.samplesLost(), app.engine.getSampleRate()) + " of audio lost (silence in its place)";
+        }
+        statusLabel.setText (st, juce::dontSendNotification);
+    }
     playButton.setButtonText (app.isPlaying() ? "Stop [Space]" : "Play [Space]");
 
     juce::String m;

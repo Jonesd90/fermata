@@ -6,6 +6,7 @@
 #include "MixerWorkers.h"
 #include "BackupCopier.h"
 #include "HostTransport.h"
+#include "TakeWriter.h"
 
 namespace td
 {
@@ -64,8 +65,11 @@ public:
     int backupCopiesGoing() const                          { return backupCopier.busy(); }
 
     // --- the mixers of a block run side by side on helper threads (see MixerWorkers) ---
-    /** Message thread: how many helper threads (0 = all the mixers run one after another on the audio thread). Set at start. */
-    void setMixerThreads (int count)                       { mixerWorkers.start (juce::jmax (0, count)); }
+    /** Message thread: how many helper threads (0 = all the mixers run one after another on the audio thread). Only while the audio device is
+        stopped (the threads cannot be replaced under a running block): false, and nothing changes, while it runs. */
+    bool setMixerThreads (int count)                       { if (running.load()) return false; mixerWorkers.start (juce::jmax (0, count)); return true; }
+    /** How many helpers a block may use right now (see MixerWorkers::setLimit). */
+    int  mixerHelperLimit() const noexcept                 { return mixerWorkers.limit_(); }
     int  mixerThreads() const noexcept                     { return mixerWorkers.size(); }
     /** How many blocks have run their mixers side by side so far (a diagnostic). */
     juce::uint64 parallelBlockCount() const noexcept       { return parallelBlocks.load(); }
@@ -74,7 +78,18 @@ public:
     /** Tests only: how far (seconds) the second drive may fall behind before its copy is thrown away. */
     void setBackupMaxLag (double seconds)                  { backupCopier.maxLagSeconds.store (seconds); }
     double recordedSeconds() const;
+    /** Blocks that did not reach the disk buffer in time (the disk stalled for longer than the buffer holds). Their time is kept as silence in the files. */
     int    overruns() const;
+    /** How much audio those overruns cost, in samples (message thread, while recording). */
+    juce::int64 samplesLost() const;
+    /** Empty while the recording is fine. Otherwise what is wrong with it: a file stopped taking data (the drive is full, or gone). Any thread. */
+    juce::String recordingProblem() const;
+    /** How fast the current recording grows on the disk (bytes per second, all its files together); 0 when not recording. */
+    double recordingBytesPerSecond() const noexcept   { return recBytesPerSecond.load (std::memory_order_relaxed); }
+    /** The folder the current recording's files are in (message thread; a null File when not recording). */
+    juce::File recordingFolder() const                { return session != nullptr ? recFolder : juce::File(); }
+    /** How many seconds of audio the recording buffers hold: the disk may stall for this long before anything is lost. */
+    static constexpr double kRecordBufferSeconds = 8.0;
     juce::Uuid currentTakeId() const      { return currentGroupId; }
 
     // --- session mode: the inputs are kept for the last few seconds, so a take starts that long BEFORE Record was pressed ---
@@ -269,7 +284,7 @@ private:
     {
         TakeFile info;
         TrackPlan route;
-        std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter> writer;
+        std::unique_ptr<TakeWriter> writer;
         std::unique_ptr<LivePeaks> peaks;
         std::shared_ptr<BackupCopier::Job> backup;              // its copy on the second drive (null when there is none)
     };
@@ -321,7 +336,7 @@ private:
     void ensurePreRoll();                           // message thread: (re)makes the ring when session mode is on and nothing is recording
     void deliverFromRing (RecordingSession&, juce::int64 from, juce::int64 to);
     std::unique_ptr<Plan> buildPlan() const;
-    juce::int64 latencySignature (bool refresh) const;      // changes whenever any plug-in's delay (or whether it is loaded / bypassed) changes
+    juce::uint64 latencySignature (bool refresh) const;     // changes whenever any plug-in's delay (or whether it is loaded / bypassed) changes
 
     Project& project;
     double sampleRate = 48000.0;
@@ -329,7 +344,7 @@ private:
     int deviceInputs = 0, deviceOutputs = 0;
 
     std::atomic<Plan*> plan { nullptr };
-    std::atomic<juce::int64> planLatencySig { 0 };
+    std::atomic<juce::uint64> planLatencySig { 0 };
     std::atomic<RecordingSession*> rec { nullptr };
     std::atomic<PlaybackSession*> playback { nullptr };
     std::atomic<PreRoll*> preRollPtr { nullptr };
@@ -370,6 +385,8 @@ private:
     std::vector<float> tbTap;                       // audio thread: the playback-only main output of the processing mixer, left then right
     std::vector<float> mainCap;                     // audio thread: the processing mixer's main output, left then right, for the cue mixers that follow it
     std::unique_ptr<RecordingSession> session;      // owned by the message thread
+    std::atomic<double> recBytesPerSecond { 0.0 };
+    juce::File recFolder;
     juce::TimeSliceThread writerThread { "Disk writer" };
     juce::WavAudioFormat wav;
     juce::Uuid currentGroupId;
