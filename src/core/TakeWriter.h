@@ -27,9 +27,12 @@ public:
     /** writer: a 24-bit integer WAV writer (owned from here), best on a FileOutputStream with a SMALL buffer (1 KB): the audio goes to the file in big
         pieces anyway, and a big stream buffer would hold the last moments back from the disk. bufferSamples: frames the buffer holds (seconds of
         audio: this is how long the disk may stall). headerEverySamples: how often the header is refreshed (0 = only at the end). */
-    TakeWriter (std::unique_ptr<juce::AudioFormatWriter> w, juce::TimeSliceThread& t, int bufferSamples, int headerEverySamples)
+    /** minWriteSamples: the disk is only written to once this much is waiting (except at the end, and before an overrun's silence). Many small
+        writes are what slow a drive down, not how much is written: 40 files written in small pieces made ~2500 writes a second, which one disk
+        thread could not keep up with; in pieces of half a second it is ~80. 0 = write whatever is there. */
+    TakeWriter (std::unique_ptr<juce::AudioFormatWriter> w, juce::TimeSliceThread& t, int bufferSamples, int headerEverySamples, int minWriteSamples = 0)
         : writer (std::move (w)), thread (t), numCh ((int) writer->getNumChannels()), fifo (juce::jmax (1024, bufferSamples) + 1),     // (a fifo keeps one slot free)
-          headerEvery (headerEverySamples)
+          headerEvery (headerEverySamples), minWrite (juce::jlimit (0, juce::jmin (kChunk, juce::jmax (1024, bufferSamples) / 4), minWriteSamples))
     {
         ring.assign ((size_t) numCh, std::vector<float> ((size_t) fifo.getTotalSize(), 0.0f));
         ints.resize ((size_t) numCh);
@@ -58,7 +61,7 @@ public:
         if (failedFlag.load (std::memory_order_relaxed)) return true;           // nothing more can reach the disk: nothing to count
         int s1, z1, s2, z2;
         fifo.prepareToWrite (n, s1, z1, s2, z2);
-        if (z1 + z2 < n) { lose (n); return false; }
+        if (z1 + z2 < n) { if (firstOverrun.load (std::memory_order_relaxed) < 0) firstOverrun.store (accepted + pendingLost.load (std::memory_order_relaxed), std::memory_order_relaxed); lose (n); return false; }
         // a drop happened before this block: mark where its silence goes (after everything accepted so far, before this block)
         if (const auto lost = pendingLost.load (std::memory_order_relaxed); lost > 0)
         {
@@ -76,6 +79,7 @@ public:
         }
         fifo.finishedWrite (n);
         accepted += n;
+        if (const float fill = fillPercent(); fill > peakFill.load (std::memory_order_relaxed)) peakFill.store (fill, std::memory_order_relaxed);
         return true;
     }
     /** Audio thread: this block could not even be offered (nothing to write from): its time is kept as silence. */
@@ -87,6 +91,12 @@ public:
     juce::int64 samplesLost() const noexcept   { return lostTotal.load (std::memory_order_relaxed); }
     juce::int64 samplesWritten() const noexcept { return written.load (std::memory_order_relaxed); }
     int bufferSamples() const noexcept         { return fifo.getTotalSize() - 1; }
+    /** The longest any single write to the disk took so far (ms): a drive that stalls shows here. */
+    double longestWriteMs() const noexcept     { return maxWriteUs.load (std::memory_order_relaxed) / 1000.0; }
+    /** The fullest the buffer has been (percent). */
+    float peakFillPercent() const noexcept     { return peakFill.load (std::memory_order_relaxed); }
+    /** Where in the take (frames accepted before it) the first overrun happened; -1 = none. */
+    juce::int64 firstOverrunAt() const noexcept { return firstOverrun.load (std::memory_order_relaxed); }
     /** How full the buffer is, in percent (100 = the next block would not fit). */
     float fillPercent() const noexcept         { return 100.0f * (float) fifo.getNumReady() / (float) juce::jmax (1, fifo.getTotalSize() - 1); }
     /** Frames the buffer can take right now (audio thread). */
@@ -105,7 +115,7 @@ public:
     }
 
 private:
-    static constexpr int kChunk = 32768;                // frames per disk write
+    static constexpr int kChunk = 65536;                // the most frames in one disk write
     static constexpr int kMarkers = 256;
 
     void lose (int n) noexcept
@@ -132,7 +142,11 @@ private:
 
     bool put (int n)
     {
-        if (! writer->write (ptrs.data(), n)) { failedFlag.store (true, std::memory_order_relaxed); return false; }
+        const auto t0 = juce::Time::getHighResolutionTicks();
+        const bool ok = writer->write (ptrs.data(), n);
+        const auto us = (juce::int64) (juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - t0) * 1.0e6);
+        if (us > maxWriteUs.load (std::memory_order_relaxed)) maxWriteUs.store (us, std::memory_order_relaxed);
+        if (! ok) { failedFlag.store (true, std::memory_order_relaxed); return false; }
         written.fetch_add (n, std::memory_order_relaxed);
         sinceHeader += n;
         if (headerEvery > 0 && sinceHeader >= headerEvery) { sinceHeader = 0; writer->flush(); headerAt.store (written.load (std::memory_order_relaxed), std::memory_order_release); }
@@ -158,6 +172,7 @@ private:
             payDebt (lost);
             return 0;
         }
+        if (! closing && ! haveMark && fifo.getNumReady() < minWrite) return 20;          // wait until a big piece can be written (see minWriteSamples)
         int want = kChunk;
         if (haveMark) want = (int) juce::jmin<juce::int64> (want, markAt[(size_t) m1] - drained);
         int s1, z1, s2, z2;
@@ -192,6 +207,7 @@ private:
     std::vector<int> zeros;
     std::vector<const int*> ptrs;
     const int headerEvery;
+    const int minWrite;
     int sinceHeader = 0;                                // disk thread
     juce::int64 accepted = 0;                           // audio thread: frames put into the fifo so far
     juce::int64 drained = 0;                            // disk thread: frames taken out so far
@@ -199,6 +215,8 @@ private:
     juce::int64 markAt[kMarkers] {}, markLost[kMarkers] {};
     std::atomic<juce::int64> pendingLost { 0 }, tailLost { 0 }, lostTotal { 0 }, written { 0 }, headerAt { 0 };
     std::atomic<int> overrunCount { 0 };
+    std::atomic<juce::int64> maxWriteUs { 0 }, firstOverrun { -1 };
+    std::atomic<float> peakFill { 0.0f };
     std::atomic<bool> failedFlag { false }, closing { false };
 
     JUCE_DECLARE_NON_COPYABLE (TakeWriter)

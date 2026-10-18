@@ -14,6 +14,7 @@ AudioEngine::AudioEngine (Project& p) : project (p)
     for (auto& x : stagePrevL) x = 1.0f;
     for (auto& x : stagePrevR) x = 1.0f;
     writerThread.startThread (juce::Thread::Priority::high);
+    finisher.startThread (juce::Thread::Priority::high);
     // (the disk writer is NOT put on the reserved cores: they are kept for the work with a deadline every block - the audio callback and the mixer
     // helpers. The writer has seconds of buffer in hand, so it runs on the other cores, at high priority, out of their way.)
     // helpers for running the mixers side by side: one fewer than the physical cores the audio can use, leaving a core or two for everything else
@@ -24,6 +25,10 @@ AudioEngine::~AudioEngine()
 {
     mixerWorkers.stop();
     if (isRecording()) stopRecording();
+    waitForFinishedTakes (60000);                    // (closing the program: every file is finished first)
+    finisher.stopThread (5000);
+    for (auto& f : finishing) if (f->rs != nullptr) for (auto& rt : f->rs->tracks) rt.writer.reset();     // (any the finisher did not get to)
+    finishing.clear();
     stopPlayback();
     running = false;
     delete plan.exchange (nullptr);
@@ -1165,6 +1170,7 @@ juce::String AudioEngine::startPlayback (std::unique_ptr<PlaybackSession> s)
 {
     if (isRecording()) return "Stop recording before playing back";
     if (zeros.empty()) return "The audio device has not been started";
+    if (! waitForFinishedTakes (15000)) return "The last take's files are still being written to the disk: try again in a moment";
     stopPlayback();
     if (std::abs (s->getSampleRate() - sampleRate) > 0.5)
         return "The take was recorded at " + juce::String (s->getSampleRate(), 0) + " Hz but the audio device runs at " + juce::String (sampleRate, 0) + " Hz";
@@ -1242,7 +1248,8 @@ juce::String AudioEngine::startRecording (TakeWindowDef& window)
         // the buffer holds kRecordBufferSeconds of audio whatever the sample rate (the disk may stall that long); session mode hands the pre-roll over
         // faster than real time, so it gets more room. The header is written again every 10 s, so a file cut short by a crash is readable as it is.
         const int bufFrames = (int) std::lround (kRecordBufferSeconds * sampleRate * (ringNow != nullptr ? 1.5 : 1.0));
-        rt.writer = std::make_unique<TakeWriter> (std::move (w), writerThread, bufFrames, (int) std::lround (10.0 * sampleRate));
+        // written to the disk in pieces of about half a second (at most 65536 frames): few, big writes keep any drive well ahead (see TakeWriter)
+        rt.writer = std::make_unique<TakeWriter> (std::move (w), writerThread, bufFrames, (int) std::lround (10.0 * sampleRate), (int) std::lround (0.5 * sampleRate));
         bytesPerSecond += sampleRate * 3.0 * (double) rt.info.numChannels;
         if (backupRoot != juce::File())                    // the second drive: the same file, in a folder named after the project (copied while it records)
         {
@@ -1276,7 +1283,7 @@ juce::Uuid AudioEngine::stopRecording()
 {
     if (session == nullptr) return juce::Uuid::null();
     rec.store (nullptr, std::memory_order_release);
-    recBytesPerSecond.store (0.0, std::memory_order_relaxed);
+    const double recBytesPerSecondAtStop = recBytesPerSecond.exchange (0.0, std::memory_order_relaxed);
     if (! waitForAudioThread())
     {   // the audio callback has not moved for half a second (a plug-in hung it?): it may still be inside the session, so the session is left in
         // memory rather than freed under it. The files keep their data; their headers are mended when the project is next opened.
@@ -1296,23 +1303,96 @@ juce::Uuid AudioEngine::stopRecording()
     }
     const auto length = session->samples.load();
     const auto gid = session->groupId;
-    std::vector<std::shared_ptr<BackupCopier::Job>> copies;
-    for (auto& rt : session->tracks) if (rt.backup != nullptr) copies.push_back (rt.backup);
+    auto fin = std::make_unique<Finishing>();
     int overrunTotal = session->overruns.load(); juce::int64 lost = 0; bool anyFailed = false;
-    for (auto& rt : session->tracks) { lost = juce::jmax (lost, rt.writer->samplesLost()); anyFailed = anyFailed || rt.writer->failed(); }
-    session->tracks.clear();          // destroys the writers: everything left in their buffers goes to disk, then the headers are finished
-    for (auto& c : copies) BackupCopier::finish (c);      // the second drive's copies finish by themselves, in the background
+    double longestWriteMs = 0.0, firstOverrunAt = -1.0; float bufPeak = 0.0f;
+    for (auto& rt : session->tracks)
+    {
+        if (rt.backup != nullptr) fin->copies.push_back (rt.backup);
+        fin->files.push_back (rt.info.file);
+        lost = juce::jmax (lost, rt.writer->samplesLost()); anyFailed = anyFailed || rt.writer->failed();
+        longestWriteMs = juce::jmax (longestWriteMs, rt.writer->longestWriteMs());
+        bufPeak = juce::jmax (bufPeak, rt.writer->peakFillPercent());
+        if (const auto at = rt.writer->firstOverrunAt(); at >= 0 && (firstOverrunAt < 0 || at < firstOverrunAt)) firstOverrunAt = (double) at;
+    }
     if (auto* w = project.findTakeWindow (session->windowId))
         if (auto* g = w->findGroup (gid))
         {
             g->lengthSamples = length;
             g->overruns = overrunTotal; g->lostSamples = lost; g->writeFailed = anyFailed;
         }
-
-    session.reset();
+    {   // the take's line in the log: where it went and how the drive kept up
+        const auto folder = recFolder;
+        juce::String kind = folder.isOnCDRomDrive() ? "optical" : folder.isOnRemovableDrive() ? "removable drive" : folder.isOnHardDisk() ? "fixed drive" : "network / other";
+        juce::String& r = fin->report;
+        r << "Take stopped: " << juce::String (sampleRate > 0 ? (double) length / sampleRate : 0.0, 1) << " s, " << (int) session->tracks.size() << " files, "
+          << juce::String (recBytesPerSecondAtStop / 1.0e6, 2) << " MB/s, to " << folder.getFullPathName() << " (" << kind << ", "
+          << juce::String ((double) folder.getBytesFreeOnVolume() / 1.0e9, 1) << " GB free); longest single disk write " << juce::String (longestWriteMs, 1)
+          << " ms, buffer peak " << juce::String (bufPeak, 1) << "% of " << juce::String (kRecordBufferSeconds, 0) << " s";
+        if (overrunTotal > 0) r << "; " << overrunTotal << " OVERRUNS, " << juce::String (sampleRate > 0 ? (double) lost / sampleRate : 0.0, 2) << " s lost, the first at "
+                               << juce::String (sampleRate > 0 ? firstOverrunAt / sampleRate : 0.0, 1) << " s";
+        if (anyFailed) r << "; A FILE STOPPED TAKING DATA";
+        if (backupRoot != juce::File()) r << "; second drive " << backupRoot.getFullPathName();
+    }
+    // The files are finished on the finisher thread: whatever is still in their buffers is written there and their headers last, so Stop never waits
+    // for the disk (it used to, on this thread: with the drive behind, the program hung for seconds after Stop).
+    fin->rs = std::move (session);
+    auto* raw = fin.get();
+    finishing.push_back (std::move (fin));
+    finisher.add (raw);
     ensurePreRoll();                                  // session mode was switched off (or the patching changed) while recording
     project.changed();
     return gid;
+}
+
+void AudioEngine::Finisher::run()
+{
+    while (! threadShouldExit())
+    {
+        Finishing* f = nullptr;
+        { const juce::ScopedLock sl (lock); if (! queue.empty()) { f = queue.front(); queue.erase (queue.begin()); } }
+        if (f == nullptr) { wait (200); continue; }
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        for (auto& rt : f->rs->tracks) rt.writer.reset();           // writes what is left in the buffer, then the header (the length)
+        for (auto& c : f->copies) BackupCopier::finish (c);         // now the second drive's copies can take the finished files
+        juce::Logger::writeToLog (f->report + "; files finished " + juce::String (juce::roundToInt (juce::Time::getMillisecondCounterHiRes() - t0)) + " ms after Stop");
+        f->done.store (true, std::memory_order_release);
+    }
+}
+
+bool AudioEngine::isFinishing (const juce::Uuid& groupId) const
+{
+    for (auto& f : finishing) if (f->rs != nullptr && f->rs->groupId == groupId && ! f->done.load (std::memory_order_acquire)) return true;
+    return false;
+}
+
+bool AudioEngine::anyFinishing() const
+{
+    for (auto& f : finishing) if (! f->done.load (std::memory_order_acquire)) return true;
+    return false;
+}
+
+bool AudioEngine::waitForFinishedTakes (int maxMs)
+{
+    const auto deadline = juce::Time::getMillisecondCounter() + (juce::uint32) juce::jmax (0, maxMs);
+    while (anyFinishing())
+    {
+        if (! finisher.isThreadRunning() || juce::Time::getMillisecondCounter() >= deadline) return false;
+        juce::Thread::sleep (2);
+    }
+    return true;
+}
+
+std::vector<juce::File> AudioEngine::reapFinishedTakes()
+{
+    std::vector<juce::File> files;
+    for (size_t i = finishing.size(); i-- > 0;)
+        if (finishing[i]->done.load (std::memory_order_acquire))
+        {
+            files.insert (files.end(), finishing[i]->files.begin(), finishing[i]->files.end());
+            finishing.erase (finishing.begin() + (std::ptrdiff_t) i);
+        }
+    return files;
 }
 
 double AudioEngine::recordedSeconds() const
@@ -1378,10 +1458,13 @@ void AudioEngine::LivePeaks::add (const float* const* chans, int numChans, int n
     }
 }
 
-bool AudioEngine::getLivePeaks (const juce::Uuid& trackId, const juce::int16*& data, int& bins, int& binSamples, int* numChannels) const
+bool AudioEngine::getLivePeaks (const juce::Uuid& trackId, const juce::int16*& data, int& bins, int& binSamples, int* numChannels, const juce::Uuid& groupId) const
 {
-    if (session == nullptr) return false;
-    for (auto& rt : session->tracks)
+    const RecordingSession* rsn = groupId.isNull() || (session != nullptr && session->groupId == groupId) ? session.get() : nullptr;
+    if (rsn == nullptr && ! groupId.isNull())
+        for (auto& f : finishing) if (f->rs != nullptr && f->rs->groupId == groupId) rsn = f->rs.get();     // (the finisher only touches the writers, never the peaks)
+    if (rsn == nullptr) return false;
+    for (auto& rt : rsn->tracks)
         if (rt.info.trackId == trackId && rt.peaks != nullptr)
         {
             bins = rt.peaks->bins.load (std::memory_order_acquire);

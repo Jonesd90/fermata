@@ -111,7 +111,7 @@ int main (int argc, char** argv)
             case 0: eng.rebuildPlan(); ++rebuilds; break;
             case 1:
                 if (! eng.isRecording() && ! eng.isPlaying()) { if (eng.startRecording (tw).isEmpty()) ++recordings; }
-                else if (eng.isRecording()) lastTake = eng.stopRecording();
+                else if (eng.isRecording()) { lastTake = eng.stopRecording(); eng.reapFinishedTakes(); }
                 break;
             case 2:
                 if (! eng.isRecording() && ! eng.isPlaying() && ! lastTake.isNull())
@@ -165,6 +165,7 @@ int main (int argc, char** argv)
         std::this_thread::sleep_for (std::chrono::microseconds (rng() % 3000));
     }
     if (eng.isRecording()) eng.stopRecording();
+    eng.waitForFinishedTakes (20000); eng.reapFinishedTakes();
     eng.stopPlayback();
     stop = true;
     audio.join();

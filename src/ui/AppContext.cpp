@@ -37,7 +37,15 @@ AppContext::AppContext()
     devices.addChangeListener (this);
     startTimer (4000);
     project.onNewWindow = [this] { juce::MessageManager::callAsync ([this] { if (project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording()) saveNow (true); }); };      // a new edit / take window / mixer gets its file at once
-    watcher.fn = [this] { if (engine.playbackFinished()) stopPlayback(); };   // tidy up when a play-through reaches its end
+    watcher.fn = [this]
+    {
+        if (engine.playbackFinished()) stopPlayback();                       // tidy up when a play-through reaches its end
+        if (const auto done = engine.reapFinishedTakes(); ! done.empty())     // a stopped take's files are finished on the disk: draw their real waveforms
+        {
+            forgetWaveforms (done);
+            project.sendChangeMessage();
+        }
+    };
     watcher.startTimer (100);
     loadTicker.fn = [this] { tickLoad(); };
     loadTicker.startTimer (1000);
@@ -919,6 +927,16 @@ void AppContext::redrawWaveforms (const std::vector<juce::File>& files)
     if (redrawLog.size() > 4000) redrawLog.erase (redrawLog.begin(), redrawLog.begin() + 2000);
     setNotice (n == 0 ? juce::String ("There are no waveforms to re-draw here") : "Re-drawing " + juce::String (n) + (n == 1 ? " waveform..." : " waveforms..."));
     project.sendChangeMessage();
+}
+
+void AppContext::forgetWaveforms (const std::vector<juce::File>& files)
+{
+    for (auto& f : files)
+    {
+        waveColors.forget (f);
+        redrawLog.push_back ({ ++redrawStamp, f.getFullPathName() });
+    }
+    if (redrawLog.size() > 4000) redrawLog.erase (redrawLog.begin(), redrawLog.begin() + 2000);
 }
 
 std::vector<juce::File> AppContext::audioFilesOfWindow (const juce::String& key) const

@@ -254,7 +254,7 @@ public:
                     setWaveColour (g, chan::waveColour (tc));
                     juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (rr.reduced (1));
                     const auto wcd = app.waveColourOf (rf->file);
-                    if (! directWave.draw (g, rr.reduced (1), rf->file, (double) (srcA - rf->fileStart) / rate, (double) (srcB - rf->fileStart) / rate, app.waveZoom, wcd.get()))
+                    if (! directWave.draw (g, rr.reduced (1), rf->file, (double) (srcA - rf->fileStart) / rate, (double) (srcB - rf->fileStart) / rate, app.waveZoom, wcd.get(), rate))
                         if (auto* th = thumbnailFor (rf->file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, (double) (srcA - rf->fileStart) / rate, (double) (srcB - rf->fileStart) / rate, app.waveZoom, wcd.get());
                 }
                 g.setColour (selected ? juce::Colour (0xffc26500) : tc.withAlpha (0.9f));         // the selected piece gets an orange frame
@@ -273,7 +273,7 @@ public:
                         setWaveColour (g, chan::waveColour (tc).withMultipliedAlpha (0.55f));
                         juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (rr.reduced (1));
                         const auto wcd = app.waveColourOf (f.file);
-                        if (! directWave.draw (g, rr.reduced (1), f.file, a, b, app.waveZoom, wcd.get()))
+                        if (! directWave.draw (g, rr.reduced (1), f.file, a, b, app.waveZoom, wcd.get(), rate))
                             if (auto* th = thumbnailFor (f.file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, a, b, app.waveZoom, wcd.get());
                     }
                     break;
@@ -345,7 +345,7 @@ public:
                     setWaveColour (g, chan::waveColour (tc));
                     juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (rr.reduced (1));
                     const auto wcd = app.waveColourOf (rf->file);
-                    if (! directWave.draw (g, rr.reduced (1), rf->file, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom, wcd.get()))
+                    if (! directWave.draw (g, rr.reduced (1), rf->file, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom, wcd.get(), rate))
                         if (auto* th = thumbnailFor (rf->file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom, wcd.get());
                 }
                 g.setColour (selected ? juce::Colour (0xffc26500) : juce::Colour (0xff6a4cc2)); g.drawRect (rr, selected ? 2 : 1);

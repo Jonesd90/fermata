@@ -234,6 +234,7 @@ public:
         for (auto& grp : w->groups)
         {
             const bool live = recordingHere && grp.id == app.engine.currentTakeId();
+            const bool finishing = ! live && app.engine.isFinishing (grp.id);   // stopped, its files still being finished on the disk: its live waveform stays until they are
             const double len = live ? app.engine.recordedSeconds() : grp.lengthSeconds();
             const int x0 = xOf (grp.startSeconds);
             const int wpx = juce::jmax (4, (int) (len * pixelsPerSecond));
@@ -269,6 +270,7 @@ public:
                 g.setColour (live ? juce::Colour (0xff6a3434) : chan::clipFill (tc, picked));      // the track's own colour, darker when the take is selected
                 g.fillRect (r);
                 if (live) drawLiveWave (g, r.reduced (1), tf.trackId);
+                else if (finishing) drawLiveWave (g, r.reduced (1), tf.trackId, grp.id);
                 else
                 {
                     setWaveColour (g, chan::waveColour (tc));
@@ -276,7 +278,7 @@ public:
                     auto* th = thumbnailFor (tf.file);
                     const double total = th != nullptr ? th->getTotalLength() : 0.0;
                     const auto wcd = app.waveColourOf (tf.file);
-                    if (total > 0.0 && ! directWave.draw (g, r.reduced (1), tf.file, 0.0, total, app.waveZoom, wcd.get()))
+                    if (total > 0.0 && ! directWave.draw (g, r.reduced (1), tf.file, 0.0, total, app.waveZoom, wcd.get(), grp.sampleRate))
                         drawThumbnailEnvelope (g, r.reduced (1), *th, 0.0, total, app.waveZoom, wcd.get());
                 }
                 if (! live)                                                                          // parts sent out with "Export for Processing": no waveform, a hatched block
@@ -830,10 +832,10 @@ private:
     }
 
     /** The waveform of the take being recorded, drawn from the overview the audio thread keeps (updates as you record). */
-    void drawLiveWave (juce::Graphics& g, juce::Rectangle<int> r, const juce::Uuid& trackId)
+    void drawLiveWave (juce::Graphics& g, juce::Rectangle<int> r, const juce::Uuid& trackId, const juce::Uuid& groupId = juce::Uuid::null())
     {
         const juce::int16* data = nullptr; int bins = 0, binSamples = 0, nc = 1;
-        if (! app.engine.getLivePeaks (trackId, data, bins, binSamples, &nc) || bins <= 0 || nc <= 0 || app.engine.getSampleRate() <= 0) return;
+        if (! app.engine.getLivePeaks (trackId, data, bins, binSamples, &nc, groupId) || bins <= 0 || nc <= 0 || app.engine.getSampleRate() <= 0) return;
         const double binSeconds = (double) binSamples / app.engine.getSampleRate();
         const float laneH = (float) r.getHeight() / (float) nc;
         juce::Graphics::ScopedSaveState clipState (g); g.reduceClipRegion (r);

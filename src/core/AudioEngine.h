@@ -51,8 +51,17 @@ public:
     /** Starts recording every armed track into a new take group of the given window.
         Returns an error message, or an empty string on success. */
     juce::String startRecording (TakeWindowDef&);
-    /** Stops, flushes files to disk and finalises the take group. Returns the group id. */
+    /** Stops the take and returns at once (the group id). The take's length is known at once; its files are finished in the background (what is
+        left in their buffers written, then their headers), see isFinishing. */
     juce::Uuid stopRecording();
+    /** Message thread: a take whose files are still being finished on the disk (normally a fraction of a second after Stop). */
+    bool isFinishing (const juce::Uuid& groupId) const;
+    bool anyFinishing() const;
+    /** Message thread: waits (at most maxMs) until every take's files are finished. True when they are. */
+    bool waitForFinishedTakes (int maxMs);
+    /** Message thread, often (a timer): tidies up the takes whose files are now finished. Returns the files of those takes (empty: none finished
+        since the last call), so the windows can read their waveforms afresh. */
+    std::vector<juce::File> reapFinishedTakes();
     bool   isRecording() const noexcept   { return rec.load() != nullptr; }
 
     // --- the second recording drive (see BackupCopier) ---
@@ -115,7 +124,8 @@ public:
     /** The waveform recorded so far for one track (message thread, only while recording).
         data holds, for every bin and every channel, a min/max pair (+-32767): data[(bin * numChannels + channel) * 2].
         There are 'bins' bins, each 'binSamples' samples long. */
-    bool getLivePeaks (const juce::Uuid& trackId, const juce::int16*& data, int& bins, int& binSamples, int* numChannels = nullptr) const;
+    bool getLivePeaks (const juce::Uuid& trackId, const juce::int16*& data, int& bins, int& binSamples, int* numChannels = nullptr,
+                       const juce::Uuid& groupId = juce::Uuid::null()) const;      // groupId: that take (also while it is being finished); null = the one recording
 
     // --- engineer audition ---
     /** While set (to a mixer other than the first one), that mixer's mix is also played on the first mixer's outputs
@@ -401,6 +411,25 @@ private:
     std::vector<float> tbTap;                       // audio thread: the playback-only main output of the processing mixer, left then right
     std::vector<float> mainCap;                     // audio thread: the processing mixer's main output, left then right, for the cue mixers that follow it
     std::unique_ptr<RecordingSession> session;      // owned by the message thread
+    /** A stopped take whose files the finisher thread is closing. The message thread owns the list; the finisher only closes the writers of an
+        entry it was handed and then sets 'done'. */
+    struct Finishing
+    {
+        std::unique_ptr<RecordingSession> rs;
+        std::vector<std::shared_ptr<BackupCopier::Job>> copies;     // the second drive's copies: told to finish only once the main files are closed
+        std::vector<juce::File> files;
+        juce::String report;                                        // the take's line for the log (the finisher adds how long the closing took)
+        std::atomic<bool> done { false };
+    };
+    std::vector<std::unique_ptr<Finishing>> finishing;
+    struct Finisher : public juce::Thread
+    {
+        Finisher() : juce::Thread ("Take finisher") {}
+        void run() override;
+        void add (Finishing* f) { { const juce::ScopedLock sl (lock); queue.push_back (f); } notify(); }
+        juce::CriticalSection lock;
+        std::vector<Finishing*> queue;
+    } finisher;
     std::atomic<double> recBytesPerSecond { 0.0 };
     juce::File recFolder;
     juce::TimeSliceThread writerThread { "Disk writer" };

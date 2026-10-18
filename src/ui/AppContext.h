@@ -197,6 +197,8 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     /** Re-draw waveforms: forgets the saved waveform outline and colours of these audio files (in the Waveforms folder and in memory) so they are worked out again from the audio.
         The windows notice through redrawLog / redrawStamp. */
     void redrawWaveforms (const std::vector<juce::File>& files);
+    /** The same, quietly and only in memory: a take whose files have just been finished (a window may have read them half written). */
+    void forgetWaveforms (const std::vector<juce::File>& files);
     std::vector<std::pair<int, juce::String>> redrawLog; int redrawStamp = 0;
     /** The edit or take window that was last in front ("edit:<id>" / "take:<id>"; "" = none), set by the application. */
     std::function<juce::String()> lastWorkWindowKey;

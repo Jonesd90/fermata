@@ -111,9 +111,13 @@ public:
     void forget (const juce::String& path) { cache.erase (path); }
 
     /** True if it drew the audio itself (the caller then does not draw the thumbnail). */
-    bool draw (juce::Graphics& g, juce::Rectangle<int> area, const juce::File& file, double t0, double t1, float vzoom, const WaveColorData* wc = nullptr)
+    /** rateHint: the file's sample rate when the caller knows it (> 0). Then nothing is opened unless the view is zoomed in far enough to need it:
+        a redraw at an ordinary zoom never touches the disk (opening a file that was only just recorded can wait on Windows' virus scan). */
+    bool draw (juce::Graphics& g, juce::Rectangle<int> area, const juce::File& file, double t0, double t1, float vzoom, const WaveColorData* wc = nullptr,
+               double rateHint = 0.0)
     {
         if (area.getWidth() < 1 || area.getHeight() < 1 || t1 <= t0) return false;
+        if (rateHint > 0.0 && (t1 - t0) * rateHint / (double) area.getWidth() >= kThumbSamplesPerPixelLimit) return false;
         auto clip = g.getClipBounds().getIntersection (area);
         if (clip.isEmpty()) return true;
 

@@ -155,6 +155,7 @@ int main()
     rig.run (eng, 100);
     CHECK (eng.recordedSeconds() > 1.0);
     auto gid1 = eng.stopRecording();
+    CHECK (eng.waitForFinishedTakes (10000)); eng.reapFinishedTakes();          // (the files are finished in the background since 2.67.1)
     CHECK (! eng.isRecording());
     CHECK (tw.groups.size() == 1);
     auto* g1 = tw.findGroup (gid1);
@@ -197,6 +198,7 @@ int main()
     CHECK (eng.startRecording (tw).isEmpty());
     rig.run (eng, 20);
     auto gid2 = eng.stopRecording();
+    CHECK (eng.waitForFinishedTakes (10000)); eng.reapFinishedTakes();          // (the files are finished in the background since 2.67.1)
     auto* g2 = tw.findGroup (gid2);
     CHECK (g2 != nullptr && g2->number == 2 && g2->files.size() == 4);
     CHECK (folder.getChildFile ("002 - Symphony - Atmos.wav").existsAsFile());
@@ -224,6 +226,7 @@ int main()
     CHECK (eng.startRecording (tw).isEmpty());
     rig.run (eng, 5);
     eng.stopRecording();
+    CHECK (eng.waitForFinishedTakes (10000)); eng.reapFinishedTakes();          // (the files are finished in the background since 2.67.1)
     CHECK (folder.getChildFile ("003 - Symphony - violin.wav").existsAsFile());
 
     SECTION ("mixers are fully independent (solo / mute / level)");
@@ -636,6 +639,7 @@ int main()
         CHECK (eng.getLivePeaks (violinId, pk, bins, binSamples) && bins > 0 && binSamples > 0 && pk != nullptr && pk[1] > 1000);
         { int ncLive = 0; CHECK (eng.getLivePeaks (violinId, pk, bins, binSamples, &ncLive) && ncLive == p.findTrack (violinId)->channelCount()); }
         auto gidM = eng.stopRecording();
+        CHECK (eng.waitForFinishedTakes (10000)); eng.reapFinishedTakes();          // (the files are finished in the background since 2.67.1)
         juce::ignoreUnused (gidM);
         p.findTrack (violinId)->setArmed (false);
         // S during playback: only the recording; S-L: live as well
@@ -1366,6 +1370,7 @@ int main()
         CHECK (e2.startRecording (*q.takeWindows.front()).isEmpty());
         r2.run (e2, 40);
         auto gidPre = e2.stopRecording();
+        CHECK (e2.waitForFinishedTakes (10000)); e2.reapFinishedTakes();          // (the files are finished in the background since 2.67.1)
         auto* gPre = q.takeWindows.front()->findGroup (gidPre);
         const juce::int64 preLen = 6 * 48000;
         CHECK (gPre != nullptr && gPre->lengthSamples == preLen + 40 * Rig::block);
@@ -1393,6 +1398,7 @@ int main()
         CHECK (e2.startRecording (*q.takeWindows.front()).isEmpty());
         r2.run (e2, 20);
         auto gidNo = e2.stopRecording();
+        CHECK (e2.waitForFinishedTakes (10000)); e2.reapFinishedTakes();          // (the files are finished in the background since 2.67.1)
         CHECK (q.takeWindows.front()->findGroup (gidNo)->lengthSamples == 20 * Rig::block);
 
         // (3) pressing Record and Stop never interrupts what the engineer hears
@@ -1406,6 +1412,7 @@ int main()
         CHECK (eng.startRecording (tw).isEmpty());
         for (int i = 0; i < 30; ++i) lo = juce::jmin (lo, level());
         eng.stopRecording();
+        CHECK (eng.waitForFinishedTakes (10000)); eng.reapFinishedTakes();          // (the files are finished in the background since 2.67.1)
         for (int i = 0; i < 30; ++i) lo = juce::jmin (lo, level());
         CHECK (lo > 0.02);                                                 // no block of silence at the start or at the stop of a recording
         eng.setSessionMode (false);
@@ -4219,6 +4226,7 @@ int main()
         CHECK (eng.startRecording (tw).isEmpty());
         rig.run (eng, 200);
         const auto gid = eng.stopRecording();
+        CHECK (eng.waitForFinishedTakes (10000)); eng.reapFinishedTakes();          // (the files are finished in the background since 2.67.1)
         auto* g = tw.findGroup (gid);
         CHECK (g != nullptr && g->files.size() == 2);
         for (int w = 0; w < 500 && eng.backupCopiesGoing() > 0; ++w) juce::Thread::sleep (10);
@@ -4237,6 +4245,7 @@ int main()
         CHECK (eng.startRecording (tw).isEmpty());
         rig.run (eng, 50);
         const auto gid2 = eng.stopRecording();
+        CHECK (eng.waitForFinishedTakes (10000)); eng.reapFinishedTakes();          // (the files are finished in the background since 2.67.1)
         for (int w = 0; w < 500 && eng.backupCopiesGoing() > 0; ++w) juce::Thread::sleep (10);
         const auto problems = eng.takeBackupProblems();
         CHECK (problems.size() == 2 && problems[0].contains ("could not keep up"));
@@ -4451,6 +4460,52 @@ int main()
         CHECK (e.mixerHelperLimit() >= 2);                                    // no cores reserved here: every helper may take part
         e.setRunningForTests (false);
         CHECK (e.setMixerThreads (0));
+    }
+
+    SECTION ("2.67.1: the writer waits for a big piece before writing; Stop returns before the files are finished");
+    {
+        juce::TimeSliceThread tst ("test writer 5"); tst.startThread();
+        auto f = tmp.getChildFile ("pieces.wav");
+        juce::WavAudioFormat fmt; std::unique_ptr<juce::OutputStream> os (new juce::FileOutputStream (f, 1024));
+        auto w = fmt.createWriterFor (os, juce::AudioFormatWriterOptions().withSampleRate (96000.0).withNumChannels (1).withBitsPerSample (24));
+        auto tw = std::make_unique<TakeWriter> (std::move (w), tst, 8 * 96000, 0, 48000);     // half a second at 96 kHz
+        std::vector<float> x (1024, 0.1f); const float* p = x.data();
+        for (int b = 0; b < 40; ++b) { tw->write (&p, 1024); tst.notify(); }                   // 40960 frames: not yet half a second
+        juce::Thread::sleep (100);
+        CHECK (tw->samplesWritten() == 0);
+        for (int b = 0; b < 10; ++b) { tw->write (&p, 1024); tst.notify(); }                   // 51200: now it goes, in one piece
+        for (int k = 0; k < 200 && tw->samplesWritten() == 0; ++k) juce::Thread::sleep (5);
+        CHECK (tw->samplesWritten() == 51200);
+        tw->write (&p, 1024);
+        tw.reset();                                                                              // the end: the small rest is written too
+        tst.stopThread (1000);
+        juce::AudioFormatManager afm; afm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> rd (afm.createReaderFor (f));
+        CHECK (rd != nullptr && rd->lengthInSamples == 52224);
+
+        // the engine: after Stop the take's live waveform can still be asked for (by its take id) until its files are finished and tidied up
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear();
+        q.projectFile = tmp.getChildFile ("fin").getChildFile ("Fin.fermata");
+        const auto ta = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        q.tracks.back().setArmed (true);
+        q.addTakeWindow ("Fin");
+        AudioEngine e (q);
+        e.prepare (48000.0, 256);
+        CHECK (e.startRecording (*q.takeWindows.back()).isEmpty());
+        std::vector<float> i0 (256, 0.2f), o0 (256), o1 (256);
+        const float* in[1] = { i0.data() }; float* out[2] = { o0.data(), o1.data() };
+        for (int b = 0; b < 400; ++b) e.process (in, 1, out, 2, 256);
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        const auto gid = e.stopRecording();
+        CHECK (juce::Time::getMillisecondCounterHiRes() - t0 < 200.0);                          // Stop does not wait for the disk
+        const juce::int16* d = nullptr; int bins = 0, bs = 0, nc = 0;
+        CHECK (e.getLivePeaks (ta, d, bins, bs, &nc, gid) && bins > 0);
+        CHECK (e.waitForFinishedTakes (10000));
+        CHECK (! e.isFinishing (gid) && ! e.anyFinishing());
+        const auto done = e.reapFinishedTakes();
+        CHECK (done.size() == 1 && ! e.getLivePeaks (ta, d, bins, bs, &nc, gid));
+        std::unique_ptr<juce::AudioFormatReader> r2 (afm.createReaderFor (done[0]));
+        CHECK (r2 != nullptr && r2->lengthInSamples == q.takeWindows.back()->groups.back().lengthSamples && r2->lengthInSamples == 400 * 256);
     }
 
     SECTION ("2.67: playback read buffers share a budget; the load meter; quick saves use the plug-ins' cached state");

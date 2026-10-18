@@ -6,6 +6,15 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.67.1
+Fixes from the first test on the real rig (40 mono tracks at 24-bit / 96 kHz on the internal NVMe): a disk overrun about 40 s into the first take, and the program hanging for about 10 s after Stop.
+
+- **Recordings are written to the disk in big pieces.** Each file is now written in pieces of about half a second of audio (at most 65536 frames), not every few milliseconds. The amount written is tiny for any modern drive (40 tracks at 96 kHz is 11.5 MB/s); the number of writes was the problem: about 2500 small writes a second, each making a file longer, more than one disk thread could keep up with on Windows. Now it is about 80 a second. (2.66 had made it worse by turning off a small buffer that used to join some of them.)
+- **Stop is instant.** The files of a stopped take are finished (what is left in their buffers written, then their headers) on a background thread, so the program answers at once and the next take can be recorded straight away. While its files are being finished the take keeps its live waveform; then the real waveform is drawn. Play on a take that is still being finished waits only until it is done. The copies on the second recording drive are finished once the main files are closed.
+- **Redrawing a window no longer opens audio files** unless it is zoomed in far enough to need the samples themselves (opening a file that has only just been recorded can wait on Windows' virus scan).
+- **A line per take in `fermata-log.txt`:** length, number of files, MB/s, the folder and the kind of drive, free space, the longest single disk write, how full the recording buffer got (about 6% is normal: half a second of 8), any overruns and when the first one happened, the second drive, and how long after Stop the files were finished.
+- Tests: the writer waits for a big piece, Stop returns before the files are finished and the take's live waveform is still there until they are.
+
 ## 2.67.0
 The speed and stability items left from the 2.66 review, and a load meter so they can be measured on the real PC.
 
