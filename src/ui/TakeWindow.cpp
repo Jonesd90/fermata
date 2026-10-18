@@ -1177,9 +1177,8 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     keysKeeper = std::make_unique<KeepKeysOnTimeline> (*vp, *timeline);
 
     auto* w = def();
-    nameLabel.setText ("Piece:", juce::dontSendNotification);
-    addAndMakeVisible (nameLabel);
-    addAndMakeVisible (nameEditor);
+    nameLabel.setText ("Piece / Take Window Name:", juce::dontSendNotification);
+    addAndMakeVisible (nameBlock);
     addAndMakeVisible (takeBox);
     nameEditor.setText (w ? w->name : "", false);
     auto commitName = [this]
@@ -1195,6 +1194,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     nameEditor.onReturnKey = [commitName] { commitName(); juce::Component::unfocusAllComponents(); };     // Enter: confirm and leave the box, so the keys (R, Space, ...) work again
 
     recordButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xffb3261e));
+    recordButton.setBoxLook (true);                         // the same size and shape as the Next Take box beside it
     recordButton.onClick = [this] { app.toggleRecord (windowId); };
     armAllButton.setTooltip ("Arm every track of this window for recording (you can also click ARM on a track's name)");
     armNoneButton.setTooltip ("Disarm every track");
@@ -1377,8 +1377,8 @@ void TakeWindowComponent::resized()
     const int clockW = clock.getIdealWidth (kClockH) + 4;
     const std::vector<FlowItem> items
     {
-        { &nameLabel, 45 }, { &nameEditor, 200, grid::btnH, 10 }, { &takeBox, 84, 58, 14 },
-        { &recordButton, IW, IH, 6 }, { &timeLabel, 150, 28, 4 }, { &clock, clockW, kClockH, 14 },      // the time readout tucked in beside the take's length
+        { &nameBlock, 200, 58, 10 }, { &takeBox, 84, 58, 6 },
+        { &recordButton, 84, 58, 6 }, { &timeLabel, 150, 28, 4 }, { &clock, clockW, kClockH, 14 },      // the time readout tucked in beside the take's length
         { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playMarkedButton }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
         { &editInButton, IW, IH, 2 }, { &editOutButton, IW, IH, 6 }, { &toEditButton, IW, IH, 2 }, { &toEditAtButton, IW, IH, 2 }, { &overdubBox, IW, IH, 6 }, { &markersToggle, IW, IH, 14 },
         { &editWindowButton, IW, IH, 2 }, { &bounceButton, IW, IH, 14 },

@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.64.2
+- **Take and edit windows, the name of the window:** the caption now reads **Piece / Take Window Name:** (in the edit window **Piece / Edit Window Name:**) and sits above the name box, so the two together are as tall as the Next Take box (and the edit window's top bar gained the room the old "Edit:" caption took).
+- **The record button is the same size and shape as the Next Take box** beside it: "REC [R]" across the top and a big red dot under it (a square while recording, with "STOP [Space]").
+
 ## 2.64.1
 - **The time readout moved from the middle of the top bar to the left:** in the take window it sits just after the take's length (the "--:--:--.---" beside the record button), in the edit window just after the edit's name. All the room to its right is for the buttons again, so on a wide screen they fit on one line (or two in the take window). When the bar does spill onto another line, a group of buttons (the transport, say) now moves down together instead of being split.
 

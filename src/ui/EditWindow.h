@@ -55,12 +55,13 @@ private:
     AppContext& app;
     juce::Uuid editId;
     juce::Label nameCaption, infoLabel;
-    TimeReadout clock;                                        // the big time readout in the middle of the top bar
+    TimeReadout clock;                                        // the big time readout in the top bar
     static constexpr int kClockH = 58;
     // the Buses / VCAs view: an audio track's waveform drawn behind the automation lanes, for reference
     juce::Label refCaption; juce::ComboBox refBox; std::vector<juce::Uuid> refIds; juce::String refSig;
     void fillRefBox();
     juce::TextEditor nameEditor;
+    StackedField nameBlock { nameCaption, nameEditor };      // "Piece / Edit Window Name:" above the name box
     IconButton playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, trimButton { "Trim Window [T]" }, deleteButton { "Delete piece" },
                leftButton { "Move earlier" }, rightButton { "Move later" }, bounceButton { "Bounce Out..." }, mixerButton { "Edit Mixer" }, automationButton { "Automation" }, busViewButton { "Buses / VCAs" },
                pitchButton { "Pitch..." }, repairButton { "Repair & DeClick..." }, reharmoniserButton { "ReHarmoniSer..." }, undoFixButton { "Undo fix" }, tracksButton { "Tracks..." }, feedbackButton { "Feedback..." },

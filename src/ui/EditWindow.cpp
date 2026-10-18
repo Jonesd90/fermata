@@ -1525,8 +1525,8 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     setWantsKeyboardFocus (true);
     keysKeeper = std::make_unique<KeepKeysOnTimeline> (*vp, *timeline);
 
-    nameCaption.setText ("Edit:", juce::dontSendNotification);
-    addAndMakeVisible (nameCaption); addAndMakeVisible (nameEditor); addAndMakeVisible (infoLabel);
+    nameCaption.setText ("Piece / Edit Window Name:", juce::dontSendNotification);
+    addAndMakeVisible (nameBlock); addAndMakeVisible (infoLabel);
 
     // the time readout: where this edit's playhead is (moving while the edit plays); white when stopped, blue while anything plays, red while recording
     addAndMakeVisible (clock);
@@ -1708,7 +1708,7 @@ void EditWindowComponent::resized()
     const int clockW = clock.getIdealWidth (kClockH) + 4;
     const std::vector<FlowItem> items
     {
-        { &nameCaption, 45 }, { &nameEditor, 240, grid::btnH, 10 }, { &clock, clockW, kClockH, 14 },     // the time readout just after the edit's name
+        { &nameBlock, 240, 58, 10 }, { &clock, clockW, kClockH, 14 },     // the time readout just after the edit's name
         { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
         { &trimButton, IW, IH, 2 }, { &deleteButton, IW, IH, 14 },
         { &leftButton, IW, IH, 2 }, { &rightButton, IW, IH, 6 }, { &endButton, IW, IH, 14 },

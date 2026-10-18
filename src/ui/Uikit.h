@@ -778,6 +778,27 @@ private:
     juce::Component& root;
 };
 
+/** A caption above its box, as one block of a flowing top bar (as tall as the Next Take box): the caption at the top, the box under it. */
+class StackedField : public juce::Component
+{
+public:
+    StackedField (juce::Label& caption, juce::Component& field) : cap (caption), fld (field)
+    {
+        cap.setFont (juce::FontOptions (13.0f));
+        cap.setBorderSize (juce::BorderSize<int> (0, 2, 0, 0));
+        cap.setJustificationType (juce::Justification::bottomLeft);
+        addAndMakeVisible (cap); addAndMakeVisible (fld);
+    }
+    void resized() override
+    {
+        const int fh = grid::btnH, h = getHeight();
+        fld.setBounds (0, h - fh - 3, getWidth(), fh);                    // the box at the bottom (in line with the bottom of the Next Take box)
+        cap.setBounds (0, 0, getWidth(), h - fh - 6);                     // the words just above it
+    }
+private:
+    juce::Label& cap; juce::Component& fld;
+};
+
 /** The square "Next Take 4" / "This Take 4" box: green while idle, red while recording. Shown in the take window and on the main page. */
 class NextTakeBox : public juce::Component
 {
@@ -1223,6 +1244,8 @@ class IconButton : public juce::TextButton
 public:
     using juce::TextButton::TextButton;
     void setIcon (Icon i, const juce::String& name) { icon = i; label = name; repaint(); }
+    /** Drawn like the Next Take box (corners of 5, a light outline) with its text in the top third and the picture below (the take window's big record button). */
+    void setBoxLook (bool on) { boxLook = on; repaint(); }
     juce::String getTooltip() override
     {
         const auto t = juce::TextButton::getTooltip();
@@ -1233,18 +1256,28 @@ public:
         auto b = getLocalBounds().toFloat().reduced (0.5f);
         const bool on = getToggleState();
         const auto base = findColour (on ? juce::TextButton::buttonOnColourId : juce::TextButton::buttonColourId);
-        g.setColour (down ? base.brighter (0.2f) : over ? base.brighter (0.1f) : base); g.fillRoundedRectangle (b, 4.0f);
-        g.setColour (on ? base.brighter (0.4f) : theme::border); g.drawRoundedRectangle (b, 4.0f, 1.0f);
+        const float rad = boxLook ? 5.0f : 4.0f;
+        g.setColour (down ? base.brighter (0.2f) : over ? base.brighter (0.1f) : base); g.fillRoundedRectangle (b, rad);
+        g.setColour (boxLook ? juce::Colours::white.withAlpha (0.55f) : on ? base.brighter (0.4f) : theme::border); g.drawRoundedRectangle (b, rad, 1.0f);
         auto ic = icon;
         const auto txt = getButtonText();
         if ((ic == Icon::Play || ic == Icon::Record) && (txt.startsWithIgnoreCase ("stop"))) ic = Icon::Stop;
         const bool dim = ! isEnabled();
         if (dim) g.beginTransparencyLayer (0.4f);
-        drawIcon (g, ic, b.reduced (3.0f, 2.0f), theme::inkOn (base));          // dark pictures on the light keys, light ones on a lit key
+        auto picture = b.reduced (3.0f, 2.0f);
+        if (boxLook && getHeight() >= 40)                    // as the Next Take box: the words in the top third, the picture under them
+        {
+            auto top = getLocalBounds().removeFromTop (juce::jmax (14, getHeight() / 3));
+            g.setColour (juce::Colours::white);
+            g.setFont (juce::FontOptions ((float) top.getHeight() * 0.62f, juce::Font::bold));
+            g.drawText (txt, top.withTrimmedTop (3), juce::Justification::centred, false);
+            picture = b.withTrimmedTop ((float) top.getHeight()).reduced (3.0f, 3.0f);
+        }
+        drawIcon (g, ic, picture, theme::inkOn (base));          // dark pictures on the light keys, light ones on a lit key
         if (dim) g.endTransparencyLayer();
     }
 private:
-    Icon icon = Icon::Play; juce::String label;
+    Icon icon = Icon::Play; juce::String label; bool boxLook = false;
 };
 
 /** The scroll bars (and the viewport) must never take the keyboard: after using one, the arrow keys still control the zoom / track heights of the window,
