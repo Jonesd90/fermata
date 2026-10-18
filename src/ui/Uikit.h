@@ -147,44 +147,6 @@ inline int flow (juce::Rectangle<int> area, const std::vector<FlowItem>& items, 
     }
     return y - area.getY();
 }
-
-/** A top bar with one thing in the middle (the time readout, as in other DAWs): the items before it flow in the space on its left and the rest in the
-    space on its right, each side spilling onto more lines when it runs out of room. Where the items are divided between the two sides is chosen
-    among the groups (an item with a wide gap after it ends a group) so that the bar is as low as possible, then uses as few lines as possible, then is
-    as even as possible. A window too narrow for that gets the middle thing at the start of an ordinary flowing bar. Returns the height used. */
-inline int flowAroundCentre (juce::Rectangle<int> area, const std::vector<FlowItem>& items, juce::Component& centre, int centreW, int centreH)
-{
-    constexpr int side = 12;                      // the space either side of the middle thing
-    if (area.getWidth() < centreW + 2 * side + 2 * 300)
-    {
-        std::vector<FlowItem> all;
-        all.push_back ({ &centre, centreW, centreH, 14 });
-        all.insert (all.end(), items.begin(), items.end());
-        return flow (area, all);
-    }
-    const auto mid = juce::Rectangle<int> (area.getCentreX() - centreW / 2, area.getY() + 4, centreW, centreH);
-    const auto leftArea  = area.withRight (mid.getX() - side);
-    const auto rightArea = area.withLeft (mid.getRight() + side);
-    std::vector<size_t> splits { 0, items.size() };
-    for (size_t i = 0; i + 1 < items.size(); ++i) if (items[i].gapAfter >= 10) splits.push_back (i + 1);
-    size_t best = items.size(); long long bestCost = std::numeric_limits<long long>::max();
-    for (auto k : splits)
-    {
-        const std::vector<FlowItem> l (items.begin(), items.begin() + (long) k), r (items.begin() + (long) k, items.end());
-        int nl = 0, nr = 0;
-        const int hl = flow (leftArea, l, false, &nl, true), hr = flow (rightArea, r, false, &nr, true);
-        int wl = 0, wr = 0;
-        for (auto& it : l) wl += it.w + it.gapAfter;
-        for (auto& it : r) wr += it.w + it.gapAfter;
-        const int h = juce::jmax (hl, hr, centreH + 8);
-        const long long cost = (long long) h * 1000000 + (long long) (nl + nr) * 10000 + std::abs (wl - wr);
-        if (cost < bestCost) { bestCost = cost; best = k; }
-    }
-    const std::vector<FlowItem> l (items.begin(), items.begin() + (long) best), r (items.begin() + (long) best, items.end());
-    const int hl = flow (leftArea, l, true, nullptr, true), hr = flow (rightArea, r, true, nullptr, true);
-    centre.setBounds (mid);
-    return juce::jmax (hl, hr, centreH + 8);
-}
 }
 
 

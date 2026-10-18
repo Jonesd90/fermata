@@ -1705,9 +1705,10 @@ void EditWindowComponent::resized()
     auto r = getLocalBounds().reduced (6);
     using grid::FlowItem;
     constexpr int IW = 34, IH = 26;                               // the picture buttons
+    const int clockW = clock.getIdealWidth (kClockH) + 4;
     const std::vector<FlowItem> items
     {
-        { &nameCaption, 45 }, { &nameEditor, 240, grid::btnH, 14 },
+        { &nameCaption, 45 }, { &nameEditor, 240, grid::btnH, 10 }, { &clock, clockW, kClockH, 14 },     // the time readout just after the edit's name
         { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
         { &trimButton, IW, IH, 2 }, { &deleteButton, IW, IH, 14 },
         { &leftButton, IW, IH, 2 }, { &rightButton, IW, IH, 6 }, { &endButton, IW, IH, 14 },
@@ -1718,7 +1719,7 @@ void EditWindowComponent::resized()
         { &slipLeftToggle, IW + 8, IH, 2 }, { &slipRightToggle, IW + 8, IH, 6 }, { &shuffleToggle, IW, IH, 2 }, { &insertFlagToggle, IW, IH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
-    r.removeFromTop (grid::flowAroundCentre (r, items, clock, clock.getIdealWidth (kClockH) + 4, kClockH));   // the time readout in the middle, the rest either side
+    r.removeFromTop (grid::flow (r, items, true, nullptr, true));     // (a group of buttons stays together when it spills onto another line)
     {
         auto row = r.removeFromTop (22);
         if (refBox.isVisible())

@@ -1374,10 +1374,11 @@ void TakeWindowComponent::resized()
     auto r = getLocalBounds().reduced (6);
     using grid::FlowItem;
     constexpr int IW = 34, IH = 26;                               // the picture buttons
+    const int clockW = clock.getIdealWidth (kClockH) + 4;
     const std::vector<FlowItem> items
     {
         { &nameLabel, 45 }, { &nameEditor, 200, grid::btnH, 10 }, { &takeBox, 84, 58, 14 },
-        { &recordButton, IW, IH, 6 }, { &timeLabel, 150, 28, 14 },
+        { &recordButton, IW, IH, 6 }, { &timeLabel, 150, 28, 4 }, { &clock, clockW, kClockH, 14 },      // the time readout tucked in beside the take's length
         { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playMarkedButton }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
         { &editInButton, IW, IH, 2 }, { &editOutButton, IW, IH, 6 }, { &toEditButton, IW, IH, 2 }, { &toEditAtButton, IW, IH, 2 }, { &overdubBox, IW, IH, 6 }, { &markersToggle, IW, IH, 14 },
         { &editWindowButton, IW, IH, 2 }, { &bounceButton, IW, IH, 14 },
@@ -1386,7 +1387,7 @@ void TakeWindowComponent::resized()
         { &importButton, IW, IH, 6 }, { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 6 }, { &exportProcButton, IW, IH, 2 }, { &undoFixButton, IW, IH, 14 }, { &barSearchButton, IW, IH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
-    r.removeFromTop (grid::flowAroundCentre (r, items, clock, clock.getIdealWidth (kClockH) + 4, kClockH));   // the time readout in the middle, the rest either side (spilling onto more lines when needed)
+    r.removeFromTop (grid::flow (r, items, true, nullptr, true));     // everything on one line when there is room, otherwise it spills onto more (a group of buttons stays together)
     auto info = r.removeFromTop (22);
     statusLabel.setBounds (info.removeFromRight (juce::jmin (330, info.getWidth() / 3)));
     markLabel.setBounds (info.reduced (4, 0));
