@@ -147,6 +147,7 @@ public:
           host (h), insert (i)
     {
         setUsingNativeTitleBar (true);
+        getProperties().set (ownsRKeyProperty(), true);       // R typed into a plug-in (a preset name ...) is the plug-in's: it does not start a recording (Space still stops one)
         setContentOwned (editor, true);
         setResizable (editor->isResizable(), false);
         centreWithSize (getWidth(), getHeight());
@@ -162,8 +163,7 @@ public:
     }
     void closeButtonPressed() override
     {
-        auto* self = this;
-        juce::MessageManager::callAsync ([h = &host, self]() { h->closeEditorsFor (self->insert); });
+        juce::MessageManager::callAsync ([h = &host, ins = insert]() { h->closeEditorsFor (ins); });     // (by value: this window may be gone by then)
     }
     PluginHost& host;
     Vst3Insert* insert;
@@ -204,17 +204,25 @@ void PluginHost::startScan (std::function<void()> whenFinished)
 
 void PluginHost::run()
 {
+    // The "dead man's pedal": the name of the plug-in being looked at is written to this file before it is opened and taken out again after.
+    // A plug-in that crashes the program while it is scanned is found there at the next scan and left out (blacklisted), instead of crashing
+    // the program at every scan from then on.
+    const auto pedal = listFile.getSiblingFile ("plugin-scan-in-progress.txt");
+    listFile.getParentDirectory().createDirectory();
+    const auto blacklistedBefore = known.getBlacklistedFiles();
     for (auto* format : formats.getFormats())
     {
-        juce::PluginDirectoryScanner scanner (known, *format, format->getDefaultLocationsToSearch(), true, juce::File(), false);
+        juce::PluginDirectoryScanner scanner (known, *format, format->getDefaultLocationsToSearch(), true, pedal, false);
         juce::String name;
         while (! threadShouldExit() && scanner.scanNextFile (true, name))
         {
             const juce::ScopedLock sl (statusLock);
             status = "Scanning: " + name;
         }
+        for (auto& f : scanner.getFailedFiles()) juce::Logger::writeToLog ("Plug-in scan: could not load " + f);
     }
-    listFile.getParentDirectory().createDirectory();
+    for (auto& f : known.getBlacklistedFiles())
+        if (! blacklistedBefore.contains (f)) juce::Logger::writeToLog ("Plug-in scan: " + f + " crashed the program during an earlier scan and is now left out (delete plugins.xml to try it again)");
     if (auto xml = known.createXml()) xml->writeTo (listFile);
     {
         const juce::ScopedLock sl (statusLock);

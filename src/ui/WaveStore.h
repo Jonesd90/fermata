@@ -54,16 +54,22 @@ inline void saveThumbnail (juce::AudioThumbnail& t, const juce::File& folder, co
 struct ThumbSaver
 {
     std::set<juce::String> done;                                  // keys already on disk (or loaded from there)
-    void markDone (const juce::String& key) { done.insert (key); }
+    std::set<juce::String> pending;                               // keys being read from the audio: looked at by saveFinished (the others are not: a window with thousands of thumbnails used to walk them all at every change)
+    void markDone (const juce::String& key) { done.insert (key); pending.erase (key); }
+    void markPending (const juce::String& key) { if (done.count (key) == 0) pending.insert (key); }
+    void forget (const juce::String& key) { done.erase (key); pending.erase (key); }
     template <typename Map>
     void saveFinished (Map& thumbs, const juce::File& folder)
     {
-        for (auto& kv : thumbs)
-            if (done.count (kv.first) == 0 && kv.second->isFullyLoaded())
-            {
-                done.insert (kv.first);
-                saveThumbnail (*kv.second, folder, juce::File (kv.first));
-            }
+        for (auto it = pending.begin(); it != pending.end();)
+        {
+            auto th = thumbs.find (*it);
+            if (th == thumbs.end()) { it = pending.erase (it); continue; }
+            if (! th->second->isFullyLoaded()) { ++it; continue; }
+            done.insert (*it);
+            saveThumbnail (*th->second, folder, juce::File (*it));
+            it = pending.erase (it);
+        }
     }
 };
 } // namespace wavestore

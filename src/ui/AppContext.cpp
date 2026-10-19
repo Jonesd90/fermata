@@ -1,4 +1,5 @@
 #include "AppContext.h"
+#include "../core/FileSync.h"
 #include "../core/Ravenna.h"
 #include "TakeDisplay.h"
 #include "TalkbackGlow.h"
@@ -40,6 +41,7 @@ AppContext::AppContext()
     watcher.fn = [this]
     {
         if (engine.playbackFinished()) stopPlayback();                       // tidy up when a play-through reaches its end
+        engine.servicePreRoll();                                             // Pre-Rec's memory, made in the background, goes in place
         if (const auto done = engine.reapFinishedTakes(); ! done.empty())     // a stopped take's files are finished on the disk: draw their real waveforms
         {
             forgetWaveforms (done);
@@ -72,7 +74,9 @@ AppContext::AppContext()
         const bool remoteCr = remoteCrKey.update (remoteCrDown, juce::Time::getMillisecondCounter());
         crWanted = cr || remoteCr || crClickLatch;
         applyTalkback();
+        pollTransportKeys();
     };
+    spaceBelongsToRecordingHook() = [this] { return engine.isRecording() || spaceHeldAfterStop; };
     talkbackPoller.startTimerHz (60);
     preampTicker.fn = [this] { preampMemoryTick(); };
     preampTicker.startTimer (1000);
@@ -94,6 +98,7 @@ AppContext::AppContext()
 
 AppContext::~AppContext()
 {
+    spaceBelongsToRecordingHook() = nullptr;
     timereadout::shared().removeChangeListener (this);
     *anemanAlive = false;
     preampTicker.stopTimer();
@@ -184,8 +189,29 @@ void AppContext::changeListenerCallback (juce::ChangeBroadcaster* source)
     }
     if (! auditionId.isNull() && (findMixer (auditionId) == nullptr || isEngineerMixer (auditionId))) setAudition ({});
     engine.rebuildPlan();
+    freeRetiredMixersSoon();
     applyTalkback();
     if (refreshTitles) refreshTitles();
+}
+
+void AppContext::freeRetiredMixersSoon()
+{
+    const size_t count = project.retiredMixers.size();
+    if (count == 0 || ! engine.audioThreadNeverStalled()) return;      // (a stalled audio thread may still be inside the old plan: those mixers stay, as they always did)
+    juce::MessageManager::callAsync ([this, count]
+    {
+        // (by now the structure change that retired them has been handled: the windows have let go of them and the plan was rebuilt without them)
+        if (! engine.audioThreadNeverStalled()) return;
+        if (engine.isPlaying()) return;                                   // an edit's automation may be moving their faders: stopPlayback calls here again
+        for (size_t i = 0; i < count && i < project.retiredMixers.size(); ++i)      // their plug-ins' windows first: a window must never outlive its plug-in
+        {
+            auto& m = *project.retiredMixers[i];
+            auto slots = [this] (InsertSlot* sl, int n) { for (int k = 0; k < n; ++k) plugins.closeEditorsFor (sl[k].getProcessorUnsafe()); };
+            for (auto& st : m.stripPool) { slots (st->slots, kNumSlots); for (auto& sd : st->sends.pool) slots (sd->slots, kSendSlots); slots (st->outSend.slots, kSendSlots); }
+            for (auto& b : m.busPool)    { slots (b->slots, kNumSlots);  for (auto& sd : b->sends.pool) slots (sd->slots, kSendSlots); slots (b->outSend.slots, kSendSlots); }
+        }
+        project.freeRetiredMixers (count);
+    });
 }
 
 MixerState* AppContext::findMixer (const juce::Uuid& id) const
@@ -387,6 +413,7 @@ void AppContext::afterProjectReplaced()
 {
     syncWithDevice();
     engine.rebuildPlan();
+    freeRetiredMixersSoon();                           // the mixers (and plug-ins) of the project that was open before
     recordTarget = project.takeWindows.empty() ? juce::Uuid::null() : project.takeWindows.front()->id;
     if (project.preampDevices.empty())                 // a new project: use the devices of the rig, as last set up
     {
@@ -506,6 +533,7 @@ bool AppContext::newProject (const juce::File& file)
 {
     if (engine.isRecording()) { showError ("Recording", "Stop recording first."); return false; }
     stopPlayback();
+    plugins.closeAllEditors();                       // (the old project's plug-ins go with it)
     saveNow();
     auto insertFactory = project.insertFactory;
     project.createDefaultDesign();
@@ -526,6 +554,7 @@ bool AppContext::openProject (const juce::File& file)
     busy::begin ("Opening project", file.getFileNameWithoutExtension());
     struct Closer { ~Closer() { busy::endAfterPendingMessages(); } } closer;
     stopPlayback();
+    plugins.closeAllEditors();                       // (the old project's plug-ins go with it)
     if (project.projectFile != juce::File()) busy::step ("Saving " + project.name + " first");
     saveNow();
     juce::String err;
@@ -548,16 +577,19 @@ bool AppContext::openProject (const juce::File& file)
             return realFactory (desc, state);
         };
     }
+    const auto tOpen0 = juce::Time::getMillisecondCounterHiRes();
     if (! project.load (file, err)) { showError ("Could not open project", err); return false; }
+    const auto tRead = juce::Time::getMillisecondCounterHiRes();
     project.insertFactory = realFactory;
     project.createFolders();
     if (! project.loadNotes.isEmpty())
     {
-        juce::String text = "Some edits or take windows could not be read, because their files are missing or damaged. Nothing was deleted: put the files back in the project folder and open the project again.\n\n";
+        juce::String text = "Not everything could be read as it was saved. Nothing was deleted. Where a file is missing, put it back in the project folder and open the project again; where a .bak was used, the file had gone wrong and the save before it was taken instead.\n\n";
         for (auto& l : project.loadNotes) text << "   " << l << "\n";
-        juce::MessageManager::callAsync ([text] { juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Files missing").withMessage (text).withButton ("OK"), nullptr); });
+        juce::MessageManager::callAsync ([text] { juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Project files").withMessage (text).withButton ("OK"), nullptr); });
     }
     const auto mended = project.repairInterruptedRecordings();      // the program or the computer stopped while recording: keep everything that was recorded
+    const auto tChecked = juce::Time::getMillisecondCounterHiRes();
     busy::step ("Getting the audio ready", -1.0);
     if (mended.size() > 0)
     {
@@ -567,6 +599,13 @@ bool AppContext::openProject (const juce::File& file)
         juce::MessageManager::callAsync ([text] { juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon).withTitle ("Recording recovered").withMessage (text).withButton ("OK"), nullptr); });
     }
     afterProjectReplaced();
+    const auto tReady = juce::Time::getMillisecondCounterHiRes();
+    {   // how long opening took, by stage (the log line to look at when a big project is slow to open)
+        size_t takes = 0; for (auto& w : project.takeWindows) takes += w->groups.size();
+        juce::Logger::writeToLog ("Opened " + project.name + " in " + juce::String (juce::roundToInt (tReady - tOpen0)) + " ms: files read " + juce::String (juce::roundToInt (tRead - tOpen0))
+                                  + " ms, recordings checked " + juce::String (juce::roundToInt (tChecked - tRead)) + " ms, audio and undo ready " + juce::String (juce::roundToInt (tReady - tChecked))
+                                  + " ms (" + juce::String ((int) project.takeWindows.size()) + " take windows, " + juce::String ((int) takes) + " takes, " + juce::String ((int) project.edits.size()) + " edits)");
+    }
     props.getUserSettings()->setValue ("lastProject", file.getFullPathName());
     return true;
 }
@@ -618,13 +657,13 @@ void AppContext::startBlankProject()
 juce::File AppContext::lastProjectFile()
 {
     juce::File last (props.getUserSettings()->getValue ("lastProject"));
-    return last.existsAsFile() ? last : juce::File();
+    return last.existsAsFile() || filesync::backupOf (last).existsAsFile() ? last : juce::File();      // (a project whose file went while it was being written still opens, from its .bak)
 }
 
 void AppContext::restoreLastProject()
 {
-    juce::File last (props.getUserSettings()->getValue ("lastProject"));
-    if (last.existsAsFile() && openProject (last)) return;
+    const auto last = lastProjectFile();
+    if (last != juce::File() && openProject (last)) return;
 
     auto folder = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Fermata")
                       .getChildFile ("Session " + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H.%M"));
@@ -724,6 +763,58 @@ void AppContext::remotePlayPause()
     if (err.isNotEmpty()) setNotice (err);
 }
 
+bool AppContext::typingInTextBox()
+{
+    for (auto* c = juce::Component::getCurrentlyFocusedComponent(); c != nullptr; c = c->getParentComponent())
+        if (auto* te = dynamic_cast<juce::TextEditor*> (c)) return ! te->isReadOnly() && te->isShowing();
+    return false;
+}
+
+bool AppContext::rKeyHasOwnJobHere()
+{
+    for (auto* c = juce::Component::getCurrentlyFocusedComponent(); c != nullptr; c = c->getParentComponent())
+        if (c->getProperties().contains (ownsRKeyProperty())) return true;
+    if (auto* w = juce::TopLevelWindow::getActiveTopLevelWindow())          // nothing has the keyboard: the window in front decides
+    {
+        std::function<bool (juce::Component&, int)> marked = [&] (juce::Component& c, int depth)
+        {
+            if (c.getProperties().contains (ownsRKeyProperty())) return true;
+            if (depth >= 3) return false;
+            for (auto* ch : c.getChildren()) if (marked (*ch, depth + 1)) return true;
+            return false;
+        };
+        return marked (*w, 0);
+    }
+    return false;
+}
+
+void AppContext::pollTransportKeys()
+{
+    const bool fg = juce::Process::isForegroundProcess();
+    const bool mods = juce::ModifierKeys::getCurrentModifiersRealtime().isAnyModifierKeyDown();
+    const bool space = fg && juce::KeyPress::isKeyCurrentlyDown (juce::KeyPress::spaceKey);
+    const bool r = fg && juce::KeyPress::isKeyCurrentlyDown ('R');
+    if (! space) spaceHeldAfterStop = false;
+    const bool spacePressed = space && ! spaceWasDown, rPressed = r && ! rWasDown;
+    spaceWasDown = space; rWasDown = r;
+    if ((! spacePressed && ! rPressed) || mods || typingInTextBox()) return;
+    if (juce::TopLevelWindow::getActiveTopLevelWindow() == nullptr) return;     // a Windows dialog of its own (a file chooser ...) is in front: typing there is typing
+    if (spacePressed && engine.isRecording())
+    {
+        spaceHeldAfterStop = true;                           // (the windows' own Space handlers see this and do nothing with the same press)
+        toggleRecord (juce::Uuid::null());
+        return;
+    }
+    if (rPressed && ! engine.isRecording() && ! rKeyHasOwnJobHere())
+    {
+        auto id = lastTakeWindowId ? lastTakeWindowId() : juce::Uuid::null();     // the take window in front, or the one that was in front last
+        if (project.findTakeWindow (id) == nullptr) id = recordTarget;
+        if (project.findTakeWindow (id) == nullptr) id = project.takeWindows.empty() ? juce::Uuid::null() : project.takeWindows.front()->id;
+        if (id.isNull()) { setNotice ("Make a take window first (Takes menu), then R records from any window."); return; }
+        toggleRecord (id);
+    }
+}
+
 void AppContext::toggleRecord (const juce::Uuid& takeWindowId)
 {
     if (engine.isRecording())
@@ -748,7 +839,7 @@ static constexpr double kOpenEndSeconds = 6.0 * 3600.0;
 
 static juce::String beginSession (AppContext& app, std::vector<PlaySegment> segs, juce::int64 start, juce::int64 end, double rate,
                                   std::shared_ptr<AutomationPlan> automation = nullptr, bool loop = false, bool allowEmpty = false,
-                                  const juce::Uuid& editId = juce::Uuid::null())
+                                  const juce::Uuid& editId = juce::Uuid::null(), juce::int64 continueTo = -1)
 {
     if (segs.empty() && ! allowEmpty) return "There is nothing to play here";
     if (end <= start) return "Nothing to play (empty range)";
@@ -758,27 +849,29 @@ static juce::String beginSession (AppContext& app, std::vector<PlaySegment> segs
     session->automation = std::move (automation);
     session->editId = editId;                                  // an Edit plays through its own mixer
     session->setLooping (loop);
+    if (continueTo > end) session->setContinueTo (continueTo);              // a loop let go of carries on to there (see PlaybackSession::releaseLoop)
     return app.engine.startPlayback (std::move (session));
 }
 
 /** Playing from the middle of something (or to a mark) would start and stop the sound abruptly: a 1 ms fade in at the start and out at the end of what is played. */
-static void transportFades (std::vector<PlaySegment>& segs, juce::int64 a, juce::int64 b, double rate)
+static void transportFades (std::vector<PlaySegment>& segs, juce::int64 a, juce::int64 b, double rate, bool fadeEnd = true)
 {
     const auto len = (juce::int64) std::llround (0.001 * rate);                   // (always 1 ms: just enough to avoid a click when starting / stopping)
     if (len <= 0) return;
     for (auto& s : segs)
     {
         if (s.begin < a && s.end > a && (s.fadeInLen == 0 || s.fadeInStart + s.fadeInLen <= a)) { s.fadeInStart = a; s.fadeInLen = len; }
-        if (s.end > b && s.begin < b && b - len > a && (s.fadeOutLen == 0 || s.fadeOutStart >= b - len)) { s.fadeOutStart = b - len; s.fadeOutLen = len; }
+        if (fadeEnd && s.end > b && s.begin < b && b - len > a && (s.fadeOutLen == 0 || s.fadeOutStart >= b - len)) { s.fadeOutStart = b - len; s.fadeOutLen = len; }
     }
 }
 
-juce::String AppContext::playTakeWindow (const juce::Uuid& windowId, double fromSec)
+juce::String AppContext::playTakeWindow (const juce::Uuid& windowId, double fromSec, double loopToSec, const juce::Uuid& rateOfTake)
 {
     auto* w = project.findTakeWindow (windowId);
     if (w == nullptr) return "That take window no longer exists";
     double rate = engine.getSampleRate();
     for (auto& g : w->groups) if (g.sampleRate > 0.0) { rate = g.sampleRate; break; }
+    if (auto* lg = w->findGroup (rateOfTake); lg != nullptr && lg->sampleRate > 0.0) rate = lg->sampleRate;     // (a loop plays at the rate of its own take)
     if (rate <= 0.0) rate = 48000.0;
     std::vector<PlaySegment> segs;
     for (auto& g : w->groups)
@@ -787,10 +880,13 @@ juce::String AppContext::playTakeWindow (const juce::Uuid& windowId, double from
         for (auto s : segmentsForTake (project, g, (juce::int64) std::llround (g.startSeconds * rate))) segs.push_back (std::move (s));
     }
     const juce::int64 a = (juce::int64) std::llround (juce::jmax (0.0, fromSec) * rate);
-    const juce::int64 b = a + (juce::int64) std::llround (kOpenEndSeconds * rate);
-    transportFades (segs, a, b, rate);
-    auto err = beginSession (*this, std::move (segs), a, b, rate, nullptr, false, true);
-    if (err.isEmpty()) { playInfo = {}; playInfo.kind = PlayInfo::Kind::Take; playInfo.windowId = windowId; playInfo.startSeconds = (double) a / rate; playInfo.windowTimeline = true; }
+    const juce::int64 open = a + (juce::int64) std::llround (kOpenEndSeconds * rate);
+    const bool loop = loopToSec > fromSec;
+    const juce::int64 b = loop ? juce::jmax (a + 1, (juce::int64) std::llround (loopToSec * rate)) : open;
+    transportFades (segs, a, b, rate, ! loop);                            // (a loop's end is faded by the session, so it can be let go of)
+    auto err = beginSession (*this, std::move (segs), a, b, rate, nullptr, loop, true, juce::Uuid::null(), loop ? open : -1);
+    if (err.isEmpty()) { playInfo = {}; playInfo.kind = PlayInfo::Kind::Take; playInfo.windowId = windowId; playInfo.startSeconds = (double) a / rate; playInfo.windowTimeline = true;
+                         playInfo.loopLen = loop ? (double) (b - a) / rate : 0.0; }
     return err;
 }
 
@@ -809,7 +905,7 @@ juce::String AppContext::playTake (const juce::Uuid& windowId, const juce::Uuid&
     return err;
 }
 
-juce::String AppContext::playEdit (const juce::Uuid& editId, double fromSec, double toSec, bool loop)
+juce::String AppContext::playEdit (const juce::Uuid& editId, double fromSec, double toSec, bool loop, bool goOnAfterLoop)
 {
     auto* e = project.findEdit (editId);
     if (e == nullptr) return "That edit no longer exists";
@@ -819,10 +915,12 @@ juce::String AppContext::playEdit (const juce::Uuid& editId, double fromSec, dou
     const juce::int64 a = juce::jmax ((juce::int64) 0, (juce::int64) std::llround (fromSec * rate));
     const juce::int64 b = toSec < 0 ? a + (juce::int64) std::llround (kOpenEndSeconds * rate) : juce::jmax (a, (juce::int64) std::llround (toSec * rate));
     auto segs = segmentsForEdit (project, *e);
-    transportFades (segs, a, b, rate);
-    project.resolveAllAutomation();
     loop = loop && toSec >= 0 && b > a;
-    auto err = beginSession (*this, std::move (segs), a, b, rate, automationPlanFor (project, *e), loop, true, editId);
+    const bool goOn = loop && goOnAfterLoop;
+    transportFades (segs, a, b, rate, ! goOn);                            // (a loop that may be let go of has its end faded by the session)
+    project.resolveAllAutomation();
+    auto err = beginSession (*this, std::move (segs), a, b, rate, automationPlanFor (project, *e), loop, true, editId,
+                             goOn ? a + (juce::int64) std::llround (kOpenEndSeconds * rate) : -1);
     if (err.isEmpty()) { playInfo = { PlayInfo::Kind::Edit, e->windowId, editId, (double) a / rate }; playInfo.loopLen = loop ? (double) (b - a) / rate : 0.0; }
     return err;
 }
@@ -882,7 +980,7 @@ juce::String AppContext::playRenders (const std::vector<RenderPlayItem>& items, 
         if (rate <= 0.0) rate = it.rate; else if (std::abs (it.rate - rate) > 0.5) continue;               // another sample rate cannot be played together with these
         const juce::int64 D = (juce::int64) std::llround (it.startSeconds * rate);
         PlaySegment s;
-        s.trackIndex = 0; s.file = it.file; s.srcOffset = -D; s.begin = D; s.end = D + it.frames;
+        s.trackIndex = 0; s.file = it.file; s.srcOffset = -D; s.begin = D; s.end = D + it.frames; s.rate = it.rate;
         segs.push_back (std::move (s));
         endAll = juce::jmax (endAll, D + it.frames);
     }
@@ -1000,6 +1098,7 @@ void AppContext::stopPlayback()
     }
     engine.stopPlayback();
     playInfo = {};
+    freeRetiredMixersSoon();                           // (mixers retired while it played waited for this)
     if (savesHeldWhilePlaying > 0)                     // a save waited while it played: do it now
     {
         savesHeldWhilePlaying = 0;
@@ -1017,14 +1116,12 @@ double AppContext::playheadSeconds() const
 double AppContext::playheadSecondsSmooth() const
 {
     if (! engine.isPlaying() || playInfo.kind == PlayInfo::Kind::None) return -1.0;
-    const double played = engine.playbackSecondsSmooth();
-    return playInfo.startSeconds + (playInfo.loopLen > 0.0 ? std::fmod (played, playInfo.loopLen) : played);
+    return playInfo.startSeconds + engine.playbackTimelineSeconds (true);       // (round a loop; straight on once the loop is let go of)
 }
 
 double AppContext::playedSeconds() const
 {
-    const double played = engine.playbackSeconds();
-    return playInfo.loopLen > 0.0 ? std::fmod (played, playInfo.loopLen) : played;      // in a loop the playhead goes round and round
+    return engine.playbackTimelineSeconds (false);       // in a loop the playhead goes round and round; once the loop is let go of it goes straight on
 }
 
 juce::String AppContext::copyMarkedToEdit (const juce::Uuid& windowId, bool atEditPlayhead, juce::Uuid* editIdOut)

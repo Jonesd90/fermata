@@ -1,4 +1,5 @@
 #include "Project.h"
+#include "FileSync.h"
 #include "WavRepair.h"
 #include <algorithm>
 #include <cstring>
@@ -52,6 +53,63 @@ void feedbackFromVar (const var& v, std::vector<FeedbackNote>& list)
         }
 }
 void put (var& o, const char* k, const var& v) { o.getDynamicObject()->setProperty (k, v); }
+void put (var& o, const juce::Identifier& k, const var& v) { o.getDynamicObject()->setProperty (k, v); }
+
+// The keys of the takes and pieces, made once: looking a key up by text goes through JUCE's locked string pool every time (a project with 100,000
+// recordings read a million of them: a tenth of a second of opening time).
+namespace key
+{
+static const juce::Identifier k_id ("id");
+static const juce::Identifier k_number ("number");
+static const juce::Identifier k_label ("label");
+static const juce::Identifier k_start ("start");
+static const juce::Identifier k_length ("length");
+static const juce::Identifier k_rate ("rate");
+static const juce::Identifier k_time ("time");
+static const juce::Identifier k_fadeIn ("fadeIn");
+static const juce::Identifier k_fadeOut ("fadeOut");
+static const juce::Identifier k_dud ("dud");
+static const juce::Identifier k_verified ("verified");
+static const juce::Identifier k_barIn ("barIn");
+static const juce::Identifier k_barOut ("barOut");
+static const juce::Identifier k_overruns ("overruns");
+static const juce::Identifier k_lost ("lost");
+static const juce::Identifier k_writeFailed ("writeFailed");
+static const juce::Identifier k_files ("files");
+static const juce::Identifier k_track ("track");
+static const juce::Identifier k_trackName ("trackName");
+static const juce::Identifier k_file ("file");
+static const juce::Identifier k_rel ("rel");
+static const juce::Identifier k_channels ("channels");
+static const juce::Identifier k_orig ("orig");
+static const juce::Identifier k_orig2 ("orig2");
+static const juce::Identifier k_waiting ("waiting");
+static const juce::Identifier k_window ("window");
+static const juce::Identifier k_take ("take");
+static const juce::Identifier k_takeName ("takeName");
+static const juce::Identifier k_in ("in");
+static const juce::Identifier k_out ("out");
+static const juce::Identifier k_sourceLength ("sourceLength");
+static const juce::Identifier k_curve ("curve");
+static const juce::Identifier k_outCurve ("outCurve");
+static const juce::Identifier k_fixIn ("fixIn");
+static const juce::Identifier k_fixOut ("fixOut");
+static const juce::Identifier k_normaliseIn ("normaliseIn");
+static const juce::Identifier k_inStart ("inStart");
+static const juce::Identifier k_inEnd ("inEnd");
+static const juce::Identifier k_outStart ("outStart");
+static const juce::Identifier k_outEnd ("outEnd");
+static const juce::Identifier k_fileStart ("fileStart");
+static const juce::Identifier k_gains ("gains");
+static const juce::Identifier k_at ("at");
+static const juce::Identifier k_ramp ("ramp");
+static const juce::Identifier k_autoNorm ("autoNorm");
+static const juce::Identifier k_db ("db");
+}
+
+/** Runs fn (0 .. n-1). (It was tried on several threads: JUCE's JSON keys all go through one locked string pool, so parsing or reading vars on
+    two threads at once took three times as long as on one. Kept as one place to try again should that change.) */
+template <typename F> void parallelFor (int n, F&& fn) { for (int i = 0; i < n; ++i) fn (i); }
 
 /** True while a quick (automatic) save writes the project: the plug-ins may hand over a cached state. */
 thread_local bool quickPluginState = false;
@@ -225,6 +283,7 @@ Project::Project() { createDefaultDesign(); }
 void Project::createDefaultDesign()
 {
     inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); preampDevices.clear();
+    windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear(); oldWindowFiles.clear();     // (nothing of the project that was open before: its missing files are not this one's)
     setInputCount (8);
     setOutputCount (4);
     addMixer ("Processing mixer");
@@ -864,22 +923,22 @@ static var waitingToVar (const WaitingPiece& w, const juce::File& base)
     var o = obj();
     put (o, "name", w.name); put (o, "from", (juce::int64) w.from); put (o, "to", (juce::int64) w.to);
     juce::Array<var> fs;
-    for (auto& f : w.files) { var fo = obj(); putFilePath (fo, f, base); put (fo, "channels", 1); fs.add (fo); }      // ("channels" marks it as an audio file for the project copy)
+    for (auto& f : w.files) { var fo = obj(); putFilePath (fo, f, base); put (fo, key::k_channels, 1); fs.add (fo); }      // ("channels" marks it as an audio file for the project copy)
     put (o, "files", fs);
     if (! w.tracks.empty()) { juce::Array<var> ts; for (auto& t : w.tracks) ts.add (t.toString()); put (o, "tracks", ts); }
     return o;
 }
 /** The file for a saved path: inside the project folder it is found from the relative path (so a moved or copied project uses its OWN files). */
-static juce::File getFilePath (const var& fv, const juce::File& base)
+static juce::File getFilePath (const var& fv, const juce::File& base, bool* moved = nullptr)
 {
-    const auto rel = fv["rel"].toString();
+    const auto rel = fv[key::k_rel].toString();
     if (rel.isNotEmpty() && base != juce::File())
     {
         auto f = base.getChildFile (rel);
-        if (f.getFullPathName() == fv["file"].toString()) return f;      // the project is still where it was saved: no need to ask the disk (thousands of files)
-        if (f.existsAsFile()) return f;
+        if (f.getFullPathName() == fv[key::k_file].toString()) return f;      // the project is still where it was saved: no need to ask the disk (thousands of files)
+        if (f.existsAsFile()) { if (moved != nullptr) *moved = true; return f; }
     }
-    return juce::File (fv["file"].toString());
+    return juce::File (fv[key::k_file].toString());
 }
 
 static WaitingPiece waitingFromVar (const var& o, const juce::File& base)
@@ -937,32 +996,32 @@ var Project::editToVar (const EditDef& eref) const
     auto regionToVar = [this] (const EditRegion& r)
     {
         var ro = obj();
-        put (ro, "id", r.id.toString()); put (ro, "window", r.windowId.toString()); put (ro, "take", r.takeId.toString());
-        put (ro, "takeName", r.takeName); put (ro, "in", (juce::int64) r.srcIn); put (ro, "out", (juce::int64) r.srcOut);
-        put (ro, "start", (juce::int64) r.startSample); put (ro, "sourceLength", (juce::int64) r.sourceLength); put (ro, "barIn", r.barIn); put (ro, "barOut", r.barOut);
-        put (ro, "rate", r.sampleRate); put (ro, "curve", (int) r.curve); if (r.outCurveOwn) put (ro, "outCurve", (int) r.outCurve); if (r.fixIn) put (ro, "fixIn", true); if (r.fixOut) put (ro, "fixOut", true); if (r.normaliseIn) put (ro, "normaliseIn", true);
-        put (ro, "inStart", r.inStart); put (ro, "inEnd", r.inEnd); put (ro, "outStart", r.outStart); put (ro, "outEnd", r.outEnd);
+        put (ro, key::k_id, r.id.toString()); put (ro, key::k_window, r.windowId.toString()); put (ro, key::k_take, r.takeId.toString());
+        put (ro, key::k_takeName, r.takeName); put (ro, key::k_in, (juce::int64) r.srcIn); put (ro, key::k_out, (juce::int64) r.srcOut);
+        put (ro, key::k_start, (juce::int64) r.startSample); put (ro, key::k_sourceLength, (juce::int64) r.sourceLength); put (ro, key::k_barIn, r.barIn); put (ro, key::k_barOut, r.barOut);
+        put (ro, key::k_rate, r.sampleRate); put (ro, key::k_curve, (int) r.curve); if (r.outCurveOwn) put (ro, key::k_outCurve, (int) r.outCurve); if (r.fixIn) put (ro, key::k_fixIn, true); if (r.fixOut) put (ro, key::k_fixOut, true); if (r.normaliseIn) put (ro, key::k_normaliseIn, true);
+        put (ro, key::k_inStart, r.inStart); put (ro, key::k_inEnd, r.inEnd); put (ro, key::k_outStart, r.outStart); put (ro, key::k_outEnd, r.outEnd);
         juce::Array<var> rf;
         for (auto& f : r.files)
         {
             var fo = obj();
-            put (fo, "track", f.trackId.toString()); put (fo, "trackName", f.trackName);
-            putFilePath (fo, f.file, projectFile.getParentDirectory()); put (fo, "channels", f.numChannels);
-            if (f.fileStart != 0) put (fo, "fileStart", (juce::int64) f.fileStart);
+            put (fo, key::k_track, f.trackId.toString()); put (fo, key::k_trackName, f.trackName);
+            putFilePath (fo, f.file, projectFile.getParentDirectory()); put (fo, key::k_channels, f.numChannels);
+            if (f.fileStart != 0) put (fo, key::k_fileStart, (juce::int64) f.fileStart);
             rf.add (fo);
         }
-        put (ro, "files", rf);
-        if (r.waiting.active()) put (ro, "waiting", waitingToVar (r.waiting, projectFile.getParentDirectory()));
+        put (ro, key::k_files, rf);
+        if (r.waiting.active()) put (ro, key::k_waiting, waitingToVar (r.waiting, projectFile.getParentDirectory()));
         juce::Array<var> gs;
         for (auto& g : r.gains)
         {
             var go = obj();
-            put (go, "at", (juce::int64) g.at); put (go, "ramp", g.ramp); if (g.autoNorm) put (go, "autoNorm", true);
+            put (go, key::k_at, (juce::int64) g.at); put (go, key::k_ramp, g.ramp); if (g.autoNorm) put (go, key::k_autoNorm, true);
             juce::Array<var> dbs; for (float d : g.db) dbs.add ((double) d);
-            put (go, "db", dbs);
+            put (go, key::k_db, dbs);
             gs.add (go);
         }
-        put (ro, "gains", gs);
+        put (ro, key::k_gains, gs);
         return ro;
     };
     juce::Array<var> rs, ods;
@@ -999,7 +1058,53 @@ var Project::editToVar (const EditDef& eref) const
     return o;
 }
 
-var Project::toVar (bool editorialOnly) const
+var Project::takeWindowToVar (const TakeWindowDef& w) const
+{
+    var o = obj();
+    put (o, "id", w.id.toString()); put (o, "name", w.name); put (o, "defaultLabel", w.defaultLabel);
+    put (o, "nextNumber", w.nextNumber);
+    put (o, "targetEdit", w.targetEdit.toString());
+    put (o, "editTake", w.editTake.toString()); put (o, "editIn", w.editIn); put (o, "editOut", w.editOut); put (o, "overdub", w.overdub);
+    if (! w.editTracks.empty()) { juce::Array<var> et; for (auto& t : w.editTracks) et.add (t.toString()); put (o, "editTracks", et); }       // Alt + drag: the marked tracks
+    put (o, "cursorTake", w.cursorTake.toString()); put (o, "cursorSeconds", w.cursorSeconds); put (o, "playhead", w.playheadSeconds);
+    { juce::Array<var> hid; for (auto& h : w.hiddenTracks) hid.add (h.toString()); put (o, "hiddenTracks", hid); }
+    if (w.showLtc) put (o, "showLtc", true);
+    if (! w.markers.empty()) put (o, "markers", markersToVar (w.markers));
+    if (! w.showMarkers) put (o, "showMarkers", false);
+    juce::Array<var> gs;
+    for (auto& g : w.groups)
+    {
+        var go = obj();
+        put (go, key::k_id, g.id.toString()); put (go, key::k_number, g.number); put (go, key::k_label, g.label);
+        put (go, key::k_start, g.startSeconds); put (go, key::k_length, (juce::int64) g.lengthSamples);
+        put (go, key::k_rate, g.sampleRate); put (go, key::k_time, g.recordedAt.toMilliseconds());
+        put (go, key::k_fadeIn, g.fadeInSeconds); put (go, key::k_fadeOut, g.fadeOutSeconds); put (go, key::k_dud, g.dud); put (go, key::k_barIn, g.barIn); put (go, key::k_barOut, g.barOut);
+        if (g.verified) put (go, key::k_verified, true);
+        if (g.overruns > 0) { put (go, key::k_overruns, g.overruns); put (go, key::k_lost, (juce::int64) g.lostSamples); }
+        if (g.writeFailed) put (go, key::k_writeFailed, true);
+        juce::Array<var> fs;
+        for (auto& f : g.files)
+        {
+            var fo = obj();
+            put (fo, key::k_track, f.trackId.toString()); put (fo, key::k_trackName, f.trackName);
+            putFilePath (fo, f.file, projectFile.getParentDirectory()); put (fo, key::k_channels, f.numChannels);
+            if (f.sourceName.isNotEmpty()) put (fo, key::k_orig, f.sourceName);
+            if (f.sourceName2.isNotEmpty()) put (fo, key::k_orig2, f.sourceName2);
+            fs.add (fo);
+        }
+        put (go, key::k_files, fs);
+        if (! g.waiting.empty())
+        {
+            juce::Array<var> ws; for (auto& wp : g.waiting) ws.add (waitingToVar (wp, projectFile.getParentDirectory()));
+            put (go, key::k_waiting, ws);
+        }
+        gs.add (go);
+    }
+    put (o, "groups", gs);
+    return o;
+}
+
+var Project::toVar (bool editorialOnly, bool withWindows) const
 {
     var root = obj();
     put (root, "format", "Fermata project");
@@ -1069,58 +1174,19 @@ var Project::toVar (bool editorialOnly) const
     put (root, "mixers", mx);
     }
 
-    juce::Array<var> tw;
-    for (auto& w : takeWindows)
-    {
-        var o = obj();
-        put (o, "id", w->id.toString()); put (o, "name", w->name); put (o, "defaultLabel", w->defaultLabel);
-        put (o, "nextNumber", w->nextNumber);
-        put (o, "targetEdit", w->targetEdit.toString());
-        put (o, "editTake", w->editTake.toString()); put (o, "editIn", w->editIn); put (o, "editOut", w->editOut); put (o, "overdub", w->overdub);
-        if (! w->editTracks.empty()) { juce::Array<var> et; for (auto& t : w->editTracks) et.add (t.toString()); put (o, "editTracks", et); }       // Alt + drag: the marked tracks
-        put (o, "cursorTake", w->cursorTake.toString()); put (o, "cursorSeconds", w->cursorSeconds); put (o, "playhead", w->playheadSeconds);
-        { juce::Array<var> hid; for (auto& h : w->hiddenTracks) hid.add (h.toString()); put (o, "hiddenTracks", hid); }
-        if (w->showLtc) put (o, "showLtc", true);
-        if (! w->markers.empty()) put (o, "markers", markersToVar (w->markers));
-        if (! w->showMarkers) put (o, "showMarkers", false);
-        juce::Array<var> gs;
-        for (auto& g : w->groups)
-        {
-            var go = obj();
-            put (go, "id", g.id.toString()); put (go, "number", g.number); put (go, "label", g.label);
-            put (go, "start", g.startSeconds); put (go, "length", (juce::int64) g.lengthSamples);
-            put (go, "rate", g.sampleRate); put (go, "time", g.recordedAt.toMilliseconds());
-            put (go, "fadeIn", g.fadeInSeconds); put (go, "fadeOut", g.fadeOutSeconds); put (go, "dud", g.dud); put (go, "barIn", g.barIn); put (go, "barOut", g.barOut);
-            if (g.overruns > 0) { put (go, "overruns", g.overruns); put (go, "lost", (juce::int64) g.lostSamples); }
-            if (g.writeFailed) put (go, "writeFailed", true);
-            juce::Array<var> fs;
-            for (auto& f : g.files)
-            {
-                var fo = obj();
-                put (fo, "track", f.trackId.toString()); put (fo, "trackName", f.trackName);
-                putFilePath (fo, f.file, projectFile.getParentDirectory()); put (fo, "channels", f.numChannels);
-                if (f.sourceName.isNotEmpty()) put (fo, "orig", f.sourceName);
-                if (f.sourceName2.isNotEmpty()) put (fo, "orig2", f.sourceName2);
-                fs.add (fo);
-            }
-            put (go, "files", fs);
-            if (! g.waiting.empty())
-            {
-                juce::Array<var> ws; for (auto& w : g.waiting) ws.add (waitingToVar (w, projectFile.getParentDirectory()));
-                put (go, "waiting", ws);
-            }
-            gs.add (go);
-        }
-        put (o, "groups", gs);
-        tw.add (o);
-    }
-    put (root, "takeWindows", tw);
+    if (withWindows) addWindowsToVar (root);
+    put (root, "mastering", mastering.toVar());
+    return root;
+}
 
+void Project::addWindowsToVar (var& root) const
+{
+    juce::Array<var> tw;
+    for (auto& w : takeWindows) tw.add (takeWindowToVar (*w));
+    put (root, "takeWindows", tw);
     juce::Array<var> eds;
     for (auto& e : edits) eds.add (editToVar (*e));
     put (root, "edits", eds);
-    put (root, "mastering", mastering.toVar());
-    return root;
 }
 
 bool Project::fromVar (const var& root)
@@ -1129,6 +1195,7 @@ bool Project::fromVar (const var& root)
         return false;
 
     inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); preampDevices.clear();
+    filesMoved = false;
     name = root.getProperty ("name", "Untitled").toString();
     windowBounds.clear();
     if (auto* wb = root["windowBounds"].getDynamicObject())
@@ -1219,9 +1286,10 @@ bool Project::fromVar (const var& root)
             mixers.push_back (std::move (m));
         }
 
-    if (auto* a = root["takeWindows"].getArray())
-        for (auto& v : *a)
-        {
+    // The take windows and the edits are built from their vars one by one (makeTakeWindow / makeEdit read only 'base', nothing of the project).
+    const auto base = loadBase();
+    auto makeTakeWindow = [&base] (const var& v, bool& moved)
+    {
             auto w = std::make_unique<TakeWindowDef>();
             w->id = juce::Uuid (v["id"].toString()); w->name = v["name"].toString();
             w->defaultLabel = v["defaultLabel"].toString(); w->nextNumber = (int) v["nextNumber"];
@@ -1238,61 +1306,66 @@ bool Project::fromVar (const var& root)
                 for (auto& gv : *gs)
                 {
                     TakeGroup g;
-                    g.id = juce::Uuid (gv["id"].toString()); g.number = (int) gv["number"]; g.label = gv["label"].toString();
-                    g.startSeconds = (double) gv["start"]; g.lengthSamples = (juce::int64) gv["length"];
-                    g.sampleRate = (double) gv["rate"]; g.recordedAt = juce::Time ((juce::int64) gv["time"]);
-                    if (gv.hasProperty ("fadeIn"))  g.fadeInSeconds  = juce::jmax (0.0, (double) gv["fadeIn"]);
+                    g.id = juce::Uuid (gv[key::k_id].toString()); g.number = (int) gv[key::k_number]; g.label = gv[key::k_label].toString();
+                    g.startSeconds = (double) gv[key::k_start]; g.lengthSamples = (juce::int64) gv[key::k_length];
+                    g.sampleRate = (double) gv[key::k_rate]; g.recordedAt = juce::Time ((juce::int64) gv[key::k_time]);
+                    if (gv.hasProperty (key::k_fadeIn))  g.fadeInSeconds  = juce::jmax (0.0, (double) gv[key::k_fadeIn]);
                     if (g.fadeInSeconds <= 0.0011 && g.fadeInSeconds > 0.0) g.fadeInSeconds = kDefaultEdgeFade;       // the old 1 ms default becomes the new one
-                    if (gv.hasProperty ("fadeOut")) g.fadeOutSeconds = juce::jmax (0.0, (double) gv["fadeOut"]);
+                    if (gv.hasProperty (key::k_fadeOut)) g.fadeOutSeconds = juce::jmax (0.0, (double) gv[key::k_fadeOut]);
                     if (g.fadeOutSeconds <= 0.0011 && g.fadeOutSeconds > 0.0) g.fadeOutSeconds = kDefaultEdgeFade;
-                    g.dud = (bool) gv["dud"]; g.barIn = juce::jmax (0, (int) gv["barIn"]); g.barOut = juce::jmax (0, (int) gv["barOut"]);
-                    g.overruns = juce::jmax (0, (int) gv["overruns"]); g.lostSamples = juce::jmax<juce::int64> (0, (juce::int64) gv["lost"]); g.writeFailed = (bool) gv["writeFailed"];
-                    if (auto* fs = gv["files"].getArray())
+                    g.dud = (bool) gv[key::k_dud]; g.verified = (bool) gv[key::k_verified]; g.barIn = juce::jmax (0, (int) gv[key::k_barIn]); g.barOut = juce::jmax (0, (int) gv[key::k_barOut]);
+                    g.overruns = juce::jmax (0, (int) gv[key::k_overruns]); g.lostSamples = juce::jmax<juce::int64> (0, (juce::int64) gv[key::k_lost]); g.writeFailed = (bool) gv[key::k_writeFailed];
+                    if (auto* fs = gv[key::k_files].getArray())
                         for (auto& fv : *fs)
                         {
-                            TakeFile f; f.trackId = juce::Uuid (fv["track"].toString()); f.trackName = fv["trackName"].toString();
-                            f.file = getFilePath (fv, loadBase()); f.numChannels = (int) fv["channels"]; f.sourceName = fv["orig"].toString(); f.sourceName2 = fv["orig2"].toString();
+                            TakeFile f; f.trackId = juce::Uuid (fv[key::k_track].toString()); f.trackName = fv[key::k_trackName].toString();
+                            f.file = getFilePath (fv, base, &moved); f.numChannels = (int) fv[key::k_channels]; f.sourceName = fv[key::k_orig].toString(); f.sourceName2 = fv[key::k_orig2].toString();
                             g.files.push_back (f);
                         }
-                    if (auto* ws = gv["waiting"].getArray()) for (auto& wv : *ws) g.waiting.push_back (waitingFromVar (wv, loadBase()));
+                    if (auto* ws = gv[key::k_waiting].getArray()) for (auto& wv : *ws) g.waiting.push_back (waitingFromVar (wv, base));
                     w->groups.push_back (std::move (g));
                 }
-            takeWindows.push_back (std::move (w));
-        }
+            return w;
+    };
+    if (auto* a = root["takeWindows"].getArray())
+    {
+        std::vector<std::unique_ptr<TakeWindowDef>> made ((size_t) a->size()); std::vector<char> moved ((size_t) a->size(), 0);
+        parallelFor (a->size(), [&] (int i) { bool m = false; made[(size_t) i] = makeTakeWindow (a->getReference (i), m); moved[(size_t) i] = m ? 1 : 0; });
+        for (size_t i = 0; i < made.size(); ++i) { takeWindows.push_back (std::move (made[i])); if (moved[i]) filesMoved = true; }
+    }
 
-    if (auto* a = root["edits"].getArray())
-        for (auto& v : *a)
-        {
+    auto makeEdit = [&base] (const var& v)
+    {
             auto e = std::make_unique<EditDef>();
             e->id = juce::Uuid (v["id"].toString()); e->name = v["name"].toString(); e->windowId = juce::Uuid (v["window"].toString());
             e->sampleRate = (double) v["rate"]; e->insertIndex = (int) v["insertIndex"];
             if (v.hasProperty ("fixIn")) { e->fixIn = (double) v["fixIn"]; e->fixOut = (double) v["fixOut"]; }
             if (auto* ft = v["fixTracks"].getArray()) for (auto& t : *ft) e->fixTracks.push_back (juce::Uuid (t.toString()));
-            auto regionFromVar = [this] (const var& rv)
+            auto regionFromVar = [&base] (const var& rv)
             {
                 EditRegion r;
-                r.id = juce::Uuid (rv["id"].toString()); r.windowId = juce::Uuid (rv["window"].toString()); r.takeId = juce::Uuid (rv["take"].toString());
-                r.takeName = rv["takeName"].toString(); r.srcIn = (juce::int64) rv["in"]; r.srcOut = (juce::int64) rv["out"];
-                r.startSample = (juce::int64) rv["start"]; r.sourceLength = (juce::int64) rv["sourceLength"];
-                r.barIn = juce::jmax (0, (int) rv["barIn"]); r.barOut = juce::jmax (0, (int) rv["barOut"]);
-                r.sampleRate = (double) rv["rate"]; r.curve = (FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv["curve"]);
-                r.fixIn = (bool) rv["fixIn"]; r.fixOut = (bool) rv["fixOut"]; r.normaliseIn = (bool) rv["normaliseIn"];
-                if (rv.hasProperty ("outCurve")) r.setOutCurve ((FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv["outCurve"]));
-                r.inStart = (double) rv["inStart"]; r.inEnd = (double) rv["inEnd"]; r.outStart = (double) rv["outStart"]; r.outEnd = (double) rv["outEnd"];
-                if (auto* fs = rv["files"].getArray())
+                r.id = juce::Uuid (rv[key::k_id].toString()); r.windowId = juce::Uuid (rv[key::k_window].toString()); r.takeId = juce::Uuid (rv[key::k_take].toString());
+                r.takeName = rv[key::k_takeName].toString(); r.srcIn = (juce::int64) rv[key::k_in]; r.srcOut = (juce::int64) rv[key::k_out];
+                r.startSample = (juce::int64) rv[key::k_start]; r.sourceLength = (juce::int64) rv[key::k_sourceLength];
+                r.barIn = juce::jmax (0, (int) rv[key::k_barIn]); r.barOut = juce::jmax (0, (int) rv[key::k_barOut]);
+                r.sampleRate = (double) rv[key::k_rate]; r.curve = (FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv[key::k_curve]);
+                r.fixIn = (bool) rv[key::k_fixIn]; r.fixOut = (bool) rv[key::k_fixOut]; r.normaliseIn = (bool) rv[key::k_normaliseIn];
+                if (rv.hasProperty (key::k_outCurve)) r.setOutCurve ((FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv[key::k_outCurve]));
+                r.inStart = (double) rv[key::k_inStart]; r.inEnd = (double) rv[key::k_inEnd]; r.outStart = (double) rv[key::k_outStart]; r.outEnd = (double) rv[key::k_outEnd];
+                if (auto* fs = rv[key::k_files].getArray())
                     for (auto& fv : *fs)
                     {
-                        RegionFile f; f.trackId = juce::Uuid (fv["track"].toString()); f.trackName = fv["trackName"].toString();
-                        f.file = getFilePath (fv, loadBase()); f.numChannels = (int) fv["channels"];
-                        f.fileStart = (juce::int64) fv["fileStart"];
+                        RegionFile f; f.trackId = juce::Uuid (fv[key::k_track].toString()); f.trackName = fv[key::k_trackName].toString();
+                        f.file = getFilePath (fv, base); f.numChannels = (int) fv[key::k_channels];
+                        f.fileStart = (juce::int64) fv[key::k_fileStart];
                         r.files.push_back (f);
                     }
-                if (rv.hasProperty ("waiting")) r.waiting = waitingFromVar (rv["waiting"], loadBase());
-                if (auto* gs = rv["gains"].getArray())
+                if (rv.hasProperty (key::k_waiting)) r.waiting = waitingFromVar (rv[key::k_waiting], base);
+                if (auto* gs = rv[key::k_gains].getArray())
                     for (auto& gv : *gs)
                     {
-                        GainChange g; g.at = (juce::int64) gv["at"]; g.ramp = (double) gv["ramp"]; g.autoNorm = (bool) gv["autoNorm"];
-                        if (auto* dbs = gv["db"].getArray()) for (auto& d : *dbs) g.db.push_back ((float) (double) d);
+                        GainChange g; g.at = (juce::int64) gv[key::k_at]; g.ramp = (double) gv[key::k_ramp]; g.autoNorm = (bool) gv[key::k_autoNorm];
+                        if (auto* dbs = gv[key::k_db].getArray()) for (auto& d : *dbs) g.db.push_back ((float) (double) d);
                         g.db.resize (r.files.size(), 0.0f);
                         r.gains.push_back (g);
                     }
@@ -1322,8 +1395,14 @@ bool Project::fromVar (const var& root)
             e->hardenEnds();                                    // older projects: the ends of the edit get their short fades too
             e->clampAll();
             e->commitAllJoins();                                // older projects: the edit points that were moved in the trim window get their pieces' edges moved with them (the sound does not change)
-            edits.push_back (std::move (e));
-        }
+            return e;
+    };
+    if (auto* a = root["edits"].getArray())
+    {
+        std::vector<std::unique_ptr<EditDef>> made ((size_t) a->size());
+        parallelFor (a->size(), [&] (int i) { made[(size_t) i] = makeEdit (a->getReference (i)); });
+        for (auto& e : made) edits.push_back (std::move (e));
+    }
 
     mastering.fromVar (root["mastering"]);
     mastering.sync (edits);
@@ -1336,19 +1415,156 @@ bool Project::fromVar (const var& root)
 }
 
 // ------------------------------------------------------------------------------------------------ undo
-juce::String Project::undoState() const
+namespace
 {
-    var v = toVar (true);
-    auto strip = [] (const var& o, std::initializer_list<const char*> keys)
+/** A 64-bit FNV-1a style mix over the fields the undo history looks at. Strings and paths go in by their own 64-bit hash. */
+struct UndoHasher
+{
+    juce::uint64 h = 1469598103934665603ull;
+    void mix (juce::uint64 x) noexcept { h ^= x; h *= 1099511628211ull; }
+    void add (bool b) noexcept { mix (b ? 0x9e3779b97f4a7c15ull : 0x2545f4914f6cdd1dull); }
+    void add (int i) noexcept { mix ((juce::uint64) (juce::int64) i ^ 0xa0761d6478bd642full); }
+    void add (juce::int64 i) noexcept { mix ((juce::uint64) i ^ 0xe7037ed1a0b428dbull); }
+    void add (double d) noexcept { juce::uint64 b; std::memcpy (&b, &d, sizeof b); mix (b ^ 0x8ebc6af09c88c6e3ull); }
+    void add (float f) noexcept { add ((double) f); }
+    void add (const juce::String& s) noexcept { mix ((juce::uint64) s.hashCode64()); mix ((juce::uint64) s.length() + 0x589965cc75374cc3ull); }
+    void add (const juce::Uuid& u) noexcept { juce::uint64 a, b; std::memcpy (&a, u.getRawData(), 8); std::memcpy (&b, u.getRawData() + 8, 8); mix (a); mix (b ^ 0x1d8e4e27c47d124full); }
+    void add (const juce::File& f) noexcept { add (f.getFullPathName()); }
+    void add (const juce::Time& t) noexcept { add (t.toMilliseconds()); }
+    void count (size_t n) noexcept { mix ((juce::uint64) n ^ 0xc6a4a7935bd1e995ull); }
+    void add (const WaitingPiece& w) noexcept
     {
-        if (auto* d = o.getDynamicObject()) for (auto* k : keys) d->removeProperty (juce::Identifier (k));
+        add (w.name); add (w.from); add (w.to);
+        count (w.files.size()); for (auto& f : w.files) add (f);
+        count (w.tracks.size()); for (auto& t : w.tracks) add (t);
+    }
+};
+}
+
+juce::uint64 Project::undoHash (const TakeWindowDef& w)
+{
+    UndoHasher h;
+    h.add (w.id); h.add (w.name); h.add (w.defaultLabel); h.add (w.nextNumber); h.add (w.targetEdit); h.add (w.showLtc);
+    h.count (w.groups.size());
+    for (auto& g : w.groups)
+    {
+        h.add (g.id); h.add (g.number); h.add (g.label); h.add (g.startSeconds); h.add (g.lengthSamples); h.add (g.sampleRate); h.add (g.recordedAt);
+        h.add (g.fadeInSeconds); h.add (g.fadeOutSeconds); h.add (g.dud); h.add (g.barIn); h.add (g.barOut);
+        h.add (g.overruns); h.add (g.lostSamples); h.add (g.writeFailed); h.add (g.verified);
+        h.count (g.files.size());
+        for (auto& f : g.files) { h.add (f.trackId); h.add (f.trackName); h.add (f.file); h.add (f.numChannels); h.add (f.sourceName); h.add (f.sourceName2); }
+        h.count (g.waiting.size());
+        for (auto& wp : g.waiting) h.add (wp);
+    }
+    return h.h;
+}
+
+juce::uint64 Project::undoHash (const EditDef& e)
+{
+    UndoHasher h;
+    h.add (e.id); h.add (e.name); h.add (e.windowId); h.add (e.sampleRate); h.add (e.automationOn); h.add (e.showLtc);
+    h.count (e.trackIds.size()); for (auto& t : e.trackIds) h.add (t);
+    auto region = [&h] (const EditRegion& r)
+    {
+        h.add (r.id); h.add (r.windowId); h.add (r.takeId); h.add (r.takeName); h.add (r.srcIn); h.add (r.srcOut); h.add (r.startSample); h.add (r.sourceLength);
+        h.add (r.barIn); h.add (r.barOut); h.add (r.sampleRate); h.add ((int) r.curve); h.add (r.outCurveOwn); if (r.outCurveOwn) h.add ((int) r.outCurve);
+        h.add (r.fixIn); h.add (r.fixOut); h.add (r.normaliseIn); h.add (r.inStart); h.add (r.inEnd); h.add (r.outStart); h.add (r.outEnd);
+        h.count (r.files.size());
+        for (auto& f : r.files) { h.add (f.trackId); h.add (f.trackName); h.add (f.file); h.add (f.numChannels); h.add (f.fileStart); }
+        h.add (r.waiting.active()); if (r.waiting.active()) h.add (r.waiting);
+        h.count (r.gains.size());
+        for (auto& g : r.gains) { h.add (g.at); h.add (g.ramp); h.add (g.autoNorm); h.count (g.db.size()); for (float d : g.db) h.add (d); }
     };
-    if (auto* a = v["takeWindows"].getArray())
-        for (auto& w : *a) strip (w, { "editTake", "editIn", "editOut", "editTracks", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub", "markers", "showMarkers" });
-    if (auto* a = v["edits"].getArray())
-        for (auto& e : *a) strip (e, { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex", "markers", "feedback", "showFeedback", "showMarkers" });
-    if (auto m = v["mastering"]; m.isObject()) strip (m, { "view" });
+    h.count (e.regions.size());  for (auto& r : e.regions)  region (r);
+    h.count (e.overdubs.size()); for (auto& r : e.overdubs) region (r);
+    h.count (e.lanes.size());
+    for (auto& l : e.lanes)
+    {
+        h.add (l.id); h.add (l.trackId); h.add (l.param); h.add (l.mixerId); h.add (l.locked);
+        h.count (l.pts.size());
+        for (auto& p : l.pts) { h.add (p.id); h.add (p.region); h.add (p.take); h.add (p.srcPos); h.add (p.time); h.add (p.value); h.add (p.floating); }
+    }
+    return h.h;
+}
+
+juce::uint64 Project::undoHash (const MasteringDef& m)
+{
+    var v = m.toVar();                                     // (small: a list of pieces and the disc's details; the text is the cheapest exact hash)
+    if (auto* o = v.getDynamicObject()) o->removeProperty ("view");
+    return (juce::uint64) juce::JSON::toString (v, true).hashCode64();
+}
+
+juce::uint64 Project::saveHash (const TakeWindowDef& w)
+{
+    UndoHasher h; h.mix (undoHash (w));                    // everything the history looks at, plus the view state that is saved with the window
+    h.add (w.editTake); h.add (w.editIn); h.add (w.editOut); h.count (w.editTracks.size()); for (auto& t : w.editTracks) h.add (t);
+    h.add (w.cursorTake); h.add (w.cursorSeconds); h.add (w.playheadSeconds); h.add (w.overdub); h.add (w.showMarkers);
+    h.count (w.hiddenTracks.size()); for (auto& t : w.hiddenTracks) h.add (t);
+    h.count (w.markers.size()); for (auto& m : w.markers) { h.add (m.id); h.add (m.name); h.add (m.seconds); }
+    return h.h;
+}
+
+juce::uint64 Project::saveHash (const EditDef& e)
+{
+    UndoHasher h; h.mix (undoHash (e));
+    h.add (e.fixIn); h.add (e.fixOut); h.count (e.fixTracks.size()); for (auto& t : e.fixTracks) h.add (t);
+    h.add (e.playheadSeconds); h.add (e.insertIndex); h.add (e.showFeedback); h.add (e.showMarkers);
+    h.count (e.markers.size()); for (auto& m : e.markers) { h.add (m.id); h.add (m.name); h.add (m.seconds); }
+    h.count (e.feedback.size());
+    for (auto& n : e.feedback) { h.add (n.key); h.add (n.who); h.add (n.bar); h.add (n.text); h.add (n.colour); h.add (n.source); h.add (n.seconds); h.add (n.done); }
+    return h.h;
+}
+
+namespace
+{
+void strip (const var& o, std::initializer_list<const char*> keys)
+{
+    if (auto* d = o.getDynamicObject()) for (auto* k : keys) d->removeProperty (juce::Identifier (k));
+}
+const std::initializer_list<const char*> kTakeViewKeys = { "editTake", "editIn", "editOut", "editTracks", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub", "markers", "showMarkers" };
+const std::initializer_list<const char*> kEditViewKeys = { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex", "markers", "feedback", "showFeedback", "showMarkers" };
+}
+
+juce::String Project::undoText (const TakeWindowDef& w) const
+{
+    var v = takeWindowToVar (w);                           // (one window's var, by the same code that saves it)
+    strip (v, kTakeViewKeys);
     return juce::JSON::toString (v, true);
+}
+
+juce::String Project::undoText (const EditDef& e) const
+{
+    var v = editToVar (e);
+    strip (v, kEditViewKeys);
+    return juce::JSON::toString (v, true);
+}
+
+juce::String Project::undoText (const MasteringDef& m) const
+{
+    var v = m.toVar();
+    strip (v, { "view" });
+    return juce::JSON::toString (v, true);
+}
+
+juce::String Project::undoTextOf (UndoSnap& snap) const
+{
+    if (snap.text.isEmpty())
+    {
+        if (snap.takeCopy != nullptr) snap.text = undoText (*snap.takeCopy);
+        else if (snap.editCopy != nullptr) snap.text = undoText (*snap.editCopy);
+        snap.takeCopy.reset(); snap.editCopy.reset();
+    }
+    return snap.text;
+}
+
+void Project::undoReset()
+{
+    undoStack.clear(); redoStack.clear(); undoPending = false;
+    undoTakes.clear(); undoEdits.clear();
+    // every window is copied, not serialised: a copy costs about a millisecond, the text of a big window several, and most are never needed
+    for (auto& w : takeWindows) { UndoSnap s; s.hash = undoHash (*w); s.takeCopy = std::make_shared<TakeWindowDef> (*w); undoTakes[w->id] = std::move (s); }
+    for (auto& e : edits)       { UndoSnap s; s.hash = undoHash (*e); s.editCopy = std::make_shared<EditDef> (*e); undoEdits[e->id] = std::move (s); }
+    undoMastering = { undoHash (mastering), undoText (mastering) };
 }
 
 void Project::undoTick (bool recording, bool force)
@@ -1356,54 +1572,105 @@ void Project::undoTick (bool recording, bool force)
     if (! undoPending) return;
     if (! force && juce::Time::getMillisecondCounter() - undoDirtyAt < 500) return;
     undoPending = false;
-    if (recording) { undoCurrent = {}; undoPending = true; undoDirtyAt = juce::Time::getMillisecondCounter(); return; }     // the take growing is not an undo step: look again after it stops
-    const auto now = undoState();
-    if (undoCurrent.isEmpty()) { undoCurrent = now; return; }
-    if (now == undoCurrent) return;
-    undoStack.push_back (undoCurrent);
+    if (recording) { undoPending = true; undoDirtyAt = juce::Time::getMillisecondCounter(); return; }     // the take growing is not an undo step: look again after it stops
+    UndoStep step;
+    // the take windows: a changed hash means the window is serialised again and its previous text becomes part of the step
+    std::set<juce::Uuid> seen;
+    for (auto& w : takeWindows)
+    {
+        seen.insert (w->id);
+        const auto hash = undoHash (*w);
+        auto it = undoTakes.find (w->id);
+        if (it == undoTakes.end()) { undoTakes[w->id] = { hash, undoText (*w) }; continue; }         // a new window: nothing to go back to
+        if (it->second.hash == hash) continue;
+        step.pieces.push_back ({ UndoKind::takeWindow, w->id, undoTextOf (it->second) });
+        it->second = { hash, undoText (*w) };
+    }
+    for (auto it = undoTakes.begin(); it != undoTakes.end();) it = seen.count (it->first) ? std::next (it) : undoTakes.erase (it);     // (removed windows are not undone: their files went with them)
+    seen.clear();
+    for (auto& e : edits)
+    {
+        seen.insert (e->id);
+        const auto hash = undoHash (*e);
+        auto it = undoEdits.find (e->id);
+        if (it == undoEdits.end()) { undoEdits[e->id] = { hash, undoText (*e) }; continue; }
+        if (it->second.hash == hash) continue;
+        step.pieces.push_back ({ UndoKind::edit, e->id, undoTextOf (it->second) });
+        it->second = { hash, undoText (*e) };
+    }
+    for (auto it = undoEdits.begin(); it != undoEdits.end();) it = seen.count (it->first) ? std::next (it) : undoEdits.erase (it);
+    {
+        const auto hash = undoHash (mastering);
+        if (hash != undoMastering.hash)
+        {
+            step.pieces.push_back ({ UndoKind::mastering, juce::Uuid::null(), undoMastering.text });
+            undoMastering = { hash, undoText (mastering) };
+        }
+    }
+    if (step.pieces.empty()) return;
+    undoStack.push_back (std::move (step));
     if ((int) undoStack.size() > kUndoLevels) undoStack.erase (undoStack.begin());
     redoStack.clear();
-    undoCurrent = now;
 }
 
 namespace
 {
-void restoreEditorial (Project& p, const var& snapshot, const juce::Uuid& liveTake)
+var rootWith (const char* key, const var& v, bool asArray)
 {
+    var root = obj(); put (root, "format", "Fermata project");
+    if (asArray) { juce::Array<var> a; a.add (v); put (root, key, a); } else put (root, key, v);
+    return root;
+}
+
+/** Puts one window back as its snapshot says, keeping what the snapshot does not cover (view state, the take being recorded).
+    True when the project's structure changed (an edit came back, which needs a mixer): the caller then raises structureChanged rather than changed. */
+bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid& liveTake)
+{
+    const var snapshot = juce::JSON::parse (piece.text);
+    if (! snapshot.isObject()) return false;
     Project tmp;
-    tmp.restoreSampleRate = p.restoreSampleRate; tmp.restoreBlock = p.restoreBlock;
-    if (! tmp.fromVar (snapshot)) return;
-    for (auto& te : tmp.edits)
+    tmp.restoreSampleRate = p.restoreSampleRate; tmp.restoreBlock = p.restoreBlock; tmp.projectFile = p.projectFile;
+    if (piece.kind == Project::UndoKind::mastering)
     {
+        const int view = p.mastering.view; const auto selI = p.mastering.selectedItem, selC = p.mastering.selectedClip;
+        p.mastering.fromVar (snapshot);
+        p.mastering.view = view; p.mastering.selectedItem = selI; p.mastering.selectedClip = selC;
+        p.mastering.sync (p.edits);
+        return false;
+    }
+    if (piece.kind == Project::UndoKind::edit)
+    {
+        if (! tmp.fromVar (rootWith ("edits", snapshot, true)) || tmp.edits.empty()) return false;
+        auto& te = tmp.edits.front();
+        bool structural = false;
         if (auto* live = p.findEdit (te->id))
         {
             te->fixIn = live->fixIn; te->fixOut = live->fixOut; te->fixTracks = live->fixTracks;
             te->playheadSeconds = live->playheadSeconds; te->insertIndex = live->insertIndex; te->markers = live->markers; te->feedback = live->feedback; te->showFeedback = live->showFeedback; te->showMarkers = live->showMarkers;
             *live = std::move (*te);
         }
-        else p.edits.push_back (std::move (te));
+        else { p.edits.push_back (std::move (te)); p.syncEditMixers(); structural = true; }
+        p.mastering.sync (p.edits);
+        return structural;
     }
-    for (auto& tw : tmp.takeWindows)
+    if (! tmp.fromVar (rootWith ("takeWindows", snapshot, true)) || tmp.takeWindows.empty()) return false;
+    auto& tw = tmp.takeWindows.front();
+    auto* live = p.findTakeWindow (tw->id);
+    if (live == nullptr) return false;
+    for (auto& tg : tw->groups)
     {
-        auto* live = p.findTakeWindow (tw->id);
-        if (live == nullptr) continue;
-        for (auto& tg : tw->groups)
+        if (tg.id == liveTake) continue;
+        if (auto* lg = live->findGroup (tg.id))
         {
-            if (tg.id == liveTake) continue;
-            if (auto* lg = live->findGroup (tg.id))
-            {
-                lg->label = tg.label; lg->startSeconds = tg.startSeconds; lg->fadeInSeconds = tg.fadeInSeconds; lg->fadeOutSeconds = tg.fadeOutSeconds;
-                lg->dud = tg.dud; lg->barIn = tg.barIn; lg->barOut = tg.barOut; lg->number = tg.number;
-            }
-            else live->groups.push_back (tg);                    // a take that was removed from the window comes back
+            lg->label = tg.label; lg->startSeconds = tg.startSeconds; lg->fadeInSeconds = tg.fadeInSeconds; lg->fadeOutSeconds = tg.fadeOutSeconds;
+            lg->dud = tg.dud; lg->barIn = tg.barIn; lg->barOut = tg.barOut; lg->number = tg.number;
         }
-        std::stable_sort (live->groups.begin(), live->groups.end(), [] (const TakeGroup& a, const TakeGroup& b) { return a.number < b.number; });
-        live->targetEdit = tw->targetEdit;
+        else live->groups.push_back (tg);                    // a take that was removed from the window comes back
     }
-    const int view = p.mastering.view; const auto selI = p.mastering.selectedItem, selC = p.mastering.selectedClip;
-    p.mastering = tmp.mastering;
-    p.mastering.view = view; p.mastering.selectedItem = selI; p.mastering.selectedClip = selC;
-    p.mastering.sync (p.edits);
+    std::stable_sort (live->groups.begin(), live->groups.end(), [] (const TakeGroup& a, const TakeGroup& b) { return a.number < b.number; });
+    live->targetEdit = tw->targetEdit;
+    live->name = tw->name; live->defaultLabel = tw->defaultLabel; live->nextNumber = tw->nextNumber;
+    return false;
 }
 }
 
@@ -1411,11 +1678,24 @@ bool Project::undo (const juce::Uuid& liveTake)
 {
     undoTick (false, true);
     if (undoStack.empty()) return false;
-    const auto target = undoStack.back(); undoStack.pop_back();
-    redoStack.push_back (undoCurrent);
-    restoreEditorial (*this, juce::JSON::parse (target), liveTake);
-    structureChanged();
-    undoPending = false; undoCurrent = undoState();
+    const auto step = std::move (undoStack.back()); undoStack.pop_back();
+    UndoStep back; bool structural = false;                // what redo will put back: the windows as they are now
+    for (auto& piece : step.pieces)
+    {
+        if (piece.kind == UndoKind::takeWindow) { auto it = undoTakes.find (piece.id); if (it != undoTakes.end()) back.pieces.push_back ({ piece.kind, piece.id, undoTextOf (it->second) }); }
+        else if (piece.kind == UndoKind::edit) { auto it = undoEdits.find (piece.id); if (it != undoEdits.end()) back.pieces.push_back ({ piece.kind, piece.id, undoTextOf (it->second) }); }
+        else back.pieces.push_back ({ piece.kind, piece.id, undoMastering.text });
+        structural = restorePiece (*this, piece, liveTake) || structural;
+    }
+    redoStack.push_back (std::move (back));
+    if (structural) structureChanged(); else changed();           // (a structure change rebuilds the main window's strips, the mixer windows and the engine's plan: only when an edit came back)
+    undoPending = false;
+    for (auto& piece : step.pieces)                        // the snapshots follow (what was just put back is the state as of now)
+    {
+        if (piece.kind == UndoKind::takeWindow) { if (auto* w = findTakeWindow (piece.id)) undoTakes[piece.id] = { undoHash (*w), undoText (*w) }; }
+        else if (piece.kind == UndoKind::edit) { if (auto* e = findEdit (piece.id)) undoEdits[piece.id] = { undoHash (*e), undoText (*e) }; }
+        else undoMastering = { undoHash (mastering), undoText (mastering) };
+    }
     return true;
 }
 
@@ -1423,11 +1703,24 @@ bool Project::redo (const juce::Uuid& liveTake)
 {
     undoTick (false, true);
     if (redoStack.empty()) return false;
-    const auto target = redoStack.back(); redoStack.pop_back();
-    undoStack.push_back (undoCurrent);
-    restoreEditorial (*this, juce::JSON::parse (target), liveTake);
-    structureChanged();
-    undoPending = false; undoCurrent = undoState();
+    const auto step = std::move (redoStack.back()); redoStack.pop_back();
+    UndoStep back; bool structural = false;
+    for (auto& piece : step.pieces)
+    {
+        if (piece.kind == UndoKind::takeWindow) { auto it = undoTakes.find (piece.id); if (it != undoTakes.end()) back.pieces.push_back ({ piece.kind, piece.id, undoTextOf (it->second) }); }
+        else if (piece.kind == UndoKind::edit) { auto it = undoEdits.find (piece.id); if (it != undoEdits.end()) back.pieces.push_back ({ piece.kind, piece.id, undoTextOf (it->second) }); }
+        else back.pieces.push_back ({ piece.kind, piece.id, undoMastering.text });
+        structural = restorePiece (*this, piece, liveTake) || structural;
+    }
+    undoStack.push_back (std::move (back));
+    if (structural) structureChanged(); else changed();           // (a structure change rebuilds the main window's strips, the mixer windows and the engine's plan: only when an edit came back)
+    undoPending = false;
+    for (auto& piece : step.pieces)
+    {
+        if (piece.kind == UndoKind::takeWindow) { if (auto* w = findTakeWindow (piece.id)) undoTakes[piece.id] = { undoHash (*w), undoText (*w) }; }
+        else if (piece.kind == UndoKind::edit) { if (auto* e = findEdit (piece.id)) undoEdits[piece.id] = { undoHash (*e), undoText (*e) }; }
+        else undoMastering = { undoHash (mastering), undoText (mastering) };
+    }
     return true;
 }
 
@@ -1441,17 +1734,34 @@ bool Project::save (juce::String& error, bool quick)
 {
     if (projectFile == juce::File()) { error = "No project file chosen"; return false; }
     projectFile.getParentDirectory().createDirectory();
-    juce::TemporaryFile tmp (projectFile);
+    dirty = false;                                        // (cleared before the snapshot: a change made while the text is being made is kept for the next save)
     quickPluginState = quick;
-    var root = toVar();
+    var root = toVar (false, false);                      // (the windows go to their own files: splitWindowFiles adds them to root only if that fails)
     quickPluginState = false;
-    splitWindowFiles (root);                              // the edits and take windows go to their own files (if that fails the project is written whole, as before)
-    if (! tmp.getFile().replaceWithText (juce::JSON::toString (root, false)) || ! tmp.overwriteTargetFileWithTemporary())
+    // The order matters for a save that is interrupted (the program or the computer stops half way): first the window files, then the project file,
+    // and only then are the old window files tidied away and the list of files updated. Stopped after any step, the folder still opens: a window
+    // file is always complete (replaceTextSafely), the project file either the old one, its .bak, or the new one, and no file it lists is gone.
+    std::map<String, WindowFile> next; std::vector<OldWindowFile> old;
+    if (splitWindowFiles (root, next, old))               // the edits and take windows go to their own files (if that fails the project is written whole, as before)
     {
-        error = "Could not write " + projectFile.getFullPathName();
+        windowFiles = next;                                // (the files are written: a later save must know they are this project's own)
+        oldWindowFiles.insert (oldWindowFiles.end(), old.begin(), old.end());
+    }
+    if (! filesync::replaceTextSafely (projectFile, juce::JSON::toString (root, false), true, &error))
+    {
+        dirty = true;
         return false;
     }
-    dirty = false;
+    const auto folder = projectFolder();
+    for (auto& o : oldWindowFiles)                         // (also what an earlier save that failed left behind)
+    {
+        filesync::backupOf (o.file).deleteFile();
+        if (! o.file.existsAsFile()) continue;
+        if (o.renamed) { o.file.deleteFile(); continue; }
+        auto dir = folder.getChildFile ("_removed"); dir.createDirectory();
+        o.file.moveFileTo (dir.getNonexistentChildFile (o.file.getFileNameWithoutExtension(), o.file.getFileExtension()));
+    }
+    oldWindowFiles.clear();
     return true;
 }
 
@@ -1477,18 +1787,22 @@ juce::StringArray Project::repairInterruptedRecordings()
             if ((done++ % 32) == 0) reportLoad ("Checking the recordings (" + String ((int) done) + " of " + String ((int) total) + " takes)", total > 0 ? (double) done / (double) total : 1.0);
             // A take that was still recording when the program stopped was saved with length 0. A finished take only needs a look if one of its files is
             // shorter than its length says (the computer lost power before everything reached the disk). Asking for a file's size is quick; opening
-            // thousands of files one by one is what made big projects slow to open.
+            // thousands of files one by one is what made big projects slow to open. A take found whole once is marked verified and saved so: the next
+            // open does not ask the disk about it at all (3000 takes of 20 files were 60,000 questions, half a second even on a quick drive) - unless the
+            // project has moved or been copied since (filesMoved), when every take is looked at again.
             bool look = g.lengthSamples <= 0;
+            if (! look && g.verified && ! filesMoved) continue;
+            bool allThere = true;
             for (size_t i = 0; ! look && i < g.files.size(); ++i)
             {
                 const auto& f = g.files[i];
                 if (! f.file.hasFileExtension ("wav;wave;bwf")) continue;                     // (only WAV files can be mended)
                 const auto size = f.file.getSize();
-                if (size <= 0) continue;                                                       // missing: nothing to mend
+                if (size <= 0) { allThere = false; continue; }                                 // missing: nothing to mend (and not verified: it may come back)
                 const int bytes = (inside != juce::File() && f.file.isAChildOf (inside)) ? 3 : 2;  // Fermata writes 24-bit; a linked original may be 16-bit
                 if (size < 44 + g.lengthSamples * (juce::int64) juce::jmax (1, f.numChannels) * bytes) look = true;
             }
-            if (! look) continue;
+            if (! look) { if (allThere && ! g.files.empty() && ! g.verified) { g.verified = true; markDirty(); } continue; }
             bool mended = false; juce::int64 longest = 0;
             const bool wasRecording = g.lengthSamples <= 0;                                // (saved so when Record was pressed; Stop writes the length)
             for (auto& f : g.files)
@@ -1505,6 +1819,7 @@ juce::StringArray Project::repairInterruptedRecordings()
             {
                 g.lengthSamples = longest; mended = true;
             }
+            if (longest > 0 && g.verified == mended) { g.verified = ! mended; markDirty(); }          // looked at and whole: verified; mended: looked at again next time
             if (mended)
             {
                 const double secs = g.sampleRate > 0 ? (double) longest / g.sampleRate : 0.0;
@@ -1520,10 +1835,16 @@ bool Project::load (const juce::File& f, juce::String& error)
 {
     juce::var v;
     reportLoad ("Reading the project file", 0.02);
-    auto r = juce::JSON::parse (f.loadFileAsString(), v);
-    readingFrom = f.getParentDirectory();
     windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear();
-    bool ok = ! r.failed() && v.isObject();
+    const auto t0 = juce::Time::getMillisecondCounterHiRes(); double tMain = 0.0, tWindows = 0.0, tSetup = 0.0, tHashes = 0.0;
+    // A damaged (or missing) project file: the save before it is in <name>.fermata.bak and is used instead
+    const int read = filesync::readJsonWithBackup (f, v, [] (const juce::var& x) { return x.isObject(); });
+    tMain = juce::Time::getMillisecondCounterHiRes() - t0;
+    readingFrom = f.getParentDirectory();
+    bool ok = read > 0;
+    if (read == 2)
+        loadNotes.add ("The project file " + f.getFileName() + " could not be read, so the save before it (" + filesync::backupOf (f).getFileName() + ") was used. "
+                       "Anything changed after that save is not in the project. The unreadable file was kept as " + filesync::damagedCopyOf (f).getFileName() + ".");
     if (ok)
     {
         const bool oldStyle = ! v.hasProperty ("takeWindowFiles") && ! v.hasProperty ("editFiles")
@@ -1533,9 +1854,13 @@ bool Project::load (const juce::File& f, juce::String& error)
             auto bak = f.getSiblingFile (f.getFileName() + ".before-window-files");
             if (! bak.exists()) f.copyFileTo (bak);
         }
+        const auto t1 = juce::Time::getMillisecondCounterHiRes();
         mergeWindowFiles (v);
+        tWindows = juce::Time::getMillisecondCounterHiRes() - t1;
         reportLoad ("Setting up the tracks, mixers and plug-ins", -1.0);
+        const auto t2 = juce::Time::getMillisecondCounterHiRes();
         ok = fromVar (v);
+        tSetup = juce::Time::getMillisecondCounterHiRes() - t2;
         if (ok && cueEnd() == 0)                           // the processing mixer's file is missing: start a fresh one (the missing file stays listed only if it is not replaced)
         {
             auto m = std::make_unique<MixerState>(); m->name = "Processing mixer";
@@ -1549,6 +1874,12 @@ bool Project::load (const juce::File& f, juce::String& error)
     if (! ok) { error = "Not a valid Fermata project file"; return false; }
     projectFile = f;
     restoreSavedComments();
+    const auto t3 = juce::Time::getMillisecondCounterHiRes();
+    quickPluginState = true; refreshWindowFileHashes(); quickPluginState = false;      // (the plug-ins' states as just loaded, not asked for again)
+    tHashes = juce::Time::getMillisecondCounterHiRes() - t3;
+    juce::Logger::writeToLog ("Project read in " + String (juce::roundToInt (juce::Time::getMillisecondCounterHiRes() - t0)) + " ms: project file " + String (juce::roundToInt (tMain))
+                              + " ms, " + String ((int) windowFiles.size()) + " window files " + String (juce::roundToInt (tWindows)) + " ms, set up " + String (juce::roundToInt (tSetup))
+                              + " ms, file hashes " + String (juce::roundToInt (tHashes)) + " ms");
     return true;
 }
 
@@ -1632,11 +1963,34 @@ void collectIds (const var& o, std::vector<String>& out, const char* arrayKey)
 }
 }
 
-bool Project::splitWindowFiles (var& root)
+String Project::takeFileHash (const TakeWindowDef& w, const String& tracksHash) const
 {
-    if (projectFile == juce::File()) return false;
+    return tracksHash + "-" + String::toHexString ((juce::int64) saveHash (w));
+}
+
+String Project::editFileHash (const EditDef& e, const String& tracksHash, const var& rootMixers, var* mixerOut) const
+{
+    String mixerHash;                                      // (the mixers' vars come from root: built once per save, the plug-ins asked for their state once)
+    if (auto* ma = rootMixers.getArray())
+        for (auto& mv : *ma)
+            if (mv["editId"].toString() == e.id.toString()) { mixerHash = fingerprintOf (mv); if (mixerOut != nullptr) *mixerOut = mv; break; }
+    return tracksHash + "-" + String::toHexString ((juce::int64) saveHash (e)) + "-" + mixerHash;
+}
+
+void Project::refreshWindowFileHashes()
+{
+    // after a project is read: what is in memory is what the files hold, so the hashes are set to it and the first save writes only what changes
+    var root = toVar (false, false);
+    const auto tracksHash = fingerprintOf (root["tracks"]);
+    for (auto& w : takeWindows) { auto it = windowFiles.find (w->id.toString()); if (it != windowFiles.end()) it->second.hash = takeFileHash (*w, tracksHash); }
+    for (auto& e : edits)       { auto it = windowFiles.find (e->id.toString()); if (it != windowFiles.end()) it->second.hash = editFileHash (*e, tracksHash, root["mixers"], nullptr); }
+}
+
+bool Project::splitWindowFiles (var& root, std::map<String, WindowFile>& next, std::vector<OldWindowFile>& old)
+{
+    next.clear(); old.clear();
+    if (projectFile == juce::File()) { addWindowsToVar (root); return false; }
     const auto folder = projectFolder();
-    std::map<String, WindowFile> next;
     std::set<String> used;
     struct Pending { juce::File file; String text; };
     std::vector<Pending> pending;
@@ -1661,55 +2015,52 @@ bool Project::splitWindowFiles (var& root)
 
     std::set<String> trackIds;                             // (the tracks a window uses are written into its file, so another project can match them by name)
     if (auto* ta = root["tracks"].getArray()) for (auto& t : *ta) { auto tid = t["id"].toString(); if (tid.isNotEmpty()) trackIds.insert (tid); }
+    const auto tracksHash = fingerprintOf (root["tracks"]);          // (a renamed track is in every window's file: they are all written again)
 
-    auto handle = [&] (const var& wv, const char* format, const char* key, const char* sub, const char* ext, juce::Array<var>& refs, const var& mixer)
+    // A window's file is written only when the window changed: a hash of the window itself (saveHash: cheap, no text) with the tracks' and, for an
+    // edit, its mixer's. Nothing of an unchanged window is serialised, which is what makes saving a project with thousands of takes quick.
+    auto fileVar = [&] (const char* format, const char* key, const var& wv, const var& mixer)
     {
-        const auto id = wv["id"].toString(), nm = wv["name"].toString();
         var fr = obj();
         put (fr, "format", format); put (fr, "version", 1); put (fr, key, wv);
         if (mixer.isObject()) put (fr, "mixer", mixer);
-        std::set<String> used; findIds (wv, trackIds, used);
+        std::set<String> usedIds; findIds (wv, trackIds, usedIds);
         juce::Array<var> tl;
         if (auto* ta = root["tracks"].getArray())
-            for (auto& t : *ta) { auto tid = t["id"].toString(); if (tid.isNotEmpty() && used.count (tid) > 0) tl.add (t); }
+            for (auto& t : *ta) { auto tid = t["id"].toString(); if (tid.isNotEmpty() && usedIds.count (tid) > 0) tl.add (t); }
         put (fr, "tracks", tl);
-        const auto hash = fingerprintOf (fr);                 // the text is only made when the file has to be written
+        return fr;
+    };
+    auto consider = [&] (const String& id, const String& nm, const String& hash, const char* sub, const char* ext, juce::Array<var>& refs, const std::function<String()>& text)
+    {
         const auto rel = place (id, nm, sub, ext);
         auto prev = windowFiles.find (id);
         const bool same = prev != windowFiles.end() && prev->second.rel == rel && prev->second.hash == hash && folder.getChildFile (rel).existsAsFile();
-        if (! same) pending.push_back ({ folder.getChildFile (rel), juce::JSON::toString (fr, false) });
+        if (! same) pending.push_back ({ folder.getChildFile (rel), text() });
         next[id] = { rel, hash };
         var ref = obj(); put (ref, "id", id); put (ref, "name", nm); put (ref, "file", rel);
         refs.add (ref);
     };
-
-    if (auto* ta = root["takeWindows"].getArray()) for (auto& w : *ta) handle (w, kTakeFormat, "window", "Take Windows", ".fmtake", takeRefs, var());
-    if (auto* ea = root["edits"].getArray())
-        for (auto& e : *ea)
-        {
-            var mixer;
-            if (auto* ma = root["mixers"].getArray())
-                for (auto& m : *ma) if (m["editId"].toString() == e["id"].toString()) mixer = m;
-            if (mixer.isObject()) editMixerIds.insert (mixer["id"].toString());
-            handle (e, kEditFormat, "edit", "Edit Windows", ".fmedit", editRefs, mixer);
-        }
+    for (auto& w : takeWindows)
+        consider (w->id.toString(), w->name, takeFileHash (*w, tracksHash), "Take Windows", ".fmtake", takeRefs,
+                  [&] { return juce::JSON::toString (fileVar (kTakeFormat, "window", takeWindowToVar (*w), var()), false); });
+    for (auto& e : edits)
+    {
+        var mixer;
+        const auto hash = editFileHash (*e, tracksHash, root["mixers"], &mixer);
+        if (mixer.isObject()) editMixerIds.insert (mixer["id"].toString());
+        consider (e->id.toString(), e->name, hash, "Edit Windows", ".fmedit", editRefs,
+                  [&] { return juce::JSON::toString (fileVar (kEditFormat, "edit", editToVar (*e), mixer), false); });
+    }
     juce::Array<var> mixerRefs;
     if (auto* ma = root["mixers"].getArray())              // the mixers that are not an Edit's own (the processing mixer, the cue mixers)
         for (auto& m : *ma)
         {
             if (m["editId"].toString().isNotEmpty()) continue;
-            const auto id = m["id"].toString(), nm = m["name"].toString();
             var fr = obj();
             put (fr, "format", kMixerFormat); put (fr, "version", 1); put (fr, "mixer", m);
             put (fr, "tracks", root["tracks"]); put (fr, "buses", root["buses"]);       // (what the strips refer to: lets another project match them by name)
-            const auto hash = fingerprintOf (fr);
-            const auto rel = place (id, nm, "Mixer Windows", ".fmmix");
-            auto prev = windowFiles.find (id);
-            const bool same = prev != windowFiles.end() && prev->second.rel == rel && prev->second.hash == hash && folder.getChildFile (rel).existsAsFile();
-            if (! same) pending.push_back ({ folder.getChildFile (rel), juce::JSON::toString (fr, false) });
-            next[id] = { rel, hash };
-            var ref = obj(); put (ref, "id", id); put (ref, "name", nm); put (ref, "file", rel);
-            mixerRefs.add (ref);
+            consider (m["id"].toString(), m["name"].toString(), fingerprintOf (fr), "Mixer Windows", ".fmmix", mixerRefs, [&] { return juce::JSON::toString (fr, false); });
         }
     for (auto& m : missingWindowRefs)                      // files that could not be read: still listed
     {
@@ -1718,24 +2069,15 @@ bool Project::splitWindowFiles (var& root)
     }
 
     for (auto& p : pending)                                // write everything first: if anything fails the project is saved whole
-    {
-        p.file.getParentDirectory().createDirectory();
-        juce::TemporaryFile tmp (p.file);
-        if (! tmp.getFile().replaceWithText (p.text) || ! tmp.overwriteTargetFileWithTemporary()) return false;
-    }
+        if (! filesync::replaceTextSafely (p.file, p.text, true)) { next.clear(); addWindowsToVar (root); return false; }
 
-    // files of windows that are gone (or that moved to a new name)
+    // files of windows that are gone (or that moved to a new name): tidied away by the caller once the project file is written
     for (auto& kv : windowFiles)
     {
         auto it = next.find (kv.first);
         if (it != next.end() && it->second.rel.equalsIgnoreCase (kv.second.rel)) continue;
-        auto old = folder.getChildFile (kv.second.rel);
-        if (! old.existsAsFile()) continue;
-        if (it != next.end()) { old.deleteFile(); continue; }            // renamed: the new file has the same content
-        auto dir = folder.getChildFile ("_removed"); dir.createDirectory();
-        old.moveFileTo (dir.getNonexistentChildFile (old.getFileNameWithoutExtension(), old.getFileExtension()));
+        old.push_back ({ folder.getChildFile (kv.second.rel), it != next.end() });
     }
-    windowFiles = next;
 
     juce::Array<var> keepMixers;
     if (auto* ma = root["mixers"].getArray()) for (auto& m : *ma) if (m["editId"].toString().isNotEmpty() && editMixerIds.count (m["id"].toString()) == 0) keepMixers.add (m);   // (an Edit mixer whose edit is not there)
@@ -1748,66 +2090,61 @@ bool Project::splitWindowFiles (var& root)
 void Project::mergeWindowFiles (var& root)
 {
     const auto base = loadBase();
-    int total = 0, done = 0;
-    for (auto* k : { "mixerFiles", "takeWindowFiles", "editFiles" }) if (auto* a = root[k].getArray()) total += a->size();
-    auto tell = [&] (const String& what, const var& ref)
+    // Every window file is read and parsed first, then they are merged into the project in their saved order. A file that is missing or damaged is replaced by its .bak (the save before)
+    // when there is one; the note says so.
+    struct Read { const char* format; const char* fileKey; var ref; String rel; var fv; int result = 0; };
+    std::vector<Read> reads;
+    auto queue = [&] (const char* refsKey, const char* format, const char* fileKey)
     {
-        ++done;
-        reportLoad ("Reading " + what + " \"" + ref["name"].toString() + "\"  (" + String (done) + " of " + String (total) + ")", 0.05 + 0.45 * (double) done / (double) juce::jmax (1, total));
+        if (auto* refs = root[refsKey].getArray()) for (auto& r : *refs) reads.push_back ({ format, fileKey, r, r["file"].toString(), var(), 0 });
     };
-    auto go = [&] (const char* arrayKey, const char* refsKey, const char* fileKey, const char* format, const char* kind)
+    queue ("mixerFiles", kMixerFormat, "mixer");
+    queue ("takeWindowFiles", kTakeFormat, "window");
+    queue ("editFiles", kEditFormat, "edit");
+    reportLoad ("Reading " + String ((int) reads.size()) + " window files", 0.05);
+    parallelFor ((int) reads.size(), [&] (int i)
+    {
+        auto& rd = reads[(size_t) i];
+        rd.result = filesync::readJsonWithBackup (base.getChildFile (rd.rel), rd.fv, [&] (const var& x) { return x.isObject() && x["format"].toString() == rd.format && x[rd.fileKey].isObject(); });
+    });
+    reportLoad ("Reading " + String ((int) reads.size()) + " window files", 0.5);
+
+    size_t next = 0;
+    auto take = [&] (const String& what, const char* kind) -> var*            // the next read, in order; a missing one is listed and skipped
+    {
+        auto& rd = reads[next++];
+        const String name = what + " \"" + rd.ref["name"].toString() + "\"";
+        if (rd.result == 2)
+            loadNotes.add (name + " had a file that could not be read, so the save before it was used (" + rd.rel + ".bak). "
+                           "Anything changed in it after that save is not there. The unreadable file was kept as " + rd.rel + ".damaged.");
+        if (rd.result > 0) { windowFiles[rd.fv[rd.fileKey]["id"].toString()] = { rd.rel, {} }; return &rd.fv; }
+        loadNotes.add (name + " is missing its file:  " + rd.rel);
+        var m = obj(); put (m, "id", rd.ref["id"]); put (m, "name", rd.ref["name"]); put (m, "file", rd.rel); put (m, "kind", kind);
+        missingWindowRefs.push_back (m);
+        return nullptr;
+    };
+    if (auto* refs = root["mixerFiles"].getArray())         // the mixers first, in their saved order (the first is the processing mixer)
+    {
+        juce::Array<var> all;
+        for (int i = 0; i < refs->size(); ++i) if (auto* fv = take ("The mixer", "mixer")) all.add ((*fv)["mixer"]);
+        if (auto* old = root["mixers"].getArray()) for (auto& m : *old) all.add (m);
+        put (root, "mixers", all);
+    }
+    auto go = [&] (const char* arrayKey, const char* refsKey, const char* fileKey, const char* what, const char* kind)
     {
         auto* refs = root[refsKey].getArray();
         if (refs == nullptr) return;
         var arr = root[arrayKey];
         if (! arr.isArray()) { arr = var (juce::Array<var>()); put (root, arrayKey, arr); }
-        for (auto& r : *refs)
-        {
-            tell (String (kind) == "edit" ? "the edit" : "the take window", r);
-            const auto rel = r["file"].toString();
-            const auto f = base.getChildFile (rel);
-            var fv; bool ok = false;
-            if (f.existsAsFile() && ! juce::JSON::parse (f.loadFileAsString(), fv).failed() && fv.isObject()
-                && fv["format"].toString() == format && fv[fileKey].isObject())
-                ok = true;
-            if (! ok)
+        for (int i = 0; i < refs->size(); ++i)
+            if (auto* fv = take (what, kind))
             {
-                loadNotes.add (String (kind) == "edit" ? "The edit \"" + r["name"].toString() + "\" is missing its file:  " + rel
-                                                         : "The take window \"" + r["name"].toString() + "\" is missing its file:  " + rel);
-                var m = obj(); put (m, "id", r["id"]); put (m, "name", r["name"]); put (m, "file", rel); put (m, "kind", kind);
-                missingWindowRefs.push_back (m);
-                continue;
+                arr.getArray()->add ((*fv)[fileKey]);
+                if ((*fv)["mixer"].isObject() && root["mixers"].isArray()) root["mixers"].getArray()->add ((*fv)["mixer"]);
             }
-            arr.getArray()->add (fv[fileKey]);
-            if (fv["mixer"].isObject() && root["mixers"].isArray()) root["mixers"].getArray()->add (fv["mixer"]);
-            windowFiles[fv[fileKey]["id"].toString()] = { rel, {} };
-        }
     };
-    if (auto* refs = root["mixerFiles"].getArray())         // the mixers first, in their saved order (the first is the processing mixer)
-    {
-        juce::Array<var> all;
-        for (auto& r : *refs)
-        {
-            tell ("the mixer", r);
-            const auto rel = r["file"].toString();
-            const auto f = base.getChildFile (rel);
-            var fv;
-            if (f.existsAsFile() && ! juce::JSON::parse (f.loadFileAsString(), fv).failed() && fv.isObject() && fv["format"].toString() == kMixerFormat && fv["mixer"].isObject())
-            {
-                all.add (fv["mixer"]); windowFiles[fv["mixer"]["id"].toString()] = { rel, {} };
-            }
-            else
-            {
-                loadNotes.add ("The mixer \"" + r["name"].toString() + "\" is missing its file:  " + rel);
-                var m = obj(); put (m, "id", r["id"]); put (m, "name", r["name"]); put (m, "file", rel); put (m, "kind", "mixer");
-                missingWindowRefs.push_back (m);
-            }
-        }
-        if (auto* old = root["mixers"].getArray()) for (auto& m : *old) all.add (m);
-        put (root, "mixers", all);
-    }
-    go ("takeWindows", "takeWindowFiles", "window", kTakeFormat, "take");
-    go ("edits", "editFiles", "edit", kEditFormat, "edit");
+    go ("takeWindows", "takeWindowFiles", "window", "The take window", "take");
+    go ("edits", "editFiles", "edit", "The edit", "edit");
 }
 
 void Project::forgetWindowFile (const String& id)
@@ -1860,6 +2197,7 @@ int Project::relinkAudio (const juce::File& searchFolder)
     for (auto& f : searchFolder.findChildFiles (juce::File::findFiles, true, "*.wav;*.flac;*.aif;*.aiff;*.w64;*.caf"))
         byName.emplace (f.getFileName().toLowerCase(), f);
     int found = 0;
+    for (auto& w : takeWindows) for (auto& g : w->groups) g.verified = false;      // (a take whose file is found again is looked at at the next open)
     forEachAudioFile (takeWindows, edits, [&] (juce::File& f)
     {
         if (f.existsAsFile()) return;

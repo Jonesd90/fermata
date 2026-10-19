@@ -38,6 +38,7 @@ private:
     void playMarked();
     void loopChanged();                  // the Loop button / key L
     bool markedRange (juce::Uuid& take, double& in, double& out) const;
+    juce::String playLoop (const juce::Uuid& take, double in, double out);     // goes round the marked area on the window timeline
     void openEditWindow();
     void openBounce();
     void nudgeCursor (double seconds);
@@ -65,7 +66,7 @@ private:
     juce::TextButton ltcButton { juce::String::fromUTF8 ("\xE2\x96\xB6 LTC") };       // the triangle: shows / hides the LTC track
     IconButton recordButton { "REC  [R]" }, playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, bounceButton { "Bounce Out..." },
                pitchButton { "Pitch..." }, repairButton { "Repair & DeClick..." }, undoFixButton { "Undo fix" };
-    juce::TextButton zoomInButton { "+" }, zoomOutButton { "-" }, playMarkedButton { "Play marked" };
+    juce::TextButton zoomInButton { "+" }, zoomOutButton { "-" };
     IconButton editInButton { "Mark 1 [1]" }, editOutButton { "Mark 2 [2]" },
                toEditButton { "To edit [3]" }, toEditAtButton { "To playhead [4]" }, editWindowButton { "Edit window" },
                importButton { "Import takes..." }, exportProcButton { "Export for Processing..." }, barSearchButton { "Search for bar" };

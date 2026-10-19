@@ -29,13 +29,14 @@ public:
     /** The place the main window always keeps for these boxes (one talkback mic, Playback and Output), shown or not. */
     static int reservedWidth() { return 3 * (kStripW + 2) + kGap + 8; }
 
-    /** Called whenever the project changes: rebuilds the strips if the CR inputs, the TB pairs or the names changed. */
-    void rebuildIfNeeded()
+    /** Called whenever the project changes: rebuilds the strips if the CR inputs, the TB pairs or the names changed. True when it did (the layout
+        around the panel may then have to change too). */
+    bool rebuildIfNeeded()
     {
         juce::String sig;
         for (int i : app.project.crMicInputs) sig << i << ":" << label (i) << ";";
         sig << "|"; for (int o : app.project.tbOutputs) sig << o << ",";
-        if (sig == signature && ! strips.isEmpty()) return;
+        if (sig == signature && ! strips.isEmpty()) return false;
         signature = sig;
         strips.clear(); holder.removeAllChildren();
         auto& p = app.project;
@@ -58,6 +59,7 @@ public:
         out->onChange = [this] (float db, float) { app.project.stageOutputDb = db; push(); };
         strips.add (out); holder.addAndMakeVisible (out);
         resized(); repaint();
+        return true;
     }
 
     void resized() override

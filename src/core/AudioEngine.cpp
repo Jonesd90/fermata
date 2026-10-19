@@ -15,6 +15,7 @@ AudioEngine::AudioEngine (Project& p) : project (p)
     for (auto& x : stagePrevR) x = 1.0f;
     writerThread.startThread (juce::Thread::Priority::high);
     finisher.startThread (juce::Thread::Priority::high);
+    ringBuilder.startThread (juce::Thread::Priority::normal);
     // (the disk writer is NOT put on the reserved cores: they are kept for the work with a deadline every block - the audio callback and the mixer
     // helpers. The writer has seconds of buffer in hand, so it runs on the other cores, at high priority, out of their way.)
     // helpers for running the mixers side by side: one fewer than the physical cores the audio can use, leaving a core or two for everything else
@@ -23,12 +24,14 @@ AudioEngine::AudioEngine (Project& p) : project (p)
 
 AudioEngine::~AudioEngine()
 {
+    destroying = true;
     mixerWorkers.stop();
     if (isRecording()) stopRecording();
     waitForFinishedTakes (60000);                    // (closing the program: every file is finished first)
     finisher.stopThread (5000);
     for (auto& f : finishing) if (f->rs != nullptr) for (auto& rt : f->rs->tracks) rt.writer.reset();     // (any the finisher did not get to)
     finishing.clear();
+    ringBuilder.stopThread (4000);
     stopPlayback();
     running = false;
     delete plan.exchange (nullptr);
@@ -147,7 +150,7 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
 
         // the sends that are on, as edges: source -> destination
         struct Edge { int src, dst; SendState* st; };
-        std::vector<Edge> edges;
+        std::vector<Edge> edges, held;
         for (size_t i = 0; i < nodes.size(); ++i)
         {
             SendList* list = nodes[i]->kind == NodeKind::Track ? &nodes[i]->strip->sends : nodes[i]->kind == NodeKind::IntBus ? &nodes[i]->bus->sends : nullptr;
@@ -155,7 +158,9 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
             for (auto& s : list->pool)
             {
                 const int d = indexOfId (s->dest);
-                if (d >= 0 && d != (int) i && s->active()) edges.push_back ({ (int) i, d, s.get() });
+                if (d < 0 || d == (int) i) continue;
+                if (s->active()) edges.push_back ({ (int) i, d, s.get() });
+                else if (s->inPlan()) held.push_back ({ (int) i, d, s.get() });     // off, but the edit's automation that is playing moves it: added below if it closes no loop
             }
         }
         // the outputs: every Audio Track / Int Bus whose output is on goes (after its fader, at unity) to its chosen bus, or - set to 'Main' - to EVERY Ext Bus
@@ -174,6 +179,23 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
                 if (d >= 0) { if (d != (int) i) edges.push_back ({ (int) i, d, st }); continue; }
                 for (int mi : mains) if (mi != (int) i) edges.push_back ({ (int) i, mi, st });   // 'Main' (or the chosen bus is gone): every main output
             }
+        }
+        // the held sends (see SendState::autoHeld): only where they close no loop with what is really connected - the check that refuses a looping send
+        // (Project::sendAllowed) only looks at sends that are on, and the order below would break a loop by cutting whichever path comes first
+        for (auto& h : held)
+        {
+            std::vector<bool> seen (nodes.size(), false);
+            std::vector<int> todo { h.dst };
+            bool loops = false;
+            while (! todo.empty() && ! loops)
+            {
+                const int n = todo.back(); todo.pop_back();
+                if (n == h.src) { loops = true; break; }
+                if (seen[(size_t) n]) continue;
+                seen[(size_t) n] = true;
+                for (auto& e : edges) if (e.src == n && ! seen[(size_t) e.dst]) todo.push_back (e.dst);
+            }
+            if (! loops) edges.push_back (h);
         }
         // put the channels in an order where every channel follows the ones that feed it (ties keep the list order)
         std::vector<int> pos (nodes.size(), -1), indeg (nodes.size(), 0);
@@ -226,8 +248,28 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
                     sp.dest->inLat = juce::jmax (sp.dest->inLat, nd->outLat + chainLat (sp.st->slots, kSendSlots));
             }
             int longest = 0;
+            int vcaLat[kMaxVcas] = {};
             for (auto& nd : mp->order)
             {
+                // where each automatable control acts, how late the sound is there (the automation reads its lane that much earlier: see AutomationPlan)
+                {
+                    InsertSlot* sl = nd->kind == NodeKind::Track ? nd->strip->slots : nd->bus->slots;
+                    int at = nd->inLat;
+                    for (int i = 0; i < kNumSlots; ++i) { sl[i].autoLat.store (at, std::memory_order_relaxed); at += sl[i].latencySamples(); }
+                    auto& latIn  = nd->kind == NodeKind::Track ? nd->strip->autoLatIn  : nd->bus->autoLatIn;
+                    auto& latOut = nd->kind == NodeKind::Track ? nd->strip->autoLatOut : nd->bus->autoLatOut;
+                    latIn.store (nd->inLat, std::memory_order_relaxed); latOut.store (nd->outLat, std::memory_order_relaxed);
+                    if (SendList* list = nd->kind == NodeKind::Track ? &nd->strip->sends : nd->kind == NodeKind::IntBus ? &nd->bus->sends : nullptr)
+                        for (auto& s : list->pool)                   // (a send not in the plan - off, and not automated - as if nothing held it back; turning it on rebuilds the plan)
+                        {
+                            int a = nd->outLat;
+                            for (auto& ss : s->slots) { ss.autoLat.store (a, std::memory_order_relaxed); a += ss.latencySamples(); }
+                            s->autoLat.store (a, std::memory_order_relaxed);
+                        }
+                    for (auto& sp : nd->sends) sp.st->autoLat.store (sp.dest->inLat, std::memory_order_relaxed);     // its level is applied after its inserts AND its delay line
+                    const juce::uint32 vm = nd->kind == NodeKind::Track ? nd->strip->vcaMask.load (std::memory_order_relaxed) : nd->kind == NodeKind::IntBus ? nd->bus->vcaMask.load (std::memory_order_relaxed) : 0u;
+                    for (int v = 0; v < kMaxVcas; ++v) if (vm & (1u << v)) vcaLat[v] = juce::jmax (vcaLat[v], nd->outLat);
+                }
                 for (auto& sp : nd->sends)
                     sp.delay.init (sp.dest->inLat - (nd->outLat + chainLat (sp.st->slots, kSendSlots)), 2);
                 if (nd->kind == NodeKind::Track && nd->inLat > 0)
@@ -235,6 +277,7 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
                 if (nd->kind == NodeKind::ExtBus) longest = juce::jmax (longest, nd->outLat);
             }
             for (auto& nd : mp->order) if (nd->kind == NodeKind::ExtBus) nd->outDelay.init (longest - nd->outLat, 2);
+            if (mp->mixer != nullptr) for (int v = 0; v < kMaxVcas; ++v) mp->mixer->vcas[v].autoLat.store (vcaLat[v], std::memory_order_relaxed);
             mp->latency = longest;
             int tapLongest = 0;
             for (auto& nd : mp->order) if (nd->tapIdx >= 0 || nd->tapPreIdx >= 0) tapLongest = juce::jmax (tapLongest, nd->outLat);
@@ -291,8 +334,10 @@ juce::uint64 AudioEngine::latencySignature (bool refresh) const
     };
     for (auto& m : project.mixers)
     {
-        for (auto& st : m->stripPool) { one (st->slots, kNumSlots); for (auto& sd : st->sends.pool) one (sd->slots, kSendSlots); one (st->outSend.slots, kSendSlots); }
-        for (auto& f : m->busPool)    { one (f->slots, kNumSlots);  for (auto& sd : f->sends.pool) one (sd->slots, kSendSlots); one (f->outSend.slots, kSendSlots); }
+        for (auto& st : m->stripPool) { one (st->slots, kNumSlots); for (auto& sd : st->sends.pool) one (sd->slots, kSendSlots); one (st->outSend.slots, kSendSlots);
+                                        sig = sig * 1000003u + st->vcaMask.load (std::memory_order_relaxed); }      // (which VCAs control it: a VCA lane's lateness follows its channels)
+        for (auto& f : m->busPool)    { one (f->slots, kNumSlots);  for (auto& sd : f->sends.pool) one (sd->slots, kSendSlots); one (f->outSend.slots, kSendSlots);
+                                        sig = sig * 1000003u + f->vcaMask.load (std::memory_order_relaxed); }
     }
     return sig;
 }
@@ -331,6 +376,8 @@ void AudioEngine::ensurePreRoll()
     auto* cur = preRollPtr.load();
     if (! sessionMode.load() || sampleRate <= 0.0)
     {
+        wantedRingInputs.clear(); wantedRingCap = 0;
+        delete ringBuilder.ready.exchange (nullptr);
         if (cur != nullptr) { preRollPtr.store (nullptr); if (waitForAudioThread()) delete cur; }
         return;
     }
@@ -344,14 +391,52 @@ void AudioEngine::ensurePreRoll()
     std::sort (used.begin(), used.end());
     const int preLen = (int) std::lround (kPreRollSeconds * sampleRate);
     const int cap = preLen + (int) std::lround (2.0 * sampleRate);       // two seconds of room while the pre-roll is handed to the files
-    if (cur != nullptr && cur->inputs == used && cur->cap == cap) return;
-    auto* fresh = new PreRoll();
-    fresh->cap = cap; fresh->preLen = preLen; fresh->inputs = used;
-    fresh->slotOf.assign ((size_t) kMaxInputs, -1);
-    for (size_t i = 0; i < used.size(); ++i) fresh->slotOf[(size_t) used[i]] = (int) i;
-    fresh->data.assign (used.size() * (size_t) cap, 0.0f);
+    if (cur != nullptr && cur->inputs == used && cur->cap == cap) { wantedRingInputs = used; wantedRingCap = cap; return; }
+    if (wantedRingCap == cap && wantedRingInputs == used) { servicePreRoll(); return; }     // already being made
+    wantedRingInputs = used; wantedRingCap = cap;
+    ringBuilder.request (used, cap, preLen);        // made in the background (it can be over 100 MB): servicePreRoll puts it in place
+}
+
+void AudioEngine::RingBuilder::run()
+{
+    while (! threadShouldExit())
+    {
+        std::vector<int> inputs; int cap = 0, preLen = 0;
+        {
+            const juce::ScopedLock sl (lock);
+            if (pending) { inputs = wantInputs; cap = wantCap; preLen = wantPre; pending = false; }
+        }
+        if (cap <= 0) { wait (500); continue; }
+        auto* fresh = new PreRoll();
+        fresh->cap = cap; fresh->preLen = preLen; fresh->inputs = inputs;
+        fresh->slotOf.assign ((size_t) kMaxInputs, -1);
+        for (size_t i = 0; i < inputs.size(); ++i) fresh->slotOf[(size_t) inputs[i]] = (int) i;
+        fresh->data.assign (inputs.size() * (size_t) cap, 0.0f);       // (the memory is touched here, not on the message or the audio thread)
+        delete ready.exchange (fresh);                                   // (one made before it and never put in place is no longer wanted)
+    }
+}
+
+void AudioEngine::servicePreRoll()
+{
+    const juce::ScopedLock sl (planLock);
+    if (ringBuilder.ready.load() == nullptr || isRecording()) return;     // (while recording the ring in use stays: the new one goes in after Stop)
+    auto* fresh = ringBuilder.ready.exchange (nullptr);
+    if (! sessionMode.load() || fresh->inputs != wantedRingInputs || fresh->cap != wantedRingCap) { delete fresh; return; }      // asked for something else since
     auto* old = preRollPtr.exchange (fresh);
-    if (waitForAudioThread()) delete old;
+    if (old != nullptr && waitForAudioThread()) delete old;
+}
+
+bool AudioEngine::waitForPreRoll (int maxMs)
+{
+    const auto deadline = juce::Time::getMillisecondCounter() + (juce::uint32) juce::jmax (0, maxMs);
+    for (;;)
+    {
+        servicePreRoll();
+        auto* cur = preRollPtr.load();
+        if (wantedRingCap == 0 || (cur != nullptr && cur->inputs == wantedRingInputs && cur->cap == wantedRingCap)) return true;
+        if (juce::Time::getMillisecondCounter() >= deadline) return false;
+        juce::Thread::sleep (2);
+    }
 }
 
 /** Hands the samples [from, to) of the ring to every file and live waveform of the session, in order, at most 4096 at a time. */
@@ -387,7 +472,9 @@ bool AudioEngine::waitForAudioThread()
     const auto deadline = juce::Time::getMillisecondCounter() + 500;
     while (blockCounter.load() < c0 + 2 && juce::Time::getMillisecondCounter() < deadline && running.load())
         juce::Thread::sleep (2);
-    return blockCounter.load() >= c0 + 2 || ! running.load();
+    const bool ok = blockCounter.load() >= c0 + 2 || ! running.load();
+    if (! ok) neverStalled.store (false, std::memory_order_relaxed);       // whatever the caller was taking away is leaked now, and may still be in use: see audioThreadNeverStalled
+    return ok;
 }
 
 void AudioEngine::setOfflineTarget (const juce::Uuid& mixerId, std::vector<juce::Uuid> tapIds, std::vector<juce::Uuid> preFaderIds)
@@ -586,7 +673,7 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
         for (int offset = 0; offset < numSamples; offset += maxBlock)
         {
             const int n = juce::jmin (maxBlock, numSamples - offset);
-            if (ps != nullptr && ps->automation != nullptr) ps->automation->apply (ps->getTimelinePosition());     // an edit's automation moves the faders
+            if (ps != nullptr && ps->automation != nullptr) ps->automation->apply (ps->getTimelinePosition(), ps);     // an edit's automation moves the faders (each read as early as the plug-ins before it delay the sound)
             // what the plug-ins are told: playing while something plays back or records; the place on the timeline (stays put when stopped)
             transport.playing = ps != nullptr || rs != nullptr;
             transport.recording = rs != nullptr;
@@ -882,7 +969,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
         for (size_t k = mp.order.size(); k-- > 0;)
         {
             auto& nd = *mp.order[k];
-            for (auto& sp : nd.sends) if (sp.dest->soloHeard) { nd.soloHeard = true; break; }
+            for (auto& sp : nd.sends) if (sp.dest->soloHeard && (sp.st->active() || sp.st->lastGain > 0.0f)) { nd.soloHeard = true; break; }     // (a send held in the plan while off keeps nothing open)
         }
 
     for (auto& nd : mp.order) if (nd->receives) nd->incoming.clear (0, n);
@@ -998,7 +1085,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             soloOk = ! anySolo || st->solo.get() || nd.soloHeard;
             audible = ! st->mute.get() && soloOk;
             faderGain = dbToGain (st->gainDb.get());
-            if (const auto vm = st->vcaMask.load (std::memory_order_relaxed); vm != 0 && mp.mixer != nullptr) faderGain *= mp.mixer->vcaGain (vm);      // the VCAs of this strip add their gain
+            if (const auto vm = st->vcaMask.load (std::memory_order_relaxed); vm != 0 && mp.mixer != nullptr) faderGain *= mp.mixer->vcaGain (vm, st->vcaAutoDb, st->vcaAutoMask.load (std::memory_order_relaxed));      // the VCAs of this strip add their gain
             lastGain = &st->lastGain; lastPre = &st->lastPre; meterL = &st->meterL; meterR = &st->meterR;
         }
         else   // Int Bus or Ext Bus: what is sent to it, through its inserts
@@ -1019,7 +1106,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             }
             audible = ! b->mute.get();
             faderGain = dbToGain (b->gainDb.get());
-            if (const auto vm = b->vcaMask.load (std::memory_order_relaxed); vm != 0 && mp.mixer != nullptr) faderGain *= mp.mixer->vcaGain (vm);
+            if (const auto vm = b->vcaMask.load (std::memory_order_relaxed); vm != 0 && mp.mixer != nullptr) faderGain *= mp.mixer->vcaGain (vm, b->vcaAutoDb, b->vcaAutoMask.load (std::memory_order_relaxed));
             lastGain = &b->lastGain; lastPre = &b->lastPre; meterL = &b->meterL; meterR = &b->meterR;
         }
 
@@ -1176,6 +1263,7 @@ juce::String AudioEngine::startPlayback (std::unique_ptr<PlaybackSession> s)
         return "The take was recorded at " + juce::String (s->getSampleRate(), 0) + " Hz but the audio device runs at " + juce::String (sampleRate, 0) + " Hz";
     auto err = s->open();
     if (err.isNotEmpty()) return err;
+    if (s->automation != nullptr && s->automation->begin()) rebuildPlan();      // sends the automation moves are put in the plan (see SendState::autoHeld)
     s->start();
     playSession = std::move (s);
     playback.store (playSession.get(), std::memory_order_release);
@@ -1186,8 +1274,12 @@ void AudioEngine::stopPlayback()
 {
     if (playSession == nullptr) return;
     playback.store (nullptr, std::memory_order_release);
-    if (waitForAudioThread()) playSession.reset();
+    const bool left = waitForAudioThread();
+    bool replan = false;
+    if (playSession->automation != nullptr) replan = playSession->automation->end();      // the VCAs go back to their own faders; held sends leave the plan
+    if (left) playSession.reset();
     else (void) playSession.release();               // the audio thread stalled: do not free what it may still be reading
+    if (replan && ! destroying) rebuildPlan();
 }
 
 // ------------------------------------------------------------------ recording

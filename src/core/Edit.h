@@ -401,6 +401,23 @@ struct EditDef
     }
     bool isEmpty() const { return regions.empty() && overdubs.empty(); }
     double lengthSeconds() const { return sampleRate > 0 ? (double) lengthSamples() / sampleRate : 0.0; }
+    /** Where the edit's sound begins and ends on its timeline: the earliest fade-in begin and the latest fade-out finish. A fade may reach outside
+        its piece (the first piece's fade-in can start before the piece does, the last one's fade-out can run on after it), so this is what a bounce
+        or a mastering render of the whole edit covers - what playing it plays. */
+    juce::int64 audibleStart() const
+    {
+        juce::int64 f = std::numeric_limits<juce::int64>::max();
+        for (auto& r : regions) f = juce::jmin (f, r.fadeInBegin(), r.startSample);
+        for (auto& r : overdubs) f = juce::jmin (f, r.fadeInBegin(), r.startSample);
+        return f == std::numeric_limits<juce::int64>::max() ? 0 : f;
+    }
+    juce::int64 audibleEnd() const
+    {
+        juce::int64 e = 0;
+        for (auto& r : regions) e = juce::jmax (e, r.fadeOutFinish(), r.endSample());
+        for (auto& r : overdubs) e = juce::jmax (e, r.fadeOutFinish(), r.endSample());
+        return e;
+    }
 
     /** Keep one region's fades legal: inside the audio that exists, in order, and not crossing each other. */
     void clampFades (int i)

@@ -325,7 +325,7 @@ MasterRenderBatch::MasterRenderBatch (const Project& live, const std::vector<juc
             auto* e = p.findEdit (items[(size_t) i].editId);
             BounceItem bi;
             bi.name = "mrtmp-" + e->id.toString();
-            bi.start = e->firstSample(); bi.end = e->lengthSamples();
+            bi.start = e->audibleStart(); bi.end = e->audibleEnd();           // (what playing the edit plays: the fades included, even where they reach outside the first and last piece)
             bi.segments = segmentsForEdit (live, *e);
             bi.automationEdit = e->automationOn ? e->id : juce::Uuid::null();
             if (rp.ownMixers) if (auto* em = live.mixerOfEdit (e->id)) bi.mixerId = em->id;

@@ -382,6 +382,7 @@ class JobDialogBase : public juce::Component, protected juce::Timer
 public:
     JobDialogBase() : bar (progressValue)
     {
+        getProperties().set (ownsRKeyProperty(), true);     // R here runs the window's own job (audition / do the fix): it does not start a recording
         addChildComponent (bar); addAndMakeVisible (status);
         status.setColour (juce::Label::textColourId, theme::warn); status.setMinimumHorizontalScale (1.0f);
     }
@@ -901,6 +902,7 @@ public:
     {
         if (k == juce::KeyPress::spaceKey)                                      // Space: play the marked part, or stop
         {
+            if (spaceIsForRecording()) return true;
             if (loaded && ! running) { if (playing()) { if (ctx.stop) ctx.stop(); } else if (ctx.play) ctx.play (view.playFrom(), view.visT1(), loopBtn.getToggleState()); }
             return true;
         }
@@ -1650,6 +1652,7 @@ protected:
     {
         if (k == juce::KeyPress::spaceKey)                                      // Space: play what is loaded, or stop
         {
+            if (spaceIsForRecording()) return true;
             if (scanned && ! running) { if (isPlayingNow()) { if (ctx.stop) ctx.stop(); } else playPressed(); }
             return true;
         }
@@ -4271,7 +4274,7 @@ public:
         gapCap.setText ("A new piece starts after this many seconds of silence:", juce::dontSendNotification);
         gap.setText ("10", juce::dontSendNotification); gap.setInputRestrictions (6, "0123456789.");
         gap.setTooltip ("Nothing playing on any track for longer than this = the next piece (its own edit window). Press Enter to apply.");
-        gap.onReturnKey = [this] { reread(); }; gap.onFocusLost = [this] { reread(); };
+        gap.onReturnKey = [this] { reread(); gap.giveAwayKeyboardFocus(); }; gap.onFocusLost = [this] { reread(); };
         addAndMakeVisible (gap);
         folderLabel.setText ("Audio is found in the takes you imported into Fermata. Not there?  Also look in a folder:  (none)", juce::dontSendNotification);
         folderButton.onClick = [this]

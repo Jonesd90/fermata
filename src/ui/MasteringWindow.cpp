@@ -729,7 +729,7 @@ MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (pr
     for (auto* c : std::initializer_list<juce::Component*> { &gapEditor, &allGapsBox, &autoPq, &isrcBtn, &zoomIn, &zoomOut, &zoomFit, &ddpUp, &ddpDown, &ddpChoose, &ddpExport, &ddpShow, &ddpCheck, &preToggle, &copyToggle,
                                                               &zipToggle, &cueToggle, &ddpNorm, &ddpTogether, &ddpFolderEditor, &ddpPeakEditor, &ddpProgress }) addChildComponent (*c);
     gapEditor.setInputRestrictions (8, "0123456789.-");
-    gapEditor.onReturnKey = [this] { applyGapToSelected (gapEditor.getText()); };
+    gapEditor.onReturnKey = [this] { applyGapToSelected (gapEditor.getText()); gapEditor.giveAwayKeyboardFocus(); };
     gapEditor.onFocusLost = [this] { applyGapToSelected (gapEditor.getText()); };
     gapEditor.setTooltip ("Silence before the selected track, in seconds (the first track always starts at 2 s or later). A minus number (or dragging the track back over the one before it) overlaps the two: they are mixed together on the disc. You can also drag a track left and right in the timeline.");
     { const double v[] = { 0, 1, 1.5, 2, 3, 4, 5 }; allGapsBox.addItem ("Keep positions", 1); for (int i = 0; i < 7; ++i) allGapsBox.addItem ("Set every pause to " + juce::String (v[i], v[i] == 1.5 ? 1 : 0) + " s", i + 2); allGapsBox.setSelectedId (1, juce::dontSendNotification); }
@@ -1829,7 +1829,7 @@ bool MasteringComponent::keyPressed (const juce::KeyPress& k)
     if (k.getModifiers().isAnyModifierKeyDown()) return false;
     if (k == juce::KeyPress::rightKey) { zoomKey (true); return true; }                 // Right: zoom in on the playhead
     if (k == juce::KeyPress::leftKey)  { zoomKey (false); return true; }                // Left: zoom out
-    if (k == juce::KeyPress::spaceKey) { togglePlay(); return true; }
+    if (k == juce::KeyPress::spaceKey) { if (! spaceIsForRecording()) togglePlay(); return true; }
     if (k == juce::KeyPress ('c') || k == juce::KeyPress ('C')) { centrePlayhead(); return true; }
     if (k == juce::KeyPress::homeKey)  { setPlayhead (0.0, true); timeline->showSeconds (0.0); return true; }
     return false;

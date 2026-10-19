@@ -337,6 +337,7 @@ private:
     static constexpr int kCheekW = wood::kCheekW, kRailFull = 44, kRailCompact = 30;   // the wooden side panels and the wooden rail along the bottom
     int railH = kRailFull;                             // thinner when the screen is short (see resized)
     float squeeze = 0.0f;                              // how much the input strips are shrunk to fit the height (0 = not at all)
+    int laidOutStageW = -2;                            // the stage speaker panel's width at the last layout (-1 = not shown): a change means a new layout
     std::vector<int> headerSeps;                       // x of the thin lines between the parts of the top row
     juce::Rectangle<int> headerLine;                   // the one line of the top row
     void pickColour (int index);

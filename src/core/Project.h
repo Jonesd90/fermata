@@ -123,8 +123,11 @@ public:
     std::vector<std::unique_ptr<TakeWindowDef>> takeWindows;
     std::vector<std::unique_ptr<EditDef>>      edits;
     MasteringDef mastering;                                     // the Mastering window: Virtual Master export list and the CD (DDP) layout
-    std::vector<std::unique_ptr<MixerState>>   retiredMixers;   // removed mixers stay alive until the app closes
+    std::vector<std::unique_ptr<MixerState>>   retiredMixers;   // removed mixers (and those of a project that was open before) stay alive until the audio thread has certainly left them: see freeRetiredMixers
     void retireAllMixers();
+    /** Frees the retired mixers and their plug-ins. Only once the engine has swapped to a plan that no longer knows them (AudioEngine::rebuildPlan
+        with the old plan freed) and their plug-ins' windows are closed: the program calls this (AppContext), not the project. */
+    void freeRetiredMixers (size_t count) { retiredMixers.erase (retiredMixers.begin(), retiredMixers.begin() + (std::ptrdiff_t) juce::jmin (count, retiredMixers.size())); }
     juce::String name { "Untitled" };
 
     /** Makes the input / output lists match the audio driver (names are kept for channels that already existed). */
@@ -226,6 +229,7 @@ public:
     // --- files ---
     juce::File projectFile;
     juce::File readingFrom;                          // while a project file is being read: its folder (to find the files that live inside it)
+    bool filesMoved = false;                         // set while reading: a recording was found by its path inside the project folder, not where it was saved (the project was moved or copied: every take is checked again)
     juce::File loadBase() const { return readingFrom != juce::File() ? readingFrom : projectFile.getParentDirectory(); }
     /** The project's own folder (where the .fermata file is) and its three working folders:
           Recorded Media            every recording made by the program
@@ -276,7 +280,15 @@ public:
     bool deleteEditAndFile (const juce::Uuid&);
     bool deleteTakeWindowAndFile (const juce::Uuid&);
 private:
-    bool splitWindowFiles (juce::var& root);
+    /** A window file that a save no longer needs: renamed (the new file has the same content: delete) or the window is gone (keep it in _removed). */
+    struct OldWindowFile { juce::File file; bool renamed; };
+    /** Writes the window files and takes the windows out of root, leaving the list of files. 'next' is what windowFiles becomes and 'old' the files to
+        tidy away, both to be applied by the caller AFTER the project file is written, so a stop between the two leaves a folder that still opens. */
+    bool splitWindowFiles (juce::var& root, std::map<juce::String, WindowFile>& next, std::vector<OldWindowFile>& old);
+    std::vector<OldWindowFile> oldWindowFiles;             // waiting to be tidied away by the next save that gets as far as writing the project file
+    juce::String takeFileHash (const TakeWindowDef&, const juce::String& tracksHash) const;              // what WindowFile::hash holds
+    juce::String editFileHash (const EditDef&, const juce::String& tracksHash, const juce::var& rootMixers, juce::var* mixerOut) const;  // (the edit's mixer var, from root, comes back too)
+    void refreshWindowFileHashes();                        // after load: the hashes of what was read, so the first save writes only what changes
     void mergeWindowFiles (juce::var& root);
     void forgetWindowFile (const juce::String& id);
 public:
@@ -286,18 +298,48 @@ public:
     std::unique_ptr<Project> cloneForRender (double sampleRate, int maxBlock) const;
     double restoreSampleRate = 48000.0; int restoreBlock = 512;    // used when plug-ins are re-created by fromVar()
 
-    juce::var toVar (bool editorialOnly = false) const;
+    /** The whole project as saved. editorialOnly: only what the undo history looks at (no inputs, tracks, mixers, plug-in states).
+        withWindows false: without the take windows and edits (a save adds them as their own files: see splitWindowFiles). */
+    juce::var toVar (bool editorialOnly = false, bool withWindows = true) const;
+    void addWindowsToVar (juce::var& root) const;        // the "takeWindows" and "edits" arrays
     juce::var mixerToVar (const MixerState&) const;      // one mixer, as saved (levels, sends, plug-in states)
     juce::var editToVar (const EditDef&) const;          // one edit, as saved
+    juce::var takeWindowToVar (const TakeWindowDef&) const;   // one take window, as saved
     bool fromVar (const juce::var&);
 
     // ---- undo: the last 30 states of the takes' details (bars, duds, names, positions, removed takes), the edits and the mastering ----
+    //      Kept per window: every take window, every edit and the mastering list has its own snapshot (a hash of what the history looks at, and
+    //      that as text). After a change only the windows whose hash moved are serialised, so the cost of a change is the size of the window it was
+    //      made in, not of the project (it used to be the whole project as one text: a third of a second on 3000 takes). An undo step holds the
+    //      previous text of the windows that changed together.
     static constexpr int kUndoLevels = 30;
-    std::vector<juce::String> undoStack, redoStack;      // older / newer states (JSON)
-    juce::String undoCurrent;                            // the state as of the last quiet moment
+    enum class UndoKind { takeWindow, edit, mastering };
+    struct UndoPiece { UndoKind kind; juce::Uuid id; juce::String text; };
+    struct UndoStep { std::vector<UndoPiece> pieces; };
+    /** A window's state as of the last quiet moment: its hash, and either its text or (until the text is first needed) a plain copy of the window.
+        Opening a project copies every window (cheap) rather than serialising it; a copy is turned into text the first time an undo step needs it. */
+    struct UndoSnap
+    {
+        juce::uint64 hash = 0; juce::String text;
+        std::shared_ptr<TakeWindowDef> takeCopy; std::shared_ptr<EditDef> editCopy;
+    };
+    juce::String undoTextOf (UndoSnap&) const;           // the snapshot's text (made from its copy if it has not been yet)
+    std::vector<UndoStep> undoStack, redoStack;          // older / newer states
+    std::map<juce::Uuid, UndoSnap> undoTakes, undoEdits; // the state of each window as of the last quiet moment
+    UndoSnap undoMastering;
     bool undoPending = false; juce::uint32 undoDirtyAt = 0;
-    juce::String undoState() const;                      // what the history looks at, as text
-    void undoReset() { undoStack.clear(); redoStack.clear(); undoCurrent = undoState(); undoPending = false; }
+    /** What the history looks at, as a hash (cheap: no text is made) and as text. The hashes cover exactly the fields the texts hold: see the
+        "undo hash" test, which changes every one of them. View state (playheads, cursors, marks, markers, hidden tracks) is in neither. */
+    static juce::uint64 undoHash (const TakeWindowDef&);
+    static juce::uint64 undoHash (const EditDef&);
+    static juce::uint64 undoHash (const MasteringDef&);
+    juce::String undoText (const TakeWindowDef&) const;
+    juce::String undoText (const EditDef&) const;
+    juce::String undoText (const MasteringDef&) const;
+    /** The undo hash plus the view state that is saved with the window: what decides whether a window's file is written again (see splitWindowFiles). */
+    static juce::uint64 saveHash (const TakeWindowDef&);
+    static juce::uint64 saveHash (const EditDef&);
+    void undoReset();
     /** Call a few times a second: once changes have stopped for half a second the previous state is kept as an undo level (if anything undoable changed). */
     void undoTick (bool recording, bool force = false);
     bool undo (const juce::Uuid& liveTake = {});         // false if there is nothing to undo; a take being recorded is never touched

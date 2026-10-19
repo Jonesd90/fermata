@@ -1,31 +1,38 @@
 #pragma once
 #include "Project.h"
+#include <functional>
 
 namespace td
 {
 /** A change of level of one file: from timeline sample 'at' the gain glides (over 'ramp' samples, 0 = instantly) from 'from' to 'to'. */
 struct GainStep { juce::int64 at = 0, ramp = 0; float from = 1.0f, to = 1.0f; };
 
-/** The automation of an edit, ready for the audio thread: each lane points straight at the control it moves. */
+class PlaybackSession;
+
+/** The automation of an edit, ready for the audio thread: each lane points straight at the control it moves.
+
+    Delay compensation: a plug-in that holds the sound back (look-ahead, linear phase) makes the sound reaching every control after it late by
+    that much (the engine lines all paths up again at the outputs). So each lane is read that many samples EARLIER: 'lat' points at the figure
+    the engine keeps for the place where the control acts (InsertSlot / SendState / StripState / BusState / VcaState autoLat...), and a move
+    drawn under a note lands on that note. Without it, a fader behind a 50 ms look-ahead moved 50 ms early. */
 struct AutomationPlan
 {
     /** Either 'target' (fader, pan, send level) or 'slot' + 'paramIndex' (a plug-in parameter, sent only when it changes). */
-    struct Item { Param* target = nullptr; InsertSlot* slot = nullptr; int paramIndex = 0; mutable float lastSent = -1.0f; AutoLane lane; };
+    /** A channel a VCA lane controls: it gets the VCA's value read at its OWN lateness (channels under one VCA can be late by different amounts). */
+    struct VcaMember { Param* db = nullptr; std::atomic<juce::uint32>* mask = nullptr; const std::atomic<int>* lat = nullptr; };
+    struct Item { Param* target = nullptr; InsertSlot* slot = nullptr; int paramIndex = 0; mutable float lastSent = -1.0f; AutoLane lane;
+                  const std::atomic<int>* lat = nullptr;
+                  SendState* send = nullptr;                    // a send-level lane: its send (held in the plan while this plays: begin / end)
+                  juce::uint32 vcaBit = 0; std::vector<VcaMember> members; };     // a VCA lane: its bit, and the channels it controls
     std::vector<Item> items;
-    /** Sets every automated control to its value at timeline sample t. Allocation-free. */
-    void apply (juce::int64 t) const noexcept
-    {
-        for (auto& it : items)
-        {
-            if (it.lane.pts.empty()) continue;
-            if (it.target != nullptr) it.target->set (it.lane.valueAt (t, it.target->get()));
-            else if (it.slot != nullptr)
-            {
-                const float v = it.lane.valueAt (t, 0.5f);
-                if (std::abs (v - it.lastSent) > 1.0e-5f) { it.slot->setParamNorm (it.paramIndex, v); it.lastSent = v; }
-            }
-        }
-    }
+    /** Sets every automated control to its value for the sound now passing it. t = the timeline sample now going in; with 'ps' (playback) the
+        place 'lat' samples back is asked of the session, so a loop going round is followed. Allocation-free. */
+    void apply (juce::int64 t, const PlaybackSession* ps = nullptr) const noexcept;
+    /** Message thread, before it plays: marks the sends it moves (SendState::autoHeld). True if any: the engine's plan must then be rebuilt. */
+    bool begin() const noexcept;
+    /** Message thread, once the audio thread has stopped applying it: the channels go back to their VCAs' own faders, the sends are released.
+        True if any send was held (rebuild the plan). */
+    bool end() const noexcept;
 };
 /** Builds the plan for an edit (null when automation is off or there is nothing to do). Lanes whose track or mixer is gone are left out;
     a Pan lane only drives mono tracks. */
@@ -37,6 +44,7 @@ struct PlaySegment
 {
     int          trackIndex = 0;             // index into Project::tracks
     juce::File   file;
+    double       rate = 0.0;                 // the file's sample rate as the project knows it (0 = not known): checked before playing, without opening the file
     juce::int64  srcOffset = 0;              // file sample = timeline sample + srcOffset
     juce::int64  begin = 0, end = 0;         // audible span on the timeline [begin, end)
     juce::int64  fadeInStart = 0,  fadeInLen = 0;     // len 0 = no fade
@@ -85,8 +93,14 @@ public:
     const juce::AudioBuffer<float>& trackBuffer (int trackIndex) const noexcept { return trackBuf[(size_t) trackIndex]; }
     int numTracks() const noexcept { return (int) trackBuf.size(); }
 
-    /** While true the session starts again at its start position each time it reaches its end (seamlessly: the disk thread just wraps). Any thread. */
+    /** While true the session starts again at its start position each time it reaches its end (seamlessly: the disk thread just wraps). Any thread.
+        Switched off, the pass that is playing finishes and the session ends (the process windows' auditions). */
     void setLooping (bool on) noexcept { looping = on; }
+    /** Where the play carries on to if the loop is let go of (releaseLoop): set before start. Default: nowhere (it ends at the loop's end). */
+    void setContinueTo (juce::int64 end) noexcept { continueTo = juce::jmax (endPos, end); }
+    /** The take and edit windows' Loop switched off while it plays: the sound goes straight on past the end of the loop (mark 2) to continueTo, without
+        a gap - also when the disk reader had already gone round to the start again (that audio is skipped). Any thread. */
+    void releaseLoop() noexcept { releaseRequest.store (true); notify(); }       // (wakes the reader at once: the sooner it acts, the less is skipped)
 
     // ---- any thread ----
     bool isFinished() const noexcept        { return finished.load(); }
@@ -94,11 +108,17 @@ public:
     juce::int64 getPosition() const noexcept { return position.load(); }
     /** Where on the TIMELINE the sound being played is (for automation): the start of what was asked for, plus what has been played, going round with a loop.
         (getPosition() only counts what was played since the start.) */
-    juce::int64 getTimelinePosition() const noexcept
+    juce::int64 getTimelinePosition() const noexcept { return timelineAt (position.load()); }
+    /** The timeline place of the sound that went in 'ago' samples before what getTimelinePosition() gives (for automation behind plug-ins that
+        delay the sound: see AutomationPlan). Before the start of the play it simply counts back from the start (nothing came from there); round
+        a loop it goes back to the end of the loop. */
+    juce::int64 getTimelinePositionAgo (juce::int64 ago) const noexcept { return timelineAt (position.load() - juce::jmax ((juce::int64) 0, ago)); }
+    /** How far along the timeline (seconds after the start position) the sound is that was played 'playedSeconds' into the session: round and
+        round in a loop, straight on once the loop was let go of. For the playhead. */
+    double timelineSecondsFromStart (double playedSeconds) const noexcept
     {
-        const auto played = position.load(); const auto len = endPos - startPos;
-        if (len <= 0) return startPos + played;
-        return startPos + ((looping.load() || played > len) ? played % len : played);
+        if (sampleRate <= 0.0) return 0.0;
+        return (double) (timelineAt ((juce::int64) std::llround (playedSeconds * sampleRate)) - startPos) / sampleRate;
     }
     double getPositionSeconds() const noexcept { return sampleRate > 0 ? (double) position.load() / sampleRate : 0.0; }
     /** Like getPositionSeconds, but between two audio blocks it moves on with the clock (never past the next block), so a playhead drawn from it
@@ -106,26 +126,62 @@ public:
     double getSmoothPositionSeconds() const noexcept;
     int getUnderruns() const noexcept       { return underruns.load(); }
 
-    /** Renders [from, from+n) of the segments into 'out' (one buffer per track). Public so tests can check the maths. */
+    /** Opens the reader of one segment's file (null if it cannot be read). */
+    using Opener = std::function<std::unique_ptr<juce::AudioFormatReader> (const PlaySegment&)>;
+    /** Renders [from, from+n) of the segments into 'out' (one buffer per track). 'readers' has one entry per segment; an entry that is null is
+        opened with 'opener' the first time its segment is rendered (none: the segment is skipped). The files are opened as they are needed and
+        closed once the render has passed them (see releaseReadersBefore): an edit of thousands of pieces used to open every file the moment Play
+        was pressed, with a read buffer for each. Public so tests can check the maths. */
     static void renderSegments (std::vector<std::unique_ptr<juce::AudioFormatReader>>& readers, const std::vector<PlaySegment>& segs,
-                                juce::int64 from, int n, std::vector<juce::AudioBuffer<float>>& out, juce::AudioBuffer<float>& scratch);
+                                juce::int64 from, int n, std::vector<juce::AudioBuffer<float>>& out, juce::AudioBuffer<float>& scratch,
+                                const Opener* opener = nullptr);
+    /** Closes the readers of the segments that end at or before 'pos' (they are not needed again unless the play loops). */
+    static void releaseReadersBefore (std::vector<std::unique_ptr<juce::AudioFormatReader>>& readers, const std::vector<PlaySegment>& segs, juce::int64 pos);
+    /** Renders with this session's own readers (the tests). */
+    void renderNow (juce::int64 from, int n, std::vector<juce::AudioBuffer<float>>& out, juce::AudioBuffer<float>& scratch) { renderSegments (readers, segments, from, n, out, scratch, &opener); }
     std::vector<std::unique_ptr<juce::AudioFormatReader>>& getReaders() { return readers; }
-    /** The read buffer of each file's reader: 1 MB, less when there are many segments (96 MB between them all), never under 32 KB. */
-    static int bufferBytesFor (size_t numSegments) noexcept
+    int openReaderCount() const { int n = 0; for (auto& r : readers) if (r != nullptr) ++n; return n; }
+    /** The read buffer of each open file: 1 MB, less when many are open at once (96 MB between them all), never under 32 KB. */
+    static int bufferBytesFor (size_t numOpen) noexcept
     {
-        const auto share = (juce::int64) (96 << 20) / (juce::int64) juce::jmax ((size_t) 1, numSegments);
+        const auto share = (juce::int64) (96 << 20) / (juce::int64) juce::jmax ((size_t) 1, numOpen);
         return (int) juce::jlimit ((juce::int64) (32 << 10), (juce::int64) (1 << 20), share);
     }
+    /** An opener for files read through a buffer of bufBytes: used by the session and by the offline render (Bounce). A file whose sample rate is
+        not 'rate' (when rate > 0) is refused (null), and 'problem' (if given) says why. */
+    static Opener makeOpener (juce::AudioFormatManager& formats, int bufBytes, double rate, juce::String* problem);
     const std::vector<PlaySegment>& getSegments() const { return segments; }
 
 private:
     void run() override;
+    /** The timeline place of the sound 'played' samples into the session (see getTimelinePosition). */
+    juce::int64 timelineAt (juce::int64 played) const noexcept
+    {
+        const auto lf = linearFrom.load (std::memory_order_acquire);
+        if (lf >= 0 && played >= lf) return linearTimeline.load (std::memory_order_relaxed) + (played - lf);
+        if (played < 0 || loopLen <= 0) return startPos + played;
+        return startPos + ((looping.load() || played > loopLen) ? played % loopLen : played);
+    }
+    /** Audio thread: copies up to n ready samples into the track buffers at 'offset'; returns how many. */
+    int readRing (int offset, int n) noexcept;
 
     std::vector<int> channelCounts;
     std::vector<PlaySegment> segments;
-    std::vector<std::unique_ptr<juce::AudioFormatReader>> readers;
+    std::vector<std::unique_ptr<juce::AudioFormatReader>> readers;      // one per segment, opened as they are needed (disk thread)
+    Opener opener;
     juce::AudioFormatManager formats;
     juce::int64 startPos, endPos, renderPos;
+    const juce::int64 loopEnd, loopLen;               // the end the session was made with (the loop's end), and start to it
+    juce::int64 continueTo;                           // see setContinueTo
+    std::atomic<bool> releaseRequest { false };       // see releaseLoop
+    // disk thread: how much it has put in the ring, where the pass it is reading began in that count, and where the faded last moments of the
+    // passes still in the ring begin in it (a short loop can be several passes ahead of what is heard)
+    juce::int64 written = 0, wrapStream = 0;
+    std::vector<juce::int64> tails;
+    // once the loop is let go of: from consumed sample linearFrom on, the timeline runs straight on from linearTimeline (-1: not let go of)
+    std::atomic<juce::int64> linearFrom { -1 }, linearTimeline { 0 };
+    // a loop let go of after the reader had already faded its end / gone round: the audio thread skips dropLen samples once it has consumed dropAt
+    std::atomic<juce::int64> dropAt { -1 }, dropLen { 0 }, dropTimeline { 0 };
     double sampleRate;
     int maxBlock;
 

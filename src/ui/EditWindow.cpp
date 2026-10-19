@@ -1,5 +1,6 @@
 #include "WaveDraw.h"
 #include "EditWindow.h"
+#include "PaintProfile.h"
 #include <set>
 #include <map>
 #include <limits>
@@ -144,6 +145,7 @@ public:
         the whole picture is painted once where it is, then the band is painted again over the top of the visible part. */
     void paint (juce::Graphics& g) override
     {
+        const auto tPaint0 = paintprof::enabled() ? juce::Time::getMillisecondCounterHiRes() : 0.0;
         headerPass = false;
         paintAll (g);
         const int sy = viewport.getViewPositionY();
@@ -156,6 +158,7 @@ public:
             paintAll (g);
             headerPass = false;
         }
+        if (paintprof::enabled()) paintprof::paintDone ("edit window", juce::Time::getMillisecondCounterHiRes() - tPaint0, g.getClipBounds().getWidth(), g.getClipBounds().getHeight());
     }
     bool headerPass = false;
     int hdrShift = 0;                          // while the mouse works in the sticky band: how far down it has been moved
@@ -213,28 +216,39 @@ public:
         }
 
         const double rate = juce::jmax (1.0, e->sampleRate);
+        // Only what is inside the clip is drawn: a piece wholly left or right of it is skipped, and so are the rows above and below it (the meters'
+        // repaint, several times a second, is a narrow column: it must not cost as much as the whole picture).
+        const auto clip = g.getClipBounds();
+        const bool lanesVisible = clip.getY() < top;
+        std::vector<juce::Colour> rowColour; for (auto& t : tracks) rowColour.push_back (chan::of (app.project, t.id));
+        paintprof::Scope profPieces ("edit window", "pieces");
         for (size_t k = 0; k < e->regions.size(); ++k)
         {
             const auto& r = e->regions[k];
             const int x0 = xOf ((double) r.startSample / rate);
             const int wpx = juce::jmax (3, (int) ((double) r.length() / rate * pixelsPerSecond));
+            const int fadeReach = (int) (juce::jmax (r.inEnd - r.inStart, r.outEnd - r.outStart) * pixelsPerSecond) + 60;      // (the fades and handles reach outside the piece)
+            if (x0 - fadeReach > clip.getRight() || x0 + wpx + fadeReach < clip.getX()) continue;
             const bool selected = isSelected (r.id);
 
             auto lane = juce::Rectangle<int> (x0, kRulerH + 11, wpx, kLaneH - 13);   // below the flags, so the title has a line to itself
-            g.setColour (selected ? juce::Colour (0xffc26500) : theme::accent);
-            g.fillRect (lane);
-            g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
-            g.drawText (r.takeName + "   " + formatTime ((double) r.srcIn / rate).substring (3, 11) + " - " + formatTime ((double) r.srcOut / rate).substring (3, 11),
-                        lane.reduced (6, 0), juce::Justification::centredLeft, true);
-
-            drawFadeHandles (g, lane, r, rate, k == 0, k + 1 == e->regions.size());
+            if (lanesVisible)
+            {
+                g.setColour (selected ? juce::Colour (0xffc26500) : theme::accent);
+                g.fillRect (lane);
+                g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
+                g.drawText (r.takeName + "   " + formatTime ((double) r.srcIn / rate).substring (3, 11) + " - " + formatTime ((double) r.srcOut / rate).substring (3, 11),
+                            lane.reduced (6, 0), juce::Justification::centredLeft, true);
+                drawFadeHandles (g, lane, r, rate, k == 0, k + 1 == e->regions.size());
+            }
 
             for (size_t ti = 0; ti < tracks.size(); ++ti)
             {
+                auto rr = juce::Rectangle<int> (x0, top + (int) ti * rowH + 3, wpx, rowH - 6);
+                if (rr.getBottom() < clip.getY() || rr.getY() > clip.getBottom()) continue;       // the row is off the screen
                 const RegionFile* rf = nullptr;
                 for (auto& f : r.files) if (f.trackId == tracks[ti].id) rf = &f;
                 if (rf == nullptr) continue;
-                auto rr = juce::Rectangle<int> (x0, top + (int) ti * rowH + 3, wpx, rowH - 6);
                 juce::int64 srcA = r.srcIn, srcB = r.srcOut;
                 if (tracks[ti].isLtc)                                   // LTC is cut hard: from the first sample of the piece's fade-in, to one sample before the next piece's fade-in
                 {
@@ -244,7 +258,7 @@ public:
                     rr = juce::Rectangle<int> (lx0, rr.getY(), juce::jmax (1, xOf ((double) le / rate) - lx0), rr.getHeight());
                     srcA = r.srcIn + (lb - r.startSample); srcB = r.srcIn + (le - r.startSample);
                 }
-                const auto tc = chan::of (app.project, tracks[ti].id);
+                const auto tc = rowColour[ti];
                 g.setColour (selected ? chan::clipFill (tc, true) : chan::clipFill (tc));
                 g.fillRect (rr);
                 if (r.waiting.active() && (r.waiting.tracks.empty() || std::find (r.waiting.tracks.begin(), r.waiting.tracks.end(), rf->trackId) != r.waiting.tracks.end()))
@@ -291,6 +305,7 @@ public:
             shade (r.fadeOutBegin(), r.fadeOutFinish(), selectedJoin == (int) k + 1 ? juce::Colour (0x77ff9d2e) : juce::Colour (0x44ff9d2e));
         }
 
+        profPieces.next ("edit points and the rest");
         // The edit points: every fade of the edit, numbered in order along the timeline. Edit 1 is where the first piece starts, the last one is where
         // the final piece fades out, and each join between two pieces is one edit. (Overdubs do not count.) The flag stands in the middle of the crossfade
         // (or of the gap, when the fades do not overlap). Click one to select it; double-click or T opens the Trim window on it.
@@ -1421,7 +1436,7 @@ private:
             auto t = std::make_unique<juce::AudioThumbnail> (128, formatManager, thumbCache);
             t->addChangeListener (this);
             if (wavestore::loadThumbnail (*t, wavesFolder(), f)) saver.markDone (key);      // saved in the Waveforms folder: no need to read the audio again
-            else t->setSource (new juce::FileInputSource (f));
+            else { t->setSource (new juce::FileInputSource (f)); saver.markPending (key); }
             it = thumbs.emplace (key, std::move (t)).first;
         }
         return it->second.get();
@@ -1433,7 +1448,7 @@ private:
     void syncRedraw()
     {
         if (app.redrawStamp == redrawSeen) return;
-        for (auto& e : app.redrawLog) if (e.first > redrawSeen) { thumbs.erase (e.second); saver.done.erase (e.second); directWave.forget (e.second); }
+        for (auto& e : app.redrawLog) if (e.first > redrawSeen) { thumbs.erase (e.second); saver.forget (e.second); directWave.forget (e.second); }
         thumbCache.clear();
         redrawSeen = app.redrawStamp;
     }
@@ -1516,6 +1531,7 @@ struct EditViewport : public juce::Viewport
 
 EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) : app (a), editId (id)
 {
+    getProperties().set (ownsRKeyProperty(), true);         // R here butts the selected pieces together: it does not start a recording
     auto* vp = new EditViewport();
     timeline.reset (new EditTimeline (app, editId, *vp));
     vp->setViewedComponent (timeline.get(), false);
@@ -2030,7 +2046,7 @@ void EditWindowComponent::togglePlay()
     double a = 0.0, b = 0.0;
     if (loopToggle.getToggleState() && loopRange (a, b))             // loop on and marks 1 / 2 set: go round that area
     {
-        const auto err = app.playEdit (editId, a, b, true);
+        const auto err = app.playEdit (editId, a, b, true, true);
         if (err.isNotEmpty()) showError ("Play", err);
         return;
     }
@@ -2054,8 +2070,8 @@ void EditWindowComponent::loopChanged()
     double a = 0.0, b = 0.0;
     if (on && ! loopRange (a, b)) { app.setNotice ("Loop: set marks 1 and 2 first (the loop plays the area between them)."); return; }
     if (! mine) return;
-    if (on) { const auto err = app.playEdit (editId, a, b, true); if (err.isNotEmpty()) showError ("Play", err); }        // switched on while playing: start going round now
-    else app.engine.setPlaybackLooping (false);                                                                             // switched off: finishes this pass and stops
+    if (on) { const auto err = app.playEdit (editId, a, b, true, true); if (err.isNotEmpty()) showError ("Play", err); }        // switched on while playing: start going round now
+    else app.engine.releasePlaybackLoop();                                                                                  // switched off: plays straight on past mark 2
 }
 
 /** R: the selected piece is moved so it starts exactly where the piece before it ends (everything after it moves with it), ready to be trimmed. */
@@ -2204,7 +2220,7 @@ bool EditWindowComponent::keyPressed (const juce::KeyPress& k)
     }
     if (c == '.' || c == '>') { app.changeWaveZoom (1.4f);        return true; }          // . bigger waveforms
     if (c == ',' || c == '<') { app.changeWaveZoom (1.0f / 1.4f); return true; }          // , smaller
-    if (k == juce::KeyPress::spaceKey) { togglePlay(); return true; }
+    if (k == juce::KeyPress::spaceKey) { if (! spaceIsForRecording()) togglePlay(); return true; }
     if (k == juce::KeyPress::leftKey)  { timeline->zoom (1.0 / 1.4);          return true; }     // arrows zoom: left / right = horizontal,
     if (k == juce::KeyPress::rightKey) { timeline->zoom (1.4);                return true; }     // up / down = vertical (same keys as the take window)
     if (k == juce::KeyPress::upKey)    { timeline->zoomVertical (1.0 / 1.25); return true; }

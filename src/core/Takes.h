@@ -29,6 +29,7 @@ struct TakeGroup
     double       fadeInSeconds = kDefaultEdgeFade, fadeOutSeconds = kDefaultEdgeFade;   // short fades when the take is played / bounced (the files are untouched)
     std::vector<TakeFile> files;
     bool         dud = false;               // marked with D: nothing good in this take
+    bool         verified = false;          // its files were found whole when the project was opened (saved: the next open does not ask the disk about them again, see Project::repairInterruptedRecordings)
     int          overruns = 0;              // blocks that did not reach the disk buffer in time while it was recorded (their time is silence in the files)
     juce::int64  lostSamples = 0;           // how much audio those overruns cost (the most on any one file)
     bool         writeFailed = false;       // a file stopped taking data while recording (the drive was full, or gone): the take is cut short

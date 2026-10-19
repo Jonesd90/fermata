@@ -108,7 +108,7 @@ int main (int argc, char** argv)
         const int action = (int) (rng() % 12);
         switch (action)
         {
-            case 0: eng.rebuildPlan(); ++rebuilds; break;
+            case 0: eng.rebuildPlan(); eng.servicePreRoll(); ++rebuilds; break;
             case 1:
                 if (! eng.isRecording() && ! eng.isPlaying()) { if (eng.startRecording (tw).isEmpty()) ++recordings; }
                 else if (eng.isRecording()) { lastTake = eng.stopRecording(); eng.reapFinishedTakes(); }
@@ -145,7 +145,7 @@ int main (int argc, char** argv)
                 ++sends;
                 break;
             }
-            case 5: eng.setSessionMode (chance (50)); break;
+            case 5: eng.setSessionMode (chance (50)); eng.servicePreRoll(); break;
             case 6: (void) eng.mixerLatency (&mixA); (void) eng.offlineLatency(); (void) eng.recordedSeconds(); (void) eng.playbackSecondsSmooth(); break;
             case 7: eng.setAuditionMixer (chance (50) ? &mixB : nullptr); break;
             case 8: eng.setScopeSource (chance (50) ? (const void*) mixA.stripFor (mainId) : nullptr); { float l[4096], r[4096]; eng.readScope (l, r, 4096); } break;

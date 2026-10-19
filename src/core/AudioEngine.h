@@ -30,6 +30,10 @@ public:
 
     /** Call after any change to tracks / mixers / effects channels (message thread). */
     void rebuildPlan();
+    /** True until the audio thread once failed to come round within half a second while something was being taken away from it (a plan, a playback
+        session, the pre-roll ring: see waitForAudioThread). The old data is then leaked rather than freed under it, and because that data may point
+        at mixers retired before it, those are never freed either for the rest of the run: false stays false. See AppContext::freeRetiredMixersSoon. */
+    bool audioThreadNeverStalled() const noexcept { return neverStalled.load (std::memory_order_relaxed); }
     /** Delay compensation. Message thread, about a few times a second: asks every loaded plug-in how late it is and, when anything changed (a plug-in
         loaded, bypassed, or one that changed its own delay), rebuilds the plan so that all paths are lined up again. */
     void checkLatency();
@@ -103,8 +107,14 @@ public:
 
     // --- session mode: the inputs are kept for the last few seconds, so a take starts that long BEFORE Record was pressed ---
     static constexpr double kPreRollSeconds = 6.0;
-    /** Switch session mode on / off (message thread). The listening stream is never touched by this, nor by starting or stopping a recording. */
+    /** Switch session mode on / off (message thread). The listening stream is never touched by this, nor by starting or stopping a recording.
+        The memory that keeps the last seconds (for 40 inputs at 96 kHz about 120 MB) is made on a background thread and put in place a moment later
+        (servicePreRoll), so switching it on never holds the program up. */
     void setSessionMode (bool on);
+    /** Message thread, often (a timer): puts a pre-roll memory made in the background in place. */
+    void servicePreRoll();
+    /** Message thread: waits (at most maxMs) until the pre-roll memory session mode needs is in place. True when it is (or none is needed). */
+    bool waitForPreRoll (int maxMs);
     bool isSessionMode() const noexcept   { return sessionMode.load(); }
 
     // --- playback (the mixers are fed from disk instead of the live inputs while this plays) ---
@@ -113,6 +123,14 @@ public:
     void stopPlayback();
     /** Turns looping of the running playback on or off (off: it plays on to its end). */
     void setPlaybackLooping (bool on) noexcept { if (auto* p = playback.load()) p->setLooping (on); }
+    /** The take / edit window's Loop switched off while it plays: the sound carries straight on past mark 2 (see PlaybackSession::releaseLoop). */
+    void releasePlaybackLoop() noexcept { if (auto* p = playback.load()) p->releaseLoop(); }
+    /** Seconds along the timeline from where the play started, for the playhead: round and round in a loop, straight on once it was let go of. */
+    double playbackTimelineSeconds (bool smooth) const noexcept
+    {
+        auto* p = playback.load();
+        return p != nullptr ? p->timelineSecondsFromStart (smooth ? p->getSmoothPositionSeconds() : p->getPositionSeconds()) : 0.0;
+    }
     bool isPlaying() const noexcept        { return playback.load() != nullptr; }
     /** True once a session has reached its end (call stopPlayback() from the message thread to tidy up). */
     bool playbackFinished() const noexcept { auto* p = playback.load(); return p != nullptr && p->isFinished(); }
@@ -348,12 +366,14 @@ private:
     BlockJobs blockJobs;                            // audio thread: what the mixer jobs of this block work on
     std::atomic<juce::uint64> parallelBlocks { 0 };
     std::atomic<Plan*> lastPlanSeen { nullptr };    // audio thread: the plan of the previous block (see carryOver)
+    bool destroying = false;                          // the destructor is running (stopPlayback then rebuilds nothing)
+    std::atomic<bool> neverStalled { true };          // false once waitForAudioThread gave up (something was leaked rather than freed under the audio thread)
     HostTransport transport;                          // what the plug-ins are told (filled per block on the audio thread, or per offline render step)
     juce::int64 offlinePos = 0;                       // offline render: the timeline position the plug-ins are told
     MixerWorkers mixerWorkers;
     BackupCopier backupCopier;
     juce::File backupRoot;
-    bool waitForAudioThread();                      // true once the audio thread has certainly left the old data; false if it stalled for half a second (then the old data is left alone rather than freed under it)
+    bool waitForAudioThread();                      // true once the audio thread has certainly left the old data; false if it stalled for half a second (then the old data is left alone rather than freed under it, and neverStalled is cleared for good)
     void ensurePreRoll();                           // message thread: (re)makes the ring when session mode is on and nothing is recording
     void deliverFromRing (RecordingSession&, juce::int64 from, juce::int64 to);
     std::unique_ptr<Plan> buildPlan() const;
@@ -422,6 +442,22 @@ private:
         std::atomic<bool> done { false };
     };
     std::vector<std::unique_ptr<Finishing>> finishing;
+    /** Makes the pre-roll memory in the background (see setSessionMode). */
+    struct RingBuilder : public juce::Thread
+    {
+        RingBuilder() : juce::Thread ("Pre-roll builder") {}
+        ~RingBuilder() override { stopThread (4000); delete ready.exchange (nullptr); }
+        void run() override;
+        void request (std::vector<int> inputs, int cap, int preLen)
+        {
+            { const juce::ScopedLock sl (lock); wantInputs = std::move (inputs); wantCap = cap; wantPre = preLen; pending = true; }
+            notify();
+        }
+        std::atomic<PreRoll*> ready { nullptr };    // made, waiting to be put in place by the message thread
+        juce::CriticalSection lock;
+        bool pending = false; std::vector<int> wantInputs; int wantCap = 0, wantPre = 0;
+    } ringBuilder;
+    std::vector<int> wantedRingInputs; int wantedRingCap = 0;      // message thread: the pre-roll memory asked for (0 = none)
     struct Finisher : public juce::Thread
     {
         Finisher() : juce::Thread ("Take finisher") {}

@@ -116,6 +116,13 @@ public:
         ctx->activeKind = [this] { return activeKind(); };
         ctx->windowLight = [this] (const juce::String& kind) { return windowLight (kind); };
         ctx->lastWorkWindowKey = [this] { return lastWorkWindowKey(); };
+        ctx->lastTakeWindowId = [this]
+        {
+            ToolWindow* best = nullptr; juce::String bestKey;
+            for (auto& kv : windows)
+                if (kv.second != nullptr && kv.first.startsWith ("take:") && kv.second->lastActive > 0 && (best == nullptr || kv.second->lastActive > best->lastActive)) { best = kv.second.get(); bestKey = kv.first; }
+            return best != nullptr ? juce::Uuid (bestKey.fromFirstOccurrenceOf (":", false, false)) : recentTake;
+        };
         ctx->showTrim = [this] (const juce::Uuid& e, const juce::Uuid& r, bool atEnd) { openTrim (e, r, atEnd); };
         ctx->closeWindowByKey = [this] (const juce::String& key) { closeWindowLater (key); };
         ctx->closeAllWindows = [this] { juce::MessageManager::callAsync ([this] { windows.clear(); }); };

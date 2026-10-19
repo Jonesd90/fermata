@@ -906,7 +906,7 @@ bool TrimComponent::keyPressed (const juce::KeyPress& k)
 {
     const auto c = juce::CharacterFunctions::toLowerCase (k.getTextCharacter());
     if (k == juce::KeyPress::F2Key) { audition(); return true; }
-    if (k == juce::KeyPress::spaceKey) { if (app.isPlaying()) { stopAll(); } return true; }      // Space stops whatever is playing (an audition or the original): ready to listen again
+    if (k == juce::KeyPress::spaceKey) { if (app.isPlaying() && ! spaceIsForRecording()) { stopAll(); } return true; }      // Space stops whatever is playing (an audition or the original): ready to listen again
     if (k == juce::KeyPress::returnKey) { accept(); return true; }
     if (k == juce::KeyPress::rightKey) { zoomBy (1.0 / 1.25); return true; }      // right = zoom in
     if (k == juce::KeyPress::leftKey)  { zoomBy (1.25); return true; }            // left = zoom out

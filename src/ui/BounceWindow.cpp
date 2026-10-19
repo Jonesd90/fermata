@@ -292,7 +292,7 @@ bool BounceComponent::buildSettings (BounceSettings& bs, juce::String& error) co
         if (e->automationOn) bs.automationEdit = e->id;                  // the edit's automation is part of what is bounced
         if (fullButton.getToggleState())
         {
-            bs.items.push_back ({ base, e->firstSample(), e->lengthSamples() });
+            bs.items.push_back ({ base, e->audibleStart(), e->audibleEnd() });       // (the fades included, even where they reach outside the first and last piece)
         }
         else if (ioButton.getToggleState())
         {

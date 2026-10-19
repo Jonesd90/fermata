@@ -119,6 +119,15 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     void remoteTalk (bool down);                         // the Talk key went down / up
     void remotePlayback() { if (! project.tbOutputs.empty()) tbWanted = ! tbWanted; }
     void remoteRecord();                                 // start (green) / stop (red) a take in the take window used last
+    /** Space and R, watched straight from the keyboard 60 times a second (like the talkback keys) so that they work from every window of the program,
+        whichever window or button has the keyboard: Space stops the recording, R starts one (in the take window used last). Not while a text box is
+        being typed in, not with Shift / Ctrl / Alt held, not in a window whose R has its own job (the edit window, the process windows), and only
+        while Fermata is the program in front. */
+    void pollTransportKeys();
+    bool spaceWasDown = false, rWasDown = false;
+    bool spaceHeldAfterStop = false;                     // the Space that stopped a recording is still held: no window acts on it
+    static bool typingInTextBox();
+    static bool rKeyHasOwnJobHere();
     void remotePlayPause();                              // plays in the window you used last (take or edit), or stops
     void remoteMixer (int index) { if (toggleMixerAt) toggleMixerAt (index); }
     std::function<void (int)> toggleMixerAt;             // set by the application: opens / closes the mixer with this index (0 = the processing mixer)
@@ -170,10 +179,13 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     /** Plays a take (all its tracks) from fromSec to toSec (-1 = to the end), seconds from the start of the take. */
     /** Plays the whole take window from 'fromSec' on its timeline: every take sounds where it stands, the gaps and everything after the last take are silent,
         and it keeps going (about 6 hours) until you stop it. */
-    juce::String playTakeWindow (const juce::Uuid& windowId, double fromSec);
+    /** Plays the take window's timeline from fromSec. With loopToSec > fromSec it goes round [fromSec, loopToSec) until the loop is let go of
+        (Loop switched off: it then carries straight on), at the sample rate of rateOfTake if given. */
+    juce::String playTakeWindow (const juce::Uuid& windowId, double fromSec, double loopToSec = -1.0, const juce::Uuid& rateOfTake = juce::Uuid::null());
     juce::String playTake (const juce::Uuid& windowId, const juce::Uuid& takeId, double fromSec, double toSec = -1.0, bool loop = false);
-    /** Plays the edit, crossfades included, from fromSec to toSec (-1 = to the end), on the edit timeline. */
-    juce::String playEdit (const juce::Uuid& editId, double fromSec, double toSec = -1.0, bool loop = false);
+    /** Plays the edit, crossfades included, from fromSec to toSec (-1 = to the end), on the edit timeline. goOnAfterLoop: a loop that is let go of
+        (the edit window's Loop switched off) carries straight on past toSec; without it the pass finishes and it stops (the process windows). */
+    juce::String playEdit (const juce::Uuid& editId, double fromSec, double toSec = -1.0, bool loop = false, bool goOnAfterLoop = false);
     /** One clip of a disc audition: the edit and where it starts on the disc's timeline. */
     struct DiscPlayItem { juce::Uuid editId; double startSeconds = 0.0; };
     /** Plays the clips one after the other, each at its place on the disc timeline (the pauses between them are silence), through the mixers with the
@@ -202,6 +214,9 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     std::vector<std::pair<int, juce::String>> redrawLog; int redrawStamp = 0;
     /** The edit or take window that was last in front ("edit:<id>" / "take:<id>"; "" = none), set by the application. */
     std::function<juce::String()> lastWorkWindowKey;
+    /** The take window that is in front, or was in front last (whatever has been in front since): where R records. Null if no take window has been
+        open yet. Set by the application. */
+    std::function<juce::Uuid()> lastTakeWindowId;
     std::vector<juce::File> audioFilesOfWindow (const juce::String& key) const;
     void setShowInsertFlag (bool on);
     void setTrimSlip (bool left, bool right);
@@ -265,6 +280,9 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     void saveNow (bool quick = false);
     bool skipFinalSave = false;                       // "Quit without saving": the last save when closing is left out
     void restoreLastProject();
+    /** After a plan rebuild: the mixers retired before it (a removed mixer, the mixers of a project that was open before) are freed with their
+        plug-ins, a little later on the message thread (once every window has let go of them), if the rebuild freed the old plan. */
+    void freeRetiredMixersSoon();
     /** Has a project been chosen (new or opened)? Until then nothing is saved or recorded. */
     bool hasProject() const { return project.projectFile != juce::File(); }
     /** The start-up state: an empty in-memory project that is not saved anywhere, until the user picks where the project goes. */

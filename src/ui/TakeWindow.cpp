@@ -2,6 +2,7 @@
 #include <limits>
 #include "WaveDraw.h"
 #include "TakeWindow.h"
+#include "PaintProfile.h"
 #include "FixTools.h"
 #include "ColourPicker.h"
 #include "MarkerStrip.h"
@@ -161,6 +162,7 @@ public:
         the picture is painted once where it is, then the band is painted again over the top of the visible part. */
     void paint (juce::Graphics& g) override
     {
+        const auto tPaint0 = paintprof::enabled() ? juce::Time::getMillisecondCounterHiRes() : 0.0;
         headerPass = false;
         paintAll (g);
         const int sy = viewport.getViewPositionY();
@@ -173,6 +175,7 @@ public:
             paintAll (g);
             headerPass = false;
         }
+        if (paintprof::enabled()) paintprof::paintDone ("take window", juce::Time::getMillisecondCounterHiRes() - tPaint0, g.getClipBounds().getWidth(), g.getClipBounds().getHeight());
     }
     bool headerPass = false;
     int hdrShift = 0;
@@ -207,6 +210,7 @@ public:
             g.fillRect (0, y, getWidth(), rowH);
         }
 
+        paintprof::Scope profGrid ("take window", "grid");
         g.setColour (theme::ruler); g.fillRect (0, 0, getWidth(), kRulerH);
         g.setColour (juce::Colours::black.withAlpha (0.22f)); g.fillRect (0, 0, getWidth(), markerui::kStripH);          // the marker strip
         const double step = pixelsPerSecond >= 200 ? 0.5 : pixelsPerSecond >= 60 ? 1.0 : pixelsPerSecond >= 24 ? 5.0 : pixelsPerSecond >= 8 ? 10.0 : pixelsPerSecond >= 3 ? 60.0 : 300.0;
@@ -226,11 +230,19 @@ public:
             g.setColour (theme::dimText); g.setFont (12.0f); g.drawText (formatTime (s).substring (3, 8), x + 3, 3 + markerui::kStripH, 64, 16, juce::Justification::left);
         }
         g.setColour (theme::border); g.fillRect (0, kRulerH - 1, getWidth(), 1);
+        profGrid.next ("takes");
 
         const bool recordingHere = app.engine.isRecording() && w->findGroup (app.engine.currentTakeId()) != nullptr;
         const double playhead = app.playheadSeconds();
         struct UseFlag { int x, y0, y1; bool isIn; int number; };
         std::vector<UseFlag> useFlags;
+        // Only what is inside the clip is drawn: a take wholly left or right of it is skipped, and so are the rows above and below it. With 60 takes
+        // of 20 tracks in a window this is what keeps the 30 Hz meter repaint (a 150 px column) from costing as much as the whole picture.
+        const auto clip = g.getClipBounds();
+        std::map<juce::Uuid, int> rowOf; std::vector<juce::Colour> rowColour;          // track -> its row, and each row's colour (looked up once per paint, not per clip)
+        for (size_t i = 0; i < tracks.size(); ++i) { rowOf[tracks[i]->id] = (int) i; rowColour.push_back (chan::of (app.project, tracks[i]->id)); }
+        const auto rowOfTrack = [&] (const juce::Uuid& id) { auto it = rowOf.find (id); return it != rowOf.end() ? it->second : -1; };
+        const bool lanesVisible = clip.getY() < top;                                      // the banner strip and the flags are above the rows
         for (auto& grp : w->groups)
         {
             const bool live = recordingHere && grp.id == app.engine.currentTakeId();
@@ -238,14 +250,18 @@ public:
             const double len = live ? app.engine.recordedSeconds() : grp.lengthSeconds();
             const int x0 = xOf (grp.startSeconds);
             const int wpx = juce::jmax (4, (int) (len * pixelsPerSecond));
+            if (! live && (x0 - 60 > clip.getRight() || x0 + wpx + 60 < clip.getX())) continue;        // (60 px: the flags and the fade corners reach outside the take)
 
             auto lane = juce::Rectangle<int> (x0, kRulerH + 16, wpx, 20);      // under the row of marks 1 / 2 flags and above the row of In / Out flags
             const bool picked = isTakeSelected (grp.id);
-            g.setColour (live ? juce::Colour (0xffb03030) : (picked ? theme::accent.darker (0.45f) : theme::accent));
-            g.fillRect (lane);
-            g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
-            g.drawText (w->displayName (grp), lane.reduced (6, 0), juce::Justification::centredLeft, true);
-            if (! live)                                     // the take's fades (25 ms unless changed): drag the top corners
+            if (lanesVisible)
+            {
+                g.setColour (live ? juce::Colour (0xffb03030) : (picked ? theme::accent.darker (0.45f) : theme::accent));
+                g.fillRect (lane);
+                g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+                g.drawText (w->displayName (grp), lane.reduced (6, 0), juce::Justification::centredLeft, true);
+            }
+            if (! live && lanesVisible)                     // the take's fades (25 ms unless changed): drag the top corners
             {
                 g.setColour (juce::Colours::white.withAlpha (0.85f));
                 auto corner = [&] (bool left, double fadeSec)
@@ -260,19 +276,21 @@ public:
             }
 
             int firstRow = 1 << 20, lastRow = -1;
+            for (auto& tf : grp.files) { const int row = rowOfTrack (tf.trackId); if (row >= 0) { firstRow = juce::jmin (firstRow, row); lastRow = juce::jmax (lastRow, row); } }
             for (auto& tf : grp.files)
             {
-                const int row = trackRow (tf.trackId);
+                const int row = rowOfTrack (tf.trackId);
                 if (row < 0) continue;
-                firstRow = juce::jmin (firstRow, row); lastRow = juce::jmax (lastRow, row);
                 auto r = juce::Rectangle<int> (x0, top + row * rowH + (rowH > 24 ? 3 : 1), wpx, rowH - (rowH > 24 ? 6 : 2));
-                const auto tc = chan::of (app.project, tf.trackId);
+                if (r.getBottom() < clip.getY() || r.getY() > clip.getBottom()) continue;       // the row is off the screen
+                const auto tc = rowColour[(size_t) row];
                 g.setColour (live ? juce::Colour (0xff6a3434) : chan::clipFill (tc, picked));      // the track's own colour, darker when the take is selected
                 g.fillRect (r);
                 if (live) drawLiveWave (g, r.reduced (1), tf.trackId);
                 else if (finishing) drawLiveWave (g, r.reduced (1), tf.trackId, grp.id);
                 else
                 {
+                    paintprof::Scope profWave ("take window", "waveforms");
                     setWaveColour (g, chan::waveColour (tc));
                     juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (r.reduced (1));
                     auto* th = thumbnailFor (tf.file);
@@ -330,7 +348,7 @@ public:
                     g.setColour (juce::Colour (0x2a3b8cff));
                     const int mx = x0 + (int) (w->editIn * pixelsPerSecond), mw = (int) ((w->editOut - w->editIn) * pixelsPerSecond);
                     if (w->editTracks.empty()) g.fillRect (juce::Rectangle<int> (mx, y0, mw, y1 - y0));
-                    else for (auto& tf : grp.files) { const int row = trackRow (tf.trackId); if (row >= 0 && w->editUses (tf.trackId)) g.fillRect (juce::Rectangle<int> (mx, kRulerH + kLaneH + row * rowH, mw, rowH)); }
+                    else for (auto& tf : grp.files) { const int row = rowOfTrack (tf.trackId); if (row >= 0 && w->editUses (tf.trackId)) g.fillRect (juce::Rectangle<int> (mx, kRulerH + kLaneH + row * rowH, mw, rowH)); }
                 }
                 auto flag = [&] (double sec, juce::Colour c, const char* t, bool left)
                 {
@@ -365,6 +383,7 @@ public:
             }
         }
 
+        profGrid.next ("flags and names");
         // The In / Out flags of every take: all the Out flags first and the In flags over them, so an In flag is never hidden under the Out flag of the
         // piece before it. A join with no edit number ("fx", only a crossfade) gets a small grey tag, "I fx" / "O fx", just big enough for its text.
         for (int pass = 0; pass < 2; ++pass)
@@ -407,10 +426,11 @@ public:
 
         if (w->showMarkers) markerui::paintFlags (g, w->markers, [this] (double s) { return xOf (s); }, viewport.getViewPositionX() + kNameW, getHeight(), markers.draggedId());
         const int sx = viewport.getViewPositionX();
-        for (size_t i = 0; i < tracks.size(); ++i)
+        for (size_t i = 0; i < tracks.size() && sx < clip.getRight() && sx + kNameW > clip.getX(); ++i)
         {
             auto r = juce::Rectangle<int> (sx, top + (int) i * rowH, kNameW, rowH);
-            const auto tc = chan::of (app.project, tracks[i]->id);
+            if (r.getBottom() < clip.getY() || r.getY() > clip.getBottom()) continue;
+            const auto tc = rowColour[(size_t) i];
             g.setColour (theme::panel); g.fillRect (r);
             g.setColour (tc.withAlpha (0.20f)); g.fillRect (r);                              // the name plate carries the track's colour
             g.setColour (tc); g.fillRect (r.removeFromLeft (6));
@@ -858,7 +878,7 @@ private:
                 tops.push_back (mid - (float) hi / 32767.0f * half * app.waveZoom);
                 bots.push_back (mid - (float) lo / 32767.0f * half * app.waveZoom);
             }
-            fillEnvelope (g, (float) r.getX(), tops, bots);
+            fillEnvelope (g, (float) r.getX(), tops, bots, nullptr, laneH);
         }
     }
 
@@ -1005,7 +1025,7 @@ private:
             auto t = std::make_unique<juce::AudioThumbnail> (128, formatManager, thumbCache);
             t->addChangeListener (this);
             if (wavestore::loadThumbnail (*t, wavesFolder(), f)) saver.markDone (key);      // saved in the Waveforms folder: no need to read the audio again
-            else t->setSource (new juce::FileInputSource (f));
+            else { t->setSource (new juce::FileInputSource (f)); saver.markPending (key); }
             it = thumbs.emplace (key, std::move (t)).first;
         }
         return it->second.get();
@@ -1017,7 +1037,7 @@ private:
     void syncRedraw()
     {
         if (app.redrawStamp == redrawSeen) return;
-        for (auto& e : app.redrawLog) if (e.first > redrawSeen) { thumbs.erase (e.second); saver.done.erase (e.second); directWave.forget (e.second); }
+        for (auto& e : app.redrawLog) if (e.first > redrawSeen) { thumbs.erase (e.second); saver.forget (e.second); directWave.forget (e.second); }
         thumbCache.clear();
         redrawSeen = app.redrawStamp;
     }
@@ -1025,10 +1045,14 @@ private:
     void changeListenerCallback (juce::ChangeBroadcaster* source) override
     {
         if (source != &app.project) { thumbsChanged = true; return; }      // a waveform was read a bit further: shown at the next tick (see timerCallback)
+        const auto t0 = paintprof::enabled() ? juce::Time::getMillisecondCounterHiRes() : 0.0;
+        paintprof::Scope prof ("take timeline change", "save thumbnails");
         saver.saveFinished (thumbs, wavesFolder());
         pruneLeft = thumbs.size();                                         // look again, a few at a time, for waveforms whose audio file has gone
-        updateSize();
+        prof.next ("update size"); updateSize();
         repaint();
+        prof.finish();
+        if (paintprof::enabled()) paintprof::paintDone ("take timeline change", juce::Time::getMillisecondCounterHiRes() - t0);
     }
     // Waveforms being read report every little step; before, each step redrew the whole window AND asked the disk about every audio file the
     // window had shown (thousands of questions, many times a second, after a big import). Now the window is redrawn at most about 6 times a second
@@ -1085,7 +1109,13 @@ private:
         updateMeters();
         refreshThumbsAndPrune();
         if (app.engine.isRecording() || app.isPlaying()) updateSize();
-        if (app.engine.isRecording()) { followPlayhead(); repaint(); }        // the growing take is drawn as it comes in
+        if (app.engine.isRecording())                                        // the growing take is drawn as it comes in: only its own columns are repainted
+        {
+            followPlayhead();
+            auto* w = def(); auto* g = w != nullptr ? w->findGroup (app.engine.currentTakeId()) : nullptr;
+            if (g == nullptr) repaint();
+            else { const int x0 = xOf (g->startSeconds) - 4, x1 = xOf (g->startSeconds + app.engine.recordedSeconds()) + 8; repaint (x0, 0, juce::jmax (12, x1 - x0), getHeight()); }
+        }
         else if (app.isPlaying()) followPlayhead();                          // the playhead moves by itself with the screen (movePlayhead)
         else followActive = false;
     }
@@ -1225,7 +1255,6 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     fwdButton.onClick = [this] { jumpBy (5.0); };
     endTransportButton.onClick = [this] { goToEnd(); };
     for (auto* b : { &startButton, &backButton, &fwdButton, &endTransportButton }) { addAndMakeVisible (b); b->setWantsKeyboardFocus (false); }
-    playMarkedButton.onClick = [this] { playMarked(); };
     toEditButton.onClick = [this] { toEdit(false); };
     toEditAtButton.onClick = [this] { toEdit(true); };
     editInButton.onClick = [this] { editMarkIn(); };
@@ -1245,7 +1274,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification);
     waveColourBtn.setWantsKeyboardFocus (false);
     addAndMakeVisible (waveColourBtn);
-    loopToggle.setTooltip ("Loop: when lit, Play and Play marked repeat the marked area (the marks 1 and 2) over and over until you press Stop. Key L.");
+    loopToggle.setTooltip ("Loop: when lit, Play repeats the marked area (the marks 1 and 2) over and over until you press Stop. Key L.");
     loopToggle.onClick = [this] { loopChanged(); };
     loopToggle.setWantsKeyboardFocus (false);
     addAndMakeVisible (loopToggle);
@@ -1295,10 +1324,10 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     armAllButton.setIcon (Icon::ArmAll, "Arm all"); armNoneButton.setIcon (Icon::ArmNone, "Arm none");
     importButton.setIcon (Icon::ImportTakes, "Import takes"); exportProcButton.setIcon (Icon::ImportMulti, "Export for Processing"); barSearchButton.setIcon (Icon::Search, "Search for bar");
     for (auto* t : { &overdubBox, &markersToggle }) { t->setClickingTogglesState (true); t->setColour (juce::TextButton::buttonOnColourId, theme::accent); }
-    for (auto* c : std::initializer_list<juce::Component*> { &recordButton, &zoomInButton, &zoomOutButton, &playButton, &playMarkedButton,
+    for (auto* c : std::initializer_list<juce::Component*> { &recordButton, &zoomInButton, &zoomOutButton, &playButton,
                                                               &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &exportProcButton, &undoFixButton, &barSearchButton, &timeLabel, &statusLabel, &markLabel })
         addAndMakeVisible (c);
-    for (auto* b : std::initializer_list<juce::Button*> { &recordButton, &zoomInButton, &zoomOutButton, &playButton, &playMarkedButton,
+    for (auto* b : std::initializer_list<juce::Button*> { &recordButton, &zoomInButton, &zoomOutButton, &playButton,
                                                           &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &exportProcButton, &undoFixButton, &barSearchButton })
         b->setWantsKeyboardFocus (false);       // keep the keyboard shortcuts working after a button click
     timeLabel.setFont (juce::FontOptions (20.0f, juce::Font::bold));
@@ -1317,6 +1346,11 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     sendCaption.setText ("To edit goes into:", juce::dontSendNotification);
     nameBlock.addPair (sendCaption, sendBox);                  // "To edit goes into:" and its box under the window's name, under a line, as wide as the name box
     nameBlock.setTopAligned (true);                            // the column starts at the very top, every row as close as it can be
+    for (auto* cap : { &nameLabel, &sendCaption })            // the captions' words at the very top of their row
+    {
+        cap->setJustificationType (juce::Justification::topLeft);
+        cap->setBorderSize (juce::BorderSize<int> (0, 1, 0, 1));
+    }
     sendBox.onChange = [this]
     {
         auto* w = def();
@@ -1387,7 +1421,7 @@ void TakeWindowComponent::resized()
     // the picture buttons: to the right of the time readout, on as many lines as they need (two fit in the readout's height)
     const std::vector<FlowItem> items
     {
-        { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playMarkedButton }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
+        { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
         { &editInButton, IW, IH, 2 }, { &editOutButton, IW, IH, 6 }, { &toEditButton, IW, IH, 2 }, { &toEditAtButton, IW, IH, 2 }, { &overdubBox, IW, IH, 6 }, { &markersToggle, IW, IH, 14 },
         { &editWindowButton, IW, IH, 2 }, { &bounceButton, IW, IH, 14 },
         { &ltcButton, 74, grid::btnH, 14 }, { &armAllButton, IW, IH, 2 }, { &armNoneButton, IW, IH, 14 },
@@ -1398,7 +1432,7 @@ void TakeWindowComponent::resized()
     constexpr int colW = 200;
     const int y0 = r.getY() + 4;                                  // (the 58-high boxes sit 4 below the top, like a line of the old flowing bar)
     int x = r.getX();
-    nameBlock.setBounds (x, y0, colW, nameBlock.idealHeight()); x += colW + 10;
+    nameBlock.setBounds (x, getLocalBounds().getY() + 1, colW, nameBlock.idealHeight()); x += colW + 10;     // (the column starts right at the top of the window, a row above the boxes)
     takeBox.setBounds (x, y0, 84, 58);                            x += 84 + 6;
     recordButton.setBounds (x, y0, 84, 58);                       x += 84 + 6;
     const int tlW = juce::GlyphArrangement::getStringWidthInt (timeLabel.getFont(), "00:00:00.000") + 12;      // the take's length: just as wide as its digits
@@ -1507,7 +1541,7 @@ void TakeWindowComponent::togglePlay()
     if (loopToggle.getToggleState())                                    // loop on and an area marked: go round it
     {
         juce::Uuid lt; double li = 0.0, lo = 0.0;
-        if (markedRange (lt, li, lo)) { const auto err = app.playTake (windowId, lt, li, lo, true); if (err.isNotEmpty()) showError ("Play", err); return; }
+        if (markedRange (lt, li, lo)) { const auto err = playLoop (lt, li, lo); if (err.isNotEmpty()) showError ("Play", err); return; }
         app.setNotice ("Loop is on, but no area is marked (marks 1 and 2): playing normally.");
     }
     // the whole window plays from the playhead, wherever it is: over a take, in a gap, or after the last take (silent, it just carries on)
@@ -1544,8 +1578,17 @@ void TakeWindowComponent::loopChanged()
     juce::Uuid take; double in = 0.0, out = 0.0;
     if (on && ! markedRange (take, in, out)) { app.setNotice ("Loop: mark an area first (marks 1 and 2, or [P] for a whole take): the loop plays the area between them."); return; }
     if (! mine) return;
-    if (on) { const auto err = app.playTake (windowId, take, in, out, true); if (err.isNotEmpty()) showError ("Play", err); }
-    else app.engine.setPlaybackLooping (false);
+    if (on) { const auto err = playLoop (take, in, out); if (err.isNotEmpty()) showError ("Play", err); }
+    else app.engine.releasePlaybackLoop();                               // switched off: plays straight on past mark 2, through the window
+}
+
+juce::String TakeWindowComponent::playLoop (const juce::Uuid& take, double in, double out)
+{
+    // on the window's own timeline (like Play), so that switching Loop off carries on through the window as Play would
+    auto* w = def();
+    auto* g = w != nullptr ? w->findGroup (take) : nullptr;
+    if (g == nullptr) return "That take no longer exists";
+    return app.playTakeWindow (windowId, g->startSeconds + in, g->startSeconds + out, take);
 }
 
 void TakeWindowComponent::openBounce()
@@ -1614,12 +1657,12 @@ void TakeWindowComponent::nudgeCursor (double seconds)
 bool TakeWindowComponent::keyPressed (const juce::KeyPress& k)
 {
     const auto c = juce::CharacterFunctions::toLowerCase (k.getTextCharacter());
-    if (k == juce::KeyPress::spaceKey)                                  // Space stops a recording; otherwise it plays (or stops playing) from the playhead
-    {
-        if (app.engine.isRecording()) { if (hereRecording()) app.toggleRecord (windowId); return true; }
+    if (k == juce::KeyPress::spaceKey)                                  // Space plays (or stops playing) from the playhead. A recording is stopped by AppContext,
+    {                                                                   // which watches Space itself, from whichever window
+        if (spaceIsForRecording()) return true;
         togglePlay(); return true;
     }
-    if (c == 'r' && ! k.getModifiers().isAnyModifierKeyDown())          // R starts recording into this window
+    if (c == 'r' && ! k.getModifiers().isAnyModifierKeyDown())          // R starts recording into this window (AppContext may already have done it: then nothing more happens)
     {
         if (! app.engine.isRecording()) app.toggleRecord (windowId);
         return true;
@@ -1649,7 +1692,12 @@ bool TakeWindowComponent::keyPressed (const juce::KeyPress& k)
     return false;
 }
 
-void TakeWindowComponent::changeListenerCallback (juce::ChangeBroadcaster*) { fillSendBox(); repaint(); }
+void TakeWindowComponent::changeListenerCallback (juce::ChangeBroadcaster*)
+{
+    const auto t0 = paintprof::enabled() ? juce::Time::getMillisecondCounterHiRes() : 0.0;
+    fillSendBox(); repaint();
+    if (paintprof::enabled()) paintprof::paintDone ("take window change", juce::Time::getMillisecondCounterHiRes() - t0);
+}
 
 void TakeWindowComponent::timerCallback()
 {

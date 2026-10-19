@@ -245,7 +245,7 @@ TakeDisplayControl::TakeDisplayControl (AppContext& a) : app (a), preview (a)
     timerText.setInputRestrictions (5, "0123456789:");
     timerText.setJustification (juce::Justification::centred);
     timerText.setFont (juce::FontOptions (16.0f, juce::Font::bold));
-    timerText.onReturnKey = [this] { applyTimer(); };
+    timerText.onReturnKey = [this] { applyTimer(); timerText.giveAwayKeyboardFocus(); };
     addAndMakeVisible (timerText);
     startTimer.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1f7a46));
     startTimer.onClick = [this] { applyTimer(); };

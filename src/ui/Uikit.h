@@ -300,8 +300,12 @@ public:
         if (linearPeak > juce::Decibels::decibelsToGain (kRedDb)) latched = true;
         if (linearPeak >= hold) { hold = linearPeak; holdTime = now; }
         else if (! latched && holdMs != 0xffffffffu && now - holdTime > holdMs) { hold = linearPeak; holdTime = now; }
-        repaint();
+        // a meter that shows the same picture is not repainted (an idle input used to cost a repaint 30 times a second, forty of them on a big rig)
+        const bool same = std::abs (level - shownLevel) < 1.0e-4f && std::abs (rmsLevel - shownRms) < 1.0e-4f && hold == shownHold && latched == shownLatched;
+        shownLevel = level; shownRms = rmsLevel; shownHold = hold; shownLatched = latched;
+        if (! same) repaint();
     }
+    float shownLevel = -1.0f, shownRms = -1.0f, shownHold = -1.0f; bool shownLatched = false;
 
     /** The 'Reset peaks' button. */
     void resetPeak() { hold = 0.0f; latched = false; holdTime = juce::Time::getMillisecondCounter(); level = 0.0f; rmsLevel = 0.0f; repaint(); }
@@ -479,6 +483,13 @@ public:
 /** A floating window that removes itself when closed. */
 /** Keys that work in every window (M = processing mixer, B = meter bridge). Set by the application. */
 inline std::function<bool (const juce::KeyPress&)>& globalKeyHook() { static std::function<bool (const juce::KeyPress&)> f; return f; }
+/** Space and R belong to recording everywhere in the program (AppContext watches the keys themselves, so no window or button can swallow them):
+    while a take is recording, or while the Space that just stopped one is still held, a window's own Space does nothing. Set by AppContext. */
+inline std::function<bool()>& spaceBelongsToRecordingHook() { static std::function<bool()> f; return f; }
+inline bool spaceIsForRecording() { return spaceBelongsToRecordingHook() && spaceBelongsToRecordingHook()(); }
+/** A component (and everything inside it) whose R key has its own job (the edit window, the process windows) carries this property: R there does
+    not start a recording. */
+inline const juce::Identifier& ownsRKeyProperty() { static const juce::Identifier id ("fermataOwnsRKey"); return id; }
 
 /** The windows that were minimised: they are hidden and shown as title bars along the bottom of the main window. */
 class DockHub

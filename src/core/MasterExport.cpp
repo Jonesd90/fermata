@@ -157,7 +157,7 @@ juce::String makeFilesSpec (const Project& p, const MasteringDef& def, MasterJob
         ++n;
         MasterJobItem j; j.editId = edits[i]->id; j.trackNo = n;
         j.editName = edits[i]->name; j.projectName = p.name;
-        j.editOffsetSeconds = edits[i]->sampleRate > 0.0 ? (double) edits[i]->firstSample() / edits[i]->sampleRate : 0.0;
+        j.editOffsetSeconds = edits[i]->sampleRate > 0.0 ? (double) edits[i]->audibleStart() / edits[i]->sampleRate : 0.0;     // (where the render starts on the edit's timeline)
         const auto base = its[i]->fileName.trim().isNotEmpty() ? its[i]->fileName.trim() : edits[i]->name;
         j.baseName = def.vm.numberFiles ? juce::String (n).paddedLeft ('0', 2) + " - " + base : base;
         j.tags = mergeTags (its[i]->tags, def.vm.album, its[i]->tags.title.isNotEmpty() ? its[i]->tags.title : base);

@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "PaintProfile.h"
 #include <set>
 #include "WinOwner.h"
 #include "FixTools.h"
@@ -639,6 +640,7 @@ void MainComponent::resized()
     layoutMenuBar();                                                    // the menu bar: always one line
     // ---- does everything fit at full size? If not (a 16:9 screen at 150 %, say) the rail gets thinner and the input strips shrink to fit
     const bool showStage = stagePanel.wanted();
+    laidOutStageW = showStage ? stagePanel.wantedWidth() : -1;
     const int headH = StageSpeakerPanel::kHeight;                      // always the stage speaker boxes' height, so the top row never moves when they come and go
     const int innerW = getWidth() - 2 * (kCheekW + 10);
     const bool outScroll = (int) outputRows.size() * (OutputRow::kStripW + 2) > innerW;
@@ -739,9 +741,20 @@ void MainComponent::rebuildRows()
 
 void MainComponent::changeListenerCallback (juce::ChangeBroadcaster* src)
 {
-    stagePanel.rebuildIfNeeded(); resized();
-    if (src == &app.project.structure) { rebuildRows(); rebuildAuditionBar(); }
-    else { for (auto* r : inputRows) r->refreshFromModel(); for (auto* r : outputRows) r->refreshFromModel(); }   // a second name or a preamp setting changed
+    const auto t0 = paintprof::enabled() ? juce::Time::getMillisecondCounterHiRes() : 0.0;
+    paintprof::Scope prof ("main change", "stage panel");
+    // The layout is only redone when something it depends on changed: the stage speaker panel (its strips, its width, whether it is shown) or the
+    // rows themselves. Laying out every strip (and repainting the whole window) on every change of the project cost ~30 ms per click on a 40-input rig.
+    const bool stageRebuilt = stagePanel.rebuildIfNeeded();
+    const int stageW = stagePanel.wanted() ? stagePanel.wantedWidth() : -1;
+    if (src == &app.project.structure) { prof.next ("rebuild rows"); rebuildRows(); rebuildAuditionBar(); }       // (rebuildRows lays everything out)
+    else
+    {
+        if (stageRebuilt || stageW != laidOutStageW) { prof.next ("resized"); resized(); }
+        prof.next ("refresh rows"); for (auto* r : inputRows) r->refreshFromModel(); for (auto* r : outputRows) r->refreshFromModel();   // a second name or a preamp setting changed
+    }
+    prof.finish();
+    if (paintprof::enabled()) paintprof::paintDone ("main change", juce::Time::getMillisecondCounterHiRes() - t0);
 }
 
 void MainComponent::peaksUpdated()

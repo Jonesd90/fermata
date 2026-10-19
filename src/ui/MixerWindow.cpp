@@ -88,6 +88,31 @@ public:
         peakLabel.setColour (juce::Label::textColourId, latched ? juce::Colour (0xffe03a2c) : mixTheme().text);
     }
     void resetPeaks() { meterL.resetPeak(); meterR.resetPeak(); peakLabel.setText ({}, juce::dontSendNotification); }
+    /** The VCAs that control this strip: what they add (dB, all of them together), whether one of them is muted, and the colour to draw it in.
+        active false: no VCA controls it. A line beside the slot then runs from the fader cap to where the level really is, with a faint cap there. */
+    void setVcaGhost (bool active, float addDb, bool muted, juce::Colour c)
+    {
+        if (active == ghostOn && std::abs (addDb - ghostDb) < 0.05f && muted == ghostMuted && c == ghostColour) return;
+        ghostOn = active; ghostDb = addDb; ghostMuted = muted; ghostColour = c;
+        repaint();
+    }
+
+    void paintOverChildren (juce::Graphics& g) override
+    {
+        if (! ghostOn || (! ghostMuted && std::abs (ghostDb) < 0.05f)) return;
+        const float top = (float) travelTop, bottom = (float) travelBottom, span = bottom - top;
+        auto yOf = [&] (float db) { return bottom - span * LevelMeter::faderFrac (juce::jlimit (-80.0f, 12.0f, db)); };
+        const float faderDb = (float) slider.getValue();
+        const float realDb = ghostMuted || faderDb <= -79.5f ? -80.0f : faderDb + ghostDb;
+        const float y0 = yOf (faderDb), y1 = yOf (realDb);
+        const float x = (float) sliderRect.getRight() + (float) ghostX;                 // in the gap between the slot and the meters
+        g.setColour (ghostColour.withAlpha (0.95f));
+        g.fillRect (juce::Rectangle<float> (x - 1.0f, juce::jmin (y0, y1), 2.0f, juce::jmax (1.0f, std::abs (y1 - y0))));
+        g.fillRect (juce::Rectangle<float> (x - 3.0f, y1 - 1.0f, 5.0f, 2.0f));          // where it ends: the real level
+        const float slotX = (float) sliderRect.getCentreX();                           // a faint ghost of the cap at the real level
+        g.setColour (ghostColour.withAlpha (0.55f));
+        g.fillRoundedRectangle (juce::Rectangle<float> (slotX - (float) sliderRect.getWidth() * 0.32f, y1 - 2.0f, (float) sliderRect.getWidth() * 0.64f, 4.0f), 1.5f);
+    }
 
     void paint (juce::Graphics& g) override
     {
@@ -133,6 +158,7 @@ public:
         const int mx = x0 + scaleW + sliderW + between;
         meterL.setBounds (mx, travelTop, meterW, travelBottom - travelTop);
         meterR.setBounds (mx + meterW + gap, travelTop, meterW, travelBottom - travelTop);
+        ghostX = juce::jmax (1, between / 2);
         syncDrag();
     }
     void lookAndFeelChanged() override { syncDrag(); }
@@ -165,7 +191,22 @@ private:
     std::function<void (float)> changed;
     juce::Colour accent { 0 };
     juce::Rectangle<int> scaleRect, sliderRect; int travelTop = 0, travelBottom = 0;
+    bool ghostOn = false, ghostMuted = false; float ghostDb = 0.0f; juce::Colour ghostColour; int ghostX = 2;
 };
+
+/** What the VCAs in 'mask' do to a strip of mixer m, for the fader's ghost line: their gains added up (dB), whether one is muted, and the colour of the first. */
+static void vcaGhostFor (AppContext& app, const MixerState& m, juce::uint32 mask, float& addDb, bool& muted, juce::Colour& colour)
+{
+    addDb = 0.0f; muted = false; colour = chan::automaticFor (NodeKind::Vca);
+    bool first = true;
+    for (int i = 0; i < kMaxVcas; ++i)
+        if (mask & (1u << i))
+        {
+            if (m.vcas[i].mute.get()) muted = true;
+            addDb += juce::jmax (-100.0f, m.vcas[i].gainDb.get());
+            if (first) { if (const auto* vd = app.project.vcaByNumber (i + 1); vd != nullptr && vd->colour != 0) colour = juce::Colour (vd->colour); first = false; }
+        }
+}
 
 class SlotButtons;
 
@@ -245,20 +286,29 @@ public:
             auto p = factory ? factory (desc, state) : nullptr;
             if (p == nullptr) { showError ("Plug-in", "Could not make a copy of " + sp->getName()); return; }
             app.plugins.closeEditorsFor (dst.getProcessorUnsafe());
-            dst.set (std::move (p), sr, blk, 2);
+            if (! dst.set (std::move (p), sr, blk, 2)) { showError ("Plug-in", stuckText (dst)); return; }
             dst.bypass.set (src.bypass.get());
         }
         else
         {
             app.plugins.closeEditorsFor (sp); app.plugins.closeEditorsFor (dst.getProcessorUnsafe());
             const bool bs = src.bypass.get(), bd = dst.bypass.get();
-            auto pa = src.take(); auto pb = dst.take();                        // the one that was there (if any) swaps places with it
+            auto pa = src.take();                                              // (null and still loaded: the slot could not be locked - a plug-in stuck in its process call)
+            if (pa == nullptr && src.isLoaded()) { showError ("Plug-in", stuckText (src)); return; }
+            auto pb = dst.take();                                              // the one that was there (if any) swaps places with it
+            if (pb == nullptr && dst.isLoaded()) { src.set (std::move (pa), sr, blk, 2); src.bypass.set (bs); showError ("Plug-in", stuckText (dst)); return; }
             dst.set (std::move (pa), sr, blk, 2); dst.bypass.set (bs);
             if (pb != nullptr) { src.set (std::move (pb), sr, blk, 2); src.bypass.set (bd); }
             else src.bypass.set (false);
         }
         app.project.markDirty(); app.engine.checkLatency();
         refresh(); target.refresh();
+    }
+    /** The message when a slot could not be locked within InsertSlot::kLockWaitMs (see InsertSlot). */
+    static juce::String stuckText (const InsertSlot& s)
+    {
+        return (s.getName().isNotEmpty() ? s.getName() : juce::String ("The plug-in")) + " did not let go of its slot for " + juce::String (InsertSlot::kLockWaitMs / 1000)
+               + " seconds (it may be stuck inside its process call). Nothing was changed; the log has the details.";
     }
     /** The slot cell under a screen position (any mixer window), or null. */
     static SlotCell* cellAt (juce::Point<int> screenPos)
@@ -306,7 +356,7 @@ private:
         if (r == 3)
         {
             app.plugins.closeEditorsFor (slot.getProcessorUnsafe());
-            slot.clear (app.engine.getSampleRate(), app.engine.getMaxBlock(), 2);
+            if (! slot.clear (app.engine.getSampleRate(), app.engine.getMaxBlock(), 2)) showError ("Plug-in", stuckText (slot));
             app.project.markDirty(); app.engine.checkLatency(); refresh(); return;
         }
         if (r == 9)
@@ -321,7 +371,7 @@ private:
             auto p = app.plugins.create (descs[(size_t) (r - 1000)], app.engine.getSampleRate(), app.engine.getMaxBlock(), err);
             if (p == nullptr) { showError ("Plug-in", "Could not load " + descs[(size_t) (r - 1000)].name + ":\n" + err); return; }
             app.plugins.closeEditorsFor (slot.getProcessorUnsafe());
-            slot.set (std::move (p), app.engine.getSampleRate(), app.engine.getMaxBlock(), 2);
+            if (! slot.set (std::move (p), app.engine.getSampleRate(), app.engine.getMaxBlock(), 2)) { showError ("Plug-in", stuckText (slot)); refresh(); return; }
             app.project.markDirty(); app.engine.checkLatency(); refresh();
             app.plugins.showEditor (slot.getProcessorUnsafe());
         }
@@ -983,6 +1033,12 @@ public:
     {
         if (! fader.isBeingDragged()) fader.setDb (strip.gainDb.get());          // the fader follows the level, so automation (and the Stream Deck) moves it on screen
         fader.pushPeaks (strip.meterL.take(), strip.meterR.take(), strip.rmsL.get(), strip.rmsR.get());
+        {   // the VCAs that control this strip: a line beside the fader to the level it really has
+            const auto vm = strip.vcaMask.load (std::memory_order_relaxed);
+            float add = 0.0f; bool muted = false; juce::Colour vc;
+            if (vm != 0) vcaGhostFor (app, mixer, vm, add, muted, vc);
+            fader.setVcaGhost (vm != 0, add, muted, vc);
+        }
     }
     void resetPeaks() override { fader.resetPeaks(); }
 
@@ -1160,6 +1216,13 @@ public:
     void tick() override
     {
         if (! fader.isBeingDragged()) fader.setDb (st.gainDb.get());
+        if (! external)
+        {   // an Int Bus controlled by VCAs: the same ghost line
+            const auto vm = st.vcaMask.load (std::memory_order_relaxed);
+            float add = 0.0f; bool muted = false; juce::Colour vc;
+            if (vm != 0) vcaGhostFor (app, mixer, vm, add, muted, vc);
+            fader.setVcaGhost (vm != 0, add, muted, vc);
+        }
         if (! external && ! panSlider.isMouseButtonDown() && std::abs (panSlider.getValue() - st.pan.get()) > 0.0001) { panSlider.setValue (st.pan.get(), juce::dontSendNotification); panValue.setText (ChannelStrip::panText (st.pan.get()), juce::dontSendNotification); }
         fader.pushPeaks (st.meterL.take(), st.meterR.take(), st.rmsL.get(), st.rmsR.get());
     }
@@ -1329,7 +1392,8 @@ public:
         nameEd.setTextToShowWhenEmpty ("name (optional)", mixTheme().dim);
         nameEd.setFont (juce::FontOptions (11.0f));
         nameEd.setTooltip ("Type a name: the strip shows  " + juce::String (number) + " - name");
-        nameEd.onReturnKey = [this] { commitName(); };
+        nameEd.onReturnKey = [this] { commitName(); nameEd.giveAwayKeyboardFocus(); };      // Enter: done, and the box lets go of the keyboard (Space / R work again)
+        nameEd.onEscapeKey = [this] { if (auto* v = app.project.findVca (vcaId)) nameEd.setText (v->name, juce::dontSendNotification); nameEd.giveAwayKeyboardFocus(); };
         nameEd.onFocusLost = [this] { commitName(); };
         addAndMakeVisible (nameEd);
         removeBtn.setButtonText ("Remove strip");
@@ -1360,8 +1424,8 @@ public:
     void resized() override
     {
         wells.clear(); sections.clear();
-        auto r = body();
-        removeBtn.setBounds (r.removeFromBottom (kOutRowH));
+        auto r = body().withTrimmedBottom (kLatH);       // (the other strips keep a line for the plug-in delay above the name plate: the same room here, so
+        removeBtn.setBounds (r.removeFromBottom (kOutRowH));   //  M / S, the fader, its meter and level line up with theirs)
         r.removeFromBottom (3);
         auto faderArea = r.removeFromBottom (juce::jmax (kFaderMin, kFaderH + getHeight() - ChannelStrip::heightFor (2 * juce::jmax (1, sendRows), nSlots)));
         wells.push_back (faderArea.expanded (2, 0));
@@ -1674,7 +1738,7 @@ MixerComponent::MixerComponent (AppContext& a, const juce::Uuid& id) : app (a), 
         app.project.syncEditMixers();
         app.project.structureChanged();            // titles and menus pick the new name up
     };
-    nameEditor.onReturnKey = commitName;
+    nameEditor.onReturnKey = [this, commitName] { commitName(); nameEditor.giveAwayKeyboardFocus(); };     // Enter: done, and the box lets go of the keyboard
     nameEditor.onFocusLost = commitName;
     addAndMakeVisible (nameEditor);
 
@@ -1724,7 +1788,10 @@ int MixerComponent::minContentH() const { return 30 + ChannelStrip::heightFor (m
 /** Gives the strips the height of the window: more height = more empty insert slots and a taller fader; less = a shorter fader (down to a minimum). */
 void MixerComponent::applyHeight()
 {
-    const int availH = viewport.getHeight() - 2 * MixerStripsHolder::kEdge;
+    // the room under the strips: less the horizontal scroll bar when the strips are wider than the window (the bar sits over the bottom of the view, so the
+    // strips used to run on under it, hiding their rounded bottom corners and name plates)
+    const bool needH = holder->getNaturalWidth() > viewport.getWidth();
+    const int availH = viewport.getHeight() - (needH ? viewport.getScrollBarThickness() : 0) - 2 * MixerStripsHolder::kEdge;
     int h = ChannelStrip::heightFor (maxDialsCached, slotCount);
     if (availH > 0)
     {
@@ -1783,7 +1850,7 @@ void MixerComponent::fitWindowToStrips()
     if (win == nullptr || win->getContentComponent() != this || win->isFullScreen()) return;
     const auto frame = win->getContentComponentBorder();
     const auto scr = juce::Desktop::getInstance().getDisplays().getDisplayForRect (win->getBounds())->userArea;
-    const int w = naturalContentW() + frame.getLeftAndRight(), h = juce::jmin (naturalContentH() + frame.getTopAndBottom(), scr.getHeight());
+    const int w = juce::jmin (naturalContentW() + frame.getLeftAndRight(), scr.getWidth()), h = juce::jmin (naturalContentH() + frame.getTopAndBottom(), scr.getHeight());   // (never wider than the screen: a scroll bar instead)
     if (auto* c = win->getConstrainer()) { c->setMinimumSize (juce::jmin (topBarMinWidth() + frame.getLeftAndRight(), w), juce::jmin (260, h)); c->setMaximumSize (juce::jmax (w + kLimitSlack, scr.getWidth() + 40), juce::jmax (h + kLimitSlack, scr.getHeight() + 40)); }
     lastMaxW = w; lastMaxH = h;
     win->setSize (w, h);
@@ -2063,9 +2130,23 @@ void MixerComponent::timerCallback()
     {
         const bool widthChanged = shownWidthGen != stripWidthGen();
         shownDark = mixTheme().dark; shownGen = theme::generation(); shownWidthGen = stripWidthGen();
+        // a strip width change keeps the meter strip (the last one, with the - / + buttons) where it is: the window keeps its right edge, and a view that
+        // is scrolled keeps the same distance from its right end, so - / + can be pressed again without scrolling to them
+        auto* win = dynamic_cast<juce::DocumentWindow*> (getTopLevelComponent());
+        const int oldRight = win != nullptr ? win->getRight() : 0;
+        const int rightGap = juce::jmax (0, holder->getWidth() - (viewport.getViewPositionX() + viewport.getViewWidth()));
         mixLook.apply();
         rebuild(); updateAuditionButton(); resized();
-        if (widthChanged) fitWindowToStrips();              // the window takes the new width of the strips at once (as when it is opened)
+        if (widthChanged)
+        {
+            fitWindowToStrips();                            // the window takes the new width of the strips at once (as when it is opened) ...
+            if (win != nullptr && win->getContentComponent() == this && ! win->isFullScreen())
+            {
+                const auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (win->getBounds())->userArea;
+                win->setTopLeftPosition (juce::jmax (area.getX(), oldRight - win->getWidth()), win->getY());     // ... growing / shrinking to the left
+            }
+            viewport.setViewPosition (juce::jmax (0, holder->getWidth() - viewport.getViewWidth() - rightGap), viewport.getViewPositionY());
+        }
         viewport.sendLookAndFeelChange();
         repaint();
     }

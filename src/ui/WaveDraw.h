@@ -14,7 +14,9 @@ inline void setWaveColour (juce::Graphics& g, juce::Colour c) { currentWaveColou
 
 /** Fills one channel's waveform as a single connected shape: the top edge left to right, the bottom edge back again. Because it is one anti-aliased
     outline rather than a thin line per pixel column, it never shows gaps or stripes, whatever the track height or the screen's scaling. */
-inline void fillEnvelope (juce::Graphics& g, float xFirst, const std::vector<float>& tops, const std::vector<float>& bottoms, const std::vector<juce::Colour>* cols = nullptr)
+/** bandHeight: the height of the lane the waveform is drawn in, when known (> 0): a band under 10 px tall gets no outline (there the line would be
+    the whole picture, and it is two thirds of the drawing work of a window full of small rows). */
+inline void fillEnvelope (juce::Graphics& g, float xFirst, const std::vector<float>& tops, const std::vector<float>& bottoms, const std::vector<juce::Colour>* cols = nullptr, float bandHeight = 0.0f)
 {
     const size_t n = tops.size();
     if (n == 0 || bottoms.size() != n) return;
@@ -50,6 +52,7 @@ inline void fillEnvelope (juce::Graphics& g, float xFirst, const std::vector<flo
     if (coloured) g.setGradientFill (gradient (false)); else g.setColour (solid ? base.interpolatedWith (juce::Colours::white, 0.74f) : base.darker (0.25f));
     g.fillPath (p);                          // a calm body ...
     // ... and a thin bright line round the outer limit of the waveform (as in SADiE and Pyramix) so the peaks stand out
+    if (bandHeight > 0.0f && bandHeight < 10.0f) { g.setColour (base); return; }
     juce::Path top, bottom;
     top.startNewSubPath (xFirst, tops[0]); bottom.startNewSubPath (xFirst, juce::jmax (tops[0] + 1.0f, bottoms[0]));
     for (size_t i = 0; i < n; ++i) { top.lineTo (xFirst + (float) i + 0.5f, tops[i]); bottom.lineTo (xFirst + (float) i + 0.5f, juce::jmax (tops[i] + 1.0f, bottoms[i])); }
@@ -79,6 +82,7 @@ inline void drawThumbnailEnvelope (juce::Graphics& g, juce::Rectangle<int> area,
     const int nCh = juce::jmax (1, th.getNumChannels());
     const auto clip = g.getClipBounds().getIntersection (area);
     if (clip.isEmpty()) return;
+    if (clip.getWidth() < 2 || area.getHeight() < 3) return;                        // a sliver: the clip's fill colour is all there is room for
     const int bandH = juce::jmax (1, area.getHeight() / nCh);
     const double perPx = (t1 - t0) / (double) area.getWidth();
     std::vector<float> tops ((size_t) clip.getWidth()), bots ((size_t) clip.getWidth());
@@ -96,7 +100,7 @@ inline void drawThumbnailEnvelope (juce::Graphics& g, juce::Rectangle<int> area,
             tops[(size_t) i] = juce::jlimit (lo, hi, centre - mx * half);
             bots[(size_t) i] = juce::jlimit (lo, hi, centre - mn * half);
         }
-        fillEnvelope (g, (float) clip.getX(), tops, bots, wc != nullptr ? &cols : nullptr);
+        fillEnvelope (g, (float) clip.getX(), tops, bots, wc != nullptr ? &cols : nullptr, (float) bandH);
     }
 }
 
@@ -163,7 +167,7 @@ public:
                     if (mn > mx) { mn = mx = 0.0f; }
                     tops.push_back (yOf (mx)); bots.push_back (yOf (mn));
                 }
-                fillEnvelope (g, (float) clip.getX(), tops, bots, wc != nullptr ? &cols : nullptr);
+                fillEnvelope (g, (float) clip.getX(), tops, bots, wc != nullptr ? &cols : nullptr, (float) bandH);
             }
             else                                                              // more than a pixel per sample: the sample curve itself
             {

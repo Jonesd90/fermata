@@ -137,7 +137,7 @@ void MasteringDef::fromVar (const var& root)
 juce::int64 masterLengthSamples (const EditDef& e, double tailSeconds)
 {
     if (e.isEmpty() || e.sampleRate <= 0.0) return 0;
-    const juce::int64 n = e.lengthSamples() - e.firstSample();
+    const juce::int64 n = e.audibleEnd() - e.audibleStart();          // (the span a render covers: see MasterRenderBatch)
     return juce::jmax ((juce::int64) 0, n) + (juce::int64) std::llround (tailSeconds * e.sampleRate);
 }
 

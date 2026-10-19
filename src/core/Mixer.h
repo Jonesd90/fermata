@@ -59,49 +59,61 @@ struct PathDelay
     }
 };
 
-/** One insert slot. The audio thread only ever try-locks, so loading a plugin can never block audio. */
+/** One insert slot. The audio thread only ever try-locks, so loading a plugin can never block audio. The message thread's own locks give up after
+    two seconds (a plug-in stuck inside its process call would otherwise hang the program along with the audio): set / take / reprepare then do
+    nothing and say so. */
 class InsertSlot
 {
 public:
-    void set (std::unique_ptr<InsertProcessor> p, double sr, int maxBlock, int numCh)
+    static constexpr int kLockWaitMs = 2000;
+
+    /** Puts p in the slot (prepared first, outside the lock). False if the slot could not be locked in time: p is dropped and the slot is unchanged. */
+    bool set (std::unique_ptr<InsertProcessor> p, double sr, int maxBlock, int numCh)
     {
         if (p != nullptr)
             p->prepare (sr, maxBlock, numCh);
-        latency.store (p != nullptr ? juce::jmax (0, p->getLatencySamples()) : 0, std::memory_order_relaxed);
+        const int lat = p != nullptr ? juce::jmax (0, p->getLatencySamples()) : 0;
         std::unique_ptr<InsertProcessor> old;
         {
-            const juce::SpinLock::ScopedLockType sl (lock);
+            TimedLock tl (lock);
+            if (! tl.locked) { stuck(); return false; }
             old = std::move (proc);
             proc = std::move (p);
+            latency.store (lat, std::memory_order_relaxed);
             loadedHint.store (proc != nullptr, std::memory_order_relaxed);
             savedDescription.clear();
             savedState.clear();
+            scratchSize (proc != nullptr ? maxBlock : 0);
         }
         // 'old' is destroyed here, outside the lock
+        return true;
     }
 
-    void clear (double sr, int maxBlock, int numCh) { set (nullptr, sr, maxBlock, numCh); }
+    bool clear (double sr, int maxBlock, int numCh) { return set (nullptr, sr, maxBlock, numCh); }
 
-    /** Message thread: takes the plug-in out of the slot (keeping all its settings) so it can be put in another slot. The slot is left empty. */
+    /** Message thread: takes the plug-in out of the slot (keeping all its settings) so it can be put in another slot. The slot is left empty.
+        Null (and the slot unchanged) if it could not be locked in time. */
     std::unique_ptr<InsertProcessor> take()
     {
         std::unique_ptr<InsertProcessor> p;
         {
-            const juce::SpinLock::ScopedLockType sl (lock);
+            TimedLock tl (lock);
+            if (! tl.locked) { stuck(); return nullptr; }
             p = std::move (proc);
             proc = nullptr;
             loadedHint.store (false, std::memory_order_relaxed);
             savedDescription.clear(); savedState.clear();
+            latency.store (0, std::memory_order_relaxed);
         }
-        latency.store (0, std::memory_order_relaxed);
         return p;
     }
 
     /** The audio device (sample rate / buffer size) changed. Audio simply bypasses this slot meanwhile. */
     void reprepare (double sr, int maxBlock, int numCh)
     {
-        const juce::SpinLock::ScopedLockType sl (lock);
-        if (proc != nullptr) { proc->prepare (sr, maxBlock, numCh); latency.store (juce::jmax (0, proc->getLatencySamples()), std::memory_order_relaxed); }
+        TimedLock tl (lock);
+        if (! tl.locked) { stuck(); return; }
+        if (proc != nullptr) { proc->prepare (sr, maxBlock, numCh); latency.store (juce::jmax (0, proc->getLatencySamples()), std::memory_order_relaxed); scratchSize (maxBlock); }
     }
 
     /** Message thread: asks the plug-in again how late it is (some change it while they work). Only the message thread ever changes 'proc', so no lock is needed. */
@@ -113,13 +125,19 @@ public:
     /** How many samples this slot delays the signal right now: 0 when empty or bypassed. */
     int latencySamples() const noexcept { return (loadedHint.load (std::memory_order_relaxed) && ! bypass.get()) ? latency.load (std::memory_order_relaxed) : 0; }
 
+    /** Audio thread. A bypassed plug-in still hears the music: it is run on a copy of the block and the copy thrown away, so its reverb, its
+        look-ahead and its meters stay in step and switching it back in is clean (it used to be left out altogether while bypassed, so the first
+        moment after Bypass was switched off played whatever had been sitting in it: a burst of old reverb). */
     void process (juce::AudioBuffer<float>& b) noexcept
     {
-        if (bypass.get())
-            return;
         const juce::SpinLock::ScopedTryLockType sl (lock);
-        if (sl.isLocked() && proc != nullptr)
-            proc->process (b);
+        if (! sl.isLocked() || proc == nullptr) return;
+        if (! bypass.get()) { proc->process (b); return; }
+        const int nc = juce::jmin (b.getNumChannels(), scratch.getNumChannels()), n = b.getNumSamples();
+        if (nc < 1 || n > scratch.getNumSamples()) return;              // (no room: the plug-in misses this block, as before)
+        for (int c = 0; c < nc; ++c) scratch.copyFrom (c, 0, b, c, 0, n);
+        juce::AudioBuffer<float> view (scratch.getArrayOfWritePointers(), nc, n);
+        proc->process (view);
     }
 
     /** Audio thread: moves one plug-in parameter (0..1). Skipped if the slot is busy being changed. */
@@ -141,10 +159,30 @@ public:
     InsertProcessor* getProcessorUnsafe() const noexcept { return proc.get(); }
 
     Flag bypass;
+    /** How late (samples) the sound coming INTO this slot is, counted from the timeline, because of plug-ins before it on its way (delay
+        compensation): written by the engine each time it builds its plan, read by the automation so a parameter move lands on the music drawn
+        under it (see AutomationPlan). */
+    std::atomic<int> autoLat { 0 };
     juce::String savedDescription, savedState;   // kept when a plugin could not be re-created
+    /** How many times a message-thread lock gave up because the audio thread never let go (a plug-in stuck in its process call). */
+    static std::atomic<int>& stuckCount() noexcept { static std::atomic<int> n { 0 }; return n; }
 private:
+    /** The message thread's lock: waits up to kLockWaitMs for the audio thread's try-lock to let go. */
+    struct TimedLock
+    {
+        explicit TimedLock (juce::SpinLock& l) : lk (l)
+        {
+            const auto until = juce::Time::getMillisecondCounter() + (juce::uint32) kLockWaitMs;
+            while (! (locked = lk.tryEnter()) && juce::Time::getMillisecondCounter() < until) juce::Thread::sleep (1);
+        }
+        ~TimedLock() { if (locked) lk.exit(); }
+        juce::SpinLock& lk; bool locked = false;
+    };
+    void stuck() { stuckCount().fetch_add (1); juce::Logger::writeToLog ("A plug-in did not let go of its insert slot for " + juce::String (kLockWaitMs) + " ms (stuck in its process call?): the slot was left as it was"); }
+    void scratchSize (int maxBlock) { if (maxBlock <= 0) scratch.setSize (0, 0); else if (scratch.getNumChannels() < kMaxTrackChannels || scratch.getNumSamples() < maxBlock) scratch.setSize (kMaxTrackChannels, maxBlock, false, false, true); }
     mutable juce::SpinLock lock;
     std::unique_ptr<InsertProcessor> proc;
+    juce::AudioBuffer<float> scratch;             // the copy a bypassed plug-in is run on (sized on the message thread, in set / reprepare)
     std::atomic<bool> loadedHint { false };
     std::atomic<int> latency { 0 };
 };
@@ -161,7 +199,13 @@ struct SendState
     InsertSlot slots[kSendSlots];
     float lastGain = 0.0f;            // audio thread only
     float lastFeed = 0.0f;            // audio thread only: the gain of a send that does not follow mute, before its own level (fader or 1), last block
+    std::atomic<int> autoLat { 0 };   // how late the sound is where this send's level is applied (after its own inserts and delay line): see InsertSlot::autoLat
+    /** An edit's automation moves this send's level while it plays: it is kept in the engine's plan even while its level is off, so the automation
+        can bring it in (a send was only connected when it was on as the plan was built, so one faded up from off by a lane was never heard).
+        Set and cleared by AutomationPlan::begin / end, message thread. */
+    std::atomic<bool> autoHeld { false };
     bool active() const noexcept      { return gainDb.get() > kSendOffDb; }
+    bool inPlan() const noexcept      { return active() || autoHeld.load (std::memory_order_relaxed); }
 };
 
 /** The sends of one channel, by destination. Entries are never removed while the project is open, so the audio thread can hold raw pointers. */
@@ -202,6 +246,11 @@ struct StripState
     Param livePkL, livePkR;           // peak since the edit window last looked (the edit window's own meters: quick, like the mixer's, and independent of them)
     float lastGain = 0.0f, lastPre = 0.0f, msL = 0.0f, msR = 0.0f;   // audio thread only
     float lastIn = 1.0f;              // audio thread only: the input gain of the previous block (for a smooth change)
+    std::atomic<int> autoLatIn { 0 }, autoLatOut { 0 };    // how late the sound is before its inserts (input gain) and after them (pan, fader): see InsertSlot::autoLat
+    /** While an edit's automation drives a VCA that controls this strip: the VCA's level as it should be for THIS strip's sound (read at this
+        strip's own lateness: see AutomationPlan), used instead of the VCA's own fader for the VCAs whose bit is in vcaAutoMask. */
+    Param vcaAutoDb[kMaxVcas];
+    std::atomic<juce::uint32> vcaAutoMask { 0 };
     StripState() { outSend.gainDb.set (0.0f); }
 };
 
@@ -226,6 +275,9 @@ struct BusState
     Param rmsL, rmsR;
     std::atomic<juce::uint32> vcaMask { 0 };   // Int Bus: bit n set = controlled by VCA number n+1 (an Ext Bus is never controlled)
     float lastGain = 0.0f, lastPre = 0.0f, msL = 0.0f, msR = 0.0f;
+    std::atomic<int> autoLatIn { 0 }, autoLatOut { 0 };    // see StripState
+    Param vcaAutoDb[kMaxVcas];                // see StripState
+    std::atomic<juce::uint32> vcaAutoMask { 0 };
     BusState() { outSend.gainDb.set (0.0f); }
 };
 
@@ -235,6 +287,7 @@ struct VcaState
 {
     Param gainDb { 0.0f };
     Flag  mute, solo;
+    std::atomic<int> autoLat { 0 };   // the latest of the channels it controls, at their faders (what its own fader shows while automated; each channel gets its own value: StripState::vcaAutoDb)
 };
 
 /** One of the project's independent mixers. All solo/mute/level/routing state lives here, so
@@ -255,13 +308,18 @@ struct MixerState
     VcaState vcas[kMaxVcas];                                // by VCA number - 1
     std::atomic<juce::uint32> vcaShown { 0 };               // bit n set: the strip of VCA number n+1 is in this mixer (the processing mixer gets the VCAs of the design, other mixers add them with their + button)
 
-    /** Audio thread: what the VCAs in 'mask' do to a strip: their gains multiplied together, or 0 when one of them is muted. */
-    float vcaGain (juce::uint32 mask) const noexcept
+    /** Audio thread: what the VCAs in 'mask' do to a strip: their gains multiplied together, or 0 when one of them is muted. For the VCAs in
+        'ownMask' the strip's own automated value (own[i]) is used instead of the VCA's fader. */
+    float vcaGain (juce::uint32 mask, const Param* own = nullptr, juce::uint32 ownMask = 0) const noexcept
     {
         if (mask == 0) return 1.0f;
         float g = 1.0f;
         for (int i = 0; i < kMaxVcas; ++i)
-            if (mask & (1u << i)) { if (vcas[i].mute.get()) return 0.0f; g *= dbToGain (vcas[i].gainDb.get()); }
+            if (mask & (1u << i))
+            {
+                if (vcas[i].mute.get()) return 0.0f;
+                g *= dbToGain ((own != nullptr && (ownMask & (1u << i)) != 0) ? own[i].get() : vcas[i].gainDb.get());
+            }
         return g;
     }
     /** Audio thread: the VCAs that are soloed, as bits. */

@@ -1,6 +1,7 @@
 #include "Bounce.h"
 #include "Playback.h"
 #include "Dither.h"
+#include <set>
 
 namespace td
 {
@@ -37,17 +38,17 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
 
     juce::AudioFormatManager formats;
     formats.registerBasicFormats();
+    // the files are opened as the render reaches them and closed once it has passed them (see PlaybackSession::renderSegments); a file that cannot be
+    // read, or is at another sample rate, stops the render with its name
     std::vector<std::unique_ptr<juce::AudioFormatReader>> readers;
+    juce::String readProblem;
+    const auto opener = PlaybackSession::makeOpener (formats, PlaybackSession::bufferBytesFor (shadow->tracks.size() * 3), settings.sampleRate, &readProblem);
     auto openReaders = [&] (const std::vector<PlaySegment>& segs) -> bool
     {
-        readers.clear();
+        readers.clear(); readers.resize (segs.size()); readProblem.clear();
+        std::set<juce::String> seen;
         for (auto& s : segs)
-        {
-            std::unique_ptr<juce::AudioFormatReader> r (formats.createReaderFor (s.file));
-            if (r == nullptr) { res.error = "Cannot read " + s.file.getFullPathName(); return false; }
-            if (std::abs (r->sampleRate - settings.sampleRate) > 0.5) { res.error = s.file.getFileName() + " is " + juce::String (r->sampleRate, 0) + " Hz, not " + juce::String (settings.sampleRate, 0) + " Hz"; return false; }
-            readers.push_back (std::move (r));
-        }
+            if (seen.insert (s.file.getFullPathName()).second && ! s.file.existsAsFile()) { res.error = "Cannot read " + s.file.getFullPathName(); return false; }
         return true;
     };
     std::shared_ptr<AutomationPlan> autoPlan;                 // the automation of the edit being bounced, aimed at the render copy's mixers
@@ -103,7 +104,10 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
             if (have && ! it.mixerId.isNull()) renderedMixer = it.mixerId;
             engine->setOfflineTarget (renderedMixer, settings.sources, settings.sourcesPre);
         }
+        bool replan = autoPlan != nullptr && autoPlan->end();               // (the previous piece's automation lets go)
         autoPlan = planForEdit (it.automationEdit.isNull() ? settings.automationEdit : it.automationEdit, renderedMixer);
+        if (autoPlan != nullptr && autoPlan->begin()) replan = true;         // sends this automation moves go into the plan (see SendState::autoHeld)
+        if (replan) engine->rebuildPlan();
 
         std::vector<juce::File> finals, tmps;
         std::vector<std::unique_ptr<juce::AudioFormatWriter>> writers;
@@ -128,7 +132,9 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
         {
             if (cancel != nullptr && cancel->load()) { writers.clear(); cleanUp(); res.cancelled = true; return res; }
             const int n = (int) juce::jmin ((juce::int64) kBlock, renderTotal - done);
-            PlaybackSession::renderSegments (readers, segs, first + done, n, trackBufs, scratch);
+            PlaybackSession::renderSegments (readers, segs, first + done, n, trackBufs, scratch, &opener);
+            if (readProblem.isNotEmpty()) { writers.clear(); cleanUp(); res.error = readProblem; return res; }
+            PlaybackSession::releaseReadersBefore (readers, segs, first + done + n);
             // the padding is silence going in (so plug-ins settle and tails ring out); only the piece itself is fed in
             const auto pos0 = first + done;
             if (pos0 < it.start || pos0 + n > it.end)
@@ -185,6 +191,7 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
         }
         toClean.clear();
     }
+    if (autoPlan != nullptr && autoPlan->end()) engine->rebuildPlan();     // (the copy is left as it was found, should it be rendered again)
     res.peakDb = juce::Decibels::gainToDecibels (overallPeak, -100.0f);
     res.clipped = overallPeak > 1.0f;
     return res;
