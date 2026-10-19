@@ -649,3 +649,7 @@ A full review of the audio thread and the recording path (read line by line; the
 - `lowCutHz` saved in the project's inputs (only when not 80) and in the preamp memory; `PreampMemory::same` compares it only while the low cut is on.
 - Checked against a stand-in device serving the captured dump (scratchpad harness: every step sends exactly the fields the MT48 reports for the same click) and core_test "2.74: the Neumann MT48".
 - Reviewed by a separate agent: fixed that `Project::setPreamp` (a restored preamp memory) wiped what the input can do (`lineOnly`, `hasInstrument`, `lowCutChoice`, `steppedPad` now kept from the hardware) and that the PAD / LC steps started from what the key last showed (now from the input's current state). The gain knob's double-click gives 20 dB on the scale shown. Left: the preamp memory compares pad / lift on an MT48 input in Line mode (where the Pad is hidden); hidden keys leave their places empty on the strip.
+
+## 2.74.1: a new project's Main bus
+
+- `Project::addDefaultMainBus()`: an Ext Bus "Main", `isMain` and `outFirst = 0` in every mixer (just the processing mixer at that point; Edit mixers made later copy it). Called by `AppContext::newProject` and `startBlankProject` after `createDefaultDesign()`, NOT by the Project constructor (the tests build their own routing on a bare project). Test in "a new project starts completely empty".

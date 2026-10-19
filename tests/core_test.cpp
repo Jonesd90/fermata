@@ -143,6 +143,17 @@ int main()
         CHECK (fresh.mixers[0]->name == "Processing mixer");
         CHECK (fresh.outputFedBy (0).isEmpty() && fresh.mixerOutputsText (*fresh.mixers[0]) == "(no outputs)");
         CHECK (p.outputFedBy (0).contains ("Out") && p.outputFedBy (3).contains ("Out") && p.mixerOutputsText (mixB).contains ("Out -> 3-4"));
+        // what the program adds to a NEW project: one Ext Bus "Main", the processing mixer's main output, on outputs 1-2
+        auto& mb = fresh.addDefaultMainBus();
+        CHECK (fresh.buses.size() == 1 && mb.external && mb.name == "Main");
+        auto* st = fresh.mixers[0]->busFor (mb.id);
+        CHECK (st->isMain.get() && st->outFirst.load() == 0);
+        CHECK (fresh.outputFedBy (0).contains ("Main") && fresh.outputFedBy (1).contains ("Main") && fresh.outputFedBy (2).isEmpty());
+        fresh.addTrack ("Violin", TrackFormat::Mono, 0); fresh.syncMixers();
+        auto& ed = fresh.addEdit ("E", juce::Uuid::null());                                  // an Edit's own mixer copies it
+        auto* em = fresh.mixerOfEdit (ed.id);
+        CHECK (em != nullptr && em->busFor (mb.id)->isMain.get() && em->busFor (mb.id)->outFirst.load() == 0);
+        Project back; CHECK (back.fromVar (fresh.toVar()) && back.buses.size() == 1 && back.mixers[0]->busFor (mb.id)->outFirst.load() == 0);
     }
 
     SECTION ("recording refuses with nothing armed");

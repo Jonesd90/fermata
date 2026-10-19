@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.74.1
+- **A new project starts with one Ext Bus, "Main",** ticked as the processing mixer's main output and sent to the audio driver's outputs 1-2, so it is heard straight away (it used to start with no buses at all). Projects that already exist are not changed.
+
 ## 2.74.0
 - **The Neumann MT48 gets its own preamp controls** (it was treated as an Anubis). Inputs 1-2: MIC / LINE, 48V, polarity, a **three-position PAD** and a **four-position low cut**; inputs 3-4: LINE / INSTR, polarity and the same low cut. Click **PAD** to step OFF -> -12 -> -24 -> OFF: as on the MT48's own page it moves the gain's scale (OFF 12 to 78 dB, -12 dB 0 to 66 dB, -24 dB -12 to 54 dB) and the gain knob stays where it is; the readout and a typed gain follow the scale. In Line mode the Pad is not shown. Click **LC** to step OFF -> 40 Hz -> 60 Hz -> 80 Hz -> OFF. No BOOST or Z HI key on the MT48 (its "lift" switch is part of the Pad). The low-cut frequency is kept in the project and the preamp memory. The Anubis and the Hapis are unchanged.
 - `tools/watch_device.py` also saves the device's full settings and every change to files you can send back (`<address>-settings.json`, `<address>-changes.txt`).

@@ -293,6 +293,9 @@ private:
     void forgetWindowFile (const juce::String& id);
 public:
     void createDefaultDesign();
+    /** What a NEW project starts with besides that (a new project or the blank one at start-up, not a project being read): one Ext Bus, "Main",
+        ticked as the processing mixer's main output and sent to the driver's outputs 1-2. Returns it. */
+    BusDef& addDefaultMainBus();
 
     /** A private, independent copy of the whole project (plug-ins re-created from their state) for offline rendering. */
     std::unique_ptr<Project> cloneForRender (double sampleRate, int maxBlock) const;

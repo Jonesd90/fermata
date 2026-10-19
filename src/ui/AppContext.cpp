@@ -537,6 +537,7 @@ bool AppContext::newProject (const juce::File& file)
     saveNow();
     auto insertFactory = project.insertFactory;
     project.createDefaultDesign();
+    project.addDefaultMainBus();                     // an Ext Bus "Main" on outputs 1-2, so a new project is heard at once
     project.name = file.getFileNameWithoutExtension();
     project.projectFile = file;
     juce::String err;
@@ -649,6 +650,7 @@ void AppContext::startBlankProject()
 {
     project.windowFiles.clear(); project.missingWindowRefs.clear();
     project.createDefaultDesign();
+    project.addDefaultMainBus();
     project.projectFile = juce::File();
     project.name = "(no project yet)";
     afterProjectReplaced();

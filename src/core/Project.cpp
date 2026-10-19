@@ -291,6 +291,15 @@ void Project::createDefaultDesign()
     syncMixers();
 }
 
+BusDef& Project::addDefaultMainBus()
+{
+    auto& b = addBus ("Main", true);
+    const auto id = b.id;
+    for (auto& m : mixers)
+        if (auto* bs = m->busFor (id)) { bs->isMain.set (true); bs->outFirst.store (0); }      // outputs 1-2 (the first pair of the audio driver)
+    return *findBus (id);
+}
+
 void Project::syncWithDevice (const juce::StringArray& ins, const juce::StringArray& outs)
 {
     if (ins.isEmpty() && outs.isEmpty()) return;
