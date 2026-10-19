@@ -56,10 +56,11 @@ public:
         readout.onDouble = [this]
         {
             juce::Component::SafePointer<InputRow> safe (this);
-            valueentry::ask (readout, "Gain in dB (0 to 66)", juce::String (gain.getValue(), 1), [safe] (const juce::String& t)
+            const double off = shownOffset();                                            // (the MT48's Pad moves the scale: the figure typed is on that scale)
+            valueentry::ask (readout, "Gain in dB (" + juce::String (off, 0) + " to " + juce::String (66.0 + off, 0) + ")", juce::String (gain.getValue() + off, 1), [safe, off] (const juce::String& t)
             {
                 double v = 0.0;
-                if (safe != nullptr && valueentry::parseDb (t, 0.0, 0.0, 66.0, v)) safe->gain.setValue (v, juce::sendNotificationSync);
+                if (safe != nullptr && valueentry::parseDb (t, off, off, 66.0 + off, v)) safe->gain.setValue (v - off, juce::sendNotificationSync);
             });
         };
 
@@ -102,6 +103,7 @@ public:
         if (driver.getText() != drv) driver.setText (drv, juce::dontSendNotification);
         if (! alias.hasKeyboardFocus (false) && alias.getText() != in.name) { alias.setText (in.name, juce::dontSendNotification); alias.moveCaretToTop (false); }
         if (std::abs (gain.getValue() - in.preamp.gainDb) > 0.01 && ! gain.isMouseButtonDown()) gain.setValue (in.preamp.gainDb, juce::dontSendNotification);
+        gain.setDoubleClickReturnValue (true, juce::jlimit (0.0, 66.0, 20.0 - (double) in.preamp.shownGainOffset()));      // (20 dB as the readout shows it: the MT48's Pad moves the scale)
         updateReadout();
         const bool lo = in.preamp.lineOnly;                                         // a fixed line input (Anubis jack 3/4): only gain, phase, low cut and Line / Instrument
         if (lo)                                                                     // the first key is the Line / Instrument switch: LINE (plain) or INSTR (lit)
@@ -120,12 +122,23 @@ public:
             mic->setEnabled (true);
             mic->setTooltip ("Mic / Line: lit = LINE input, off = MIC input");
         }
-        for (auto* b : { v48, pad, boost, zhi }) b->setVisible (preampShown && ! lo);
+        const bool stepped = in.preamp.steppedPad;                                 // the MT48's mic inputs: a three-position Pad, no Boost / Z HI
+        v48->setVisible (preampShown && ! lo);
+        pad->setVisible (preampShown && ! lo && ! (stepped && in.preamp.line));    // (the MT48 offers no Pad in Line mode)
+        boost->setVisible (preampShown && ! lo && ! stepped);
+        zhi->setVisible (preampShown && ! lo && ! stepped);
         v48->setToggleState (in.preamp.phantom, juce::dontSendNotification);
         pol->setToggleState (in.preamp.polarity, juce::dontSendNotification);
+        lcHzNow = in.preamp.lowCut ? (in.preamp.lowCutChoice ? in.preamp.lowCutHz : 80) : 0;
         lc->setToggleState (in.preamp.lowCut, juce::dontSendNotification);
+        lc->setButtonText (in.preamp.lowCutChoice && in.preamp.lowCut ? juce::String (in.preamp.lowCutHz) + " Hz" : juce::String ("LC"));
+        lc->setTooltip (in.preamp.lowCutChoice ? "Low cut: click to step OFF -> 40 Hz -> 60 Hz -> 80 Hz -> OFF" : "Low cut filter");
         boost->setToggleState (in.preamp.boost, juce::dontSendNotification);
-        pad->setToggleState (in.preamp.pad, juce::dontSendNotification);
+        padStepNow = in.preamp.padStep();
+        pad->setToggleState (stepped ? padStepNow > 0 : in.preamp.pad, juce::dontSendNotification);
+        pad->setButtonText (stepped ? (padStepNow == 0 ? juce::String ("PAD") : padStepNow == 1 ? juce::String ("-12") : juce::String ("-24")) : juce::String ("PAD"));
+        pad->setTooltip (stepped ? "Pad (MT48): click to step OFF (gain 12 to 78 dB) -> -12 dB (0 to 66 dB) -> -24 dB (-12 to 54 dB) -> OFF. It moves the gain's scale; the gain knob stays where it is."
+                                 : "Pad: the mic preamp's input attenuator");
         zhi->setToggleState (in.preamp.zHigh, juce::dontSendNotification);
         crButton.setToggleState (app.project.isCrMic (idx), juce::dontSendNotification);
         updating = false;
@@ -230,11 +243,22 @@ private:
         auto* b = buttons.add (new desk::DeskKey (text, ic, 10.0f));
         b->setLed (led);
         b->setTooltip (tip);
-        b->onClick = [this] { push(); };
+        b->onClick = [this, b]
+        {
+            if (updating || idx >= (int) app.project.inputs.size()) return;
+            const auto& cur = app.project.inputs[(size_t) idx].preamp;
+            padStepNow = cur.padStep(); lcHzNow = cur.lowCut ? cur.lowCutHz : 0;                              // (from what the device says now, not what the key last showed)
+            if (b == pad && cur.steppedPad) padStepNow = (padStepNow + 1) % 3;                               // OFF -> -12 -> -24 -> OFF
+            if (b == lc && cur.lowCutChoice) lcHzNow = lcHzNow == 0 ? 40 : lcHzNow == 40 ? 60 : lcHzNow == 60 ? 80 : 0;   // OFF -> 40 -> 60 -> 80 -> OFF
+            push();
+            refreshFromModel();                                                                               // (the key shows its new position)
+        };
         addAndMakeVisible (b);
         return b;
     }
-    void updateReadout() { readout.setValueText (juce::String (gain.getValue(), 1)); }
+    /** What is added to the gain for the figure shown: the MT48's Pad scale (0 for everything else). */
+    double shownOffset() const { return idx < (int) app.project.inputs.size() ? (double) app.project.inputs[(size_t) idx].preamp.shownGainOffset() : 0.0; }
+    void updateReadout() { readout.setValueText (juce::String (gain.getValue() + shownOffset(), 1)); }
     void push()
     {
         if (updating || idx >= (int) app.project.inputs.size()) return;
@@ -242,7 +266,11 @@ private:
         const bool lo = app.project.inputs[(size_t) idx].preamp.lineOnly;
         s.gainDb = (float) gain.getValue(); s.line = lo ? true : mic->getToggleState(); s.phantom = v48->getToggleState();
         s.polarity = pol->getToggleState(); s.lowCut = lc->getToggleState(); s.boost = boost->getToggleState(); s.pad = pad->getToggleState(); s.zHigh = lo ? mic->getToggleState() : zhi->getToggleState();
-        s.lineOnly = app.project.inputs[(size_t) idx].preamp.lineOnly; s.hasInstrument = app.project.inputs[(size_t) idx].preamp.hasInstrument;
+        const auto& cur = app.project.inputs[(size_t) idx].preamp;
+        s.lineOnly = cur.lineOnly; s.hasInstrument = cur.hasInstrument; s.lowCutChoice = cur.lowCutChoice; s.steppedPad = cur.steppedPad;
+        s.lowCutHz = cur.lowCutHz;
+        if (cur.lowCutChoice) { s.lowCut = lcHzNow != 0; if (lcHzNow != 0) s.lowCutHz = lcHzNow; }          // the LC key's position (OFF / 40 / 60 / 80)
+        if (cur.steppedPad) { s.setPadStep (padStepNow); s.zHigh = false; }                                   // the Pad's position, as the two switches the MT48 wants
         app.project.setPreamp (idx, s);
     }
 
@@ -256,6 +284,7 @@ private:
     }
 
     AppContext& app; int idx; bool updating = false, preampShown = true;
+    int padStepNow = 0, lcHzNow = 0;                        // the MT48's Pad position (0 OFF, 1 -12, 2 -24) and low cut (0 = off, else Hz), as the keys show them
     float squeeze = 0.0f;                                   // 0 = full size, 1 = the most compact (see sizesFor)
     juce::Rectangle<int> dispArea, gainCapArea;
     juce::Colour colour;

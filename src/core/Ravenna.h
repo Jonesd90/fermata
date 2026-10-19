@@ -38,6 +38,9 @@ struct HwPreamp
     int          micGain = 0, lineGain = 0, instrumentGain = 0;   // tenths of a dB (660 = 66.0 dB)
     bool         lineOnly = false;            // a fixed line input (the Anubis jack inputs): gain, phase, low cut and Line / Instrument only
     juce::String instrKey;                    // "inputMode" when such an input can be switched Line (1) / Instrument (2); "" if it cannot
+    int          lowCutFreq = 80;             // the device's lowCut_freq
+    bool         lowCutChoice = false;        // its lowCut_info lists more than one frequency (MT48: 40, 60, 80)
+    bool         steppedPad = false;          // the MT48's three-position Pad (see PreampSettings::steppedPad)
 };
 
 /** A Merging device (Anubis, Hapi, MT48) reached through its web interface: CometD over a WebSocket, at ws://<ip>/cometd/handshake.
@@ -63,7 +66,9 @@ public:
     std::function<void()> onUpdate;
 
     // parsing and path helpers, exposed for the tests
-    static HwPreamp readChannel (const juce::var& module, int index);
+    static HwPreamp readChannel (const juce::var& module, int index, bool isMT48 = false);
+    /** Is this the settings dump of a Neumann MT48 (its 'identity')? Its mic inputs work differently: see PreampSettings::steppedPad. */
+    static bool isMT48 (const juce::var& dump);
     static bool applyPath (juce::var& module, const juce::String& relativePath, const juce::var& value);
 
 private:
@@ -80,6 +85,7 @@ private:
     mutable juce::CriticalSection lock;
     juce::String status { "Starting" };
     std::map<int, juce::var> modules;                  // id -> module, from the settings dump
+    bool mt48 = false;                                 // the dump said this is a Neumann MT48
     struct Ref { int moduleId = 0, index = 0; };
     std::vector<Ref> refs;
     juce::StringArray outgoing;

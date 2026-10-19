@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.74.0
+- **The Neumann MT48 gets its own preamp controls** (it was treated as an Anubis). Inputs 1-2: MIC / LINE, 48V, polarity, a **three-position PAD** and a **four-position low cut**; inputs 3-4: LINE / INSTR, polarity and the same low cut. Click **PAD** to step OFF -> -12 -> -24 -> OFF: as on the MT48's own page it moves the gain's scale (OFF 12 to 78 dB, -12 dB 0 to 66 dB, -24 dB -12 to 54 dB) and the gain knob stays where it is; the readout and a typed gain follow the scale. In Line mode the Pad is not shown. Click **LC** to step OFF -> 40 Hz -> 60 Hz -> 80 Hz -> OFF. No BOOST or Z HI key on the MT48 (its "lift" switch is part of the Pad). The low-cut frequency is kept in the project and the preamp memory. The Anubis and the Hapis are unchanged.
+- `tools/watch_device.py` also saves the device's full settings and every change to files you can send back (`<address>-settings.json`, `<address>-changes.txt`).
+
 ## 2.73.0
 - **Switching Loop off while it plays carries straight on past mark 2** (take window and edit window). Play never stops at mark 2: Loop sends the playback back to mark 1 each time round, and switching it off lets the sound run on through mark 2 and keep playing, as Play would - with no gap and no jump back, even in the last moment before mark 2. (It used to finish the pass and stop at mark 2.) The take window's loop now plays on the window's own timeline, like Play, so after the loop is let go of it carries on through the window. The process windows' auditions keep their Loop as it was (switched off, the pass finishes and the audition stops).
 

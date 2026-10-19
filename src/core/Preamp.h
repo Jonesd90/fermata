@@ -15,10 +15,25 @@ struct PreampSettings
     bool  pad      = false;   // PAD
     bool  zHigh    = false;   // high input impedance (the device's z_in)
     bool  boost    = false;   // the mic preamp's Boost (the device calls it "lift")
+    int   lowCutHz = 80;      // the low cut's frequency, where the device offers a choice (MT48: 40 / 60 / 80 Hz); the others are fixed at 80
     // what the input CAN do (not saved; filled from the hardware): a fixed line input (the Anubis jack inputs) has no Mic / 48V / Pad / Boost,
     // only gain, polarity, low cut and (zHigh = "Instrument") the Line / Instrument switch
     bool  lineOnly      = false;
     bool  hasInstrument = false;
+    bool  lowCutChoice  = false;  // the low cut has several frequencies (MT48): the LC key steps OFF -> 40 -> 60 -> 80 -> OFF
+    /** The Neumann MT48's mic inputs: its Pad has three positions, which the device sends as two switches (pad, lift), and which only move the
+        gain's SCALE - the gain itself (gainDb, 0..66) stays where it is:
+            OFF    = pad off, lift on   ->  shown 12 .. 78 dB
+            -12 dB = pad off, lift off  ->  shown  0 .. 66 dB
+            -24 dB = pad on,  lift off  ->  shown -12 .. 54 dB
+        No Boost key on these (the lift switch is part of the Pad). In Line mode the Pad is not offered and the gain shows 0 .. 66. */
+    bool  steppedPad    = false;
+
+    /** steppedPad: the Pad position, 0 = OFF, 1 = -12 dB, 2 = -24 dB. */
+    int padStep() const noexcept { return pad ? 2 : (boost ? 0 : 1); }
+    void setPadStep (int step) noexcept { pad = step == 2; boost = step == 0; }
+    /** What is added to gainDb for the figure shown (and typed): the MT48's Pad scale; 0 for everything else. */
+    float shownGainOffset() const noexcept { return (steppedPad && ! line) ? 12.0f - 12.0f * (float) padStep() : 0.0f; }
 };
 
 struct PreampDeviceCfg

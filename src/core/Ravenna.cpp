@@ -181,7 +181,13 @@ static bool isLineOnlyModule (const juce::var& m)
     return o != nullptr && o->hasProperty ("lineGain") && ! o->hasProperty ("micGain");
 }
 
-HwPreamp RavennaDevice::readChannel (const juce::var& module, int index)
+bool RavennaDevice::isMT48 (const juce::var& dump)
+{
+    const auto product = dump["identity"]["product"].toString().removeCharacters (" -").toUpperCase();
+    return product.contains ("MT48");
+}
+
+HwPreamp RavennaDevice::readChannel (const juce::var& module, int index, bool isMT48Device)
 {
     HwPreamp h;
     h.moduleId = (int) module["id"]; h.index = index; h.name = module["name"].toString();
@@ -189,6 +195,9 @@ HwPreamp RavennaDevice::readChannel (const juce::var& module, int index)
     h.m48V = boolOf (ch["m48V"]); h.pad = boolOf (ch["pad"]); h.lowCut = boolOf (ch["lowCut"]); h.phase = boolOf (ch["phase"]); h.cut = boolOf (ch["cut"]); h.lift = boolOf (ch["lift"]); h.zIn = boolOf (ch["z_in"]);
     h.line = (int) ch["inputMode"] == 1;
     h.micGain = (int) ch["micGain"]; h.lineGain = (int) ch["lineGain"];
+    if (ch.hasProperty ("lowCut_freq")) h.lowCutFreq = (int) ch["lowCut_freq"];
+    if (const auto* lc = module["custom"]["ins"]["capabilities"]["channel"]["lowCut_info"].getArray()) h.lowCutChoice = lc->size() > 1;
+    h.steppedPad = isMT48Device && (bool) module["custom"]["ins"]["capabilities"]["channel"]["pad"] && (bool) module["custom"]["ins"]["capabilities"]["channel"]["lift"];
     if (isLineOnlyModule (module))
     {
         h.lineOnly = true; h.line = true;
@@ -301,7 +310,7 @@ bool RavennaDevice::getChannel (int i, HwPreamp& out) const
     if (! juce::isPositiveAndBelow (i, (int) refs.size())) return false;
     auto it = modules.find (refs[(size_t) i].moduleId);
     if (it == modules.end()) return false;
-    out = readChannel (it->second, refs[(size_t) i].index);
+    out = readChannel (it->second, refs[(size_t) i].index, mt48);
     return true;
 }
 
@@ -356,6 +365,8 @@ void RavennaDevice::handleSettings (const juce::var& data)
         {
             if (auto* arr = value["_modules"].getArray())
             {
+                mt48 = isMT48 (value);
+                if (mt48) juce::Logger::writeToLog ("Device " + hostName + " is a Neumann MT48: three-position Pad on its mic inputs, low cut at 40 / 60 / 80 Hz");
                 modules.clear();
                 for (auto& m : *arr) modules[(int) m["id"]] = m;
                 rebuildChannelList();
@@ -518,6 +529,7 @@ PreampSettings RavennaPreampDriver::toSettings (const HwPreamp& h)
     s.line = h.line; s.gainDb = (float) (h.lineOnly ? (h.zIn ? h.instrumentGain : h.lineGain) : (h.line ? h.lineGain : h.micGain)) / 10.0f;
     s.phantom = h.m48V; s.lowCut = h.lowCut; s.polarity = h.phase; s.boost = h.lift; s.pad = h.pad; s.zHigh = h.zIn;
     s.lineOnly = h.lineOnly; s.hasInstrument = h.lineOnly && h.instrKey.isNotEmpty();
+    s.lowCutHz = h.lowCutFreq; s.lowCutChoice = h.lowCutChoice; s.steppedPad = h.steppedPad && ! h.lineOnly;
     return s;
 }
 
@@ -558,6 +570,8 @@ bool RavennaPreampDriver::apply (int inputIndex, const PreampSettings& s)
     }
     if (! h.lineOnly && s.phantom != h.m48V) { o->setProperty ("m48V", s.phantom); any = true; }
     if (s.lowCut != h.lowCut)  { o->setProperty ("lowCut", s.lowCut); any = true; }
+    if (h.lowCutChoice && s.lowCut && s.lowCutHz != h.lowCutFreq && (s.lowCutHz == 40 || s.lowCutHz == 60 || s.lowCutHz == 80))
+        { o->setProperty ("lowCut_freq", s.lowCutHz); any = true; }        // (the MT48's web page sends the two together: lowCut on, at that frequency)
     if (s.polarity != h.phase) { o->setProperty ("phase", s.polarity); any = true; }
     if (! h.lineOnly && s.boost != h.lift)   { o->setProperty ("lift", s.boost); any = true; }
     if (! h.lineOnly && s.pad != h.pad)      { o->setProperty ("pad", s.pad); any = true; }
@@ -603,7 +617,8 @@ void RavennaPreampDriver::hardwareChanged()
             auto it = lastReported.find (p.first);
             const auto& a = p.second;
             if (it != lastReported.end() && it->second.gainDb == a.gainDb && it->second.phantom == a.phantom && it->second.line == a.line
-                && it->second.lowCut == a.lowCut && it->second.polarity == a.polarity && it->second.boost == a.boost && it->second.pad == a.pad && it->second.zHigh == a.zHigh) continue;
+                && it->second.lowCut == a.lowCut && it->second.polarity == a.polarity && it->second.boost == a.boost && it->second.pad == a.pad && it->second.zHigh == a.zHigh
+                && it->second.lowCutHz == a.lowCutHz && it->second.steppedPad == a.steppedPad && it->second.lowCutChoice == a.lowCutChoice) continue;
             lastReported[p.first] = a;
             if (onHardware) onHardware (p.first, a);
         }

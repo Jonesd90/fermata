@@ -1,5 +1,8 @@
 """Prints every setting change a Merging device reports, so you can see what a button in its web page changes.
-Usage:   python watch_device.py 165.165.1.40        (then click things in the device's web page and read the lines that appear)
+Usage:   python watch_device.py 165.165.1.30        (then click things in the device's web page and read the lines that appear)
+It also saves, in the folder you run it from:
+  <address>-settings.json   everything the device says about itself when it connects (its inputs, what each can do, their present settings)
+  <address>-changes.txt     every line printed below, so the clicks can be sent back
 Needs only Python 3 (no installs)."""
 import socket, struct, base64, os, json, sys, time
 
@@ -46,7 +49,10 @@ send = lambda o: s.sendall(frame(json.dumps([o])))
 send({"channel": "/meta/connect", "connectionType": "websocket", "advice": {"timeout": 0}, "id": "2", "clientId": cid})
 send({"channel": "/meta/subscribe", "subscription": "/ravenna/settings", "id": "3", "clientId": cid})
 send({"channel": "/service/ravenna/commands", "data": {"command": "update"}, "id": "5", "clientId": cid})
-print(f"Connected to {host}. Now click things in the device's web page (e.g. Boost) - changes appear below. Ctrl+C to stop.\n")
+log = open(f"{host}-changes.txt", "a", encoding="utf-8")
+def say(line):
+    print(line); log.write(line + "\n"); log.flush()
+say(f"Connected to {host} at {time.strftime('%Y-%m-%d %H:%M:%S')}. Now click things in the device's web page - changes appear below. Ctrl+C to stop.\n")
 s.settimeout(None); n = 10; last = time.time()
 while True:
     for m in json.loads(read_message(s)):
@@ -56,7 +62,9 @@ while True:
             n += 1; send({"channel": "/meta/connect", "connectionType": "websocket", "id": str(n), "clientId": cid}); last = time.time()
         elif ch == "/ravenna/settings":
             d = m.get("data", {})
-            if d.get("path") == "$": print("(received the full settings dump: %d bytes)" % len(json.dumps(d))); continue
-            print(time.strftime("%H:%M:%S"), d.get("path"), "=", json.dumps(d.get("value")))
+            if d.get("path") == "$":
+                with open(f"{host}-settings.json", "w", encoding="utf-8") as f: json.dump(d.get("value"), f, indent=1)
+                say("(received the full settings dump: %d bytes, saved as %s-settings.json)" % (len(json.dumps(d)), host)); continue
+            say(time.strftime("%H:%M:%S") + " " + str(d.get("path")) + " = " + json.dumps(d.get("value")))
         elif not (ch or "").startswith("/meta/"):
-            print(time.strftime("%H:%M:%S"), "other message:", ch, json.dumps(m)[:400])      # anything else the device says
+            say(time.strftime("%H:%M:%S") + " other message: " + str(ch) + " " + json.dumps(m)[:400])      # anything else the device says

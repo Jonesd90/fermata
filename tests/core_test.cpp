@@ -3004,6 +3004,41 @@ int main()
         CHECK (! RavennaDevice::readChannel (combo, 0).lineOnly);
     }
 
+    SECTION ("2.74: the Neumann MT48: three-position Pad (a gain scale), low cut at 40 / 60 / 80 Hz");
+    {
+        // the modules exactly as the MT48 reported them (inputs 1/2 and 3/4)
+        auto mic = juce::JSON::parse (R"({"id":154,"name":"Mic/Line","custom":{"ins":{"channels":[{"lock":false,"inputMode":0,"m48V":false,"pad":false,"lift":true,"lineGain":0,"micGain":180,"lowCut":true,"lowCut_freq":60,"phase":false,"cut":false},{"inputMode":1,"pad":true,"lift":false,"micGain":0,"lineGain":250,"lowCut":false,"lowCut_freq":80}],"capabilities":{"channel":{"mic":true,"line":true,"instrument":false,"lineGain":true,"micGain":true,"48V":true,"z_in":false,"pad":true,"lift":true,"lowCut":true,"lowCut_info":[40,60,80],"phase":true,"cut":true}}}}})");
+        auto inst = juce::JSON::parse (R"({"id":155,"name":"Inst/Line","custom":{"ins":{"channels":[{"inputMode":2,"lineGain":0,"instrumentGain":300,"lowCut":true,"lowCut_freq":40,"phase":true,"cut":false}],"capabilities":{"channel":{"mic":false,"line":true,"instrument":true,"inputMode_ro":false,"lineGain":true,"micGain":false,"instrumentGain":true,"48V":false,"pad":false,"lift":false,"lowCut":true,"lowCut_info":[40,60,80],"phase":true}}}}})");
+        auto dump = juce::JSON::parse (R"({"identity":{"vendor":"Neumann","product":"MT 48","name":"MT48"}})");
+        CHECK (RavennaDevice::isMT48 (dump) && ! RavennaDevice::isMT48 (juce::JSON::parse (R"({"identity":{"product":"MERGING+ANUBIS"}})")));
+        auto s = RavennaPreampDriver::toSettings (RavennaDevice::readChannel (mic, 0, true));
+        CHECK (s.steppedPad && s.lowCutChoice && s.lowCut && s.lowCutHz == 60 && ! s.lineOnly);
+        CHECK (s.padStep() == 0 && std::abs (s.gainDb - 18.0f) < 0.01f && s.shownGainOffset() == 12.0f);          // Pad OFF: 18 shown as 30 (scale 12..78)
+        s.setPadStep (1); CHECK (! s.pad && ! s.boost && s.shownGainOffset() == 0.0f);                            // -12 dB: shown 18 (0..66)
+        s.setPadStep (2); CHECK (s.pad && ! s.boost && s.shownGainOffset() == -12.0f);                            // -24 dB: shown 6 (-12..54)
+        s.setPadStep (0); CHECK (! s.pad && s.boost);
+        auto l = RavennaPreampDriver::toSettings (RavennaDevice::readChannel (mic, 1, true));
+        CHECK (l.line && l.steppedPad && l.padStep() == 2 && l.shownGainOffset() == 0.0f && std::abs (l.gainDb - 25.0f) < 0.01f);   // Line: no Pad scale
+        auto i3 = RavennaPreampDriver::toSettings (RavennaDevice::readChannel (inst, 0, true));
+        CHECK (i3.lineOnly && i3.hasInstrument && i3.zHigh && ! i3.steppedPad && i3.lowCutChoice && i3.lowCutHz == 40 && i3.shownGainOffset() == 0.0f && std::abs (i3.gainDb - 30.0f) < 0.01f);
+        // the same modules on an Anubis: no stepped Pad (its lift stays Boost), one low-cut frequency
+        auto anubisMic = juce::JSON::parse (R"({"id":154,"name":"Combo 1/2","custom":{"ins":{"channels":[{"inputMode":0,"pad":false,"lift":true,"micGain":100,"lowCut":true,"lowCut_freq":80}],"capabilities":{"channel":{"micGain":true,"pad":true,"lift":true,"lowCut_info":[80]}}}}})");
+        auto a = RavennaPreampDriver::toSettings (RavennaDevice::readChannel (anubisMic, 0, false));
+        CHECK (! a.steppedPad && ! a.lowCutChoice && a.boost && a.shownGainOffset() == 0.0f);
+        // the low-cut frequency is kept in the project and in the preamp memory
+        Project q; q.inputs.resize (2); q.inputs[1].preamp.lowCut = true; q.inputs[1].preamp.lowCutHz = 40;
+        Project q2; CHECK (q2.fromVar (q.toVar()) && q2.inputs.size() == 2 && q2.inputs[1].preamp.lowCutHz == 40 && q2.inputs[0].preamp.lowCutHz == 80);
+        PreampMemory pm; pm.inputs[3] = q.inputs[1].preamp;
+        PreampMemory pm2; CHECK (PreampMemory::fromVar (pm.toVar(), pm2) && pm2.inputs[3].lowCutHz == 40 && PreampMemory::same (pm2.inputs[3], pm.inputs[3]));
+        auto other = pm.inputs[3]; other.lowCutHz = 60; CHECK (! PreampMemory::same (other, pm.inputs[3]));
+        other.lowCut = false; auto off2 = other; off2.lowCutHz = 80; CHECK (PreampMemory::same (other, off2));    // (with the low cut off its frequency does not matter)
+        // setting an input (a restored preamp memory, say) keeps what the hardware says the input can do
+        q.inputs[0].preamp.steppedPad = true; q.inputs[0].preamp.lowCutChoice = true;
+        PreampSettings restored; restored.gainDb = 30.0f; restored.setPadStep (1); restored.lowCut = true; restored.lowCutHz = 60;
+        q.setPreamp (0, restored);
+        CHECK (q.inputs[0].preamp.steppedPad && q.inputs[0].preamp.lowCutChoice && q.inputs[0].preamp.padStep() == 1 && q.inputs[0].preamp.lowCutHz == 60 && q.inputs[0].preamp.gainDb == 30.0f);
+    }
+
     SECTION ("undo: many levels of the takes' details, the edits and the mastering");
     {
         auto& w0 = *p.takeWindows.front();

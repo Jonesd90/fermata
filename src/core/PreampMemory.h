@@ -12,7 +12,7 @@ struct PreampMemory
     static bool same (const PreampSettings& a, const PreampSettings& b) noexcept
     {
         return std::abs (a.gainDb - b.gainDb) < 0.05f && a.phantom == b.phantom && a.line == b.line && a.lowCut == b.lowCut
-            && a.polarity == b.polarity && a.pad == b.pad && a.zHigh == b.zHigh && a.boost == b.boost;
+            && a.polarity == b.polarity && a.pad == b.pad && a.zHigh == b.zHigh && a.boost == b.boost && (! a.lowCut || a.lowCutHz == b.lowCutHz);
     }
 
     juce::var toVar() const
@@ -23,7 +23,7 @@ struct PreampMemory
             auto* o = new juce::DynamicObject();
             o->setProperty ("input", i); o->setProperty ("gainDb", (double) s.gainDb); o->setProperty ("phantom", s.phantom);
             o->setProperty ("line", s.line); o->setProperty ("lowCut", s.lowCut); o->setProperty ("polarity", s.polarity);
-            o->setProperty ("pad", s.pad); o->setProperty ("zHigh", s.zHigh); o->setProperty ("boost", s.boost);
+            o->setProperty ("pad", s.pad); o->setProperty ("zHigh", s.zHigh); o->setProperty ("boost", s.boost); o->setProperty ("lowCutHz", s.lowCutHz);
             arr.add (juce::var (o));
         }
         auto* root = new juce::DynamicObject();
@@ -39,6 +39,7 @@ struct PreampMemory
             {
                 PreampSettings s; s.gainDb = (float) (double) e["gainDb"]; s.phantom = (bool) e["phantom"]; s.line = (bool) e["line"];
                 s.lowCut = (bool) e["lowCut"]; s.polarity = (bool) e["polarity"]; s.pad = (bool) e["pad"]; s.zHigh = (bool) e["zHigh"]; s.boost = (bool) e["boost"];
+                s.lowCutHz = e.hasProperty ("lowCutHz") ? (int) e["lowCutHz"] : 80;
                 out.inputs[(int) e["input"]] = s;
             }
         return true;

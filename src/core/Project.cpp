@@ -815,8 +815,11 @@ void Project::setPreamp (int inputIndex, const PreampSettings& s)
     if (! juce::isPositiveAndBelow (inputIndex, (int) inputs.size())) return;
     if (inputs[(size_t) inputIndex].preamp.line != s.line)
         juce::Logger::writeToLog ("Preamp: input " + juce::String (inputIndex + 1) + " Mic/Line " + (s.line ? "MIC -> LINE" : "LINE -> MIC") + " set from the program (gain " + juce::String (s.gainDb, 1) + ")");
-    inputs[(size_t) inputIndex].preamp = s;
-    if (preampDriver != nullptr) preampDriver->apply (inputIndex, s);
+    auto& cur = inputs[(size_t) inputIndex].preamp;
+    PreampSettings kept = s;                              // what the input CAN do comes from the hardware, not from what is being set (a restored memory has none of it)
+    kept.lineOnly = cur.lineOnly; kept.hasInstrument = cur.hasInstrument; kept.lowCutChoice = cur.lowCutChoice; kept.steppedPad = cur.steppedPad;
+    cur = kept;
+    if (preampDriver != nullptr) preampDriver->apply (inputIndex, kept);
     changed();
 }
 
@@ -1121,6 +1124,7 @@ var Project::toVar (bool editorialOnly, bool withWindows) const
         put (o, "name", i.name); put (o, "driverName", i.driverName);
         put (o, "gainDb", i.preamp.gainDb); put (o, "phantom", i.preamp.phantom); put (o, "line", i.preamp.line);
         put (o, "lowCut", i.preamp.lowCut); put (o, "polarity", i.preamp.polarity); put (o, "boost", i.preamp.boost); put (o, "pad", i.preamp.pad); put (o, "zHigh", i.preamp.zHigh);
+        if (i.preamp.lowCutHz != 80) put (o, "lowCutHz", i.preamp.lowCutHz);
         in.add (o);
     }
     put (root, "inputs", in);
@@ -1210,6 +1214,7 @@ bool Project::fromVar (const var& root)
             InputChannel i; i.name = v["name"].toString(); i.driverName = v["driverName"].toString();
             i.preamp.gainDb = (float) (double) v["gainDb"]; i.preamp.phantom = (bool) v["phantom"];
             i.preamp.line = (bool) v["line"]; i.preamp.lowCut = (bool) v["lowCut"]; i.preamp.polarity = (bool) v["polarity"]; i.preamp.boost = (bool) v["boost"]; i.preamp.pad = (bool) v["pad"]; i.preamp.zHigh = (bool) v["zHigh"];
+            i.preamp.lowCutHz = v.hasProperty ("lowCutHz") ? (int) v["lowCutHz"] : 80;
             if (i.name == i.driverName) i.name.clear();          // older projects stored the driver name as 'your name'
             inputs.push_back (i);
         }
