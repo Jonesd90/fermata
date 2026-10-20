@@ -171,8 +171,8 @@ inline juce::String regionsSignature (const std::vector<EditRegion>& v)
 class StreamFrame : public juce::Component
 {
 public:
-    StreamFrame (std::unique_ptr<juce::Component> content, juce::Colour tint, juce::String big, juce::String small)
-        : inner (std::move (content)), colour (tint), bigText (std::move (big)), smallText (std::move (small))
+    StreamFrame (std::unique_ptr<juce::Component> content, juce::Colour tint, juce::String big, juce::String smallCaption)
+        : inner (std::move (content)), colour (tint), bigText (std::move (big)), smallText (std::move (smallCaption))
     {
         addAndMakeVisible (*inner);
         setSize (inner->getWidth(), inner->getHeight() + kBanner);
@@ -317,9 +317,9 @@ static void launchStream (const std::shared_ptr<StreamPair>& pair, int slot, std
     const auto tint = slot == 0 ? juce::Colour (0xffc4511a) : juce::Colour (0xff1f6f8b);
     auto w = std::make_unique<StreamWindow> (title, theme::window.interpolatedWith (tint, 0.28f), pair);
     const juce::String big = slot == 0 ? "OUT STREAM" : "IN STREAM";
-    const juce::String small = slot == 0 ? "the take that plays UP TO the edit point (carried on past it, where its crossfade uses it)  -  Write back closes this window; the other stream is then yours"
+    const juce::String smallCaption = slot == 0 ? "the take that plays UP TO the edit point (carried on past it, where its crossfade uses it)  -  Write back closes this window; the other stream is then yours"
                                          : "the take that plays FROM the edit point (started before it, where its crossfade uses it)  -  Write back closes this window; the other stream is then yours";
-    w->setContentOwned (new StreamFrame (std::move (content), tint.darker (0.15f), big, small), true);
+    w->setContentOwned (new StreamFrame (std::move (content), tint.darker (0.15f), big, smallCaption), true);
     w->setUsingNativeTitleBar (true);
     w->setResizable (true, true);
     juce::Rectangle<int> area (0, 0, 1900, 1000);

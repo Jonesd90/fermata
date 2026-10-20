@@ -7,7 +7,19 @@
  #ifndef NOMINMAX
   #define NOMINMAX
  #endif
+ #ifndef WIN32_LEAN_AND_MEAN
+  #define WIN32_LEAN_AND_MEAN 1      // (without it windows.h pulls in the RPC headers, and those #define small, hyper ... as types)
+ #endif
  #include <windows.h>
+ // windows.h leaves macros behind that are ordinary words in the rest of Fermata ("auto near = ...", "int small"): a file that includes this
+ // header must not break on them. (JUCE itself drops min / max the same way.)
+ #undef small
+ #undef hyper
+ #undef near
+ #undef far
+ #undef pascal
+ #undef min
+ #undef max
 #else
  #include <fcntl.h>
  #include <unistd.h>

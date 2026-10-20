@@ -290,7 +290,7 @@ private:
         const auto lanes = laneRects();
         const float ob = xAt ((double) A.fadeOutBegin()), oe = xAt ((double) A.fadeOutFinish()), ib = xAt ((double) B.fadeInBegin()), ie = xAt ((double) B.fadeInFinish());
         const float x = (float) p.x;
-        auto near = [&] (float a) { return std::abs (x - a) <= kHit; };
+        auto nearTo = [&] (float a) { return std::abs (x - a) <= kHit; };
         auto inside = [&] (float a, float b) { return x >= juce::jmin (a, b) - kHit && x <= juce::jmax (a, b) + kHit; };
 
         const int yA = lanes.a.getCentreY(), yB = lanes.b.getCentreY();
@@ -301,19 +301,19 @@ private:
         if (p.y < yA || (! hasB))                                      // top half of A: the out-fade on its own
         {
             if (! hasA) return Mode::None;
-            if (oe - ob > 1.0f) { if (near (ob)) return Mode::OutStart; if (near (oe)) return Mode::OutEnd; if (x > ob && x < oe) return Mode::OutBody; }
-            else if (near (ob)) return Mode::OutBody;
+            if (oe - ob > 1.0f) { if (nearTo (ob)) return Mode::OutStart; if (nearTo (oe)) return Mode::OutEnd; if (x > ob && x < oe) return Mode::OutBody; }
+            else if (nearTo (ob)) return Mode::OutBody;
         }
         else if (p.y >= yB || ! hasA)                                  // bottom half of B: the in-fade on its own
         {
-            if (ie - ib > 1.0f) { if (near (ib)) return Mode::InStart; if (near (ie)) return Mode::InEnd; if (x > ib && x < ie) return Mode::InBody; }
-            else if (near (ib)) return Mode::InBody;
+            if (ie - ib > 1.0f) { if (nearTo (ib)) return Mode::InStart; if (nearTo (ie)) return Mode::InEnd; if (x > ib && x < ie) return Mode::InBody; }
+            else if (nearTo (ib)) return Mode::InBody;
         }
         else if (hasA && hasB)                                         // in between: both fades together
         {
             const float s0 = juce::jmin (ob, ib), s1 = juce::jmax (ob, ib), e0 = juce::jmin (oe, ie), e1 = juce::jmax (oe, ie);
-            if (near (ob) || near (ib)) return Mode::MidStart;
-            if (near (oe) || near (ie)) return Mode::MidEnd;
+            if (nearTo (ob) || nearTo (ib)) return Mode::MidStart;
+            if (nearTo (oe) || nearTo (ie)) return Mode::MidEnd;
             if (inside (s0, e1) && x > s0 && x < e1 && (p.y >= lanes.a.getBottom() - 6 || p.y <= lanes.b.getY() + 6 || (p.y > lanes.a.getBottom() && p.y < lanes.b.getY())))
                 return Mode::MidBody;
             juce::ignoreUnused (s1, e0);

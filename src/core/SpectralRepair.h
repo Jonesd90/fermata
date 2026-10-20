@@ -323,13 +323,13 @@ public:
             }
             return v;
         };
-        auto measure = [&] (std::vector<double> v, bool before, double& quiet, double& near)  // the mean just next to the edge, and the mean of the quieter half
+        auto measure = [&] (std::vector<double> v, bool before, double& quiet, double& nearLevel)  // the mean just next to the edge, and the mean of the quieter half
         {
             if (v.empty()) return false;
             const int nn = juce::jmax (1, (int) (nearSpan / H));
             double s = 0.0; int k = 0;
             for (int i = 0; i < juce::jmin (nn, (int) v.size()); ++i) { s += before ? v[v.size() - 1 - (size_t) i] : v[(size_t) i]; ++k; }
-            near = s / juce::jmax (1, k);
+            nearLevel = s / juce::jmax (1, k);
             std::sort (v.begin(), v.end());
             const int use = juce::jmax (1, (int) std::ceil (bgPart * (double) v.size()));
             s = 0.0; for (int i = 0; i < use; ++i) s += v[(size_t) i];
@@ -959,8 +959,8 @@ public:
             const long win = (long) (sr * 0.003);
             for (size_t i = 0; i < gaps.size(); ++i)
             {
-                int near = 0; for (size_t j = 0; j < gaps.size(); ++j) if (j != i && std::abs (gaps[j].first - gaps[i].first) < win) ++near;
-                if (near >= 3) drop[i] = 1;
+                int nearCount = 0; for (size_t j = 0; j < gaps.size(); ++j) if (j != i && std::abs (gaps[j].first - gaps[i].first) < win) ++nearCount;
+                if (nearCount >= 3) drop[i] = 1;
             }
             std::vector<std::pair<long, long>> keepG; for (size_t i = 0; i < gaps.size(); ++i) if (! drop[i]) keepG.push_back (gaps[i]);
             gaps.swap (keepG);

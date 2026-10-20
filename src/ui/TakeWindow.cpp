@@ -93,8 +93,8 @@ public:
     void applyHeightLevel()
     {
         const int avail = juce::jmax (120, viewport.getMaximumVisibleHeight() - kRulerH - kLaneH);
-        const double small = juce::jmax (10.0, (double) avail / 32.0), large = juce::jmax (small * 2.0, (double) avail - 24.0);
-        rowH = (int) std::round (small * std::pow (large / small, (double) heightLevel / (kHeightLevels - 1)));
+        const double rowMin = juce::jmax (10.0, (double) avail / 32.0), rowMax = juce::jmax (rowMin * 2.0, (double) avail - 24.0);
+        rowH = (int) std::round (rowMin * std::pow (rowMax / rowMin, (double) heightLevel / (kHeightLevels - 1)));
         updateSize();
         repaint();
     }

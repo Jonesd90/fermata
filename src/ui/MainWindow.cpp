@@ -167,7 +167,7 @@ public:
     struct Sizes { int top, disp, gainCap, knob, afterKnob, readout, gap1, key, keyGap, gap2, lower, monGap, gap3, talk, bottom; };
     static Sizes sizesFor (float t)
     {
-        auto l = [t] (int full, int small) { return juce::roundToInt ((float) full + ((float) small - (float) full) * juce::jlimit (0.0f, 1.0f, t)); };
+        auto l = [t] (int full, int compact) { return juce::roundToInt ((float) full + ((float) compact - (float) full) * juce::jlimit (0.0f, 1.0f, t)); };
         return { l (12, 9), l (50, 40), l (16, 13), l (72, 48), l (2, 1), l (22, 18), l (10, 6), l (32, 26), l (3, 2), l (10, 6), l (105, 72), l (3, 2), l (8, 5), l (24, 20), l (10, 8) };
     }
     /** The height of a strip at a given squeeze. */
@@ -689,8 +689,8 @@ void MainComponent::resized()
     railH = getHeight() >= fixedH + InputRow::heightFor (0.0f) + kRailFull ? kRailFull : kRailCompact;
     {
         const int room = getHeight() - fixedH - railH;                  // what the input strips can have
-        const int full = InputRow::heightFor (0.0f), small = InputRow::heightFor (1.0f);
-        squeeze = room >= full ? 0.0f : juce::jlimit (0.0f, 1.0f, (float) (full - room) / (float) (full - small));
+        const int full = InputRow::heightFor (0.0f), compact = InputRow::heightFor (1.0f);
+        squeeze = room >= full ? 0.0f : juce::jlimit (0.0f, 1.0f, (float) (full - room) / (float) (full - compact));
         for (auto* row : inputRows) row->setSqueeze (squeeze);
     }
     // ---- the wooden rail along the bottom: the minimised windows sit on it, the maker's name at its right

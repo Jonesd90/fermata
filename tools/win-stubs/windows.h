@@ -7,6 +7,16 @@ typedef unsigned long ULONG; typedef ULONG* PULONG; typedef unsigned long DWORD;
 typedef void* HANDLE; typedef void* LPVOID; typedef void* PVOID; typedef const wchar_t* LPCWSTR; typedef void* HMODULE;
 #define WINAPI
 #define NTAPI
+// the real header leaves these behind (windef.h / rpcndr.h): a file that includes windows.h must cope with them, as FileSync.h does
+#define near
+#define far
+#define pascal
+#define small char
+#define hyper long long
+#ifndef NOMINMAX
+ #define min(a, b) (((a) < (b)) ? (a) : (b))
+ #define max(a, b) (((a) > (b)) ? (a) : (b))
+#endif
 #define TRUE 1
 #define FALSE 0
 #define INVALID_HANDLE_VALUE ((HANDLE) (intptr_t) -1)
