@@ -196,7 +196,7 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
     std::vector<NumGroup> numGroups;
     if (flat.size() >= 4)
     {
-        auto isSideWord = [] (const juce::String& w) { return w.equalsIgnoreCase ("L") || w.equalsIgnoreCase ("R") || w.equalsIgnoreCase ("Left") || w.equalsIgnoreCase ("Right"); };
+        auto isSideWord = [] (const juce::String& w) { return w.equalsIgnoreCase ("L") || w.equalsIgnoreCase ("R") || w.equalsIgnoreCase ("C") || w.equalsIgnoreCase ("Left") || w.equalsIgnoreCase ("Right"); };   // (C: Pyramix's mono "-C")
         auto isNumWord = [] (const juce::String& w) { return w.isNotEmpty() && w.length() <= 6 && w.containsOnly ("0123456789"); };
         auto coreEnd = [&] (const juce::StringArray& t) { return t.size() - (t.size() >= 2 && isSideWord (t[t.size() - 1]) ? 1 : 0); };   // (exclusive)
         auto groupKey = [] (const juce::String& w) { return w.toLowerCase().removeCharacters ("0123456789") + "#" + juce::String (numberIn (w)); };   // "01" = "1"
@@ -248,13 +248,27 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
                     if (same) ++sameLength;
                 }
                 if (! ok || biggest < 2 || (double) all.size() > 1.5 * (double) biggest) continue;   // the takes must share their tracks
-                // takes whose files are the same length (a grouping by track number would make 'takes' of different lengths); then more takes;
-                // then the last word
-                const double score = 10.0 * std::round (10.0 * (double) sameLength / (double) groups.size()) + 0.001 * (double) groups.size() + (! fromStart && k == 1 ? 0.0001 : 0.0);
+                // takes that each hold (nearly) all the tracks - a word that mixes take numbers and mic numbers ("001_1-C", "001_OMNI-L") does not;
+                // then takes whose files are the same length (a grouping by track number would make 'takes' of different lengths); then more
+                // takes; then the last word
+                double coverage = 0.0; for (auto& kv : groups) coverage += (double) kv.second.items.size() / (double) all.size();
+                coverage /= (double) groups.size();
+                const double score = 100.0 * std::round (20.0 * coverage) + 10.0 * std::round (10.0 * (double) sameLength / (double) groups.size())
+                                   + 0.001 * (double) groups.size() + (! fromStart && k == 1 ? 0.0001 : 0.0);
                 if (score > bestScore)
                 {
                     bestScore = score; numGroups.clear();
-                    for (auto& kv : groups) { NumGroup ng; ng.value = kv.second.value; for (auto& x : kv.second.items) ng.items.push_back ({ x.first, x.second.joinIntoString (" ").trim() }); numGroups.push_back (std::move (ng)); }
+                    for (auto& kv : groups)
+                    {
+                        NumGroup ng; ng.value = kv.second.value;
+                        for (auto& x : kv.second.items)
+                        {
+                            auto w = x.second;                                     // "1 C" -> "1": the C only says the file is mono (Pyramix)
+                            if (w.size() >= 2 && w[w.size() - 1].equalsIgnoreCase ("C")) w.remove (w.size() - 1);
+                            ng.items.push_back ({ x.first, w.joinIntoString (" ").trim() });
+                        }
+                        numGroups.push_back (std::move (ng));
+                    }
                 }
             }
     }
@@ -474,6 +488,17 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
             tryTidy ([] (const juce::StringArray& t) { juce::StringArray r = t; r.remove (0); return r.joinIntoString (" "); });
         if (allNames ([&] (const juce::StringArray& t) { return t.size() >= 2 && isTakeWord (t[t.size() - 1]); }))
             tryTidy ([] (const juce::StringArray& t) { juce::StringArray r = t; r.remove (r.size() - 1); return r.joinIntoString (" "); });
+        // Pyramix's "-C" (a mono file) at the end of a name: "1 C" -> "1" ("OMNI L" / "OMNI R" keep their side for the stereo pairs)
+        {
+            bool anyC = false;
+            const bool allSided = allNames ([&] (const juce::StringArray& t)
+            {
+                const auto w = t[t.size() - 1]; anyC = anyC || (t.size() >= 2 && w.equalsIgnoreCase ("C"));
+                return t.size() >= 2 && (w.equalsIgnoreCase ("C") || w.equalsIgnoreCase ("L") || w.equalsIgnoreCase ("R"));
+            });
+            if (allSided && anyC)
+                tryTidy ([] (const juce::StringArray& t) { juce::StringArray r = t; if (r[r.size() - 1].equalsIgnoreCase ("C")) r.remove (r.size() - 1); return r.joinIntoString (" "); });
+        }
         // the words every track name starts with ("Ave Maria 8 AB", "Ave Maria 8 SPOT1" ...: the piece), when there are enough tracks for that to say something
         {
             std::set<juce::String> distinct; for (auto* p : all) distinct.insert (p->trackKey);

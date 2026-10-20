@@ -2636,6 +2636,25 @@ int main()
                     CHECK (pp.tracks[2].name == "SPOT1" && pp.tracks[11].name == "SPOT10" && pp.tracks[12].name == "WIDE ROOM");
                 }
             }
+            // 2.77.3: Pyramix names with no piece ("001_1-C", "001_OMNI-L", the first take "0_..."), and one take whose Room pair is a second
+            // longer than its other files: that take split in two by length and every take came in with tracks of its own
+            {
+                std::vector<ImportSource> py;
+                for (int t = 0; t < 8; ++t)
+                {
+                    const int len = 48000 * (20 + 3 * t);
+                    const auto tn = t == 0 ? juce::String ("0") : juce::String (t).paddedLeft ('0', 3);
+                    for (int k = 1; k <= 4; ++k) py.push_back (src (tn + "_" + juce::String (k) + "-C.wav", 1, len));
+                    for (auto st : { "OMNI", "Room" }) for (auto side : { "-L", "-R" }) py.push_back (src (tn + "_" + st + side + ".wav", 1, len + (t == 3 && juce::String (st) == "Room" ? 48000 : 0)));
+                }
+                auto pyp = joinStereoPairs (buildImportPlan (py));
+                CHECK (pyp.takes.size() == 8 && pyp.tracks.size() == 6);
+                if (pyp.takes.size() == 8 && pyp.tracks.size() == 6)
+                {
+                    CHECK (pyp.takes[0].number == 0 && pyp.takes[7].number == 7 && pyp.takes[3].parts.size() == 6 && pyp.takes[3].length == 48000 * 30);
+                    CHECK (pyp.tracks[0].name == "1" && pyp.tracks[3].name == "4" && pyp.tracks[4].name == "OMNI" && pyp.tracks[4].channels == 2 && pyp.tracks[5].name == "Room");
+                }
+            }
             // a whole session of mono files named "<piece> <take>_<instrument>-<L|R|C>": all takes share the same tracks
             {
                 std::vector<ImportSource> m;
