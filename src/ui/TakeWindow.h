@@ -66,7 +66,7 @@ private:
     IconButton armAllButton { "Arm all" }, armNoneButton { "Arm none" };
     juce::TextButton ltcButton { juce::String::fromUTF8 ("\xE2\x96\xB6 LTC") };       // the triangle: shows / hides the LTC track
     IconButton recordButton { "REC  [R]" }, playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, bounceButton { "Bounce Out..." },
-               pitchButton { "Pitch..." }, repairButton { "Repair & DeClick..." }, undoFixButton { "Undo fix" };
+               pitchButton { "Pitch..." }, repairButton { "Repair & DeClick..." }, denoiseButton { "Denoise..." }, undoFixButton { "Undo fix" };
     juce::TextButton zoomInButton { "+" }, zoomOutButton { "-" };
     IconButton editInButton { "Mark 1 [1]" }, editOutButton { "Mark 2 [2]" },
                toEditButton { "To edit [3]" }, toEditAtButton { "To playhead [4]" }, editWindowButton { "Edit window" },

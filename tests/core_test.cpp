@@ -22,6 +22,7 @@
 #include "../src/core/ReviewPage.h"
 #include "../src/core/FileSync.h"
 #include "../src/core/AudioRelink.h"
+#include "../src/core/AudioOps.h"
 #include <cstdio>
 #include <thread>
 
@@ -4100,6 +4101,144 @@ int main()
         // the summary reads
         CHECK (rep.summary().contains ("1 file found by its name") && rep.summary().contains ("2 renamed files found") && rep2.summary().contains ("fit several"));
         base.deleteRecursively();
+    }
+    SECTION ("2.77 background denoiser: the C++ engine matches the reference, on files, in pieces, and does what the controls say");
+    {
+        const auto dataDir = juce::File (__FILE__).getParentDirectory().getChildFile ("data").getChildFile ("denoise");
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        auto readMono = [&] (const juce::File& f, double& sr)
+        {
+            std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (f));
+            std::vector<float> v; if (r == nullptr) return v;
+            sr = r->sampleRate; std::vector<std::vector<float>> ch; audioops::readRange (*r, 0, r->lengthInSamples, ch); return ch[0];
+        };
+        double sr = 0, sr2 = 0;
+        const auto in = readMono (dataDir.getChildFile ("golden_in.wav"), sr), expect = readMono (dataDir.getChildFile ("golden_out.wav"), sr2);
+        const auto gold = juce::JSON::parse (dataDir.getChildFile ("golden.json").loadFileAsString());
+        CHECK (! in.empty() && in.size() == expect.size() && sr == 48000.0);
+        if (in.empty() || in.size() != expect.size()) { std::printf ("  (tests/data/denoise is missing: the rest of this section is skipped)\n"); goto denoiseDone; }
+        {
+        denoise::Params p;
+        const double r0 = (double) gold["region"][0], r1 = (double) gold["region"][1];
+        std::vector<float> region (in.begin() + (size_t) (r0 * sr), in.begin() + (size_t) (r1 * sr));
+        auto prof = denoise::learnProfile ({ region }, sr, p);
+        CHECK (prof.valid() && prof.fftSize == (int) gold["nfft"] && std::abs (prof.levelDb() - (double) gold["profileLevelDb"]) < 0.01);
+        auto read = [&] (juce::int64 start, int n, float* dst) { for (int i = 0; i < n; ++i) { const auto j = start + i; dst[i] = j >= 0 && j < (juce::int64) in.size() ? in[(size_t) j] : 0.0f; } };
+        auto decay = denoise::measureDecay (prof, p, (juce::int64) in.size(), read);
+        bool ratesOk = decay.rates.size() == (size_t) gold["rates"].size();
+        for (size_t b = 0; ratesOk && b < decay.rates.size(); ++b)
+        {
+            const auto g = gold["rates"][(int) b];
+            if (g.isVoid()) ratesOk = std::isnan (decay.rates[b]); else ratesOk = ! std::isnan (decay.rates[b]) && std::abs (decay.rates[b] - (double) g) < 0.01;
+        }
+        CHECK (ratesOk);
+        std::vector<float> out; out.reserve (in.size());
+        CHECK (denoise::processChannel (prof, p, decay, (juce::int64) in.size(), read, [&] (const float* x, int n) { out.insert (out.end(), x, x + n); }));
+        auto snrOf = [] (const std::vector<float>& ref, const std::vector<float>& other)
+        {
+            double se = 0, sd = 0; for (size_t i = 0; i < ref.size() && i < other.size(); ++i) { se += (double) ref[i] * ref[i]; const double d = other[i] - ref[i]; sd += d * d; }
+            return 10.0 * std::log10 (se / juce::jmax (sd, 1e-30));
+        };
+        auto rmsDb = [] (const std::vector<float>& v, size_t a, size_t b) { double s = 0; for (size_t i = a; i < b && i < v.size(); ++i) s += (double) v[i] * v[i]; return 10.0 * std::log10 (s / (double) juce::jmax ((size_t) 1, b - a) + 1e-30); };
+        CHECK (out.size() == in.size() && snrOf (expect, out) > 60.0);                                        // (the 24-bit golden file itself is the limit, ~100 dB)
+        const double nr = rmsDb (in, (size_t) (0.1 * sr), (size_t) (1.3 * sr)) - rmsDb (out, (size_t) (0.1 * sr), (size_t) (1.3 * sr));
+        CHECK (std::abs (nr - (double) gold["noiseReductionDb"]) < 0.3);                                       // (the reference measured it above 30 Hz)
+        // in small pieces with context it comes out the same as in one go
+        std::vector<float> out2; out2.reserve (in.size());
+        CHECK (denoise::processChannel (prof, p, decay, (juce::int64) in.size(), read, [&] (const float* x, int n) { out2.insert (out2.end(), x, x + n); }, {}, 2.0, 3.0, 1.5));
+        CHECK (snrOf (out, out2) > 60.0);
+        // the controls: a deeper residual takes more out of the room tone; the noise-only lead-in comes out at about the residual asked for
+        denoise::Params deep; deep.residualDb = -20.0;
+        std::vector<float> out3; CHECK (denoise::processChannel (prof, deep, decay, (juce::int64) in.size(), read, [&] (const float* x, int n) { out3.insert (out3.end(), x, x + n); }));
+        const double nr3 = rmsDb (in, (size_t) (0.1 * sr), (size_t) (1.3 * sr)) - rmsDb (out3, (size_t) (0.1 * sr), (size_t) (1.3 * sr));
+        CHECK (nr3 > nr + 5.0 && nr3 < 20.5 && nr > 10.5 && nr < 12.5);
+        // a pure tone well above the noise is left alone (no dulling: within 0.2 dB), and the removed part is what was added
+        {
+            const int n = (int) (3.0 * sr); std::vector<float> tone ((size_t) n), noisy ((size_t) n);
+            juce::Random rnd (5);
+            for (int i = 0; i < n; ++i) { tone[(size_t) i] = 0.05f * std::sin (2.0f * 3.14159265f * 1000.0f * (float) i / (float) sr); noisy[(size_t) i] = tone[(size_t) i] + 0.0005f * (rnd.nextFloat() * 2.0f - 1.0f); }
+            std::vector<float> nreg (noisy.begin() + (size_t) (0.2 * sr), noisy.begin() + (size_t) (1.2 * sr));
+            for (size_t i = 0; i < nreg.size(); ++i) nreg[i] -= tone[(size_t) (0.2 * sr) + i];                   // (the room tone alone)
+            auto pr2 = denoise::learnProfile ({ nreg }, sr, p);
+            std::vector<float> y2; auto rd2 = [&] (juce::int64 st, int m, float* dst) { for (int i = 0; i < m; ++i) { const auto j = st + i; dst[i] = j >= 0 && j < n ? noisy[(size_t) j] : 0.0f; } };
+            CHECK (denoise::processChannel (pr2, p, {}, n, rd2, [&] (const float* x, int m) { y2.insert (y2.end(), x, x + m); }));
+            const double toneIn = rmsDb (tone, (size_t) (0.5 * sr), (size_t) (2.5 * sr)), toneOut = rmsDb (y2, (size_t) (0.5 * sr), (size_t) (2.5 * sr));
+            CHECK (std::abs (toneOut - toneIn) < 0.2);
+            double se = 0, sd = 0; for (size_t i = (size_t) (0.5 * sr); i < (size_t) (2.5 * sr); ++i) { se += (double) tone[i] * tone[i]; const double d = y2[i] - tone[i]; sd += d * d; }
+            CHECK (10.0 * std::log10 (se / sd) > 45.0);                                                        // (the output is the tone, not the tone plus noise: the noise was ~40 dB down)
+        }
+        // on files: a stereo file, each channel with its own profile; the untouched parts copied, the stretch denoised, 'removed' = input - output
+        {
+            const auto dir = tmp.getChildFile ("denoise"); dir.deleteRecursively(); dir.createDirectory();
+            const int n = (int) (4.0 * sr); std::vector<std::vector<float>> st (2, std::vector<float> ((size_t) n));
+            juce::Random rnd (9);
+            for (int i = 0; i < n; ++i)
+            {
+                const float t = (float) i / (float) sr, env = t > 1.5f && t < 3.0f ? 1.0f : 0.0f;
+                st[0][(size_t) i] = env * 0.1f * std::sin (2.0f * 3.14159265f * 440.0f * t) + 0.002f * (rnd.nextFloat() * 2.0f - 1.0f);
+                st[1][(size_t) i] = env * 0.1f * std::sin (2.0f * 3.14159265f * 660.0f * t) + 0.0005f * (rnd.nextFloat() * 2.0f - 1.0f);
+            }
+            const auto src = dir.getChildFile ("stereo.wav"), dst = dir.getChildFile ("stereo (denoise).wav"), rem = dir.getChildFile ("stereo (removed).wav");
+            CHECK (audioops::writeWav (src, st, sr));
+            juce::String err;
+            auto profs = audioops::learnDenoise (fm, src, (juce::int64) (0.1 * sr), (juce::int64) (1.2 * sr), p, err);
+            CHECK (err.isEmpty() && profs.valid() && profs.channels == 2 && profs.perChannel[0].levelDb() > profs.perChannel[1].levelDb() + 8.0);
+            CHECK (audioops::denoiseFile (fm, src, dst, rem, (juce::int64) (1.0 * sr), (juce::int64) (3.5 * sr), profs, p, {}, err) && err.isEmpty());
+            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (dst)), rr (fm.createReaderFor (rem));
+            CHECK (rd != nullptr && rr != nullptr && rd->numChannels == 2 && rd->lengthInSamples == n && rd->bitsPerSample == 24 && rr->lengthInSamples == n);
+            std::vector<std::vector<float>> o, rmv; audioops::readRange (*rd, 0, n, o); audioops::readRange (*rr, 0, n, rmv);
+            // before 1.0 s: a copy (to 24-bit precision); inside: the noise is down by about the residual; the tone is kept; removed = in - out
+            double dcopy = 0; for (int i = 0; i < (int) (0.9 * sr); ++i) dcopy = juce::jmax (dcopy, (double) std::abs (o[0][(size_t) i] - st[0][(size_t) i]));
+            CHECK (dcopy < 2.0 / 8388608.0);
+            CHECK (rmsDb (st[0], (size_t) (1.05 * sr), (size_t) (1.45 * sr)) - rmsDb (o[0], (size_t) (1.05 * sr), (size_t) (1.45 * sr)) > 9.0);
+            CHECK (std::abs (rmsDb (st[1], (size_t) (1.6 * sr), (size_t) (2.9 * sr)) - rmsDb (o[1], (size_t) (1.6 * sr), (size_t) (2.9 * sr))) < 0.3);
+            double dr = 0; for (int i = (int) (1.1 * sr); i < (int) (3.4 * sr); ++i) dr = juce::jmax (dr, (double) std::abs ((st[0][(size_t) i] - o[0][(size_t) i]) - rmv[0][(size_t) i]));
+            CHECK (dr < 5.0 / 8388608.0);
+            double zr = 0; for (int i = 0; i < (int) (0.9 * sr); ++i) zr = juce::jmax (zr, (double) std::abs (rmv[0][(size_t) i]));
+            CHECK (zr == 0.0);                                                                                 // (digital silence outside the stretch)
+            // the other tracks help: the right channel has the tone buried in its noise (about the noise's own level in its bin, so hard to tell
+            // from noise on its own), the left channel hears it clearly - with the group on, the right keeps more of the tone; a preview run
+            // writes silence before the stretch and ends with it. (A 10 s file: learnDenoise measures the decay over the 5 s after the room tone.)
+            const int n2 = (int) (10.0 * sr);
+            std::vector<std::vector<float>> st2 (2, std::vector<float> ((size_t) n2));
+            juce::Random rnd2 (12);
+            for (int i = 0; i < n2; ++i)
+            {
+                const float t = (float) i / (float) sr, env = t > 1.5f && t < 3.5f ? 1.0f : 0.0f, tone = std::sin (2.0f * 3.14159265f * 1000.0f * t);
+                st2[0][(size_t) i] = env * 0.1f * tone + 0.0005f * (rnd2.nextFloat() * 2.0f - 1.0f);
+                st2[1][(size_t) i] = env * 0.00004f * tone + 0.002f * (rnd2.nextFloat() * 2.0f - 1.0f);
+            }
+            const auto src2 = dir.getChildFile ("pair.wav");
+            CHECK (audioops::writeWav (src2, st2, sr));
+            auto profs2 = audioops::learnDenoise (fm, src2, (juce::int64) (0.1 * sr), (juce::int64) (1.2 * sr), p, err, 10.0);
+            CHECK (err.isEmpty() && profs2.valid() && profs2.decay.size() == 2 && profs2.decay[0].rates.size() == profs2.decay[0].edges.size() - 1);
+            CHECK (audioops::learnDenoise (fm, src, (juce::int64) (0.1 * sr), (juce::int64) (1.2 * sr), p, err, 10.0).decay.empty() && err.isEmpty());   // (a 4 s file: no 5 s stretch to measure)
+            auto toneDb = [&] (const std::vector<float>& v)                                                  // the level at 1 kHz over 1.6 - 3.4 s
+            {
+                double re = 0, im = 0; const int a0 = (int) (1.6 * sr), a1 = (int) (3.4 * sr);
+                for (int i = a0; i < a1; ++i) { const double ph = 2.0 * 3.14159265358979 * 1000.0 * i / sr; re += v[(size_t) i] * std::cos (ph); im -= v[(size_t) i] * std::sin (ph); }
+                return 20.0 * std::log10 (std::sqrt (re * re + im * im) / (a1 - a0) + 1e-20);
+            };
+            std::vector<double> rightTone (3, 0.0);
+            for (int mode = 0; mode <= 2; ++mode)
+            {
+                denoise::Params pg = p; pg.groupMode = mode;
+                audioops::DenoiseRun run; run.a = (juce::int64) (1.0 * sr); run.b = (juce::int64) (3.8 * sr); run.preview = mode == 2; run.removed = false; run.threads = 2;
+                const auto out2 = dir.getChildFile ("pair out " + juce::String (mode) + ".wav");
+                CHECK (audioops::denoiseFiles (fm, { src2 }, { out2 }, {}, { profs2 }, pg, run, {}, err) && err.isEmpty());
+                std::unique_ptr<juce::AudioFormatReader> r2 (fm.createReaderFor (out2));
+                CHECK (r2 != nullptr && r2->numChannels == 2 && r2->lengthInSamples == (mode == 2 ? (juce::int64) (3.8 * sr) : (juce::int64) n2));
+                std::vector<std::vector<float>> o2; audioops::readRange (*r2, 0, r2->lengthInSamples, o2);
+                rightTone[(size_t) mode] = toneDb (o2[1]);
+                CHECK (std::abs (toneDb (o2[0]) - toneDb (st2[0])) < 0.3);                                      // the left keeps its tone whatever the mode
+                if (mode == 2) { double z = 0; for (int i = 0; i < (int) (0.9 * sr); ++i) z = juce::jmax (z, (double) std::abs (o2[0][(size_t) i])); CHECK (z == 0.0); }   // (a preview: silence before the stretch)
+            }
+            CHECK (rightTone[1] > rightTone[0] + 2.0 && rightTone[1] <= toneDb (st2[1]) + 1.0);
+            CHECK (std::abs (rightTone[2] - rightTone[1]) < 1.0);                                              // (the preview has the same gains)
+            dir.deleteRecursively();
+        }
+        }
+        denoiseDone:;
     }
     SECTION ("VCAs: numbers, members, gains, mute, save and load");
     {

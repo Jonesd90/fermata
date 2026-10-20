@@ -1116,7 +1116,7 @@ public:
 /** The little pictures on the buttons of the edit and take windows. Each is drawn from a 24 x 24 grid so it stays sharp at any size. */
 enum class Icon { Start, Rewind, Play, Stop, Forward, End, Record, Trim, Bounce, Pitch, Repair, Reharm, Tracks, Feedback, Mixer, Earlier, Later, Delete, Undo, Automation, Buses,
                   ExportProc, ImportMulti, Markers, FeedbackMarkers, SlipLeft, SlipRight, Shuffle, InsertFlag, NextAtEnd,
-                  Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search };
+                  Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search, Denoise };
 
 inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area, juce::Colour ink = theme::text)
 {
@@ -1320,6 +1320,14 @@ inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area, j
             g.setColour (Colour (0xffc9a577)); for (auto d : { std::pair<float, float> { 10.5f, 10 }, { 13.5f, 10 }, { 12, 12 }, { 10.5f, 14 }, { 13.5f, 14 } }) g.fillEllipse (d.first - 0.7f, d.second - 0.7f, 1.4f, 1.4f);
             g.setColour (Colour (0xffb58d5c)); g.drawRoundedRectangle (2, 7.5f, 20, 9, 4.5f, 0.8f);
             g.restoreState();
+            break;
+        }
+        case Icon::Denoise:
+        {
+            // hiss (little grey spikes) thinning out towards the right, under a clean wave
+            juce::Random rnd (7);
+            for (int i = 0; i < 16; ++i) { const float x = 2.5f + (float) i * 1.25f, h = 1.5f + rnd.nextFloat() * 4.0f * (1.0f - (float) i / 18.0f); seg (x, 20.5f - h, x, 20.5f, 0.9f, Colour (0xff9aa3ad).withAlpha (1.0f - (float) i / 20.0f)); }
+            P w; w.startNewSubPath (2, 10); w.cubicTo (5, 3, 8, 3, 11, 10); w.cubicTo (14, 17, 17, 17, 22, 10); stroke (w, 2.0f, Bl);
             break;
         }
         case Icon::Reharm:

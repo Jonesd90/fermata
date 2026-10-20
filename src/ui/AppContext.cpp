@@ -37,7 +37,7 @@ AppContext::AppContext()
     project.structure.addChangeListener (this);
     devices.addChangeListener (this);
     startTimer (4000);
-    project.onNewWindow = [this] { juce::MessageManager::callAsync ([this] { if (project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording()) saveNow (true); }); };      // a new edit / take window / mixer gets its file at once
+    project.onNewWindow = [this] { juce::MessageManager::callAsync ([this] { if (saveHold == 0 && project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording()) saveNow (true); }); };      // a new edit / take window / mixer gets its file at once
     watcher.fn = [this]
     {
         if (engine.playbackFinished()) stopPlayback();                       // tidy up when a play-through reaches its end
@@ -346,6 +346,7 @@ void AppContext::timerCallback()
     // The automatic save (every 4 s when something changed). While the music plays it waits, up to a minute: saving a big project takes a moment
     // of the screen's time, and doing it every few seconds while you mix made the moving playhead hitch. Stopping saves straight away (stopPlayback).
     if (engine.isPlaying() && ++savesHeldWhilePlaying < 15) return;
+    if (saveHold > 0) return;                                               // (a preview's files are in the take's file list: not what the project file should say)
     if (project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording())
         saveNow (true);
     savesHeldWhilePlaying = 0;
@@ -400,6 +401,7 @@ void AppContext::redoStep()
 
 void AppContext::saveNow (bool quick)
 {
+    if (quick && saveHold > 0) return;                   // (a preview's files are in a take's file list: the project file must not say so; the save comes once they are out)
     juce::String err;
     if (project.projectFile != juce::File())
     {

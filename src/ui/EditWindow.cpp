@@ -1745,7 +1745,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     reharmoniserButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::reharmoniserEdit (app, editId, this); }); };
     exportProcButton.setTooltip ("Export for Processing: sends the part between marks 1 and 2 (all tracks) to the Processing Media folder to be corrected in other software (e.g. iZotope RX). Re-link it afterwards with a right-click on the 'Waiting for corrected audio' block");
     exportProcButton.onClick = [this] { fixtools::exportForProcessingEdit (app, editId, this); };
-    undoFixButton.setTooltip ("Undo the last pitch correction, repair, de-click or export for processing (the original audio files were never touched)");
+    undoFixButton.setTooltip ("Undo the last pitch correction, repair, de-click, denoise or export for processing (the original audio files were never touched)");
     undoFixButton.onClick = [this] { fixtools::undoLastFix (app); };
     bounceButton.setTooltip ("Make a master file of this edit through its own mixer (or another mixer)");
     bounceButton.setColour (juce::TextButton::buttonColourId, theme::accent);

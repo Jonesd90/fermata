@@ -152,6 +152,7 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
 
     /** The last pitch correction / repair, so it can be undone (the new audio files stay on the disk; the originals were never touched). */
     int undoHold = 0;      // > 0 while a dialog is trying something out (pitch curve audition): the undo history is not written to meanwhile
+    int saveHold = 0;      // > 0 while a take's files are swapped for preview files (the denoiser): the automatic save waits, so a crash can never leave the project pointing at them
     std::function<void()> fixUndo;
     juce::String fixUndoLabel;
 

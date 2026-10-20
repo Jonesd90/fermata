@@ -2,6 +2,8 @@
 #include "Project.h"
 #include "PitchShift.h"
 #include "SpectralRepair.h"
+#include "Denoise.h"
+#include <limits>
 
 namespace td
 {
@@ -116,6 +118,34 @@ PieceResult fixPiece (juce::AudioFormatManager&, const juce::File& source, juce:
                       const FixSpec&, const juce::File& dest, juce::String& error);
 PieceResult fixPiece (juce::AudioFormatManager&, const juce::File& source, juce::int64 fileStart,
                       juce::int64 outFrom, juce::int64 outTo, const std::vector<FixOp>& ops, const juce::File& dest, juce::String& error);
+
+/** The background denoiser (Denoise.h) on whole files. A profile per channel of the file, learned from the room tone, and (optionally) the room's
+    decay per channel, measured over the file once so that a preview and the final run agree. */
+struct DenoiseProfiles
+{
+    std::vector<denoise::Profile> perChannel; std::vector<denoise::Decay> decay;     // decay: empty, or one per channel
+    double sampleRate = 0.0; int channels = 0;
+    bool valid() const { return channels > 0 && (int) perChannel.size() == channels; }
+};
+/** Learns a profile per channel of 'file' from its samples [s0, s1): the part that holds nothing but the room (the first 60 s of it, if longer).
+    With 'decaySeconds' > 0 the room's decay is measured as well, over up to that much of the file after the room tone. Empty profiles + 'error' on failure. */
+DenoiseProfiles learnDenoise (juce::AudioFormatManager&, const juce::File&, juce::int64 s0, juce::int64 s1, const denoise::Params&, juce::String& error, double decaySeconds = 0.0);
+/** One run of the denoiser over the files of a take (all of them together: with Params::groupMode > 0 each track's gains use what the other tracks hear). */
+struct DenoiseRun
+{
+    juce::int64 a = 0, b = std::numeric_limits<juce::int64>::max();   // the stretch to denoise (samples); the rest is copied
+    bool preview = false;                                             // a preview: the part before the stretch is written as silence and the file ends with the stretch
+    bool removed = false;                                             // also write what was taken out (input - output) to the 'removed' files
+    int threads = 1;                                                  // tracks (channels) done at once
+};
+/** Writes dests[i]: sources[i] with the stretch denoised (24-bit, same rate and channels) and, when run.removed, removed[i] with what was taken out.
+    All sources must have the same sample rate; each has its own DenoiseProfiles. 'progress' (optional) is told how far it has got, 0..1, and stops the
+    work by returning false; false (and no files) when cancelled or failed. */
+bool denoiseFiles (juce::AudioFormatManager&, const std::vector<juce::File>& sources, const std::vector<juce::File>& dests, const std::vector<juce::File>& removed,
+                   const std::vector<DenoiseProfiles>&, const denoise::Params&, const DenoiseRun&, const std::function<bool (float)>& progress, juce::String& error);
+/** One file on its own (no other tracks to listen to): [a, b) denoised, the rest copied as it is. */
+bool denoiseFile (juce::AudioFormatManager&, const juce::File& source, const juce::File& dest, const juce::File& removed, juce::int64 a, juce::int64 b,
+                  const DenoiseProfiles&, const denoise::Params&, const std::function<bool (float)>& progress, juce::String& error);
 
 /** The take-window version of a fix. Runs on a job thread; makes new files and returns them (the model is changed by the caller). */
 struct TakeFixResult { std::vector<juce::File> newFiles; juce::String error; };
