@@ -523,7 +523,8 @@ bool denoiseFiles (juce::AudioFormatManager& fm, const std::vector<juce::File>& 
                 return stopped ? "Cancelled." : juce::String();
             });
             if (err.isNotEmpty()) return fail (err);
-            denoise::othersMax (maps, others);
+            std::vector<int> sourceOf ((size_t) nch); for (int i = 0; i < nch; ++i) sourceOf[(size_t) i] = (int) chans[(size_t) i].first;
+            denoise::othersAgreed (maps, sourceOf, others);             // (a sound only one mic hears - a rustle at one stand - does not count)
         }
         const auto err = parallelFor (nch, run.threads, [&] (int i) -> juce::String
         {

@@ -49,6 +49,7 @@ struct Params
     bool   tailPrior = true;           // the SNR estimate itself follows the room's decay
     double tailSeedSnr = 2.0;          // ... starting only from an SNR of at least this (linear; 2 = 3 dB)
     int    groupMode = 1;              // the other tracks of the take: 0 = ignored, 1 = a cell they hear as music is kept here too, 2 = ... and a cell none of them hears is treated as noise
+    double groupSureLo = 0.4, groupSureHi = 0.85;   // another track's presence counts from Lo (nothing) to Hi (fully): only what it is sure of
 
     int fftSize (double sampleRate) const
     {
@@ -247,7 +248,15 @@ inline std::vector<double> decayRates (const std::vector<std::vector<double>>& E
             }
             else ++t;
         }
-        if (slopes.size() >= 2) { std::sort (slopes.begin(), slopes.end()); const size_t k = slopes.size(); rates[b] = k % 2 ? slopes[k / 2] : 0.5 * (slopes[k / 2 - 1] + slopes[k / 2]); }
+        // the room's decay is the FASTEST a band can fall (a diminuendo is slower, never faster): the 80th percentile of the slopes (numpy's linear
+        // interpolation), the mean of two. The median took the diminuendos in: real takes measured 7 - 9 s where their final decays showed 1 - 4 s.
+        if (slopes.size() == 2) rates[b] = 0.5 * (slopes[0] + slopes[1]);
+        else if (slopes.size() >= 3)
+        {
+            std::sort (slopes.begin(), slopes.end());
+            const double pos = 0.8 * (double) (slopes.size() - 1); const size_t lo = (size_t) pos; const double fr = pos - (double) lo;
+            rates[b] = lo + 1 < slopes.size() ? slopes[lo] + fr * (slopes[lo + 1] - slopes[lo]) : slopes[lo];
+        }
     }
     return rates;
 }
@@ -537,7 +546,10 @@ inline void finish (const Profile& prof, const Params& p, Analysis& A, const uns
             double pres = A.pres.v[i];
             if (others != nullptr && p.groupMode > 0)
             {
-                const double e = others[i] / 255.0;
+                // only what another track is sure is music counts: with a dozen tracks, one of them always has a noise cell that looks a
+                // little like music somewhere, and the plain maximum of them all kept ~1 dB more noise everywhere (measured on real takes)
+                const double e0 = others[i] / 255.0;
+                const double e = detail::smoothstep (e0, p.groupSureLo, p.groupSureHi);
                 pres = juce::jmax (pres, 0.85 * e);
                 if (p.groupMode >= 2 && (A.prot.empty() || ! A.prot[i])) pres = juce::jmin (pres, 0.25 + 0.75 * e);
             }
@@ -605,6 +617,39 @@ inline void othersMax (const std::vector<std::vector<unsigned char>>& maps, std:
         unsigned char m1 = 0, m2 = 0; size_t i1 = 0;
         for (size_t i = 0; i < n; ++i) { const unsigned char v = maps[i][c]; if (v > m1) { m2 = m1; m1 = v; i1 = i; } else if (v > m2) m2 = v; }
         for (size_t i = 0; i < n; ++i) others[i][c] = i == i1 ? m2 : m1;
+    }
+}
+
+/** Like othersMax, but a sound counts only when two other sources agree: each channel's "others" value is the SECOND largest among the other
+    sources (a source = a file: the two channels of a stereo mic are one source), each source counted by its loudest channel. A rustle next to one
+    music stand is heard by that one spot; music reaches several mics. With fewer than two other sources it is the plain largest of the other
+    channels (two mics, or the two channels of one stereo file). sourceOf[i]: the source of channel i. */
+inline void othersAgreed (const std::vector<std::vector<unsigned char>>& maps, const std::vector<int>& sourceOf, std::vector<std::vector<unsigned char>>& others)
+{
+    const size_t n = maps.size();
+    int nSources = 0; for (auto s : sourceOf) nSources = juce::jmax (nSources, s + 1);
+    if (n < 2 || nSources < 3 || sourceOf.size() != n) { othersMax (maps, others); return; }
+    const size_t cells = maps[0].size();
+    others.assign (n, std::vector<unsigned char> (cells, 0));
+    std::vector<unsigned char> per ((size_t) nSources);
+    for (size_t c = 0; c < cells; ++c)
+    {
+        std::fill (per.begin(), per.end(), (unsigned char) 0);
+        for (size_t i = 0; i < n; ++i) per[(size_t) sourceOf[i]] = juce::jmax (per[(size_t) sourceOf[i]], maps[i][c]);
+        // the three largest sources (a channel's own source is left out, so the second largest of the rest needs up to three)
+        unsigned char v[3] = { 0, 0, 0 }; int s[3] = { -1, -1, -1 };
+        for (int k = 0; k < nSources; ++k)
+        {
+            const unsigned char x = per[(size_t) k];
+            if (x > v[0])      { v[2] = v[1]; s[2] = s[1]; v[1] = v[0]; s[1] = s[0]; v[0] = x; s[0] = k; }
+            else if (x > v[1]) { v[2] = v[1]; s[2] = s[1]; v[1] = x; s[1] = k; }
+            else if (x > v[2]) { v[2] = x; s[2] = k; }
+        }
+        for (size_t i = 0; i < n; ++i)
+        {
+            const int own = sourceOf[i];
+            others[i][c] = own == s[0] || own == s[1] ? v[2] : v[1];         // the second largest of the OTHER sources
+        }
     }
 }
 

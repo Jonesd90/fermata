@@ -122,8 +122,8 @@ def _lsa_gain(xi, gamma):
 
 
 def measure_decay(P, freqs, sr, hop, npsd, min_len_s=0.4, min_above_db=15.0):
-    """Per 1/3-octave band: the room's decay rate in dB/s, measured from the decays in the file (median of the slopes of
-    monotone decays that last >= min_len_s and start >= min_above_db above the band's noise). Returns (band_edges, rates[bands] or nan)."""
+    """Per 1/3-octave band: the room's decay rate in dB/s, measured from the decays in the file (the 80th percentile of the slopes of
+    monotone decays that last >= min_len_s and start >= min_above_db above the band's noise; the mean of two). Returns (band_edges, rates[bands] or nan)."""
     edges = 50.0 * 2 ** (np.arange(0, 28) / 3.0); edges = edges[edges < sr * 0.49]
     rates = np.full(len(edges) - 1, np.nan)
     dt = hop / sr
@@ -147,7 +147,10 @@ def measure_decay(P, freqs, sr, hop, npsd, min_len_s=0.4, min_above_db=15.0):
                     if slope > 1.0: slopes.append(slope)
                 t = max(u, t + 1)
             else: t += 1
-        if len(slopes) >= 2: rates[b] = float(np.median(slopes))
+        # the room's decay is the FASTEST a band can fall (a diminuendo is slower, never faster): the 80th percentile of the slopes (the mean
+        # of two). The median took the diminuendos in and measured real takes at 7 - 9 s where their final decays showed 1 - 4 s.
+        if len(slopes) == 2: rates[b] = float(np.mean(slopes))
+        elif len(slopes) >= 3: rates[b] = float(np.percentile(slopes, 80))
     return edges, rates
 
 

@@ -4329,6 +4329,25 @@ int main()
         }
         }
         denoiseDone:;
+        {   // 2.78: the room's decay is the 80th percentile of the decays found (the fastest a band falls), not the median (diminuendos are slower)
+            const double dt = 0.02; std::vector<std::vector<double>> E (1);
+            auto decays = [dt] (std::initializer_list<double> slopes)            // free decays from 60 dB above the noise all the way down into it
+            {
+                std::vector<std::vector<double>> E (1);
+                for (double s : slopes)
+                {
+                    for (int i = 0; i < 25; ++i) E[0].push_back (0.0);
+                    for (int i = 0; 60.0 - s * dt * i > 0.0; ++i) E[0].push_back (60.0 - s * dt * i);
+                }
+                for (int i = 0; i < 25; ++i) E[0].push_back (0.0);
+                return E;
+            };
+            const auto r = denoise::detail::decayRates (decays ({ 10.0, 50.0, 20.0, 40.0, 30.0 }), { 0.0 }, dt);
+            std::printf ("  (decay rates measured: 80th percentile %.1f dB/s)\n", r[0]);
+            CHECK (r.size() == 1 && r[0] > 36.0 && r[0] < 46.0);                // 80th percentile of 10 ... 50: 42 (the median would be 30)
+            const auto r2 = denoise::detail::decayRates (decays ({ 12.0, 24.0 }), { 0.0 }, dt);
+            CHECK (r2[0] > 15.0 && r2[0] < 21.0);                               // two: their mean (18)
+        }
     }
     SECTION ("VCAs: numbers, members, gains, mute, save and load");
     {
