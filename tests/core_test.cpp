@@ -2600,6 +2600,29 @@ int main()
             CHECK (p3.takes.size() == 2 && p3.takes[0].parts.size() == 2);
             { std::vector<ImportSource> one; for (auto n : { "Mic 1", "Mic 2", "Mic 3" }) one.push_back (src (juce::String (n) + ".wav", 1, 96000));
               CHECK (buildImportPlan (one).takes.size() == 1); }
+            // 2.77: a Pro Tools session - "<piece> <track> <take>" with split stereo ".L" / ".R", track names that hold numbers of their own
+            // ("ROOM 414", "SPOT10"), files of one take NOT all the same length, and a piece name with a number ("Ave Maria 8"): one set of
+            // tracks with the piece name off, every take on it, in take order; also with Pro Tools' "-01" after the take number
+            for (int style = 0; style < 2; ++style)
+            {
+                std::vector<ImportSource> pt; juce::Random rr (5);
+                for (int t = 12; t >= 1; --t)
+                {
+                    const int len = 96000 * (10 + t);
+                    auto nm = [&] (const juce::String& trk) { return "Ave Maria 8 " + trk + " " + juce::String (t).paddedLeft ('0', 2) + (style == 1 ? "-01" : ""); };
+                    for (auto st : { "AB", "ROOM 414", "WIDE ROOM" }) for (auto side : { ".L", ".R" }) pt.push_back (src (nm (st) + side + ".wav", 1, len - rr.nextInt (5000)));
+                    for (int k = 1; k <= 10; ++k) pt.push_back (src (nm ("SPOT" + juce::String (k)) + ".wav", 1, len - rr.nextInt (5000)));
+                }
+                auto pp = joinStereoPairs (buildImportPlan (pt));
+                CHECK (pp.takes.size() == 12 && pp.tracks.size() == 13);
+                if (pp.takes.size() == 12 && pp.tracks.size() == 13)
+                {
+                    CHECK (pp.takes[0].number == 1 && pp.takes[11].number == 12 && pp.takes[7].parts.size() == 13);
+                    CHECK (pp.takes[7].length == 96000 * 18 || pp.takes[7].length > 96000 * 18 - 5000);
+                    CHECK (pp.tracks[0].name == "AB" && pp.tracks[0].channels == 2 && pp.tracks[1].name == "ROOM 414" && pp.tracks[1].channels == 2);
+                    CHECK (pp.tracks[2].name == "SPOT1" && pp.tracks[11].name == "SPOT10" && pp.tracks[12].name == "WIDE ROOM");
+                }
+            }
             // a whole session of mono files named "<piece> <take>_<instrument>-<L|R|C>": all takes share the same tracks
             {
                 std::vector<ImportSource> m;

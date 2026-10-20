@@ -120,12 +120,19 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
             if (inNum && lead) k << '0';
             return k;
         };
+        // "AB 01_01.L": what follows the '_' is a second number, not an instrument or mic (Pro Tools-style names, handled further down)
+        auto instIsNumber = [] (const juce::String& inst)
+        {
+            auto t = tokensOf (inst);
+            if (t.size() >= 2 && (t[t.size() - 1].equalsIgnoreCase ("L") || t[t.size() - 1].equalsIgnoreCase ("R"))) t.remove (t.size() - 1);
+            return t.size() > 0 && t.joinIntoString ("").containsOnly ("0123456789");
+        };
         std::vector<Hit> hits;
         std::set<juce::String> numberedPieces;
         for (int k = 0; k < (int) flat.size(); ++k)
         {
             std::smatch m; const std::string stem = flat[(size_t) k].stem.toStdString();
-            if (std::regex_match (stem, m, pat) && m[1].length() > 0)
+            if (std::regex_match (stem, m, pat) && m[1].length() > 0 && ! instIsNumber (juce::String (m[3].str())))
             {
                 hits.push_back ({ k, juce::String (m[1].str()).trim(), juce::String (m[3].str()).trim(), juce::String (m[2].str()).getIntValue() });
                 numberedPieces.insert (pieceKey (hits.back().piece));
@@ -176,6 +183,47 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
             std::set<int> taken; for (auto& h : hits) taken.insert (h.idx);
             std::vector<Item> rest; for (int k = 0; k < (int) flat.size(); ++k) if (! taken.count (k)) rest.push_back (flat[(size_t) k]);
             flat = std::move(rest);
+        }
+    }
+
+    // ---- names that carry the take number as a number word, whatever the lengths ("Ave Maria 8 AB 01.L", "Ave Maria 8 SPOT1 01", "Ave Maria 8 ROOM 414 01.R":
+    //      Pro Tools and others): the k-th whole number from the end of the name (a last L / R does not count) is the same in every file of a take
+    //      and different from take to take. Grouping by it does not need the files of a take to have the same length (in Pro Tools they
+    //      often do not). Used below when the grouping by length leaves every take with tracks of its own.
+    struct NumGroup { int value; std::vector<std::pair<Item, juce::String>> items; };      // the item and its track name (the take word taken out)
+    std::vector<NumGroup> numGroups;
+    if (flat.size() >= 4)
+    {
+        auto isSideWord = [] (const juce::String& w) { return w.equalsIgnoreCase ("L") || w.equalsIgnoreCase ("R") || w.equalsIgnoreCase ("Left") || w.equalsIgnoreCase ("Right"); };
+        auto isNumWord = [] (const juce::String& w) { return w.isNotEmpty() && w.length() <= 4 && w.containsOnly ("0123456789"); };
+        double bestScore = -1.0;
+        for (int k = 1; k <= 2; ++k)
+        {
+            std::map<int, NumGroup> groups; bool ok = true;
+            for (auto& it : flat)
+            {
+                juce::StringArray t = it.tok;
+                const int last = t.size() - 1 - (t.size() >= 2 && isSideWord (t[t.size() - 1]) ? 1 : 0);
+                int idx = -1, seen = 0;
+                for (int i = last; i >= 0; --i) if (isNumWord (t[i]) && ++seen == k) { idx = i; break; }
+                if (idx < 0 || (idx == 0 && last == 0)) { ok = false; break; }
+                const int v = t[idx].getIntValue(); t.remove (idx);
+                auto& g = groups[v]; g.value = v; g.items.push_back ({ it, t.joinIntoString (" ").trim() });
+            }
+            if (! ok || groups.size() < 2) continue;
+            std::set<juce::String> all; size_t biggest = 0; int sameLength = 0;
+            for (auto& kv : groups)
+            {
+                std::set<juce::String> keys;
+                for (auto& x : kv.second.items) if (! keys.insert (x.second.toLowerCase()).second) ok = false;     // the same track twice in a take
+                for (auto& x : keys) all.insert (x);
+                biggest = juce::jmax (biggest, kv.second.items.size());
+                bool same = true; for (auto& x : kv.second.items) if (std::abs (S[(size_t) x.first.src].length - S[(size_t) kv.second.items.front().first.src].length) > 64) same = false;
+                if (same) ++sameLength;
+            }
+            if (! ok || biggest < 2 || (double) all.size() > 1.5 * (double) biggest) continue;   // the takes must share their tracks
+            const double score = (double) sameLength / (double) groups.size() + (k == 1 ? 0.01 : 0.0);   // (a tie: the last number)
+            if (score > bestScore) { bestScore = score; numGroups.clear(); for (auto& kv : groups) numGroups.push_back (kv.second); }
         }
     }
 
@@ -283,6 +331,62 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
         for (auto& it : c) byTok[tokenOf (it)].push_back (it);
         for (auto& kv : byTok) takesFlat.push_back (kv.second);
         plan.notes.add ("Several takes have exactly the same length; they were told apart by the number in the file names.");
+    }
+
+    // ---- did the grouping by length give takes that share their tracks? If every take ended up with tracks of its own (860 tracks for 44 takes)
+    //      and the take number in the names groups them properly, that grouping is used instead.
+    bool useNumbers = false;
+    if (! numGroups.empty())
+    {
+        std::set<juce::String> keys; size_t biggest = 0;
+        for (auto& c : takesFlat) { biggest = juce::jmax (biggest, c.size()); for (auto& it : c) keys.insert (keyOf (it).toLowerCase()); }
+        useNumbers = takesFlat.size() < 2 || (double) keys.size() > 1.5 * (double) juce::jmax<size_t> (1, biggest);
+    }
+    if (useNumbers)
+    {
+        takesFlat.clear();
+        // a run of words every track name starts with ("Ave Maria 8") is the piece, not the track: it comes off the names when what is left
+        // still tells every track apart (and there are enough tracks for that to mean something)
+        std::vector<juce::StringArray> words; std::set<juce::String> distinct;
+        for (auto& g : numGroups) for (auto& x : g.items) { words.push_back (tokensOf (x.second)); distinct.insert (x.second.toLowerCase()); }
+        int common = 0;
+        if (distinct.size() >= 4)
+            for (;; ++common)
+            {
+                bool same = true;
+                for (auto& w : words) if (w.size() <= common + 1 || ! w[common].equalsIgnoreCase (words.front()[common])) { same = false; break; }
+                if (! same) break;
+            }
+        // and a last word every name has before its L / R ("AB 01-01": the "-01" Pro Tools adds when a clip is cut) comes off too
+        bool dropLast = distinct.size() >= 4;
+        auto lastWordIdx = [] (const juce::StringArray& w) { const bool side = w.size() >= 2 && (w[w.size() - 1].equalsIgnoreCase ("L") || w[w.size() - 1].equalsIgnoreCase ("R")); return w.size() - 1 - (side ? 1 : 0); };
+        for (auto& w : words) { const int i = lastWordIdx (w); if (i <= common || ! w[i].equalsIgnoreCase (words.front()[lastWordIdx (words.front())])) { dropLast = false; break; } }
+        auto tidy = [&] (juce::StringArray w) { if (dropLast) w.remove (lastWordIdx (w)); if (common > 0) w.removeRange (0, common); return w; };
+        if (dropLast || common > 0)
+        {
+            std::set<juce::String> after;
+            for (auto& g : numGroups) for (auto& x : g.items) after.insert (tidy (tokensOf (x.second)).joinIntoString (" ").toLowerCase());
+            if (after.size() != distinct.size()) { dropLast = false; common = 0; }
+        }
+        for (auto& g : numGroups)
+        {
+            ImportTake t; const auto& first = S[(size_t) g.items.front().first.src];
+            t.length = first.length; t.sampleRate = first.sampleRate; t.modified = first.modified; t.number = g.value;
+            for (auto& x : g.items)
+            {
+                const auto& src = S[(size_t) x.first.src];
+                ImportPart p; p.source = x.first.src; p.channel = -1;
+                auto w = tidy (tokensOf (x.second));
+                p.trackName = w.joinIntoString (" ").trim(); if (p.trackName.isEmpty()) p.trackName = x.second;
+                p.trackKey = p.trackName.toLowerCase();
+                p.trackChannels = src.channels >= 2 ? 2 : 1;
+                t.length = juce::jmax (t.length, src.length);
+                if (src.modified < t.modified) t.modified = src.modified;
+                t.parts.push_back (p);
+            }
+            plan.takes.push_back (std::move (t));
+        }
+        plan.notes.add ("The take number in the file names was used to put every take on the same tracks (the files of a take need not be the same length).");
     }
 
     for (auto& c : takesFlat)
