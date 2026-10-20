@@ -73,6 +73,25 @@ private:
     Kind kind; bool darkLook = true, glowing = false;
 };
 
+/** The view the mixer's strips scroll in. The mouse wheel moves the strips left and right (no fader or knob in a mixer turns with the wheel: they
+    hand it on to here); Shift + wheel scrolls up and down when the window is shorter than the strips (the plain wheel too, when every strip fits across). */
+class MixerViewport : public juce::Viewport
+{
+public:
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
+    {
+        const float d = std::abs (w.deltaX) > std::abs (w.deltaY) ? w.deltaX : w.deltaY;
+        if (d == 0.0f) return;
+        int step = juce::roundToInt (d * 400.0f);                  // (one notch of a mouse wheel: about one strip)
+        if (step == 0) step = d > 0.0f ? 1 : -1;
+        auto pos = getViewPosition();
+        const bool canX = getHorizontalScrollBar().isVisible(), canY = getVerticalScrollBar().isVisible();
+        if (canY && (e.mods.isShiftDown() || ! canX)) pos.y -= step;      // (every strip fits across: the wheel scrolls up / down instead)
+        else pos.x -= step;
+        setViewPosition (pos);
+    }
+};
+
 /** One mixer. Several can be open at once; each has its own solo/mute/levels/sends/plug-ins and output pair. */
 class MixerComponent : public juce::Component, private juce::ChangeListener, private juce::Timer
 {
@@ -81,8 +100,10 @@ public:
     ~MixerComponent() override;
     void resized() override;
     void parentHierarchyChanged() override;
-    /** Makes the window exactly as big as the strips need (so everything is shown, no scroll bars), whatever size it was. Used when the window opens. */
-    void fitWindowToStrips();
+    /** Used when the window opens: makes it as big as the strips need (everything shown), but never wider than the display nor so tall that its
+        bottom edge (the horizontal scroll bar) is off the screen; strips that do not fit get a scroll bar. 'remembered': the size the window had
+        when it was last closed (from the project), kept instead (still within those limits). */
+    void fitWindowToStrips (juce::Rectangle<int> remembered = {});
 
 private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
@@ -121,7 +142,7 @@ private:
     bool shownDark = false;
     int shownGen = 0;
     int shownWidthGen = 0;                                  // the strip width (see stripWidthGen) when the strips were last laid out                                       // theme::generation() when the colours were last taken
-    juce::Viewport viewport;
+    MixerViewport viewport;
     std::unique_ptr<MixerStripsHolder> holder;
 };
 } // namespace td

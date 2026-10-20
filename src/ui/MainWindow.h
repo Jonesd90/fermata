@@ -267,7 +267,12 @@ public:
     /** The height the main window needs to show everything at full size. */
     int fullHeight() const;
     /** How wide the driver line (status) is with this text: DRIVER INPUTS sits just after it. */
-    int statusWidthFor (const juce::String& t) const { return juce::jlimit (60, 520, juce::GlyphArrangement::getStringWidthInt (statusLabel.getFont(), t) + 10); }
+    int statusWidthFor (const juce::String& t) const
+    {
+        int w = 0;                                                       // (two lines: the wider one; a long notice wraps onto the second)
+        for (auto& l : juce::StringArray::fromLines (t)) w = juce::jmax (w, juce::GlyphArrangement::getStringWidthInt (statusLabel.getFont(), l));
+        return juce::jlimit (60, 520, w + 10);
+    }
     int statusWidth() const { return statusWidthFor (statusLabel.getText()); }
     int lastStatusTextW = -1;
     /** Where the bottom edge of the menu bar is on the screen: the Display Organiser keeps everything else below it. */

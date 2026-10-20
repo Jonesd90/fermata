@@ -111,7 +111,13 @@ void TakeDisplayView::paint (juce::Graphics& g)
         else if (logo.isValid()) g.drawImage (logo, lr, juce::RectanglePlacement::centred | juce::RectanglePlacement::onlyReduceInSize);
         top.removeFromLeft (m * 0.8f);
     }
-    drawFitted (g, s.line, top, true, kWhite, juce::Justification::centredLeft);
+    if (s.line.isNotEmpty())
+    {   // the project line sits in the middle of the display; a long one is pushed right so it never runs into the logo (it starts just after it)
+        float w = widthOf (fontOf (top.getHeight(), true), s.line);
+        if (w > top.getWidth()) w = top.getWidth();
+        const float x = juce::jlimit (top.getX(), juce::jmax (top.getX(), top.getRight() - w), area.getCentreX() - w * 0.5f);
+        drawFitted (g, s.line, { x, top.getY(), juce::jmin (w + 2.0f, top.getRight() - x), top.getHeight() }, true, kWhite, juce::Justification::centredLeft);
+    }
 
     // ---- bottom band: time of day and time left
     auto bottom = area.removeFromBottom (H * 0.20f);
@@ -167,6 +173,9 @@ TakeDisplayWindow::~TakeDisplayWindow() {}
 bool TakeDisplayWindow::keyPressed (const juce::KeyPress& k)
 {
     if (k == juce::KeyPress::escapeKey) { closeSelf(); return true; }
+    if (ToolWindow::isPlainSpace (k))                                   // (clicked by mistake: Space still plays / stops the take or edit window you were last in)
+        if (auto* t = ToolWindow::lastTransportWindow())
+            if (auto* c = t->getContentComponent()) return c->keyPressed (k);
     return false;
 }
 

@@ -147,6 +147,8 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     std::function<void (const juce::File&)> mediaReveal;
     void revealInMedia (const juce::File& f) { mediaSelection = f; if (mediaReveal) mediaReveal (f); }
     std::function<void (const BounceContext&)> showBounce;
+    /** "Find missing audio files": the folder chooser and the search (the main window). Set by the main window. */
+    std::function<void()> findMissingAudio;
 
     /** The last pitch correction / repair, so it can be undone (the new audio files stay on the disk; the originals were never touched). */
     int undoHold = 0;      // > 0 while a dialog is trying something out (pitch curve audition): the undo history is not written to meanwhile
@@ -271,6 +273,9 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     void rebuildPreampDriver();
     bool newProject (const juce::File& projectFile);
     bool openProject (const juce::File& projectFile);
+    /** A project file's backup (Name.fermata.bak: the project as it was saved the time before) put back as the project file and opened. The file it
+        replaces is kept beside it as "Name (replaced <date> <time>).fermata"; the take and edit windows' own files are left as they are. */
+    bool openBackupProject (const juce::File& bakFile);
     /** Project > Close: the project's windows close and Fermata goes back to its start panel (New / Open). save: write it first; otherwise nothing more is
         written (what was saved automatically as you worked stays). False if it cannot close now (recording). */
     bool closeProject (bool save);

@@ -80,6 +80,14 @@ public:
     /** A few words in the top right corner of the readout ("Edit 1", "of 12:34"). */
     void setCaption (const juce::String& text) { if (text != caption) { caption = text; repaint(); } }
 
+    /** A quieter readout for a length (the take window's TAKE LENGTH): always hours : minutes : seconds . ms whatever the main readouts show,
+        a grey box with softer digits, its own label instead of the format badge (no menu, no typing), and dashes while it is stopped. */
+    void setLengthStyle (const juce::String& label)
+    {
+        lengthStyle = true; lengthLabel = label;
+        repaint();
+    }
+
     /** The readout fetches the position (and the state) itself, 'hz' times a second, until stopFollowing(). */
     void follow (std::function<double()> positionSeconds, std::function<State()> stateNow = {}, int hz = 30)
     {
@@ -101,7 +109,7 @@ public:
         const auto fmtNow = currentFormat();
         const auto b = getLocalBounds().toFloat();
         const bool bad = badFlash;
-        g.setColour (theme::field);
+        g.setColour (lengthStyle ? theme::field.interpolatedWith (theme::panel, 0.45f) : theme::field);      // (the length readout: grey, not black)
         g.fillRoundedRectangle (b.reduced (0.5f), 4.0f);
         g.setColour (bad ? theme::playhead : theme::border);
         g.drawRoundedRectangle (b.reduced (0.5f), 4.0f, bad ? 2.0f : 1.0f);
@@ -110,8 +118,8 @@ public:
         if (! m.compact)
         {
             g.setFont (juce::Font (juce::FontOptions (9.5f, juce::Font::bold)));
-            g.setColour (badgeHover ? theme::text : theme::dimText.withAlpha (0.85f));
-            g.drawText (badgeText (fmtNow), m.badge, juce::Justification::centredLeft, false);
+            g.setColour (badgeHover && ! lengthStyle ? theme::text : theme::dimText.withAlpha (0.85f));
+            g.drawText (lengthStyle ? lengthLabel : badgeText (fmtNow), lengthStyle ? m.badge.withWidth (getWidth()) : m.badge, juce::Justification::centredLeft, false);
             if (caption.isNotEmpty())
             {
                 g.setFont (juce::Font (juce::FontOptions (9.5f)));
@@ -121,7 +129,13 @@ public:
         }
 
         // the digits: each in a cell of its own width, so nothing jiggles as they change
-        const auto t = timefmt::format (fmtNow, position);
+        auto t = timefmt::format (fmtNow, position);
+        if (lengthStyle && state == State::stopped)                                       // (a length with nothing being measured: dashes)
+        {
+            auto chars = t.text.toRawUTF8(); juce::String d;
+            for (int i = 0; chars[i] != 0; ++i) d << (chars[i] >= '0' && chars[i] <= '9' ? '-' : chars[i]);
+            t.text = d;
+        }
         float fontH = m.fontHeight, cellW = m.cellW;
         float total = widthOf (t.text, cellW);
         float boxW = m.widestWidth;
@@ -130,10 +144,11 @@ public:
             const float k = juce::jmin (1.0f, m.digits.getWidth() / total) ;
             fontH *= k; cellW *= k; total *= k; boxW = total;
         }
-        const juce::Font f (juce::FontOptions (fontH, juce::Font::bold));
+        const juce::Font f (juce::FontOptions (fontH, lengthStyle ? juce::Font::plain : juce::Font::bold));
         const auto cells = cellWidths (t.text, cellW);
         float x = m.digits.getCentreX() - boxW * 0.5f + (boxW - total);    // the right edge stays put when the text is shorter than the widest
-        const auto ink = state == State::recording ? theme::playhead : state == State::playing ? theme::accent.brighter (0.55f) : theme::text;
+        auto ink = state == State::recording ? theme::playhead : state == State::playing ? theme::accent.brighter (0.55f) : theme::text;
+        if (lengthStyle) ink = state == State::recording ? theme::playhead.interpolatedWith (theme::dimText, 0.45f) : theme::dimText.withAlpha (0.7f);   // softer than the main readout
         g.setFont (f);
         for (int i = 0; i < t.text.length(); ++i)
         {
@@ -148,11 +163,11 @@ public:
 
     void mouseDown (const juce::MouseEvent& e) override
     {
-        if (e.mods.isPopupMenu()) showMenu();
+        if (e.mods.isPopupMenu() && ! lengthStyle) showMenu();
     }
     void mouseUp (const juce::MouseEvent& e) override
     {
-        if (! e.mods.isPopupMenu() && e.mouseWasClicked() && badgeHit (e.getPosition())) cycleMode();
+        if (! e.mods.isPopupMenu() && e.mouseWasClicked() && badgeHit (e.getPosition()) && ! lengthStyle) cycleMode();
     }
     void mouseDoubleClick (const juce::MouseEvent& e) override
     {
@@ -160,7 +175,7 @@ public:
     }
     void mouseMove (const juce::MouseEvent& e) override
     {
-        const bool over = badgeHit (e.getPosition());
+        const bool over = badgeHit (e.getPosition()) && ! lengthStyle;
         if (over != badgeHover) { badgeHover = over; setMouseCursor (over ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor); repaint(); }
     }
     void mouseExit (const juce::MouseEvent&) override
@@ -183,6 +198,7 @@ private:
     {
         auto& s = timereadout::shared();
         timefmt::Format f; f.mode = s.mode; f.ltcCode = s.ltcCode; f.offsetSeconds = s.offsetSeconds; f.sampleRate = sampleRate;
+        if (lengthStyle) { f.mode = timefmt::Mode::time; f.offsetSeconds = 0.0; }        // (a length: always h:m:s.ms from zero)
         return f;
     }
 
@@ -281,6 +297,7 @@ private:
 
     juce::String getTooltip() override
     {
+        if (lengthStyle) return lengthLabel.isNotEmpty() ? "How long the take being recorded in this window is" : juce::String();
         return juce::String ("The position on the timeline, written as ") + timefmt::modeName (timereadout::shared().mode)
                + ". Right-click to choose how it is written (or click the small label above the digits to go through the choices)"
                + (onJump ? ". Double-click to type a time and go there (1:30, 1:02:03.5 or 2m10s; in Timecode 01:02:03:04; in Samples a number)." : ".");
@@ -367,8 +384,8 @@ private:
 
     double position = 0.0, sampleRate = 48000.0;
     State state = State::stopped;
-    juce::String caption;
-    bool badgeHover = false, badFlash = false;
+    juce::String caption, lengthLabel;
+    bool badgeHover = false, badFlash = false, lengthStyle = false;
     std::function<double()> getPosition_;
     std::function<State()> getState_;
 

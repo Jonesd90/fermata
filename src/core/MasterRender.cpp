@@ -126,7 +126,7 @@ juce::String masterRenderFingerprint (const Project& cp, const EditDef& e, const
                         else if (autoparam::isSend (l.param))
                         {
                             if (auto* sl = sv["sendList"].getArray())
-                                for (auto& so : *sl) if (so["dest"].toString() == autoparam::sendDest (l.param).toString()) removeKeys (so, { "gainDb" });
+                                for (auto& so : *sl) if (so["dest"].toString() == autoparam::sendDest (l.param).toString()) removeKeys (so, { "gainDb", "mutedGainDb" });
                         }
                         else if (int slot = 0, idx = 0; autoparam::parsePlugin (l.param, slot, idx))
                         {
@@ -143,7 +143,7 @@ juce::String masterRenderFingerprint (const Project& cp, const EditDef& e, const
                         else if (autoparam::isSend (l.param))
                         {
                             if (auto* sl = sv["sendList"].getArray())
-                                for (auto& so : *sl) if (so["dest"].toString() == autoparam::sendDest (l.param).toString()) removeKeys (so, { "gainDb" });
+                                for (auto& so : *sl) if (so["dest"].toString() == autoparam::sendDest (l.param).toString()) removeKeys (so, { "gainDb", "mutedGainDb" });
                         }
                         else if (int slot = 0, idx = 0; autoparam::parsePlugin (l.param, slot, idx))
                         {

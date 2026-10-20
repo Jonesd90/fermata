@@ -173,9 +173,8 @@ private:
     {
         const bool down = juce::KeyPress::isKeyCurrentlyDown (juce::KeyPress::spaceKey) && ! juce::ModifierKeys::getCurrentModifiersRealtime().isAnyModifierKeyDown();
         if (down && ! spaceWasDown && isVisible() && isForegroundWindow (*this))           // pressed (not held) while this window is the one in front
-            if (auto* t = ToolWindow::lastTransportWindow().getComponent())
-                if (t->isVisible())
-                    if (auto* c = t->getContentComponent()) c->keyPressed (juce::KeyPress (juce::KeyPress::spaceKey));
+            if (auto* t = ToolWindow::lastTransportWindow())                                // (one down in the bar too, as from any other window)
+                if (auto* c = t->getContentComponent()) c->keyPressed (juce::KeyPress (juce::KeyPress::spaceKey));
         spaceWasDown = down;
     }
 };
@@ -184,8 +183,99 @@ PluginHost::PluginHost() : juce::Thread ("Plug-in scanner")
 {
     formats.addFormat (new juce::VST3PluginFormat());
     listFile = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("Fermata").getChildFile ("plugins.xml");
+    ignoredFile = listFile.getSiblingFile ("plugins-ignored.txt");          // one line per ignored file: the file, a tab, the names of its plug-ins
     if (auto xml = juce::XmlDocument::parse (listFile))
         known.recreateFromXml (*xml);
+    for (auto& line : juce::StringArray::fromLines (ignoredFile.loadFileAsString()))
+        if (const auto f = line.upToFirstOccurrenceOf ("\t", false, false).trim(); f.isNotEmpty() && ! ignored.contains (f, true))
+        {
+            ignored.add (f); ignoredNames.add (line.fromFirstOccurrenceOf ("\t", false, false).trim());
+            known.addToBlacklist (f);                                              // (so a scan never opens it, even if plugins.xml was deleted)
+            for (auto& t : known.getTypes()) if (t.fileOrIdentifier.equalsIgnoreCase (f)) known.removeType (t);
+        }
+    // a scan that crashed the program last time: the plug-in it was looking at is left out now (and the list saved), so it shows as CRASHED at once
+    if (pedalFile().existsAsFile())
+    {
+        juce::PluginDirectoryScanner::applyBlacklistingsFromDeadMansPedal (known, pedalFile());
+        saveLists();
+    }
+}
+
+void PluginHost::forgetCrashNote (const juce::String& file)
+{
+    const auto pedal = pedalFile();
+    if (! pedal.existsAsFile()) return;
+    juce::StringArray lines; pedal.readLines (lines); lines.removeEmptyStrings();
+    if (lines.indexOf (file, true) < 0) return;
+    lines.removeString (file, true);
+    pedal.replaceWithText (lines.joinIntoString ("\n"), true, true);
+}
+
+void PluginHost::saveLists()
+{
+    listFile.getParentDirectory().createDirectory();
+    if (auto xml = known.createXml()) xml->writeTo (listFile);
+    juce::StringArray lines;
+    for (int i = 0; i < ignored.size(); ++i) lines.add (ignored[i] + "\t" + ignoredNames[i]);
+    ignoredFile.replaceWithText (lines.joinIntoString ("\n"));
+}
+
+std::vector<PluginHost::FileEntry> PluginHost::listFiles() const
+{
+    std::vector<FileEntry> out;
+    std::map<juce::String, juce::StringArray> byFile;
+    for (auto& t : known.getTypes()) byFile[t.fileOrIdentifier].add (t.manufacturerName.isNotEmpty() ? t.name + " (" + t.manufacturerName + ")" : t.name);
+    auto shortName = [] (const juce::String& f) { return juce::File::isAbsolutePath (f) ? juce::File (f).getFileNameWithoutExtension() : f; };
+    for (auto& f : known.getBlacklistedFiles())
+    {
+        const int i = ignored.indexOf (f, true);
+        if (i >= 0) out.push_back ({ f, ignoredNames[i].isNotEmpty() ? ignoredNames[i] : shortName (f), FileEntry::State::ignored });
+        else        out.push_back ({ f, shortName (f), FileEntry::State::crashed });
+    }
+    for (int i = 0; i < ignored.size(); ++i)                                          // (ignored but somehow not on JUCE's list: still shown as ignored)
+        if (! known.getBlacklistedFiles().contains (ignored[i], true)) out.push_back ({ ignored[i], ignoredNames[i].isNotEmpty() ? ignoredNames[i] : shortName (ignored[i]), FileEntry::State::ignored });
+    for (auto& [f, names] : byFile) if (! ignored.contains (f, true)) out.push_back ({ f, names.joinIntoString (", "), FileEntry::State::found });
+    std::stable_sort (out.begin(), out.end(), [] (const FileEntry& a, const FileEntry& b)
+    {
+        if (a.state != b.state) return (int) a.state > (int) b.state;                 // crashed first, then ignored, then the ones in use
+        return a.names.compareIgnoreCase (b.names) < 0;
+    });
+    return out;
+}
+
+bool PluginHost::setIgnored (const juce::String& f, bool ignore, std::function<void()> done)
+{
+    if (scanning.load() || f.isEmpty()) return false;
+    if (ignore)
+    {
+        if (! ignored.contains (f, true))
+        {
+            juce::StringArray names;
+            for (auto& t : known.getTypes()) if (t.fileOrIdentifier.equalsIgnoreCase (f)) names.add (t.manufacturerName.isNotEmpty() ? t.name + " (" + t.manufacturerName + ")" : t.name);
+            ignored.add (f); ignoredNames.add (names.joinIntoString (", "));
+        }
+        known.addToBlacklist (f);
+        for (auto& t : known.getTypes()) if (t.fileOrIdentifier.equalsIgnoreCase (f)) known.removeType (t);
+        saveLists();
+        if (done) done();
+        return true;
+    }
+    if (const int i = ignored.indexOf (f, true); i >= 0) { ignored.remove (i); ignoredNames.remove (i); }
+    known.removeFromBlacklist (f);
+    forgetCrashNote (f);
+    saveLists();
+    onlyFiles = juce::StringArray (f);                                                // scan it again, so its plug-ins are offered again
+    return startScan (std::move (done));
+}
+
+bool PluginHost::tryAgain (const juce::String& f, std::function<void()> done)
+{
+    if (scanning.load() || f.isEmpty() || ignored.contains (f, true)) return false;
+    known.removeFromBlacklist (f);
+    forgetCrashNote (f);                                                              // (else the scanner would put it straight back on the list unscanned)
+    saveLists();
+    onlyFiles = juce::StringArray (f);
+    return startScan (std::move (done));
 }
 
 PluginHost::~PluginHost()
@@ -194,12 +284,14 @@ PluginHost::~PluginHost()
     closeAllEditors();
 }
 
-void PluginHost::startScan (std::function<void()> whenFinished)
+bool PluginHost::startScan (std::function<void()> whenFinished)
 {
-    if (scanning.load()) return;
+    if (scanning.load()) return false;
+    if (isThreadRunning()) waitForThreadToExit (3000);                              // (the last scan's thread may still be on its way out)
     finished = std::move (whenFinished);
     scanning = true;
-    startThread();
+    if (! startThread()) { scanning = false; onlyFiles.clear(); finished = nullptr; return false; }
+    return true;
 }
 
 void PluginHost::run()
@@ -207,12 +299,20 @@ void PluginHost::run()
     // The "dead man's pedal": the name of the plug-in being looked at is written to this file before it is opened and taken out again after.
     // A plug-in that crashes the program while it is scanned is found there at the next scan and left out (blacklisted), instead of crashing
     // the program at every scan from then on.
-    const auto pedal = listFile.getSiblingFile ("plugin-scan-in-progress.txt");
+    const auto pedal = pedalFile();
     listFile.getParentDirectory().createDirectory();
     const auto blacklistedBefore = known.getBlacklistedFiles();
+    const auto only = onlyFiles;                                                      // (set by the message thread before the thread was started)
     for (auto* format : formats.getFormats())
     {
-        juce::PluginDirectoryScanner scanner (known, *format, format->getDefaultLocationsToSearch(), true, pedal, false);
+        juce::PluginDirectoryScanner scanner (known, *format, only.isEmpty() ? format->getDefaultLocationsToSearch() : juce::FileSearchPath(), true, pedal, false);
+        if (! only.isEmpty())                                                          // try again / use again: just those files
+        {
+            juce::StringArray mine;
+            for (auto& f : only) if (format->fileMightContainThisPluginType (f)) mine.add (f);
+            scanner.setFilesOrIdentifiersToScan (mine);
+        }
+        if (auto xml = known.createXml()) xml->writeTo (listFile);                    // (the scanner has just left out what crashed last time: keep that even if this scan crashes too)
         juce::String name;
         while (! threadShouldExit() && scanner.scanNextFile (true, name))
         {
@@ -222,14 +322,19 @@ void PluginHost::run()
         for (auto& f : scanner.getFailedFiles()) juce::Logger::writeToLog ("Plug-in scan: could not load " + f);
     }
     for (auto& f : known.getBlacklistedFiles())
-        if (! blacklistedBefore.contains (f)) juce::Logger::writeToLog ("Plug-in scan: " + f + " crashed the program during an earlier scan and is now left out (delete plugins.xml to try it again)");
+        if (! blacklistedBefore.contains (f)) juce::Logger::writeToLog ("Plug-in scan: " + f + " crashed the program during an earlier scan and is now left out (Audio settings > Plug-ins... > Try again)");
     if (auto xml = known.createXml()) xml->writeTo (listFile);
     {
         const juce::ScopedLock sl (statusLock);
         status = "Found " + juce::String (known.getNumTypes()) + " plug-ins";
     }
-    scanning = false;
-    juce::MessageManager::callAsync ([this]() { if (finished) finished(); });
+    juce::MessageManager::callAsync ([this]()
+    {
+        onlyFiles.clear();
+        scanning = false;                                                             // (here, on the message thread: no new scan can start before onlyFiles is cleared)
+        auto cb = std::move (finished); finished = nullptr;
+        if (cb) cb();
+    });
 }
 
 std::unique_ptr<InsertProcessor> PluginHost::create (const juce::PluginDescription& d, double sr, int block, juce::String& error)
@@ -286,7 +391,9 @@ juce::PopupMenu PluginHost::buildPluginMenu (int baseId, std::vector<juce::Plugi
     juce::PopupMenu menu;
     auto types = known.getTypes();
     std::map<juce::String, std::vector<juce::PluginDescription>> byMaker;
-    for (auto& t : types) byMaker[t.manufacturerName.isEmpty() ? juce::String ("Other") : t.manufacturerName].push_back (t);
+    for (auto& t : types)
+        if (! isIgnored (t.fileOrIdentifier))                                          // (ignored ones are never offered)
+            byMaker[t.manufacturerName.isEmpty() ? juce::String ("Other") : t.manufacturerName].push_back (t);
     int id = baseId;
     for (auto& [maker, list] : byMaker)
     {

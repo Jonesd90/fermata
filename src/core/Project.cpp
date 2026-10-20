@@ -1,6 +1,7 @@
 #include "Project.h"
 #include "FileSync.h"
 #include "WavRepair.h"
+#include "AudioRelink.h"
 #include <algorithm>
 #include <cstring>
 #include <set>
@@ -162,8 +163,10 @@ var sendsToVar (const SendList& l, bool inserts)
         for (auto& sl : s->slots) hasInserts = hasInserts || sl.mightBeLoaded() || sl.savedDescription.isNotEmpty();
         if (! s->active() && ! hasInserts) continue;
         var o = obj();
-        put (o, "dest", s->dest.toString()); put (o, "gainDb", s->gainDb.get()); put (o, "pre", s->pre.get());
+        // a muted send is written with its level off and the level it keeps beside it, so an older Fermata (which knows no send mute) keeps it silent
+        put (o, "dest", s->dest.toString()); put (o, "gainDb", s->mute.get() ? -100.0f : s->gainDb.get()); put (o, "pre", s->pre.get());
         if (! s->followMute.get()) put (o, "followMute", false);          // (only written when off: on is how every send always was)
+        if (s->mute.get()) { put (o, "mute", true); put (o, "mutedGainDb", s->gainDb.get()); }
         if (inserts) put (o, "slots", slotsToVar (s->slots, kSendSlots));
         arr.add (o);
     }
@@ -178,13 +181,19 @@ void sendsFromVar (SendList& l, const var& v, const InsertFactory& factory, doub
         for (auto& sv : *a)
         {
             auto* s = l.get (juce::Uuid (sv["dest"].toString()));
-            if (levels) { s->gainDb.set ((float) (double) sv["gainDb"]); s->pre.set ((bool) sv["pre"]); s->followMute.set (sv.hasProperty ("followMute") ? (bool) sv["followMute"] : true); }
+            if (levels)
+            {
+                const bool muted = sv.hasProperty ("mute") && (bool) sv["mute"];
+                s->gainDb.set ((float) (double) (muted && sv.hasProperty ("mutedGainDb") ? sv["mutedGainDb"] : sv["gainDb"]));
+                s->pre.set ((bool) sv["pre"]); s->followMute.set (sv.hasProperty ("followMute") ? (bool) sv["followMute"] : true);
+                s->mute.set (muted);
+            }
             if (inserts) slotsFromVar (s->slots, sv["slots"], factory, sr, block, kSendSlots);
             seen.push_back (s);
         }
     if (levels)
     for (auto& s : l.pool)                                         // sends the other side did not have are switched off
-        if (std::find (seen.begin(), seen.end(), s.get()) == seen.end()) s->gainDb.set (-100.0f);
+        if (std::find (seen.begin(), seen.end(), s.get()) == seen.end()) { s->gainDb.set (-100.0f); s->mute.set (false); }
 }
 
 var stripToVar (const StripState& s, const juce::Uuid& trackId, bool inserts)
@@ -641,6 +650,18 @@ bool Project::sendAllowed (const MixerState& cm, const juce::Uuid& src, const ju
             for (auto& s : l->pool) if (s->active()) todo.push_back (s->dest);
     }
     return true;
+}
+
+juce::String Project::backupWithCurrentWindows (const juce::String& backupText, const juce::String& currentText)
+{
+    var b, c;
+    if (juce::JSON::parse (backupText, b).failed() || ! b.isObject() || juce::JSON::parse (currentText, c).failed() || ! c.isObject()) return backupText;
+    for (auto* key : { "mixerFiles", "takeWindowFiles", "editFiles", "mixers", "takeWindows", "edits" })
+    {
+        if (c.hasProperty (key)) b.getDynamicObject()->setProperty (key, c[key]);
+        else b.getDynamicObject()->removeProperty (key);
+    }
+    return juce::JSON::toString (b);
 }
 
 SendResult Project::setSendLevel (MixerState& m, const juce::Uuid& src, const juce::Uuid& dest, float db)
@@ -2197,29 +2218,178 @@ bool Project::deleteTakeWindowAndFile (const juce::Uuid& id)
     return false;
 }
 
-int Project::missingAudioCount() const
+int Project::missingAudioCount (bool quick) const
 {
     auto& self = const_cast<Project&> (*this);
-    int n = 0;
-    forEachAudioFile (self.takeWindows, self.edits, [&n] (juce::File& f) { if (! f.existsAsFile()) ++n; });
+    // (quick) the files of takes found whole at the last open are not asked about one by one - only their FOLDER is (one question per folder, however
+    // many takes it holds): a Recorded Media folder that was moved or renamed is found out at once, a single file gone from it is found out when it is played
+    std::map<String, bool> folderThere;
+    auto folderExists = [&] (const juce::File& f)
+    {
+        const auto dir = f.getParentDirectory().getFullPathName();
+        auto it = folderThere.find (dir);
+        if (it == folderThere.end()) it = folderThere.emplace (dir, f.getParentDirectory().isDirectory()).first;
+        return it->second;
+    };
+    std::set<String> trusted;
+    if (quick && ! filesMoved)
+        for (auto& w : takeWindows) for (auto& g : w->groups) if (g.verified && g.lengthSamples > 0) for (auto& tf : g.files) if (folderExists (tf.file)) trusted.insert (tf.file.getFullPathName());
+    std::set<String> seen; int n = 0;
+    forEachAudioFile (self.takeWindows, self.edits, [&] (juce::File& f)
+    {
+        const auto path = f.getFullPathName();
+        if (path.isEmpty() || ! seen.insert (path).second || trusted.count (path) > 0) return;
+        if (quick && ! folderExists (f)) { ++n; return; }                            // (its folder is gone: no need to ask about the file)
+        if (! f.existsAsFile()) ++n;
+    });
     return n;
 }
 
-int Project::relinkAudio (const juce::File& searchFolder)
+juce::StringArray Project::missingAudioList (int atMost) const
 {
-    std::map<String, juce::File> byName;
-    for (auto& f : searchFolder.findChildFiles (juce::File::findFiles, true, "*.wav;*.flac;*.aif;*.aiff;*.w64;*.caf"))
-        byName.emplace (f.getFileName().toLowerCase(), f);
-    int found = 0;
-    for (auto& w : takeWindows) for (auto& g : w->groups) g.verified = false;      // (a take whose file is found again is looked at at the next open)
+    juce::StringArray out; std::set<String> seen; int more = 0;
+    auto add = [&] (const juce::File& f, const String& where)
+    {
+        if (f == juce::File() || ! seen.insert (f.getFullPathName()).second || f.existsAsFile()) return;
+        if (out.size() < atMost) out.add (f.getFileName() + "   (" + where + ")"); else ++more;
+    };
+    for (auto& w : takeWindows)
+        for (auto& g : w->groups)
+        {
+            for (auto& tf : g.files) add (tf.file, "Takes - " + w->name + ", " + w->displayName (g) + ", " + tf.trackName);
+            for (auto& wp : g.waiting) for (auto& wf : wp.files) add (wf, "Takes - " + w->name + ", " + w->displayName (g) + ", waiting for corrected audio");
+        }
+    for (auto& e : edits)
+    {
+        auto doRegion = [&] (const EditRegion& r)
+        {
+            for (auto& rf : r.files) add (rf.file, "Edit - " + e->name + ", " + r.takeName + ", " + rf.trackName);
+            for (auto& wf : r.waiting.files) add (wf, "Edit - " + e->name + ", " + r.takeName + ", waiting for corrected audio");
+        };
+        for (auto& r : e->regions) doRegion (r);
+        for (auto& r : e->overdubs) doRegion (r);
+    }
+    if (more > 0) out.add ("... and " + String (more) + " more");
+    return out;
+}
+
+juce::String Project::RelinkReport::summary() const
+{
+    juce::StringArray s;
+    if (byName > 0) s.add (String (byName) + (byName == 1 ? " file found by its name" : " files found by their names"));
+    if (renamed > 0) s.add (String (renamed) + (renamed == 1 ? " renamed file found" : " renamed files found") + " (by length, rate, depth and channels)");
+    if (unsure > 0) s.add (String (unsure) + (unsure == 1 ? " file fits" : " files fit") + " several files in the folder: not linked, so nothing is guessed");
+    if (stillMissing > 0) s.add (String (stillMissing) + (stillMissing == 1 ? " file is" : " files are") + " still missing");
+    if (s.isEmpty()) return "Nothing was missing.";
+    return s.joinIntoString (".\n") + ".";
+}
+
+Project::RelinkReport Project::relinkAudio (const juce::File& searchFolder, const std::function<void (const juce::String&, double)>& progress)
+{
+    RelinkReport rep;
+    // what the project knows about each missing file, once per file (an edit's piece usually uses a take's own file: the take says the most about it);
+    // the files that ARE there are remembered too, so none of them is taken for a missing one
+    std::vector<relink::Wanted> wanted;
+    std::map<String, size_t> index;                                                // full path -> wanted
+    std::set<juce::File> inUse;
+    std::set<String> names, fromTakes;                                             // every track name the project knows (as recorded, and as the tracks are called now); the paths a take described
+    for (auto& t : tracks) names.insert (t.name);
+    auto want = [&] (const juce::File& f) -> relink::Wanted*
+    {
+        if (f == juce::File()) return nullptr;
+        if (f.existsAsFile()) { inUse.insert (f); return nullptr; }
+        const auto path = f.getFullPathName();
+        auto it = index.find (path);
+        if (it != index.end()) return &wanted[it->second];
+        index[path] = wanted.size();
+        relink::Wanted w; w.file = f;
+        wanted.push_back (w);
+        return &wanted.back();
+    };
+    for (auto& w : takeWindows)
+        for (auto& g : w->groups)
+        {
+            for (auto& tf : g.files)
+            {
+                names.insert (tf.trackName);
+                if (auto* x = want (tf.file))
+                {
+                    fromTakes.insert (tf.file.getFullPathName());
+                    x->sampleRate = g.sampleRate; x->numChannels = juce::jmax (1, tf.numChannels); x->lengthSamples = g.lengthSamples;
+                    x->ownRecording = tf.sourceName.isEmpty();                                   // (not imported from another file)
+                    x->bitsPerSample = x->ownRecording ? 24 : 0;                                  // (recorded by Fermata: always 24 bit)
+                    x->trackName = tf.trackName; x->takeTag = pad3 (g.number); x->windowName = w->name; x->recordedAt = g.recordedAt;
+                }
+            }
+            for (auto& wp : g.waiting) for (auto& wf : wp.files) want (wf);                       // (name only: nothing else is known about them)
+        }
+    for (auto& e : edits)
+    {
+        auto doRegion = [&] (EditRegion& r)
+        {
+            for (auto& rf : r.files)
+            {
+                names.insert (rf.trackName);
+                if (auto* x = want (rf.file))
+                    if (fromTakes.count (rf.file.getFullPathName()) == 0)                         // (not a take's file: what the piece knows)
+                    {
+                        // The take's length is the file's only for the take's own, whole file. A piece that was processed (de-clicked, pitch-corrected, sent out and
+                        // back) has "(what was done)" after its take name and its files may be short ones starting at the take's start: their length is not known.
+                        const juce::int64 len = rf.fileStart == 0 && ! r.takeName.contains (" (") ? r.sourceLength : 0;
+                        if (x->sampleRate > 0.0) { if (len <= 0) x->lengthSamples = 0; continue; }       // (another piece described it already: the doubt wins)
+                        x->sampleRate = r.sampleRate; x->numChannels = juce::jmax (1, rf.numChannels); x->lengthSamples = len;
+                        x->trackName = rf.trackName;
+                        if (r.takeName.length() >= 4 && r.takeName.substring (0, 3).containsOnly ("0123456789") && r.takeName[3] == ' ') x->takeTag = r.takeName.substring (0, 3);
+                        for (auto& w : takeWindows) if (w->id == r.windowId) x->windowName = w->name;
+                    }
+            }
+            for (auto& wf : r.waiting.files) want (wf);
+        };
+        for (auto& r : e->regions) doRegion (r);
+        for (auto& r : e->overdubs) doRegion (r);
+    }
+    if (wanted.empty()) return rep;
+
+    juce::StringArray trackNames;
+    for (auto& n : names) if (n.trim().isNotEmpty()) trackNames.add (n);
+    juce::AudioFormatManager formats; formats.registerBasicFormats();
+    const auto results = relink::find (wanted, searchFolder, formats, progress, inUse, trackNames);
+    std::map<String, juce::File> replace;
+    for (size_t k = 0; k < wanted.size(); ++k)
+    {
+        const auto& w = wanted[k]; const auto& r = results[k];
+        if (r.found != juce::File())
+        {
+            replace[w.file.getFullPathName()] = r.found;
+            if (r.how.startsWith ("the same name")) ++rep.byName; else ++rep.renamed;
+            rep.found.add (w.file.getFileName() + "  ->  " + r.found.getFileName() + "  (" + r.how + ")");
+            juce::Logger::writeToLog ("Relink: " + w.file.getFullPathName() + " -> " + r.found.getFullPathName() + " (" + r.how + ")");
+        }
+        else if (! r.alternatives.isEmpty())
+        {
+            ++rep.unsure;
+            rep.unsureLines.add (w.file.getFileName() + ": fits " + String (r.alternatives.size()) + " files (" + r.alternatives.joinIntoString (", ") + ")");
+            juce::Logger::writeToLog ("Relink: " + w.file.getFullPathName() + " fits several files, not linked: " + r.alternatives.joinIntoString (", "));
+        }
+        else
+        {
+            ++rep.stillMissing; rep.missing.add (w.file.getFileName());
+            if (rep.stillMissing <= 100) juce::Logger::writeToLog ("Relink: " + w.file.getFullPathName() + " not found in " + searchFolder.getFullPathName());
+        }
+    }
+    if (rep.stillMissing > 100) juce::Logger::writeToLog ("Relink: ... and " + String (rep.stillMissing - 100) + " more files not found");
+    if (replace.empty()) return rep;
+    for (auto& w : takeWindows)
+        for (auto& g : w->groups)
+            for (auto& tf : g.files) if (replace.count (tf.file.getFullPathName()) > 0) g.verified = false;      // (looked at again at the next open)
     forEachAudioFile (takeWindows, edits, [&] (juce::File& f)
     {
-        if (f.existsAsFile()) return;
-        auto it = byName.find (f.getFileName().toLowerCase());
-        if (it != byName.end()) { f = it->second; ++found; }
+        auto it = replace.find (f.getFullPathName());
+        if (it != replace.end()) f = it->second;
     });
-    if (found > 0) structureChanged();
-    return found;
+    structureChanged();
+    undoReset();           // not an undo step: Ctrl+Z must never quietly put the missing paths back (the save before is in the project's .bak)
+    return rep;
 }
 
 bool Project::importMixerFile (const juce::File& file, String& message)
@@ -2268,7 +2438,7 @@ bool Project::importMixerFile (const juce::File& file, String& message)
     return true;
 }
 
-bool Project::importWindowFile (const juce::File& file, String& message, juce::Uuid* newId)
+bool Project::importWindowFile (const juce::File& file, String& message, juce::Uuid* newId, int* missingFiles)
 {
     var fv;
     if (juce::JSON::parse (file.loadFileAsString(), fv).failed() || ! fv.isObject()) { message = "That is not a Fermata edit or take window file."; return false; }
@@ -2347,11 +2517,20 @@ bool Project::importWindowFile (const juce::File& file, String& message, juce::U
     put (root, "takeWindows", tws); put (root, "edits", eds); put (root, "mixers", mxs);
     if (! tmp.fromVar (root)) { message = "Could not read that file."; return false; }
 
+    // the audio files the imported window uses that are not there (each once)
+    int missing = 0; std::set<String> seen;
+    auto count = [&] (const juce::File& f) { if (f != juce::File() && seen.insert (f.getFullPathName()).second && ! f.existsAsFile()) ++missing; };
     if (isTake)
     {
         if (tmp.takeWindows.empty()) { message = "That file has no take window in it."; return false; }
         takeWindows.push_back (std::move (tmp.takeWindows.front()));
         if (newId != nullptr) *newId = takeWindows.back()->id;
+        for (auto& g : takeWindows.back()->groups)
+        {
+            g.verified = false;                            // (found whole in the OTHER project: this one looks for itself at its next open)
+            for (auto& tf : g.files) count (tf.file);
+            for (auto& wp : g.waiting) for (auto& wf : wp.files) count (wf);
+        }
     }
     else
     {
@@ -2364,11 +2543,14 @@ bool Project::importWindowFile (const juce::File& file, String& message, juce::U
             if (auto* theirs = tmp.mixerOfEdit (eid))
                 applyMix (*mine, tmp.mixSnapshot (*theirs, false), restoreSampleRate, restoreBlock);
         mastering.sync (edits);
+        auto doRegion = [&] (const EditRegion& r) { for (auto& rf : r.files) count (rf.file); for (auto& wf : r.waiting.files) count (wf); };
+        for (auto& r : edits.back()->regions) doRegion (r);
+        for (auto& r : edits.back()->overdubs) doRegion (r);
     }
     structureChanged();
     message = String (isEdit ? "Edit" : "Take window") + " \"" + win["name"].toString() + "\" added.";
-    const int missing = missingAudioCount();
     if (missing > 0) message << "  " << missing << " of its audio files could not be found.";
+    if (missingFiles != nullptr) *missingFiles = missing;
     return true;
 }
 } // namespace td

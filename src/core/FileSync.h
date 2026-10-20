@@ -71,6 +71,40 @@ inline bool replaceTextSafely (const juce::File& target, const juce::String& tex
     return true;
 }
 
+/** The project file a project backup belongs to: "Name.fermata.bak" -> "Name.fermata", and a copy kept aside by restoreBackupText,
+    "Name (replaced 2026-10-20 00.10.00).fermata.bak", -> "Name.fermata" too (so going back is opening that copy the same way).
+    An empty File when 'bak' is not the backup of a project file. */
+inline juce::File projectFileForBackup (const juce::File& bak)
+{
+    if (! bak.hasFileExtension ("bak")) return {};
+    const auto inner = bak.getSiblingFile (bak.getFileNameWithoutExtension());           // Name.fermata, or Name (replaced ...).fermata
+    if (! (inner.hasFileExtension ("fermata") || inner.hasFileExtension ("takedaw"))) return {};
+    auto base = inner.getFileNameWithoutExtension();
+    if (base.endsWithChar (')') && base.contains (" (replaced ")) base = base.upToLastOccurrenceOf (" (replaced ", false, false);
+    if (base.isEmpty()) return {};
+    return bak.getSiblingFile (base + inner.getFileExtension());
+}
+
+/** Opening a file's backup on purpose ("the save before"): 'target' - if it is there - is first copied aside as "<name> (replaced <stamp>)<ext>.bak"
+    (nothing is ever deleted; a .bak so it is not opened as a second project by mistake, and opening it the same way goes back), then 'text' (what
+    was in the backup, read before anything was saved) takes its place, written safely; the file that was there becomes <name>.bak, as at every
+    save. 'aside' is set to the copy kept (empty if there was no file). */
+inline bool restoreBackupText (const juce::File& target, const juce::String& text, const juce::String& stamp, juce::File& aside, juce::String& error)
+{
+    aside = juce::File();
+    if (target.existsAsFile())
+    {
+        for (int n = 1; n < 1000; ++n)
+        {
+            aside = target.getSiblingFile (target.getFileNameWithoutExtension() + " (replaced " + stamp + (n > 1 ? " " + juce::String (n) : juce::String()) + ")"
+                                           + target.getFileExtension() + ".bak");
+            if (! aside.exists()) break;
+        }
+        if (aside.exists() || ! target.copyFileTo (aside)) { error = "A copy of " + target.getFileName() + " could not be kept, so nothing was changed."; aside = juce::File(); return false; }
+    }
+    return replaceTextSafely (target, text, true, &error);
+}
+
 /** Reads a JSON file into v. If the file is missing or cannot be parsed but its .bak can, the .bak is used: the broken file is put aside as
     <name>.damaged and the .bak copied into its place, so the folder is whole again. Returns 0 when nothing could be read, 1 when the file was
     read, 2 when the backup had to be used. 'accept' says whether the parsed value is what the file should hold (the right format, say). */

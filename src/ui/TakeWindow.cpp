@@ -175,7 +175,59 @@ public:
             paintAll (g);
             headerPass = false;
         }
+        if (lassoMoved)                                              // Alt + drag: the lasso
+        {
+            const auto lr = lassoRect();
+            g.setColour (theme::accent.withAlpha (0.13f)); g.fillRect (lr);
+            g.setColour (theme::accent.withAlpha (0.9f));  g.drawRect (lr, 1);
+        }
         if (paintprof::enabled()) paintprof::paintDone ("take window", juce::Time::getMillisecondCounterHiRes() - tPaint0, g.getClipBounds().getWidth(), g.getClipBounds().getHeight());
+    }
+    // ---- Alt + drag: a lasso; every take it touches is selected (whole takes)
+    bool lassoActive = false, lassoMoved = false; juce::Point<int> lassoFrom, lassoTo;
+    juce::Rectangle<int> lassoRect() const
+    {
+        return juce::Rectangle<int>::leftTopRightBottom (juce::jmin (lassoFrom.x, lassoTo.x), juce::jmin (lassoFrom.y, lassoTo.y),
+                                                         juce::jmax (lassoFrom.x, lassoTo.x) + 1, juce::jmax (lassoFrom.y, lassoTo.y) + 1);
+    }
+    /** The takes that 'box' touches: its banner or any of its tracks' rows. */
+    std::vector<juce::Uuid> takesIn (juce::Rectangle<int> box)
+    {
+        std::vector<juce::Uuid> out;
+        auto* w = def();
+        if (w == nullptr) return out;
+        const auto shown = shownTracks();
+        std::map<juce::Uuid, int> rowOf;
+        for (size_t i = 0; i < shown.size(); ++i) rowOf[shown[i]->id] = (int) i;
+        const int top = kRulerH + kLaneH;
+        for (auto& grp : w->groups)
+        {
+            if (app.engine.isRecording() && grp.id == app.engine.currentTakeId()) continue;      // (the take being recorded cannot be selected, as with a click)
+            const int x0 = xOf (grp.startSeconds), x1 = x0 + juce::jmax (4, (int) (grp.lengthSeconds() * pixelsPerSecond));
+            if (x1 < box.getX() || x0 > box.getRight()) continue;
+            bool hit = juce::Rectangle<int> (x0, kRulerH, x1 - x0, kLaneH).intersects (box);
+            for (auto& f : grp.files)
+                if (auto it = rowOf.find (f.trackId); ! hit && it != rowOf.end()) hit = juce::Rectangle<int> (x0, top + it->second * rowH, x1 - x0, rowH).intersects (box);
+            if (hit) out.push_back (grp.id);
+        }
+        return out;
+    }
+    // ---- the corner above the first track's name: what Ctrl / Alt / Shift do here, while they are held
+    int shownMods = 0;
+    static juce::StringArray modifierHints (int bits)
+    {
+        using namespace modhint;
+        switch (bits)
+        {
+            case ctrl:         return { "Click a take: add it to the selection or take it out", "Ctrl + Z / Ctrl + Y: undo / redo" };
+            case alt:          return { "Drag: lasso - selects every take it touches" };
+            case ctrl | alt:   case ctrl | alt | shift:
+                               return { "Drag over a take: mark 1 - 2 on only the tracks you drag over" };
+            case alt | shift:  return { "Drag: lasso - selects every take it touches" };
+            case shift:        return { "Left / Right arrow: nudge the playhead by 10 ms" };
+            case ctrl | shift: return { "Ctrl + Shift + Z: redo" };
+            default:           return {};
+        }
     }
     bool headerPass = false;
     int hdrShift = 0;
@@ -227,7 +279,7 @@ public:
         {
             const int x = kNameW + (int) (s * pixelsPerSecond);
             g.setColour (theme::grid); g.drawVerticalLine (x, (float) kRulerH - 12, (float) getHeight());
-            g.setColour (theme::dimText); g.setFont (12.0f); g.drawText (formatTime (s).substring (3, 8), x + 3, 3 + markerui::kStripH, 64, 16, juce::Justification::left);
+            g.setColour (theme::dimText); g.setFont (12.0f); g.drawText (formatTimeShort (s, 0), x + 3, 3 + markerui::kStripH, 64, 16, juce::Justification::left);
         }
         g.setColour (theme::border); g.fillRect (0, kRulerH - 1, getWidth(), 1);
         profGrid.next ("takes");
@@ -484,11 +536,12 @@ public:
         }
         g.setColour (theme::panel.withAlpha (0.96f)); g.fillRect (sx, rowsBottom, kNameW, juce::jmax (0, getHeight() - rowsBottom));     // the name column carries on to the bottom
         g.setColour (theme::panel.withAlpha (0.96f)); g.fillRect (sx, 0, kNameW, top);
+        if (shownMods != 0 && (headerPass || viewport.getViewPositionY() == 0)) modhint::paint (g, { sx, 0, kNameW, top }, shownMods, modifierHints (shownMods));
     }
 
     void mouseDownImpl (const juce::MouseEvent& e)
     {
-        dragId = {}; dragging = false; markDragTake = {}; markActive = false;
+        dragId = {}; dragging = false; markDragTake = {}; markActive = false; lassoActive = lassoMoved = false;
         closeBarsPopup();
         grabKeyboardFocus();
         auto* w = def();
@@ -603,10 +656,16 @@ public:
                 repaint(); return;
             }
         }
+        const bool ctrlDown = e.mods.isCommandDown() || e.mods.isCtrlDown();
+        if (! e.mods.isPopupMenu() && e.mods.isAltDown() && ! ctrlDown && e.y >= kRulerH + kLaneH && e.x >= sx + kNameW)    // Alt + drag: a lasso
+        {
+            lassoActive = true; lassoMoved = false; lassoFrom = lassoTo = e.getPosition();
+            return;
+        }
         if (auto* grp = groupAt (e.getPosition(), e.mods.isPopupMenu()))
         {
             if (inLane && e.getNumberOfClicks() > 1) { showSettings (grp->id, false); return; }
-            if (e.mods.isCommandDown() || e.mods.isCtrlDown())              // Ctrl + click: add this take to the selection, or take it out again
+            if (ctrlDown && ! e.mods.isAltDown())                          // Ctrl + click: add this take to the selection, or take it out again
             {
                 auto it = std::find (selectedTakes.begin(), selectedTakes.end(), grp->id);
                 if (it != selectedTakes.end()) selectedTakes.erase (it); else selectedTakes.push_back (grp->id);
@@ -630,7 +689,7 @@ public:
             else if (e.y >= kRulerH + kLaneH && e.x >= kNameW && e.getNumberOfClicks() < 2 && ! (app.engine.isRecording() && grp->id == app.engine.currentTakeId()))
             {
                 markDragTake = grp->id; markAnchor = juce::jmax (0.0, (double) (e.x - kNameW) / pixelsPerSecond - grp->startSeconds); markStartX = e.x;
-                markAlt = e.mods.isAltDown(); markRow0 = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);      // Alt + drag: only the track(s) the mouse covers
+                markAlt = e.mods.isAltDown() && ctrlDown; markRow0 = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);      // Ctrl + Alt + drag: only the track(s) the mouse covers
             }
             // clicking a take only selects it: the playhead stays where it is
         }
@@ -646,6 +705,17 @@ public:
         auto* w = def();
         if (w == nullptr) return;
         if (widthDrag) { kNameW = juce::jlimit (110, 700, e.x - viewport.getViewPositionX()); markers.setNameWidth (viewport.getViewPositionX() + kNameW); updateSize(); repaint(); return; }
+        if (lassoActive)
+        {
+            const auto before = lassoMoved ? lassoRect() : juce::Rectangle<int>();
+            lassoTo = e.getPosition();
+            if (! lassoMoved && lassoTo.getDistanceFrom (lassoFrom) < 4) return;
+            lassoMoved = true;
+            auto picked = takesIn (lassoRect());
+            if (picked != selectedTakes) { selectedTakes = std::move (picked); repaint(); }       // (the takes change colour: all of it)
+            else repaint (before.getUnion (lassoRect()).expanded (2));
+            return;
+        }
         if (markers.mouseDrag (e)) return;
         if (fadeDrag != 0)
         {
@@ -714,6 +784,12 @@ public:
     void mouseUpImpl (const juce::MouseEvent& e)
     {
         if (widthDrag) { widthDrag = false; setMouseCursor (juce::MouseCursor::NormalCursor); repaint(); return; }
+        if (lassoActive)
+        {
+            if (! lassoMoved) selectedTakes = takesIn (lassoRect());          // Alt + click (no drag): the take under the mouse, or none
+            lassoActive = lassoMoved = false;
+            repaint(); return;
+        }
         if (markers.mouseUp (e)) return;
         if (markActive) { markActive = false; app.project.changed(); }
         if (flagDrag != 0) { flagDrag = 0; app.project.changed(); }
@@ -1106,6 +1182,11 @@ private:
 
     void timerCallback() override
     {
+        if (const int held = modhint::heldFor (*this); held != shownMods)      // the corner box: what the keys being held do here
+        {
+            shownMods = held;
+            repaint (viewport.getViewPositionX(), viewport.getViewPositionY(), kNameW, kRulerH + kLaneH);
+        }
         updateMeters();
         refreshThumbsAndPrune();
         if (app.engine.isRecording() || app.isPlaying()) updateSize();
@@ -1228,7 +1309,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
             }
     };
     nameEditor.onFocusLost = commitName;
-    nameEditor.onReturnKey = [commitName] { commitName(); juce::Component::unfocusAllComponents(); };     // Enter: confirm and leave the box, so the keys (R, Space, ...) work again
+    nameEditor.onReturnKey = [this, commitName] { commitName(); timeline->grabKeyboardFocus(); };     // Enter: confirm and leave the box: the keyboard goes back to the timeline (its keys work at once)
 
     recordButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xffb3261e));
     recordButton.setBoxLook (true);                         // the same size and shape as the Next Take box beside it
@@ -1325,14 +1406,16 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     importButton.setIcon (Icon::ImportTakes, "Import takes"); exportProcButton.setIcon (Icon::ImportMulti, "Export for Processing"); barSearchButton.setIcon (Icon::Search, "Search for bar");
     for (auto* t : { &overdubBox, &markersToggle }) { t->setClickingTogglesState (true); t->setColour (juce::TextButton::buttonOnColourId, theme::accent); }
     for (auto* c : std::initializer_list<juce::Component*> { &recordButton, &zoomInButton, &zoomOutButton, &playButton,
-                                                              &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &exportProcButton, &undoFixButton, &barSearchButton, &timeLabel, &statusLabel, &markLabel })
+                                                              &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &exportProcButton, &undoFixButton, &barSearchButton, &lengthClock, &statusLabel, &markLabel })
         addAndMakeVisible (c);
     for (auto* b : std::initializer_list<juce::Button*> { &recordButton, &zoomInButton, &zoomOutButton, &playButton,
                                                           &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &exportProcButton, &undoFixButton, &barSearchButton })
         b->setWantsKeyboardFocus (false);       // keep the keyboard shortcuts working after a button click
-    timeLabel.setFont (juce::FontOptions (20.0f, juce::Font::bold));
-    timeLabel.setJustificationType (juce::Justification::centredRight);     // snug against the time readout beside it (the dashes are narrower than the digits)
-    timeLabel.setTooltip ("How long the take being recorded in this window is so far (it counts up from 0 while recording; dashes when nothing is recording here)");
+    // the take's length: a quieter box of the same kind as the time readout (fixed digit cells, 30 times a second, so it counts as smoothly);
+    // grey with softer digits, always h:m:s.ms, dashes when nothing is recording here
+    lengthClock.setLengthStyle ("TAKE LENGTH");
+    lengthClock.follow ([this] { return hereRecording() ? app.engine.recordedSeconds() : 0.0; },
+                        [this] { return hereRecording() ? TimeReadout::State::recording : TimeReadout::State::stopped; });
     statusLabel.setColour (juce::Label::textColourId, theme::warn);
 
     // the time readout: where this window's playhead is (moving while it plays or records here); white when stopped, blue while anything plays, red while recording
@@ -1351,6 +1434,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
         cap->setJustificationType (juce::Justification::topLeft);
         cap->setBorderSize (juce::BorderSize<int> (0, 1, 0, 1));
     }
+    sendBox.setWantsKeyboardFocus (false);                      // changed only by clicking: the arrow keys stay the window's (zoom, track heights)
     sendBox.onChange = [this]
     {
         auto* w = def();
@@ -1435,8 +1519,8 @@ void TakeWindowComponent::resized()
     nameBlock.setBounds (x, getLocalBounds().getY() + 1, colW, nameBlock.idealHeight()); x += colW + 10;     // (the column starts right at the top of the window, a row above the boxes)
     takeBox.setBounds (x, y0, 84, 58);                            x += 84 + 6;
     recordButton.setBounds (x, y0, 84, 58);                       x += 84 + 6;
-    const int tlW = juce::GlyphArrangement::getStringWidthInt (timeLabel.getFont(), "00:00:00.000") + 12;      // the take's length: just as wide as its digits
-    timeLabel.setBounds (x, y0 + 15, tlW, 28);                    x += tlW + 6;
+    const int tlH = 44, tlW = lengthClock.getIdealWidth (tlH);     // the take's length: smaller than the readout beside it, its bottom level with it
+    lengthClock.setBounds (x, y0 + kClockH - tlH, tlW, tlH);      x += tlW + 6;
     clock.setBounds (x, y0, clockW, kClockH);                     x += clockW + 14;
     int headH = juce::jmax (nameBlock.getBottom(), y0 + kClockH + 4) - r.getY();
     const int btnRight = r.getRight() - grid::cornerReserve;      // (clear of the pin and sun / moon buttons in the corner)
@@ -1444,11 +1528,14 @@ void TakeWindowComponent::resized()
         headH = juce::jmax (headH, grid::flow (juce::Rectangle<int> (x, r.getY(), btnRight - x, headH), items, true, nullptr, true));
     else                                                          // a narrow window: the buttons go under the head, across the whole width
         headH += grid::flow (juce::Rectangle<int> (r.getX(), r.getY() + headH, r.getWidth(), 0), items, true, nullptr, true);
-    r.removeFromTop (headH + 2);
-    auto info = r.removeFromTop (22);
-    statusLabel.setBounds (info.removeFromRight (juce::jmin (330, info.getWidth() / 3)));
-    markLabel.setBounds (info.reduced (4, 0));
-    r.removeFromTop (4);
+    // the marks (or the playhead) on the same line as the "To edit goes into" box, under Next Take, REC and the readouts: the row it had of its own
+    // under the head is the timeline's now. A recording problem is shown in the same place while there is one.
+    {
+        const auto sb = sendBox.getBoundsInParent() + nameBlock.getPosition();
+        const auto row = juce::Rectangle<int> (takeBox.getX(), sb.getY(), juce::jmax (100, clock.getRight() - takeBox.getX()), sb.getHeight());
+        markLabel.setBounds (row); statusLabel.setBounds (row);
+    }
+    r.removeFromTop (headH + 4);
     if (viewportOwner != nullptr) { viewportOwner->setBounds (r); if (timeline != nullptr) timeline->applyHeightLevel(); }
 }
 
@@ -1684,8 +1771,14 @@ bool TakeWindowComponent::keyPressed (const juce::KeyPress& k)
         if (c == '4') { toEdit (true);  return true; }
     }
     // Right = zoom in, Left = zoom out (time). Shift + arrow nudges the cursor instead.
-    if (k == juce::KeyPress::leftKey)   { if (k.getModifiers().isShiftDown()) nudgeCursor (-0.01); else timeline->zoom (1.0 / 1.4); return true; }
-    if (k == juce::KeyPress::rightKey)  { if (k.getModifiers().isShiftDown()) nudgeCursor (0.01);  else timeline->zoom (1.4);       return true; }
+    {   // (KeyPress == a key code is false whenever a modifier is held: Shift + arrow has to be asked for by its code, or it never arrives here)
+        const auto km = k.getModifiers();
+        const bool onlyShift = km.isShiftDown() && ! km.isCtrlDown() && ! km.isCommandDown() && ! km.isAltDown();
+        if (onlyShift && k.getKeyCode() == juce::KeyPress::leftKey)  { nudgeCursor (-0.01); return true; }
+        if (onlyShift && k.getKeyCode() == juce::KeyPress::rightKey) { nudgeCursor (0.01);  return true; }
+    }
+    if (k == juce::KeyPress::leftKey)   { timeline->zoom (1.0 / 1.4); return true; }
+    if (k == juce::KeyPress::rightKey)  { timeline->zoom (1.4);       return true; }
     // Up = all tracks smaller, Down = all tracks bigger (8 steps)
     if (k == juce::KeyPress::upKey)     { timeline->changeHeightLevel (-1); return true; }
     if (k == juce::KeyPress::downKey)   { timeline->changeHeightLevel (+1); return true; }
@@ -1717,7 +1810,6 @@ void TakeWindowComponent::timerCallback()
     }
     recordButton.setEnabled (! rec || hereRec);
     clock.setSampleRate (app.engine.getSampleRate());
-    timeLabel.setText (hereRec ? formatTime (app.engine.recordedSeconds()) : juce::String ("--:--:--.---"), juce::dontSendNotification);
     {
         juce::String st;
         if (hereRec)
@@ -1726,13 +1818,14 @@ void TakeWindowComponent::timerCallback()
             else if (app.engine.overruns() > 0) st = "DISK OVERRUN - " + lostText (app.engine.samplesLost(), app.engine.getSampleRate()) + " of audio lost (silence in its place)";
         }
         statusLabel.setText (st, juce::dontSendNotification);
+        statusLabel.setVisible (st.isNotEmpty()); markLabel.setVisible (st.isEmpty());          // (they share the line under the boxes: a problem comes first)
     }
     playButton.setButtonText (app.isPlaying() ? "Stop [Space]" : "Play [Space]");
 
     juce::String m;
     if (auto* w = def())
     {
-        auto fmt = [] (double v) { return v >= 0 ? formatTime (v).substring (3) : juce::String ("--"); };
+        auto fmt = [] (double v) { return v >= 0 ? formatTimeShort (v, 3) : juce::String ("--"); };
         if (overdubBox.getToggleState() != w->overdub) overdubBox.setToggleState (w->overdub, juce::dontSendNotification);
         if (auto* ge = w->findGroup (w->editTake))
         {
@@ -1740,8 +1833,8 @@ void TakeWindowComponent::timerCallback()
             if (w->editIn >= 0 && w->editOut > w->editIn) m += "   (" + juce::String (w->editOut - w->editIn, 2) + " s)";
         }
         else if (auto* gc = w->findGroup (w->cursorTake))
-            m = "Playhead: " + w->displayName (*gc) + "  " + formatTime (w->cursorSeconds).substring (3);
-        else m = "Playhead: " + formatTime (w->playheadSeconds).substring (3) + "  (between takes)";
+            m = "Playhead: " + w->displayName (*gc) + "  " + formatTimeShort (w->cursorSeconds, 3);
+        else m = "Playhead: " + formatTimeShort (w->playheadSeconds, 3) + "  (between takes)";
     }
     markLabel.setText (m, juce::dontSendNotification);
 }

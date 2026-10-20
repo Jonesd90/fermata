@@ -137,10 +137,18 @@ public:
     void drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos, float startA, float endA, juce::Slider& s) override
     {
         const auto& t = mixTheme();
-        const float size = (float) juce::jmin (w, h) - 2.0f, r = size * 0.5f;
+        float size = (float) juce::jmin (w, h) - 2.0f;
         const float cx = (float) x + (float) w * 0.5f, cy = (float) y + (float) h * 0.5f;
+        if ((bool) s.getProperties().getWithDefault ("pre", false))            // a send taken before the fader: a yellow square round the dial (the dial a little smaller inside it)
+        {
+            const float side = (float) juce::jmin (w, h) - 1.0f;
+            g.setColour (juce::Colour (0xfff2c200)); g.drawRoundedRectangle (juce::Rectangle<float> (side, side).withCentre ({ cx, cy }), 2.5f, 1.5f);
+            size -= 5.0f;
+        }
+        const float r = size * 0.5f;
         const float a = startA + pos * (endA - startA);
-        const juce::Colour arc = juce::Colour ((juce::uint32) (juce::int64) s.getProperties().getWithDefault ("arc", (juce::int64) theme::accent.getARGB()));
+        juce::Colour arc = juce::Colour ((juce::uint32) (juce::int64) s.getProperties().getWithDefault ("arc", (juce::int64) theme::accent.getARGB()));
+        if ((bool) s.getProperties().getWithDefault ("muted", false)) arc = t.dim.withAlpha (0.55f);      // a muted send: the ring goes grey
         juce::Path track, value;
         track.addCentredArc (cx, cy, r - 0.5f, r - 0.5f, 0.0f, startA, endA, true);
         value.addCentredArc (cx, cy, r - 0.5f, r - 0.5f, 0.0f, startA, a, true);

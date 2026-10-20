@@ -616,7 +616,7 @@ void TrimComponent::describe()
     const double rate = R.sampleRate, J = hasB ? (double) rf.B->startSample : (double) rf.A->endSample();
     auto ms = [&] (juce::int64 t) { return juce::String (((double) t - (double) refSample) / rate * 1000.0, 1); };      // (counted from the reference line)
     const int n = (int) rf.e->regions.size();
-    const juce::String where = formatTime (J / rate).substring (3, 12);
+    const juce::String where = formatTimeShort (J / rate, 3);
     int editNo = 0, editTotal = 0;                                       // the edit points are counted without the joins made by offline fixes
     for (int q = 0; q <= n; ++q) { if (! rf.e->isFixJoin (q)) { ++editTotal; if (q <= rf.k) ++editNo; } }
     if (hasA && hasB && rf.e->isFixJoin (rf.k))

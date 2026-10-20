@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 #include "PaintProfile.h"
+#include "BusyWindow.h"
+#include "../core/FileSync.h"
 #include <set>
 #include "WinOwner.h"
 #include "FixTools.h"
@@ -448,6 +450,7 @@ void MainComponent::showStartPanel()
 
 MainComponent::MainComponent (AppContext& a) : app (a)
 {
+    setWantsKeyboardFocus (true);                                 // (the keys come here, never into the first input's name box: see ToolWindow::FocusKeeper)
     addAndMakeVisible (auditionIcon);
     addAndMakeVisible (logo);
     addChildComponent (stagePanel);
@@ -465,6 +468,7 @@ MainComponent::MainComponent (AppContext& a) : app (a)
     menuStrip->addAndMakeVisible (ltcInLamp); menuStrip->addAndMakeVisible (ltcOutLamp);
     ltcInLamp.onClick = [this] { showLtcInMenu(); };
     ltcOutLamp.onClick = [this] { showLtcOutMenu(); };
+    app.findMissingAudio = [this] { relinkAudioDialog (false, juce::Uuid::null()); };
     menuBarRaise() = [this] { if (menuStrip != nullptr && menuStrip->isVisible() && juce::Process::isForegroundProcess()) menuStrip->toFront (false); };
     menuBarAvoidArea() = [this] { return menuStrip != nullptr && menuStrip->isVisible() ? menuStrip->getBounds() : juce::Rectangle<int>(); };
     editsButton.onClick = [this] { showEditsMenu(); };
@@ -655,6 +659,11 @@ void MainComponent::paint (juce::Graphics& g)
         g.setColour (p.cream.withAlpha (0.55f)); g.fillRect (kCheekW + 10, headerLineY, getWidth() - 2 * (kCheekW + 10), 1);
         g.setColour (juce::Colours::black.withAlpha (0.25f)); g.fillRect (kCheekW + 10, headerLineY + 1, getWidth() - 2 * (kCheekW + 10), 1);
     }
+    for (int x : headerSeps)                                                              // the thin lines between the parts of the top row
+    {
+        g.setColour (p.cream.withAlpha (0.45f)); g.fillRect (x, headerLine.getY() + 6, 1, headerLine.getHeight() - 12);
+        g.setColour (juce::Colours::black.withAlpha (0.25f)); g.fillRect (x + 1, headerLine.getY() + 6, 1, headerLine.getHeight() - 12);
+    }
     // the wooden side panels, and the rail along the bottom with the maker's name
     const int top = menuBarH, bottom = getHeight() - railH;
     desk::paintCheek (g, { 0, top, kCheekW, bottom - top }, true);
@@ -700,20 +709,29 @@ void MainComponent::resized()
     {   // left to right: the mark, the displays, the driver line, DRIVER INPUTS; everything to the right of that is the stage speaker boxes' room
         // (they sit at the right-hand end and only scroll sideways when they fill all of it)
         auto line = head;
-        logo.setBounds (line.removeFromLeft (148).withSizeKeepingCentre (148, 40));
-        line.removeFromLeft (12);
-        // the displays: the project on top, the rate, depth and free disk space under it
-        const int colW = juce::jmax (rateBox.wantedWidth() + depthBox.wantedWidth() + diskBox.wantedWidth() + 24, juce::jmin (460, projectBox.wantedWidth()));
-        auto col = line.removeFromLeft (juce::jmin (colW, line.getWidth() / 2)).withSizeKeepingCentre (juce::jmin (colW, line.getWidth() / 2), 56);
-        projectBox.setBounds (col.removeFromTop (28).withWidth (juce::jmin (col.getWidth(), juce::jmax (180, projectBox.wantedWidth()))));
-        col.removeFromTop (6);
-        for (auto* b : { &rateBox, &depthBox, &diskBox }) { b->setBounds (col.removeFromLeft (b->wantedWidth()).withSizeKeepingCentre (b->wantedWidth(), 22)); col.removeFromLeft (12); }
-        line.removeFromLeft (12);
+        {   // the mark and name, with DRIVER INPUTS under it (the caption of the strips just below)
+            auto mark = line.removeFromLeft (148);
+            logo.setBounds (mark.removeFromTop (42).withTrimmedTop (2));
+            inputsCaption.setBounds (mark.removeFromTop (20));
+        }
+        line.removeFromLeft (8); headerSeps.push_back (line.getX()); line.removeFromLeft (9);      // (a thin line between the mark and the displays)
+        // the displays: the project, rate and depth on the top row, the free disk space (and, while recording, the time left) under them
+        const int topW = juce::jmin (330, juce::jmax (180, projectBox.wantedWidth())) + 10 + rateBox.wantedWidth() + 10 + depthBox.wantedWidth();
+        const int colW = juce::jmin (juce::jmax (topW, diskBox.wantedWidth()), juce::jmax (200, line.getWidth() / 2));
+        auto col = line.removeFromLeft (colW).withSizeKeepingCentre (colW, 54);
+        {
+            auto top = col.removeFromTop (26);
+            const int pw = juce::jmax (120, top.getWidth() - rateBox.wantedWidth() - depthBox.wantedWidth() - 20);
+            projectBox.setBounds (top.removeFromLeft (juce::jmin (pw, juce::jmax (180, projectBox.wantedWidth()))));
+            top.removeFromLeft (10); rateBox.setBounds (top.removeFromLeft (rateBox.wantedWidth()).withSizeKeepingCentre (rateBox.wantedWidth(), 22));
+            top.removeFromLeft (10); depthBox.setBounds (top.removeFromLeft (depthBox.wantedWidth()).withSizeKeepingCentre (depthBox.wantedWidth(), 22));
+            col.removeFromTop (6);
+            diskBox.setBounds (col.removeFromTop (22).withWidth (juce::jmin (col.getWidth(), diskBox.wantedWidth())));
+        }
+        line.removeFromLeft (8); headerSeps.push_back (line.getX()); line.removeFromLeft (9);      // (and between the displays and the driver lines)
         const int minStage = juce::jmin (StageSpeakerPanel::reservedWidth(), line.getWidth() / 3);          // the boxes always have at least this much
-        const int statusW = juce::jmin (statusWidth(), juce::jmax (60, line.getWidth() - minStage - 10 - 122 - 12));
-        statusLabel.setBounds (line.removeFromLeft (statusW).withSizeKeepingCentre (statusW, 24));
-        line.removeFromLeft (14);
-        inputsCaption.setBounds (line.removeFromLeft (112).withSizeKeepingCentre (112, 24));
+        const int statusW = juce::jmin (statusWidth(), juce::jmax (60, line.getWidth() - minStage - 10));
+        statusLabel.setBounds (line.removeFromLeft (statusW).withSizeKeepingCentre (statusW, 38));     // two lines: the driver, then its numbers
         line.removeFromLeft (10);
         if (showStage) stagePanel.setBounds (line.removeFromRight (juce::jmin (line.getWidth(), stagePanel.wantedWidth())));
         projectName.setBounds ({});
@@ -869,14 +887,16 @@ void MainComponent::timerCallback()
         if (projectBox.wantedWidth() != before || diskBox.wantedWidth() != lastDiskW) { lastDiskW = diskBox.wantedWidth(); resized(); }
     }
 
-    juce::String s;
+    // two lines: what is happening and the driver on the first, the driver's numbers (buffer, channels, load) on the second
+    juce::String s, nums;
     if (auto* dev = app.devices.getCurrentAudioDevice())
     {
-        s = dev->getTypeName() + ": " + dev->getName() + "   buffer " + juce::String (dev->getCurrentBufferSizeSamples())
-            + "   in " + juce::String (dev->getActiveInputChannels().countNumberOfSetBits())
-            + " / out " + juce::String (dev->getActiveOutputChannels().countNumberOfSetBits());
-        if (app.engine.getBackupFolder() != juce::File()) s += "   2nd drive on";
+        s = dev->getTypeName() + ": " + dev->getName();
         if (dev->getTypeName() != "ASIO") s += "  (not ASIO)";
+        nums = "buffer " + juce::String (dev->getCurrentBufferSizeSamples())
+             + "   in " + juce::String (dev->getActiveInputChannels().countNumberOfSetBits())
+             + " / out " + juce::String (dev->getActiveOutputChannels().countNumberOfSetBits());
+        if (app.engine.getBackupFolder() != juce::File()) nums += "   2nd drive on";
         if (rec && app.engine.overruns() > 0) s = "DISK OVERRUN - " + lostText (app.engine.samplesLost(), app.engine.getSampleRate()) + " of audio lost (silence in its place)   " + s;
         if (rec && diskAlarm.isNotEmpty()) s = diskAlarm + "   " + s;
         if (const auto problem = app.engine.recordingProblem(); rec && problem.isNotEmpty())
@@ -886,9 +906,9 @@ void MainComponent::timerCallback()
         }
         else if (! rec) problemNoticed = false;
         if (auto* x = dynamic_cast<juce::AudioIODevice*> (dev); x != nullptr && dev->getXRunCount() > 0)
-            s += "   xruns: " + juce::String (dev->getXRunCount());
+            nums += "   xruns: " + juce::String (dev->getXRunCount());
         if (app.lastLoad.blocks > 0)                                    // the load meter: how much of each block's time the audio thread needs
-            s += "   DSP " + juce::String (juce::roundToInt (app.lastLoad.average)) + "% (peak " + juce::String (juce::roundToInt (app.lastLoad.peak)) + "%)"
+            nums += "   DSP " + juce::String (juce::roundToInt (app.lastLoad.average)) + "% (peak " + juce::String (juce::roundToInt (app.lastLoad.peak)) + "%)"
                  + (app.lastLoad.late > 0 ? "  LATE BLOCKS: " + juce::String (app.lastLoad.late) : juce::String());
     }
     else s = "No audio device - open Audio settings";
@@ -898,11 +918,13 @@ void MainComponent::timerCallback()
     else if (! app.talkbackReady() && (app.crWanted || app.tbWanted))
         s = "Talkback key pressed, but no CR input / TB outputs are chosen (CR button on an input, TB button on an output)  -  " + s;
     const bool noticeOn = juce::Time::getMillisecondCounter() < app.noticeUntil;
-    if (noticeOn) s = app.notice;
+    const bool alarmLine = s.startsWith ("DISK") || s.startsWith ("No audio") || s.startsWith ("RECORDING HAS");
+    if (noticeOn) s = app.notice;                                       // (a notice has both lines: it wraps)
+    else if (nums.isNotEmpty()) s << "\n" << nums;
     statusLabel.setText (s, juce::dontSendNotification);
     if (const int w = statusWidthFor (s); w != lastStatusTextW) { lastStatusTextW = w; resized(); }                                   // DRIVER INPUTS follows the end of the driver line
     if (noticeOn) statusLabel.setColour (juce::Label::textColourId, juce::Colour (0xff3ee0c0)); else
-    statusLabel.setColour (juce::Label::textColourId, rec ? juce::Colour (0xffff5555) : s.startsWith ("DISK") || s.startsWith ("No audio") ? theme::warn : desk::pal().cream.withAlpha (0.8f));
+    statusLabel.setColour (juce::Label::textColourId, rec ? juce::Colour (0xffff5555) : alarmLine ? theme::warn : desk::pal().cream.withAlpha (0.8f));
     if (rec && (s.startsWith ("DISK") || s.startsWith ("RECORDING HAS"))) statusLabel.setColour (juce::Label::textColourId, ((now2 / 500) & 1) ? juce::Colour (0xffff5555) : juce::Colours::white);     // (flashes)
 }
 
@@ -1038,11 +1060,23 @@ void MainComponent::openProjectDialog()
 {
     if (app.engine.isRecording()) { showError ("Recording", "Stop recording first."); return; }
     auto start = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Fermata");
-    chooser = std::make_unique<juce::FileChooser> ("Open a project", start, "*.fermata;*.takedaw");
+    chooser = std::make_unique<juce::FileChooser> ("Open a project (or a project's .bak: the save before)", start, "*.fermata;*.takedaw;*.fermata.bak;*.takedaw.bak");
     chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this] (const juce::FileChooser& fc)
     {
         auto f = fc.getResult();
-        if (f.existsAsFile()) app.openProject (f);
+        if (! f.existsAsFile()) return;
+        if (! f.hasFileExtension ("bak")) { app.openProject (f); return; }
+        // a .bak: the project as it was saved the time before. It is put back as the project file (the current one is kept beside it, nothing is deleted)
+        const auto target = filesync::projectFileForBackup (f);
+        if (target == juce::File()) { showError ("Open", f.getFileName() + " is not the backup of a project file (that would be called Name.fermata.bak)."); return; }
+        const auto when = f.getLastModificationTime().formatted ("%d %b %Y, %H:%M");
+        confirmAsync ("Open the save before",
+                      f.getFileName() + " is " + target.getFileNameWithoutExtension() + " as it was saved at " + when + ".\n\n"
+                      "Fermata puts it back as the project file and opens it. The project file there now is kept beside it as \""
+                      + target.getFileNameWithoutExtension() + " (replaced <date> <time>)" + target.getFileExtension() + ".bak\": nothing is deleted, "
+                      "and opening that file the same way goes back.\n\n"
+                      "The take windows, edits and mixers have files of their own, which are not changed: they open as they are now.",
+                      "Open the save before", [this, f] { app.openBackupProject (f); });
     });
 }
 
@@ -1051,22 +1085,24 @@ void MainComponent::importWindowFileDialog (bool isEdit)
     if (app.engine.isRecording()) { showError ("Recording", "Stop recording first."); return; }
     auto start = app.project.projectFolder().getChildFile (isEdit ? "Edit Windows" : "Take Windows");
     if (! start.isDirectory()) start = app.project.projectFolder();
-    chooser = std::make_unique<juce::FileChooser> (isEdit ? "Choose an edit file (.fmedit)" : "Choose a take window file (.fmtake)", start, isEdit ? "*.fmedit" : "*.fmtake");
+    chooser = std::make_unique<juce::FileChooser> (isEdit ? "Choose an edit file (.fmedit, or its .bak: the save before)" : "Choose a take window file (.fmtake, or its .bak: the save before)", start,
+                                                   isEdit ? "*.fmedit;*.fmedit.bak" : "*.fmtake;*.fmtake.bak");
     chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this, isEdit] (const juce::FileChooser& fc)
     {
         auto f = fc.getResult();
         if (! f.existsAsFile()) return;
-        juce::String msg; juce::Uuid id;
-        if (! app.project.importWindowFile (f, msg, &id)) { showError ("Import", msg); return; }
+        juce::String msg; juce::Uuid id; int missing = 0;
+        if (! app.project.importWindowFile (f, msg, &id, &missing)) { showError ("Import", msg); return; }
         app.saveNow();
-        if (app.project.missingAudioCount() == 0)
+        if (missing == 0)
         {
             juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Imported", msg);
             if (isEdit) { if (app.showEdit) app.showEdit (id); } else if (app.showTakeWindow) app.showTakeWindow (id);
             return;
         }
         juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon).withTitle ("Imported - audio not found")
-                                          .withMessage (msg + "\n\nDo you want to point Fermata at the folder that holds the audio files? It looks in that folder and all the folders inside it, by file name.")
+                                          .withMessage (msg + "\n\nDo you want to point Fermata at the folder that holds the audio files? It looks in that folder and all the folders inside it, by file name; "
+                                                        "a file that was renamed is taken when its length, sample rate, bit depth and channels say it is the one.")
                                           .withButton ("Find the audio files...").withButton ("Later"),
                                       [this, isEdit, id] (int r)
         {
@@ -1078,19 +1114,63 @@ void MainComponent::importWindowFileDialog (bool isEdit)
 
 void MainComponent::relinkAudioDialog (bool isEdit, const juce::Uuid& openAfter)
 {
-    chooser = std::make_unique<juce::FileChooser> ("Choose the folder that holds the audio files", app.project.projectFolder(), "*");
-    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories, [this, isEdit, openAfter] (const juce::FileChooser& fc)
+    auto openIt = [this, isEdit, openAfter]
+    {
+        if (openAfter.isNull()) return;
+        if (isEdit) { if (app.showEdit) app.showEdit (openAfter); } else if (app.showTakeWindow) app.showTakeWindow (openAfter);
+    };
+    if (app.engine.isRecording()) { showError ("Recording", "Stop recording first."); return; }
+    int missing = 0;
+    {   // every file is asked about here (the quick check at the open trusts the takes found whole last time: a file gone from one of those shows up only now)
+        size_t takes = 0; for (auto& w : app.project.takeWindows) takes += w->groups.size();
+        std::unique_ptr<busy::Scope> wait;
+        if (takes > 300) wait = std::make_unique<busy::Scope> ("Checking the audio files", "Looking for every audio file the project uses");   // (thousands of files: a moment)
+        missing = app.project.missingAudioCount();
+    }
+    if (missing == 0)
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Audio files", "Nothing is missing: every audio file this project uses is where the project expects it.");
+        openIt();
+        return;
+    }
+    chooser = std::make_unique<juce::FileChooser> ("Choose the folder that holds the audio files (it and all the folders inside it are searched)", app.project.projectFolder(), "*");
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories, [this, openIt] (const juce::FileChooser& fc)
     {
         auto folder = fc.getResult();
+        if (folder.isDirectory() && app.engine.isRecording()) { showError ("Recording", "A recording started while the folder was being chosen. Stop it, then choose the folder again."); openIt(); return; }
         if (folder.isDirectory())
         {
-            const int found = app.project.relinkAudio (folder);
-            app.saveNow();
-            const int left = app.project.missingAudioCount();
-            juce::AlertWindow::showMessageBoxAsync (left == 0 ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon, "Audio files",
-                                                    juce::String (found) + " audio file(s) found and connected." + (left > 0 ? "\n" + juce::String (left) + " still could not be found. You can choose another folder from the same menu (\"Find missing audio files...\")." : juce::String()));
+            app.stopPlayback();
+            Project::RelinkReport rep;
+            {
+                busy::Scope wait ("Finding the audio files", "Listing the audio files in " + folder.getFileName());
+                rep = app.project.relinkAudio (folder, [] (const juce::String& what, double p) { busy::step (what, p); });
+            }
+            if (rep.byName + rep.renamed > 0) app.saveNow();
+            juce::String text = rep.summary();
+            if (! rep.found.isEmpty())
+            {
+                text << "\n\nFound:\n";
+                for (int i = 0; i < rep.found.size() && i < 12; ++i) text << "   " << rep.found[i] << "\n";
+                if (rep.found.size() > 12) text << "   ... and " << juce::String (rep.found.size() - 12) << " more (every one is in the log)\n";
+            }
+            if (! rep.unsureLines.isEmpty())
+            {
+                text << "\nFits several files - give the right one its old name, or move the others out of the folder, then search again:\n";
+                for (int i = 0; i < rep.unsureLines.size() && i < 8; ++i) text << "   " << rep.unsureLines[i] << "\n";
+                if (rep.unsureLines.size() > 8) text << "   ... and " << juce::String (rep.unsureLines.size() - 8) << " more (every one is in the log)\n";
+            }
+            if (! rep.missing.isEmpty())
+            {
+                text << "\nStill missing (choose another folder from the same menu, \"Find missing audio files...\"):\n";
+                for (int i = 0; i < rep.missing.size() && i < 8; ++i) text << "   " << rep.missing[i] << "\n";
+                if (rep.missing.size() > 8) text << "   ... and " << juce::String (rep.missing.size() - 8) << " more (every one is in the log)\n";
+            }
+            if (rep.byName + rep.renamed > 0) text << "\nThe project was saved with the files found. Ctrl+Z does not undo this; the save before it is the project's .bak file.\n";
+            const bool allGood = rep.unsure == 0 && rep.stillMissing == 0;
+            juce::AlertWindow::showMessageBoxAsync (allGood ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon, "Audio files", text);
         }
-        if (isEdit) { if (app.showEdit) app.showEdit (openAfter); } else if (app.showTakeWindow) app.showTakeWindow (openAfter);
+        openIt();
     });
 }
 
@@ -1101,8 +1181,8 @@ void MainComponent::showTakesMenu()
     for (auto& w : app.project.takeWindows) { m.addItem (i, "Open: " + w->name); del.addItem (2000 + i, w->name); ++i; }
     m.addSeparator();
     m.addItem (1000, "New take window...");
-    m.addItem (1001, "Import a take window file (.fmtake)...");
-    m.addItem (1002, "Find missing audio files...", app.project.missingAudioCount() > 0);
+    m.addItem (1001, "Import a take window file (.fmtake, or its .bak)...");
+    m.addItem (1002, "Find missing audio files...");
     if (i > 1) { m.addSeparator(); m.addSubMenu ("Delete a take window", del); }
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&takesButton), [this] (int r)
     {
@@ -1134,8 +1214,8 @@ void MainComponent::showEditsMenu()
     for (auto& e : app.project.edits) { m.addItem (i, "Open: " + e->name); del.addItem (2000 + i, e->name); ++i; }
     m.addSeparator();
     m.addItem (1000, "New empty edit");
-    m.addItem (1001, "Import an edit file (.fmedit)...");
-    m.addItem (1002, "Find missing audio files...", app.project.missingAudioCount() > 0);
+    m.addItem (1001, "Import an edit file (.fmedit, or its .bak)...");
+    m.addItem (1002, "Find missing audio files...");
     if (i > 1) { m.addSeparator(); m.addSubMenu ("Delete an edit", del); }
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&editsButton), [this] (int r)
     {

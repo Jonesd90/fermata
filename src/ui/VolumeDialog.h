@@ -48,7 +48,7 @@ public:
         allLabel.setText ("All", juce::dontSendNotification); allLabel.setJustificationType (juce::Justification::centred);
         allLabel.setFont (juce::FontOptions (12.0f, juce::Font::bold)); addAndMakeVisible (allLabel);
 
-        title.setText ("Volume change at " + formatTime ((double) (r->startSample + rel) / rate).substring (3, 11) + "  -  " + r->takeName, juce::dontSendNotification);
+        title.setText ("Volume change at " + formatTimeShort ((double) (r->startSample + rel) / rate, 2) + "  -  " + r->takeName, juce::dontSendNotification);
         title.setFont (juce::FontOptions (13.0f, juce::Font::bold)); addAndMakeVisible (title);
 
         fadeBox.setButtonText ("Fade the change");
@@ -213,7 +213,7 @@ public:
         viewport.setViewedComponent (&content, false); viewport.setScrollBarsShown (false, true);
         addAndMakeVisible (viewport);
 
-        title.setText ("Volume change from " + formatTime ((double) t0 / rate).substring (3, 11) + " to " + formatTime ((double) t1 / rate).substring (3, 11)
+        title.setText ("Volume change from " + formatTimeShort ((double) t0 / rate, 2) + " to " + formatTimeShort ((double) t1 / rate, 2)
                            + "  -  " + juce::String (n) + " track(s)", juce::dontSendNotification);
         title.setFont (juce::FontOptions (13.0f, juce::Font::bold)); addAndMakeVisible (title);
         info.setText ("0 = no change. The level glides to the new value over the fade time, and glides back at the end. Earlier volume changes inside this area are replaced.", juce::dontSendNotification);

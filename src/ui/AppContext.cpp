@@ -548,6 +548,30 @@ bool AppContext::newProject (const juce::File& file)
     return true;
 }
 
+bool AppContext::openBackupProject (const juce::File& bak)
+{
+    if (engine.isRecording()) { showError ("Recording", "Stop recording first."); return false; }
+    const auto target = filesync::projectFileForBackup (bak);                            // Name.fermata.bak (or a "(replaced ...)" copy) -> Name.fermata
+    if (target == juce::File()) { showError ("Open", bak.getFileName() + " is not the backup of a project file (that would be called Name.fermata.bak)."); return false; }
+    const auto bakText = bak.loadFileAsString();                                         // (read first: saving the open project below may rewrite this very file)
+    juce::var v;
+    if (juce::JSON::parse (bakText, v).failed() || ! v.isObject()) { showError ("Open", bak.getFileName() + " could not be read as a Fermata project, so nothing was changed."); return false; }
+    stopPlayback();
+    if (hasProject())                              // the open project is saved first; if that fails nothing is touched (its unsaved changes would be lost)
+    {
+        juce::String serr;
+        if (! project.save (serr)) { showError ("Open", "The project that is open could not be saved first, so nothing was changed.\n\n" + serr); return false; }
+    }
+    // the take windows, edits and mixers have files of their own, which are not put back: the lists of them stay as they are now
+    const auto text = target.existsAsFile() ? Project::backupWithCurrentWindows (bakText, target.loadFileAsString()) : bakText;
+    juce::String err; juce::File aside;
+    if (! filesync::restoreBackupText (target, text, juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H.%M.%S"), aside, err)) { showError ("Open", err); return false; }
+    project.projectFile = juce::File();            // (saved above: opening must not save it again, over the file just put back)
+    juce::Logger::writeToLog ("Opened the save before: " + bak.getFullPathName() + " put back as " + target.getFullPathName()
+                              + (aside != juce::File() ? "; the file it replaced is kept as " + aside.getFileName() : juce::String()));
+    return openProject (target);
+}
+
 bool AppContext::openProject (const juce::File& file)
 {
     if (engine.isRecording()) { showError ("Recording", "Stop recording first."); return false; }
@@ -570,10 +594,15 @@ bool AppContext::openProject (const juce::File& file)
     if (realFactory)
     {
         auto count = std::make_shared<int> (0);
-        project.insertFactory = [realFactory, count] (const juce::String& desc, const juce::String& state)
+        project.insertFactory = [this, realFactory, count] (const juce::String& desc, const juce::String& state) -> std::unique_ptr<InsertProcessor>
         {
-            juce::String nm;
-            if (auto xml = juce::XmlDocument::parse (desc)) nm = xml->getStringAttribute ("name");
+            juce::String nm, file;
+            if (auto xml = juce::XmlDocument::parse (desc)) { nm = xml->getStringAttribute ("name"); file = xml->getStringAttribute ("file"); }
+            if (file.isNotEmpty() && plugins.isIgnored (file))          // on the list of ignored plug-ins: not loaded (the slot keeps it, with its settings)
+            {
+                juce::Logger::writeToLog ("Plug-in not loaded: " + (nm.isNotEmpty() ? nm : file) + " is on the list of ignored plug-ins (Audio settings > Plug-ins...)");
+                return nullptr;
+            }
             busy::step ("Starting plug-in " + juce::String (++*count) + (nm.isNotEmpty() ? ":  " + nm : juce::String()), -1.0);
             return realFactory (desc, state);
         };
@@ -600,6 +629,22 @@ bool AppContext::openProject (const juce::File& file)
         juce::MessageManager::callAsync ([text] { juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon).withTitle ("Recording recovered").withMessage (text).withButton ("OK"), nullptr); });
     }
     afterProjectReplaced();
+    busy::step ("Checking for missing audio files", -1.0);
+    if (const int missing = project.missingAudioCount (true); missing > 0)       // (quick: the takes found whole last time are not asked about again)
+    {
+        const auto list = project.missingAudioList (12);
+        juce::String text = juce::String (missing) + (missing == 1 ? " audio file used by this project could not be found" : " audio files used by this project could not be found") + ":\n\n";
+        for (auto& l : list) text << "   " << l << "\n";
+        text << "\nPoint Fermata at the folder that holds them? It looks in that folder and all the folders inside it, by name; a file that was renamed is taken when "
+                "its length, sample rate, bit depth and channels say it is the one. (Later: Takes or Edits menu > Find missing audio files...)";
+        juce::Logger::writeToLog ("Missing audio files: " + juce::String (missing) + " - " + list.joinIntoString (" | "));
+        juce::MessageManager::callAsync ([this, text]
+        {
+            juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Audio files missing").withMessage (text)
+                                              .withButton ("Find the audio files...").withButton ("Later"),
+                                          [this] (int r) { if (r == 1 && findMissingAudio) findMissingAudio(); });
+        });
+    }
     const auto tReady = juce::Time::getMillisecondCounterHiRes();
     {   // how long opening took, by stage (the log line to look at when a big project is slow to open)
         size_t takes = 0; for (auto& w : project.takeWindows) takes += w->groups.size();

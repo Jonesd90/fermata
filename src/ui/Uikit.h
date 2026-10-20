@@ -3,6 +3,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "../core/AudioEngine.h"
 #include "WaveColor.h"
+#include "WinOwner.h"
 #include <map>
 #include <array>
 #include <algorithm>
@@ -398,6 +399,59 @@ inline juce::String formatTime (double seconds)
     return juce::String::formatted ("%02d:%02d:%02d.%03d", (int) (ms / 3600000), (int) ((ms / 60000) % 60), (int) ((ms / 1000) % 60), (int) (ms % 1000));
 }
 
+/** A time as MM:SS (with 'decimals' digits after the seconds: 0, 2 or 3) under an hour, and HH:MM:SS from an hour on: the rulers and the
+    marks' readouts (they used to show MM:SS always, so an hour in they started again from 00:00). */
+inline juce::String formatTimeShort (double seconds, int decimals = 0)
+{
+    const auto full = formatTime (juce::jmax (0.0, seconds));                 // HH:MM:SS.mmm
+    const int tail = 8 + (decimals > 0 ? 1 + juce::jlimit (1, 3, decimals) : 0);   // HH:MM:SS + .d..
+    return seconds >= 3600.0 ? full.substring (0, tail) : full.substring (3, tail);
+}
+
+/** The little box in the top left corner of the take and edit windows (above the first track's name): while Ctrl, Alt, Shift or a mix of them is held,
+    it says what they do there. */
+namespace modhint
+{
+    enum { shift = 1, ctrl = 2, alt = 4 };
+    /** Which of them are held now, read from the keyboard itself (no key event needed): shift | ctrl | alt. */
+    inline int heldNow()
+    {
+        const auto m = juce::ModifierKeys::getCurrentModifiersRealtime();
+        return (m.isShiftDown() ? shift : 0) | (m.isCtrlDown() || m.isCommandDown() ? ctrl : 0) | (m.isAltDown() ? alt : 0);
+    }
+    /** Only for the window that has the keyboard, while Fermata is the program in front. */
+    inline int heldFor (const juce::Component& c)
+    {
+        auto* peer = c.getPeer();
+        return juce::Process::isForegroundProcess() && peer != nullptr && peer->isFocused() && c.isShowing() ? heldNow() : 0;
+    }
+    inline juce::String keysText (int bits)
+    {
+        juce::StringArray s;
+        if (bits & ctrl) s.add ("Ctrl");
+        if (bits & alt) s.add ("Alt");
+        if (bits & shift) s.add ("Shift");
+        return s.joinIntoString (" + ");
+    }
+    /** The box: the keys held along its top, then what they do here, one line each (or "nothing here" when the mix does nothing). */
+    inline void paint (juce::Graphics& g, juce::Rectangle<int> box, int bits, const juce::StringArray& lines)
+    {
+        if (bits == 0 || box.getWidth() < 40 || box.getHeight() < 24) return;
+        auto r = box.reduced (4, 3);
+        g.setColour (theme::accent.withAlpha (0.16f)); g.fillRoundedRectangle (r.toFloat(), 4.0f);
+        g.setColour (theme::accent.withAlpha (0.7f));  g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 4.0f, 1.0f);
+        r = r.reduced (6, 3);
+        g.setColour (theme::text); g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
+        g.drawText (keysText (bits), r.removeFromTop (15), juce::Justification::centredLeft, true);
+        g.setFont (juce::FontOptions (10.5f));
+        g.setColour (lines.isEmpty() ? theme::dimText : theme::text);
+        juce::StringArray shown;                                   // (a dot before each, so two hints that wrap are told apart)
+        for (auto& l : lines) shown.add (juce::String::fromUTF8 ("\xE2\x80\xA2 ") + l);
+        const auto body = lines.isEmpty() ? juce::String ("nothing different here") : shown.joinIntoString ("\n");
+        g.drawFittedText (body, r, juce::Justification::topLeft, juce::jmax (1, r.getHeight() / 12), 0.85f);
+    }
+}
+
 inline void showError (const juce::String& title, const juce::String& message)
 {
     juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, title, message);
@@ -726,24 +780,53 @@ public:
         {
             lastActive = ++counter; grabContentFocus();
             keepTitleBarClear();                                                        // (also here: a window opened or put back where it covers the menu bar)
-            if (isTransportWindow) lastTransportWindow() = this;
+            if (isTransportWindow) noteTransportWindow (this);
             if (menuBarRaise()) juce::MessageManager::callAsync ([] { if (menuBarRaise()) menuBarRaise()(); });     // the menu bar stays in front of the Fermata windows
         }
     }
     /** So the keyboard shortcuts (arrow-key zoom, C, Space ...) work as soon as the window is in front, without clicking in it first.
-        A text box that already has the keyboard keeps it. */
+        A text box that already has the keyboard keeps it. Only when this window really is the one in front on the desktop: JUCE still calls a
+        window "active" after the keyboard has gone to a window that is not a JUCE component - a plug-in's own editor, an ASIO driver's panel -
+        and taking the keyboard back then would pull this window over the plug-in and send the typing into it (R: a recording). */
     void grabContentFocus()
     {
         juce::Component::SafePointer<ToolWindow> safe (this);
         juce::MessageManager::callAsync ([safe]
         {
             auto* w = safe.getComponent();
-            if (w == nullptr || ! w->isShowing() || ! w->isActiveWindow()) return;      // never pull a window forward just to give it the keyboard
+            if (w == nullptr || ! w->isShowing() || ! w->isActiveWindow() || ! isForegroundWindow (*w)) return;      // never pull a window forward just to give it the keyboard
             auto* cur = juce::Component::getCurrentlyFocusedComponent();
             if (cur != nullptr && w->isParentOf (cur) && dynamic_cast<juce::TextEditor*> (cur) != nullptr) return;
             if (auto* c = w->getContentComponent()) if (c->getWantsKeyboardFocus()) c->grabKeyboardFocus();
         });
     }
+    /** Whenever the keyboard is left with nobody (a text box let go of it with Enter, a pop-up closed) while a Fermata window is in front, that
+        window's contents take it back at once, so its keys work straight away - no click needed, in the window or on its title bar. Without this,
+        JUCE hands the keys to the window frame, and a click on the title bar of a window that is in front already gives the keyboard to nothing
+        (or, in a window whose contents do not take the keyboard themselves, to its first text box: typing R then went into a name).
+        Installed once by the program; the main window's contents count too. Nothing is taken from a plug-in's window or a driver's own panel:
+        the window must be the one in front on the desktop (see grabContentFocus). */
+    class FocusKeeper : private juce::FocusChangeListener
+    {
+    public:
+        FocusKeeper() { juce::Desktop::getInstance().addFocusChangeListener (this); }
+        ~FocusKeeper() override { juce::Desktop::getInstance().removeFocusChangeListener (this); }
+    private:
+        void globalFocusChanged (juce::Component* focused) override
+        {
+            if (focused != nullptr) return;
+            juce::MessageManager::callAsync ([]
+            {
+                if (juce::Component::getCurrentlyFocusedComponent() != nullptr || ! juce::Process::isForegroundProcess()) return;
+                if (juce::ModalComponentManager::getInstance()->getNumModalComponents() > 0) return;
+                auto* active = juce::TopLevelWindow::getActiveTopLevelWindow();
+                if (active == nullptr || ! isForegroundWindow (*active)) return;
+                if (auto* tw = dynamic_cast<ToolWindow*> (active)) { tw->grabContentFocus(); return; }
+                if (auto* rw = dynamic_cast<juce::ResizableWindow*> (active))                 // (the main window)
+                    if (auto* c = rw->getContentComponent()) if (c->getWantsKeyboardFocus() && rw->isShowing()) c->grabKeyboardFocus();
+            });
+        }
+    };
     void closeButtonPressed() override { if (closeCallback) closeCallback (this); }
     /** Minimising does not send the window to the taskbar: it is hidden and appears as a title bar at the bottom of the main window. */
     void minimisationStateChanged (bool nowMinimised) override
@@ -758,16 +841,50 @@ public:
     bool keyPressed (const juce::KeyPress& k) override
     {
         if (globalKeyHook() && globalKeyHook() (k)) return true;
-        if (forwardKeys)                                  // e.g. a mixer: the keys (Space, R, 1, 2 ...) go on to the take / edit window that was last in use
-            if (auto* t = lastTransportWindow().getComponent())
-                if (t != this && t->isVisible())
+        // Tab with the keyboard on the window or its contents as a whole (not in a box or on a button) would hand it to the first text box in the
+        // window (JUCE's fallback for a Tab nobody used), and R or Space would then be typing: swallowed. Tab inside a box still moves to the next one.
+        if (k.getKeyCode() == juce::KeyPress::tabKey)
+            if (auto* f = juce::Component::getCurrentlyFocusedComponent(); f == nullptr || f == this || f == getContentComponent()) return true;
+        // Nothing inside this window has the keyboard (a name box let go of it with Enter, say): JUCE then hands every key to the window itself, which
+        // used to drop it, so the take / edit window's keys (Space to play, the arrows, 1 / 2 / 3 ...) were dead until something in it was clicked -
+        // clicking its title bar did not help, as the window was active already. The keys go to the contents, as if they had the keyboard.
+        if (! forwardKeys)
+            if (auto* c = getContentComponent(); c != nullptr && ! focusIsInside() && c->keyPressed (k)) { grabContentFocus(); return true; }
+        // e.g. a mixer: the keys (Space, R, 1, 2 ...) go on to the take / edit window that was last in use. From every other window (one whose own
+        // contents had no use for it: not the Mastering or Trim window, which play themselves) Space does too, so it always plays / stops the take or
+        // edit window you were last in, even one that is down in the bar
+        const bool space = isPlainSpace (k);
+        if (forwardKeys || (space && ! isTransportWindow))
+            if (auto* t = lastTransportWindow())
+                if (t != this && (t->isVisible() || space))
                     if (auto* c = t->getContentComponent()) if (c->keyPressed (k)) return true;
         return juce::DocumentWindow::keyPressed (k);
     }
+    /** Whether the component that has the keyboard is inside this window's contents. */
+    bool focusIsInside() const
+    {
+        auto* f = juce::Component::getCurrentlyFocusedComponent();
+        auto* c = getContentComponent();
+        return f != nullptr && c != nullptr && (f == c || c->isParentOf (f));
+    }
+    static bool isPlainSpace (const juce::KeyPress& k) { return k.getKeyCode() == juce::KeyPress::spaceKey && ! k.getModifiers().isAnyModifierKeyDown(); }
     bool isTransportWindow = false;                       // a take window or an edit window: it becomes the target of the keys of the windows that forward them
     bool forwardKeys = false;                             // a mixer, meter bridge ...: keys that it does not use itself are passed to the last take / edit window
-    static juce::Component::SafePointer<ToolWindow>& lastTransportWindow() { static juce::Component::SafePointer<ToolWindow> p; return p; }
+    /** The take or edit window that was in front most recently and is still there (open, or down in the bar); if that one has been closed, the one before it. */
+    static ToolWindow* lastTransportWindow()
+    {
+        auto& list = recentTransportWindows();
+        for (auto it = list.rbegin(); it != list.rend(); ++it) if (auto* w = it->getComponent()) return w;
+        return nullptr;
+    }
+    static void noteTransportWindow (ToolWindow* w)
+    {
+        auto& list = recentTransportWindows();
+        list.erase (std::remove_if (list.begin(), list.end(), [w] (const juce::Component::SafePointer<ToolWindow>& p) { return p == nullptr || p.getComponent() == w; }), list.end());
+        list.emplace_back (w);
+    }
 private:
+    static std::vector<juce::Component::SafePointer<ToolWindow>>& recentTransportWindows() { static std::vector<juce::Component::SafePointer<ToolWindow>> v; return v; }
     std::function<void (ToolWindow*)> closeCallback;
 };
 
@@ -1345,7 +1462,8 @@ private:
         if (timeline.hasKeyboardFocus (false)) return;
         // Only when this window is the one being worked in. A bar that moves by itself (the timeline following the playhead while a take plays) must NEVER take the
         // keyboard: with two windows both scrolling, each would activate itself in turn and they would fight for the front.
-        if (juce::TopLevelWindow::getActiveTopLevelWindow() != timeline.getTopLevelComponent()) return;
+        auto* top = timeline.getTopLevelComponent();
+        if (juce::TopLevelWindow::getActiveTopLevelWindow() != top || top == nullptr || ! isForegroundWindow (*top)) return;   // (and not while a plug-in's window has the keyboard: JUCE still calls this one active then)
         if (dynamic_cast<juce::TextEditor*> (juce::Component::getCurrentlyFocusedComponent()) != nullptr) return;     // somebody is typing: leave them
         timeline.grabKeyboardFocus();
     }

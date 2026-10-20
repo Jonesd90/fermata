@@ -2306,7 +2306,7 @@ public:
             if (splitting() && tk.piece != lastPiece) { lastPiece = tk.piece; n = 0; t << (i > 0 ? "\n" : "") << "Take window  \"" << tk.piece << "\":\n"; }
             ++n;
             t << "Take " << juce::String (splitting() ? n : (int) i + 1) << (tk.number > 0 ? "  (number " + juce::String (tk.number) + " in the file names)" : juce::String())
-              << ":  " << juce::String ((int) tk.parts.size()) << " track(s),  " << formatTime ((double) tk.length / juce::jmax (1.0, tk.sampleRate)).substring (3, 11)
+              << ":  " << juce::String ((int) tk.parts.size()) << " track(s),  " << formatTimeShort ((double) tk.length / juce::jmax (1.0, tk.sampleRate), 2)
               << ",  " << juce::String (tk.sampleRate, 0) << " Hz\n";
         }
         t << "\nTracks, in this order (matched to the tracks you already have by name; new ones are added):\n";
@@ -4024,8 +4024,8 @@ void exportForProcessingEdit (AppContext& app, const juce::Uuid& eid, juce::Comp
             // OUT: from mark 1 to mark 2, or to where it has faded out completely, whichever comes first.  IN: from where its fade-in begins (or mark 1) to mark 2.  No fades are applied to what is sent.
             fill ((*plan)[0], *A, juce::jmax (tIn, A->startSample), juce::jmin (tOut, A->fadeOutFinish()), "Out Stream");
             fill ((*plan)[1], *B, juce::jmax (tIn, B->fadeInBegin()), juce::jmin (tOut, B->endSample()), "In Stream");
-            if (outS.ids.size() > 1 && tIn < A->startSample) notes << "\n\nNOTE: the OUT stream before " << formatTime ((double) A->startSample / rate).substring (3, 12) << " is made of an earlier fix, so only the part from there on is sent.";
-            if (inS.ids.size() > 1 && tOut > B->endSample()) notes << "\n\nNOTE: the IN stream is sent up to the end of its piece (" << formatTime ((double) B->endSample() / rate).substring (3, 12) << "); what follows is made of an earlier fix.";
+            if (outS.ids.size() > 1 && tIn < A->startSample) notes << "\n\nNOTE: the OUT stream before " << formatTimeShort ((double) A->startSample / rate, 3) << " is made of an earlier fix, so only the part from there on is sent.";
+            if (inS.ids.size() > 1 && tOut > B->endSample()) notes << "\n\nNOTE: the IN stream is sent up to the end of its piece (" << formatTimeShort ((double) B->endSample() / rate, 3) << "); what follows is made of an earlier fix.";
             const bool haveOut = ! (*plan)[0].src.empty(), haveIn = ! (*plan)[1].src.empty();
             if (! haveOut && ! haveIn) { say (title, "There is nothing to send: the marked part is too short on both sides of the edit point, or the tracks you chose with Alt + drag are not there."); return; }
             auto ask = [&app, eid, plan, notes, parent = juce::Component::SafePointer<juce::Component> (parent), subset, title] (bool wantOut, bool wantIn)
@@ -4327,7 +4327,7 @@ private:
         {
             const auto& pc = res.pieces[i];
             t << juce::String ((int) i + 1) << ".  " << pc.name << "   -   " << juce::String (pc.regions.size()) << " pieces of takes, " << juce::String (pc.lengthSeconds / 60.0, 1) << " min, at "
-              << formatTime (pc.startSeconds).substring (3, 11) << " in the AAF\n";
+              << formatTimeShort (pc.startSeconds, 2) << " in the AAF\n";
         }
         t << "\nTracks:  " << res.trackNames.size() << (res.trackNames.empty() ? juce::String() : juce::String ("  (") + res.trackNames.front() + " ... " + res.trackNames.back() + ")") << "\n";
         if (res.notes.size() > 0) { t << "\nNotes:\n"; for (auto& n : res.notes) t << "   " << n << "\n"; }

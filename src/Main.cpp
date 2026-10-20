@@ -18,6 +18,7 @@
 #include "ui/BusyWindow.h"
 #include "ui/RemoteControl.h"
 #include "ui/CpuCoresPanel.h"
+#include "ui/PluginManager.h"
 #if JUCE_WINDOWS
  #include <shlobj.h>
 #endif
@@ -130,8 +131,10 @@ public:
         ctx->showDesign = [this] { openDesign(); };
         ctx->showBridge = [this] { toggleBridge(); };
         ctx->showBounce = [this] (const BounceContext& c) { openBounce (c); };
+        focusKeeper = std::make_unique<ToolWindow::FocusKeeper>();              // the keys never go dead after a text box lets go of the keyboard
         globalKeyHook() = [this] (const juce::KeyPress& k)
         {
+            if (! ctx->hasProject()) return false;                                   // (the program's keys do nothing until a project exists)
             {   // Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo (a text box that has the keyboard does its own)
                 const auto m = k.getModifiers();
                 const int kc = k.getKeyCode();
@@ -285,6 +288,7 @@ public:
         mainWindow.reset();
         ctx.reset();
         tooltips.reset();
+        focusKeeper.reset();
         globalKeyHook() = nullptr;
         juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
         lookAndFeel.reset();
@@ -337,6 +341,11 @@ private:
         bool keyPressed (const juce::KeyPress& k) override
         {
             if (globalKeyHook() && globalKeyHook() (k)) return true;
+            if (k.getKeyCode() == juce::KeyPress::tabKey)        // (as in ToolWindow: Tab from the window as a whole must not land in its first text box)
+                if (auto* f = juce::Component::getCurrentlyFocusedComponent(); f == nullptr || f == this || f == getContentComponent()) return true;
+            if (ToolWindow::isPlainSpace (k))                    // the main window has no transport of its own: Space plays / stops the take or edit window you were last in
+                if (auto* t = ToolWindow::lastTransportWindow())
+                    if (auto* c = t->getContentComponent()) if (c->keyPressed (k)) return true;
             return juce::DocumentWindow::keyPressed (k);
         }
     };
@@ -388,10 +397,16 @@ private:
             juce::MessageManager::callAsync ([this, key] { windows.erase (key); });
         });
         w->setContentOwned (content, true);
+        // every window's contents take the keyboard themselves (the keys then come to them, and on to the window), so a window never hands it to
+        // the first text box it finds instead: JUCE does that when a window is activated with nothing in it holding the keyboard - a click on a
+        // mixer's title bar put the keys into its name box, and R / Space were "typing" from then on
+        content->setWantsKeyboardFocus (true);
+        if (auto* host = dynamic_cast<CornerStripHost*> (content)) host->content->setWantsKeyboardFocus (true);
         w->setIcon (makeFermataIcon (256));
         w->isTransportWindow = key.startsWith ("take:") || key.startsWith ("edit:");
         w->forwardKeys = key.startsWith ("mixer:") || key.startsWith ("scope:") || key == "bridge" || key == "media" || key == "takedisplay" || key == "organiser";
-        {   // where it was left last time (kept in the project), or else centred; never wider than the screen, nor taller (except a mixer, which opens tall enough to show the whole strip)
+        juce::Rectangle<int> mixerRemembered;                                         // a mixer's size when it was last closed (put back by fitWindowToStrips)
+        {   // where it was left last time (kept in the project), or else centred; never wider than the screen, nor taller
             const auto& displays = juce::Desktop::getInstance().getDisplays();
             const auto area = (mainWindow != nullptr ? displays.getDisplayForRect (mainWindow->getBounds()) : displays.getPrimaryDisplay())->userArea;
             juce::Rectangle<int> saved;
@@ -401,7 +416,7 @@ private:
             const bool isMixer = key.startsWith ("mixer:");
             if (saved.getWidth() >= 120 && saved.getHeight() >= 80 && onScreen)
             {
-                if (isMixer) w->setTopLeftPosition (saved.getPosition());           // a mixer always opens at the size that shows every strip; only its place is remembered
+                if (isMixer) { w->setTopLeftPosition (saved.getPosition()); mixerRemembered = saved; }     // a mixer: its size is put back once it knows its strips (below)
                 else w->setBounds (saved);
             }
             else
@@ -414,7 +429,7 @@ private:
         }
         const bool owned = mainWindow != nullptr && makeOwnedBy (*w, *mainWindow);
         w->setVisible (true);
-        if (auto* mc = dynamic_cast<MixerComponent*> (content)) mc->fitWindowToStrips();
+        if (auto* mc = dynamic_cast<MixerComponent*> (content)) mc->fitWindowToStrips (mixerRemembered);    // (the size it was left at, within the screen)
         w->onBoundsChanged = [this, key] (const juce::String& t) { ctx->project.windowBounds[key] = t; };       // from now on, every move / resize is remembered in the project
         auto* raw = w.get();
         windows[key] = std::move (w);
@@ -617,7 +632,9 @@ private:
             : app (c), selector (c.devices, 0, 256, 0, 256, false, false, false, false)
         {
             addAndMakeVisible (selector);
-            addAndMakeVisible (apply); addAndMakeVisible (close); addAndMakeVisible (note); addAndMakeVisible (scan); addAndMakeVisible (cpuCores);
+            addAndMakeVisible (apply); addAndMakeVisible (close); addAndMakeVisible (note); addAndMakeVisible (scan); addAndMakeVisible (cpuCores); addAndMakeVisible (pluginList);
+            pluginList.setTooltip ("Every plug-in Fermata has found: ignore the ones you never want (they are not scanned, loaded or offered), and try again the ones left out after a crash");
+            pluginList.onClick = [this] { showPluginManager (app); };
             note.setText ("Choose the driver and settings above, then press Apply.", juce::dontSendNotification);
             apply.onClick = [this] { app.applyAudioSettings(); note.setText ("Applied: " + juce::String (app.engine.getNumInputs()) + " inputs / "
                                                                              + juce::String (app.engine.getNumOutputs()) + " outputs from the driver.", juce::dontSendNotification); };
@@ -637,7 +654,7 @@ private:
             cpuCores.setTooltip ("Keep some CPU cores for Fermata's audio only, so that other programs cannot interrupt a recording");
             cpuCores.onClick = [this] { showCpuCoresPanel (app); };
             apply.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1f7a46));
-            setSize (580, 560);
+            setSize (680, 560);
         }
         void resized() override
         {
@@ -646,13 +663,14 @@ private:
             selector.setBounds (r);
             close.setBounds (bottom.removeFromRight (110).reduced (3));
             apply.setBounds (bottom.removeFromRight (110).reduced (3));
-            scan.setBounds (bottom.removeFromLeft (130).reduced (3));
-            cpuCores.setBounds (bottom.removeFromLeft (110).reduced (3));
+            scan.setBounds (bottom.removeFromLeft (118).reduced (3));
+            pluginList.setBounds (bottom.removeFromLeft (92).reduced (3));
+            cpuCores.setBounds (bottom.removeFromLeft (104).reduced (3));
             note.setBounds (bottom);
         }
         AppContext& app;
         juce::AudioDeviceSelectorComponent selector;
-        juce::TextButton apply { "Apply" }, close { "Close" }, scan { "Scan plug-ins" }, cpuCores { "CPU cores..." };
+        juce::TextButton apply { "Apply" }, close { "Close" }, scan { "Scan plug-ins" }, pluginList { "Plug-ins..." }, cpuCores { "CPU cores..." };
         juce::Label note;
     };
 
@@ -717,6 +735,7 @@ private:
     std::unique_ptr<AppContext> ctx;
     std::unique_ptr<RemoteControlServer> remoteServer;       // the control port for a Stream Deck (127.0.0.1 only)
     std::unique_ptr<ToolWindowMain> mainWindow;
+    std::unique_ptr<ToolWindow::FocusKeeper> focusKeeper;
     std::map<juce::String, std::unique_ptr<ToolWindow>> windows;
     std::unique_ptr<StayOnTop> bridgeTop;                    // keeps the meter bridge in front of everything (see StayOnTop)
 };

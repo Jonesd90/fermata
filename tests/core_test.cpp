@@ -20,6 +20,8 @@
 #include "../src/core/EditFix.h"
 #include "../src/core/Feedback.h"
 #include "../src/core/ReviewPage.h"
+#include "../src/core/FileSync.h"
+#include "../src/core/AudioRelink.h"
 #include <cstdio>
 #include <thread>
 
@@ -1105,6 +1107,48 @@ int main()
         mixA.stripFor (violinId)->mute.set (false);
         mixA.stripFor (violinId)->gainDb.set (0.0f);
         mixA.stripFor (violinId)->sends.find (foldback)->pre.set (false);
+        {   // the send's own MUTE (2.75): silences only that send, pre or post fader, whatever "follow mute" says; its level is kept
+            auto* fb = mixA.stripFor (violinId)->sends.find (foldback);
+            const auto on = rig.measure (eng);
+            CHECK (on[2] > 0.2);
+            fb->mute.set (true);
+            const auto mt = rig.measure (eng);
+            CHECK (mt[2] < 1e-6 && std::abs (mt[0] - on[0]) < 1e-6 && std::abs (fb->gainDb.get()) < 1e-6f && fb->active());   // the send silent, the channel untouched, the level kept
+            fb->pre.set (true); fb->followMute.set (false);
+            CHECK (rig.measure (eng)[2] < 1e-6);                                          // pre-fader and not following mute: still silent
+            fb->mute.set (false);
+            CHECK (rig.measure (eng)[2] > 0.2);                                           // unmuted: back at the level it had
+            fb->pre.set (false); fb->followMute.set (true);
+            // a muted send keeps nothing open under a solo: soloing the Int Bus it feeds does not let the channel through to the main mix
+            CHECK (p.setSendLevel (mixA, violinId, strings, 0.0f) == SendResult::RoutingChanged);
+            eng.rebuildPlan();
+            auto* toStrings = mixA.stripFor (violinId)->sends.find (strings);
+            mixA.busFor (strings)->solo.set (true);
+            CHECK (rig.measure (eng)[0] > 0.2);                                           // the send on: the violin stays open (its own main out is heard)
+            toStrings->mute.set (true);
+            CHECK (rig.measure (eng)[0] < 1e-6);                                          // muted: nothing keeps it open any more
+            toStrings->mute.set (false); mixA.busFor (strings)->solo.set (false);
+            p.setSendLevel (mixA, violinId, strings, -100.0f);
+            eng.rebuildPlan();
+            // written so that an older Fermata (no send mute) keeps it silent: level off, the kept level beside it
+            fb->mute.set (true);
+            {
+                const auto vv = mixA.stripFor (violinId)->sends.find (foldback);
+                Project::MixParts sendsOnly { false, true, false, false };
+                auto snap = p.mixSnapshot (mixA, false);
+                bool seen = false;
+                if (auto* strips = snap["strips"].getArray())
+                    for (auto& sv : *strips) if (sv["track"].toString() == violinId.toString())
+                        if (auto* sl = sv["sendList"].getArray())
+                            for (auto& so2 : *sl) if (so2["dest"].toString() == foldback.toString())
+                            { seen = true; CHECK ((double) so2["gainDb"] < -99.0 && (bool) so2["mute"] && std::abs ((double) so2["mutedGainDb"]) < 1e-6); }
+                CHECK (seen);
+                vv->gainDb.set (-30.0f); vv->mute.set (false);
+                p.applyMix (mixA, snap, 48000.0, Rig::block, sendsOnly);
+                CHECK (vv->mute.get() && std::abs (vv->gainDb.get()) < 1e-6f);           // read back: muted, at the level it keeps
+            }
+            fb->mute.set (false);
+        }
 
         // an insert on the send changes only the send
         auto plain = rig.measure (eng);
@@ -1151,6 +1195,7 @@ int main()
         // the sends survive save / load, with their dials, pre / post and inserts
         p.setSendLevel (mixA, violaId, violinId, -7.5f);
         mixA.stripFor (violaId)->sends.find (violinId)->pre.set (true);
+        mixA.stripFor (violaId)->sends.find (violinId)->mute.set (true);                  // (2.75: the send's own MUTE is saved too)
         {
             juce::String err;
             auto saveFile = tmp.getChildFile ("routing.fermata");
@@ -1160,7 +1205,13 @@ int main()
             CHECK (q.load (saveFile, err));
             auto* qm = q.mixers.front().get();
             auto* sd = qm->stripFor (violaId)->sends.find (violinId);
-            CHECK (sd != nullptr && std::abs (sd->gainDb.get() + 7.5f) < 1e-4f && sd->pre.get());
+            CHECK (sd != nullptr && std::abs (sd->gainDb.get() + 7.5f) < 1e-4f && sd->pre.get() && sd->mute.get());
+            {   // a mix copied with its sends takes the MUTE along; a send the copy did not have is switched off and unmuted
+                auto* other = qm->stripFor (violinId)->sends.get (violaId); other->mute.set (true);      // (an unused send of the other way round)
+                auto snapQ = q.mixSnapshot (*qm, false);
+                q.applyMix (*qm, snapQ, 48000.0, Rig::block, MixParts { false, true, false, false });
+                CHECK (qm->stripFor (violaId)->sends.find (violinId)->mute.get() && ! other->mute.get() && ! other->active());
+            }
             CHECK (q.buses.size() == p.buses.size() && q.kindOf (foldback) == NodeKind::ExtBus && q.busIndices (true).size() == 2);
             CHECK (qm->busFor (foldback)->outFirst.load() == 2 && (qm->stripFor (violaId)->sends.find (outBus) == nullptr || ! qm->stripFor (violaId)->sends.find (outBus)->active()));
             p.projectFile = tmp.getChildFile ("Concert.fermata");
@@ -1168,7 +1219,7 @@ int main()
 
         // tidy up for the following sections
         for (auto& t : p.tracks) { for (auto* mx : { &mixA, &mixB }) { auto* sp = mx->stripFor (t.id); sp->mute.set (false); sp->gainDb.set (0.0f); sp->pan.set (0.0f);
-                                                                     for (auto& sd : sp->sends.pool) sd->gainDb.set (-100.0f); } }
+                                                                     for (auto& sd : sp->sends.pool) { sd->gainDb.set (-100.0f); sd->mute.set (false); } } }
         mixB.busFor (outBus)->mute.set (false);
         for (int i = (int) p.buses.size() - 1; i >= 0; --i) if (p.buses[(size_t) i].id == strings || p.buses[(size_t) i].id == foldback) p.removeBus (i);
         for (auto& t : p.tracks) { setMain (mixA, t.id, true); setMain (mixB, t.id, true); }
@@ -3825,10 +3876,230 @@ int main()
         CHECK (! editFile.existsAsFile() && ! bakOf (editFile).existsAsFile() && folder.getChildFile ("Edit Windows/Second name.fmedit").existsAsFile());
         { Project q; CHECK (q.load (p.projectFile, er) && q.loadNotes.isEmpty() && q.edits.front()->name == "Second name"); }
 
+        // 2.75: a project's .bak opened on purpose ("the save before"): the file there now is kept as "(replaced ...)" and the .bak's text is put back
+        {
+            const auto nameWas = p.name;
+            CHECK (p.save (er));
+            p.name = "After the bak"; p.changed(); CHECK (p.save (er));                  // the .bak now holds the save before (the old name)
+            const auto bakText = bakOf (p.projectFile).loadFileAsString(), nowText = p.projectFile.loadFileAsString();
+            CHECK (juce::JSON::parse (bakText)["name"].toString() == nameWas && juce::JSON::parse (nowText)["name"].toString() == "After the bak");
+            CHECK (filesync::projectFileForBackup (bakOf (p.projectFile)) == p.projectFile);
+            CHECK (filesync::projectFileForBackup (p.projectFile) == juce::File() && filesync::projectFileForBackup (folder.getChildFile ("Edit Windows/x.fmedit.bak")) == juce::File());
+            // the windows and mixers stay as they are now: their lists come from the file there now (here they are the same)
+            const auto merged = Project::backupWithCurrentWindows (bakText, nowText);
+            CHECK (juce::JSON::parse (merged)["name"].toString() == nameWas && juce::JSON::toString (juce::JSON::parse (merged)["editFiles"]) == juce::JSON::toString (juce::JSON::parse (nowText)["editFiles"]));
+            {
+                auto b = juce::JSON::parse (bakText); b.getDynamicObject()->setProperty ("editFiles", juce::Array<juce::var>());     // (a backup from before the edits were made)
+                const auto m2 = Project::backupWithCurrentWindows (juce::JSON::toString (b), nowText);
+                CHECK (juce::JSON::parse (m2)["editFiles"].size() == juce::JSON::parse (nowText)["editFiles"].size() && juce::JSON::parse (m2)["editFiles"].size() > 0);
+                CHECK (Project::backupWithCurrentWindows (bakText, "not json") == bakText);
+            }
+            juce::File aside;
+            CHECK (filesync::restoreBackupText (p.projectFile, merged, "2026-10-19 12.00.00", aside, er));
+            CHECK (aside.existsAsFile() && aside.getFileName() == p.projectFile.getFileNameWithoutExtension() + " (replaced 2026-10-19 12.00.00).fermata.bak" && aside.loadFileAsString() == nowText);
+            CHECK (filesync::projectFileForBackup (aside) == p.projectFile);                                            // opening the kept copy the same way goes back
+            CHECK (p.projectFile.loadFileAsString() == merged && bakOf (p.projectFile).loadFileAsString() == nowText);  // (the file it replaced is the new .bak, as at every save)
+            { Project q; CHECK (q.load (p.projectFile, er) && q.name == nameWas && q.edits.size() == p.edits.size() && q.loadNotes.isEmpty()); }
+            juce::File aside2;                                                                                          // the same stamp again: a copy of its own, nothing overwritten
+            CHECK (filesync::restoreBackupText (p.projectFile, nowText, "2026-10-19 12.00.00", aside2, er) && aside2.existsAsFile() && aside2 != aside && aside.loadFileAsString() == nowText);
+            CHECK (aside2.getFileName().contains ("(replaced 2026-10-19 12.00.00 2)") && filesync::projectFileForBackup (aside2) == p.projectFile);
+            aside.deleteFile(); aside2.deleteFile();
+            p.name = nameWas; p.changed(); CHECK (p.save (er));
+        }
+
         // a new project does not inherit the old one's list of missing files
         Project n; n.missingWindowRefs.push_back (juce::var()); n.loadNotes.add ("x"); n.windowFiles["a"] = { "b", "c" };
         n.createDefaultDesign();
         CHECK (n.missingWindowRefs.empty() && n.loadNotes.isEmpty() && n.windowFiles.empty());
+    }
+    SECTION ("2.76 finding missing audio files: by name, then renamed files by length / rate / depth / channels and their headers");
+    {
+        // a scratch project with one take of three tracks (all its files the same length) and an edit using the take's files
+        const auto base = tmp.getChildFile ("relink"); base.deleteRecursively(); base.createDirectory();
+        const auto rec = base.getChildFile ("Recorded Media"); rec.createDirectory();
+        const auto elsewhere = base.getChildFile ("Found here"); elsewhere.getChildFile ("sub").createDirectory();
+        using Meta = std::unordered_map<juce::String, juce::String>;
+        auto writeWav = [] (const juce::File& f, int bits, int channels, int frames, double rate, const Meta& meta, float value)
+        {
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::OutputStream> os (f.createOutputStream().release());
+            auto w = wav.createWriterFor (os, juce::AudioFormatWriterOptions().withSampleRate (rate).withNumChannels (channels).withBitsPerSample (bits).withMetadataValues (meta));
+            juce::AudioBuffer<float> b (channels, frames); for (int c = 0; c < channels; ++c) for (int i = 0; i < frames; ++i) b.setSample (c, i, value);
+            w->writeFromAudioSampleBuffer (b, 0, frames);
+        };
+        auto bwf = [] (const juce::String& desc, const juce::String& date, const juce::String& time)
+        {
+            Meta m;
+            m[juce::WavAudioFormat::bwavDescription] = desc; m[juce::WavAudioFormat::bwavOriginator] = "Fermata";
+            m[juce::WavAudioFormat::bwavOriginationDate] = date; m[juce::WavAudioFormat::bwavOriginationTime] = time;
+            return m;
+        };
+        Project rp; rp.projectFile = base.getChildFile ("Relink.fermata");
+        rp.createDefaultDesign(); rp.tracks.clear(); rp.buses.clear();
+        const auto tA = rp.addTrack ("ORTF L", TrackFormat::Mono, 0).id, tB = rp.addTrack ("Spaced L", TrackFormat::Mono, 1).id, tC = rp.addTrack ("Choir", TrackFormat::Stereo, 2).id;
+        auto& tw = rp.addTakeWindow ("Kyrie");
+        TakeGroup g; g.id = juce::Uuid(); g.number = 3; g.sampleRate = 48000.0; g.lengthSamples = 24000; g.recordedAt = juce::Time (2026, 9, 14, 10, 30, 0, 0, true);
+        const juce::String desc = "Kyrie / 003 - Kyrie / ";
+        auto addFile = [&] (const juce::Uuid& id, const juce::String& name, int ch) { TakeFile tf; tf.trackId = id; tf.trackName = name; tf.numChannels = ch; tf.file = rec.getChildFile (TakeWindowDef::fileNameFor (3, "Kyrie", name)); g.files.push_back (tf); };
+        addFile (tA, "ORTF L", 1); addFile (tB, "Spaced L", 1); addFile (tC, "Choir", 2);
+        tw.groups.push_back (g);
+        auto& ed = rp.addEdit ("Edit 1", tw.id);
+        { EditRegion r; r.id = juce::Uuid(); r.takeName = "003 - Kyrie"; r.sampleRate = 48000.0; r.sourceLength = 24000; r.srcIn = 0; r.srcOut = 24000;
+          for (auto& tf : g.files) { RegionFile rf; rf.trackId = tf.trackId; rf.trackName = tf.trackName; rf.numChannels = tf.numChannels; rf.file = tf.file; r.files.push_back (rf); }
+          ed.regions.push_back (r); }
+        CHECK (rp.missingAudioCount() == 3 && rp.missingAudioList().size() == 3 && rp.missingAudioList()[0].contains ("Takes - Kyrie, 003 - Kyrie, ORTF L"));
+
+        // the files turn up elsewhere: ORTF under its own name (in a sub-folder), Spaced renamed but with Fermata's header, Choir renamed with no header
+        writeWav (elsewhere.getChildFile ("sub").getChildFile (g.files[0].file.getFileName()), 24, 1, 24000, 48000.0, bwf (desc + "ORTF L", "2026-09-14", "10:30:00"), 0.1f);
+        writeWav (elsewhere.getChildFile ("spaced renamed.wav"), 24, 1, 24000, 48000.0, bwf (desc + "Spaced L", "2026-09-14", "10:30:00"), 0.2f);
+        writeWav (elsewhere.getChildFile ("choir renamed.wav"), 24, 2, 24000, 48000.0, {}, 0.3f);
+        writeWav (elsewhere.getChildFile ("not it - 16 bit.wav"), 16, 1, 24000, 48000.0, {}, 0.4f);           // the same length but 16 bit: not a Fermata recording
+        writeWav (elsewhere.getChildFile ("not it - longer.wav"), 24, 1, 24001, 48000.0, {}, 0.5f);
+        juce::StringArray steps;
+        const auto rep = rp.relinkAudio (elsewhere, [&steps] (const juce::String& what, double) { steps.add (what); });
+        CHECK (rep.byName == 1 && rep.renamed == 2 && rep.unsure == 0 && rep.stillMissing == 0 && rep.found.size() == 3 && ! steps.isEmpty());
+        CHECK (rp.missingAudioCount() == 0);
+        CHECK (tw.groups[0].files[0].file == elsewhere.getChildFile ("sub").getChildFile (g.files[0].file.getFileName()));
+        CHECK (tw.groups[0].files[1].file == elsewhere.getChildFile ("spaced renamed.wav") && tw.groups[0].files[2].file == elsewhere.getChildFile ("choir renamed.wav"));
+        CHECK (ed.regions[0].files[1].file == elsewhere.getChildFile ("spaced renamed.wav"));                   // the edit's piece follows the take's file
+        CHECK (! tw.groups[0].verified);
+        bool sawDepth = false;
+        for (auto& l : rep.found) sawDepth = sawDepth || l.contains ("24 bit");
+        CHECK (sawDepth);
+
+        // two files of one take, both renamed, neither with a header: they fit each other, so nothing is guessed
+        const auto twice = base.getChildFile ("Twice"); twice.createDirectory();
+        tw.groups[0].files[0].file = rec.getChildFile ("gone a.wav"); tw.groups[0].files[1].file = rec.getChildFile ("gone b.wav");
+        for (auto& r : ed.regions) { r.files[0].file = tw.groups[0].files[0].file; r.files[1].file = tw.groups[0].files[1].file; }
+        writeWav (twice.getChildFile ("x.wav"), 24, 1, 24000, 48000.0, {}, 0.1f);
+        writeWav (twice.getChildFile ("y.wav"), 24, 1, 24000, 48000.0, {}, 0.2f);
+        const auto rep2 = rp.relinkAudio (twice);
+        CHECK (rep2.byName == 0 && rep2.renamed == 0 && rep2.unsure == 2 && rep2.stillMissing == 0 && rep2.unsureLines.size() == 2 && rep2.unsureLines[0].contains ("fits 2 files"));
+        CHECK (rp.missingAudioCount() == 2);
+        // ... until the track name in a file name tells one apart: the other then has one file left to it
+        CHECK (twice.getChildFile ("y.wav").moveFileTo (twice.getChildFile ("take 3 Spaced L.wav")));
+        const auto rep3 = rp.relinkAudio (twice);
+        CHECK (rep3.renamed == 2 && rep3.unsure == 0 && rp.missingAudioCount() == 0);
+        CHECK (tw.groups[0].files[1].file == twice.getChildFile ("take 3 Spaced L.wav") && tw.groups[0].files[0].file == twice.getChildFile ("x.wav"));
+        bool sawName = false; for (auto& l : rep3.found) sawName = sawName || l.contains ("the track name in its file name");
+        CHECK (sawName);
+        // three files of one take, all renamed to nothing, two with Fermata's header: the headers pick those two, the third is what is left
+        const auto three = base.getChildFile ("Three"); three.createDirectory();
+        for (size_t i = 0; i < 3; ++i) tw.groups[0].files[i].file = rec.getChildFile ("lost " + juce::String ((int) i) + ".wav");
+        for (auto& r : ed.regions) for (size_t i = 0; i < 3; ++i) r.files[i].file = tw.groups[0].files[i].file;
+        tw.groups[0].files[2].numChannels = 1; ed.regions[0].files[2].numChannels = 1;                          // (all three the same now)
+        writeWav (three.getChildFile ("p.wav"), 24, 1, 24000, 48000.0, bwf (desc + "Spaced L", "2026-09-14", "10:30:00"), 0.1f);
+        writeWav (three.getChildFile ("q.wav"), 24, 1, 24000, 48000.0, {}, 0.2f);
+        writeWav (three.getChildFile ("r.wav"), 24, 1, 24000, 48000.0, bwf (desc + "ORTF L", "2026-09-14", "10:30:00"), 0.3f);
+        const auto rep5 = rp.relinkAudio (three);
+        CHECK (rep5.renamed == 3 && rep5.unsure == 0);
+        CHECK (tw.groups[0].files[0].file == three.getChildFile ("r.wav") && tw.groups[0].files[1].file == three.getChildFile ("p.wav") && tw.groups[0].files[2].file == three.getChildFile ("q.wav"));
+        bool sawHeader = false; for (auto& l : rep5.found) sawHeader = sawHeader || l.contains ("written in its header");
+        CHECK (sawHeader);
+
+        // a file the project HAS is never taken for a missing one, and a file with no header is not ruled out by its silence: the take's ORTF and
+        // Choir files are there (recorded at the same time, so they used to win), its Spaced file was exported by another program (no header) under a new name
+        auto setFiles = [&] (const juce::File& a, const juce::File& b, const juce::File& c)
+        {
+            tw.groups[0].files[0].file = a; tw.groups[0].files[1].file = b; tw.groups[0].files[2].file = c;
+            for (auto& r : ed.regions) for (size_t i = 0; i < 3; ++i) r.files[i].file = tw.groups[0].files[i].file;
+        };
+        const auto have = base.getChildFile ("Have"); have.createDirectory();
+        writeWav (have.getChildFile ("003 - Kyrie - ORTF L.wav"), 24, 1, 24000, 48000.0, bwf (desc + "ORTF L", "2026-09-14", "10:30:00"), 0.1f);
+        writeWav (have.getChildFile ("003 - Kyrie - Choir.wav"), 24, 1, 24000, 48000.0, bwf (desc + "Choir", "2026-09-14", "10:30:00"), 0.3f);
+        writeWav (have.getChildFile ("spaced export.wav"), 24, 1, 24000, 48000.0, {}, 0.2f);
+        setFiles (have.getChildFile ("003 - Kyrie - ORTF L.wav"), rec.getChildFile ("spaced gone.wav"), have.getChildFile ("003 - Kyrie - Choir.wav"));
+        CHECK (rp.missingAudioCount() == 1);
+        const auto rep6 = rp.relinkAudio (have);
+        CHECK (rep6.renamed == 1 && rep6.unsure == 0 && rep6.stillMissing == 0 && tw.groups[0].files[1].file == have.getChildFile ("spaced export.wav"));
+        CHECK (tw.groups[0].files[0].file == have.getChildFile ("003 - Kyrie - ORTF L.wav") && tw.groups[0].files[2].file == have.getChildFile ("003 - Kyrie - Choir.wav"));
+        // all three missing and found as a (ORTF's header), b (no header), c (Choir's header): a's and c's headers say they are not Spaced's file, so b is -
+        // in whichever order the files are looked at (Spaced first, then the others first)
+        const auto abc = base.getChildFile ("ABC"); abc.createDirectory();
+        writeWav (abc.getChildFile ("a.wav"), 24, 1, 24000, 48000.0, bwf (desc + "ORTF L", "2026-09-14", "10:30:00"), 0.1f);
+        writeWav (abc.getChildFile ("b.wav"), 24, 1, 24000, 48000.0, {}, 0.2f);
+        writeWav (abc.getChildFile ("c.wav"), 24, 1, 24000, 48000.0, bwf (desc + "Choir", "2026-09-14", "10:30:00"), 0.3f);
+        for (int order = 0; order < 2; ++order)
+        {
+            setFiles (rec.getChildFile ("o.wav"), rec.getChildFile ("s.wav"), rec.getChildFile ("ch.wav"));
+            if (order == 0) { std::swap (tw.groups[0].files[0], tw.groups[0].files[1]); for (auto& r : ed.regions) std::swap (r.files[0], r.files[1]); }
+            const auto rep7 = rp.relinkAudio (abc);
+            CHECK (rep7.renamed == 3 && rep7.unsure == 0 && rep7.stillMissing == 0);
+            for (auto& tf : tw.groups[0].files)
+                CHECK (tf.file == abc.getChildFile (tf.trackName == "ORTF L" ? "a.wav" : tf.trackName == "Spaced L" ? "b.wav" : "c.wav"));
+            bool sawOthers = false; for (auto& l : rep7.found) sawOthers = sawOthers || l.contains ("the other files' headers name another take or track");
+            CHECK (sawOthers);
+            if (order == 0) { std::swap (tw.groups[0].files[0], tw.groups[0].files[1]); for (auto& r : ed.regions) std::swap (r.files[0], r.files[1]); }
+        }
+        // the same name in another project's folder (even one named like the old folder) is not the file: its length says so. A same-named file
+        // with the right length, rate and channels is.
+        const auto names = base.getChildFile ("Names"); names.getChildFile ("Recorded Media").createDirectory(); names.getChildFile ("Elsewhere").createDirectory();
+        writeWav (names.getChildFile ("Recorded Media").getChildFile ("003 - Kyrie - ORTF L.wav"), 24, 1, 99000, 48000.0, bwf ("Other / 003 - Kyrie / ORTF L", "2026-01-01", "09:00:00"), 0.1f);
+        setFiles (rec.getChildFile ("003 - Kyrie - ORTF L.wav"), abc.getChildFile ("b.wav"), abc.getChildFile ("c.wav"));
+        const auto rep8 = rp.relinkAudio (names);
+        CHECK (rep8.byName == 0 && rep8.renamed == 0 && rep8.unsure == 0 && rep8.stillMissing == 1 && rp.missingAudioCount() == 1);
+        writeWav (names.getChildFile ("Elsewhere").getChildFile ("003 - Kyrie - ORTF L.wav"), 24, 1, 24000, 48000.0, {}, 0.1f);
+        const auto rep9 = rp.relinkAudio (names);
+        CHECK (rep9.byName == 1 && rep9.unsure == 0 && tw.groups[0].files[0].file == names.getChildFile ("Elsewhere").getChildFile ("003 - Kyrie - ORTF L.wav"));
+        CHECK (! rep9.found.isEmpty() && rep9.found[0].contains ("the same name, length, rate and channels"));
+        // "ORTF L" is not "ORTF L 2": with a track of that name in the project, the file whose name says ORTF L 2 is that track's
+        rp.addTrack ("ORTF L 2", TrackFormat::Mono, 3);
+        const auto two = base.getChildFile ("Two"); two.createDirectory();
+        writeWav (two.getChildFile ("take 3 ORTF L 2.wav"), 24, 1, 24000, 48000.0, {}, 0.1f);
+        writeWav (two.getChildFile ("take 3 ORTF L.wav"), 24, 1, 24000, 48000.0, {}, 0.1f);
+        setFiles (rec.getChildFile ("ortf gone.wav"), abc.getChildFile ("b.wav"), abc.getChildFile ("c.wav"));
+        const auto rep10 = rp.relinkAudio (two);
+        CHECK (rep10.renamed == 1 && rep10.unsure == 0 && tw.groups[0].files[0].file == two.getChildFile ("take 3 ORTF L.wav"));
+        // a processed piece's file ("003 - Kyrie (declick)": a short file that starts at the take's start) is found by its name only, never by the take's
+        // length, which is not its own: the take's file, renamed, must not be taken for it
+        const auto proc = base.getChildFile ("Proc"); proc.createDirectory();
+        setFiles (two.getChildFile ("take 3 ORTF L.wav"), abc.getChildFile ("b.wav"), abc.getChildFile ("c.wav"));     // (the take is whole)
+        ed.regions[0].takeName = "003 - Kyrie (declick)"; ed.regions[0].files[0].file = rec.getChildFile ("003 - Kyrie - ORTF L (declick).wav"); ed.regions[0].files[0].fileStart = 0;
+        writeWav (proc.getChildFile ("ortf renamed.wav"), 24, 1, 24000, 48000.0, bwf (desc + "ORTF L", "2026-09-14", "10:30:00"), 0.1f);   // (fits the take, not the piece)
+        const auto rep11 = rp.relinkAudio (proc);
+        CHECK (rep11.byName == 0 && rep11.renamed == 0 && rep11.unsure == 0 && rep11.stillMissing == 1 && rp.missingAudioCount() == 1);
+        // a relink is not an undo step: it cannot put the missing paths back
+        rp.undoReset(); tw.groups[0].label = "Kyrie again"; rp.changed(); rp.undoTick (false, true);
+        CHECK (rp.undoDepth() == 1);
+        writeWav (proc.getChildFile ("003 - Kyrie - ORTF L (declick).wav"), 24, 1, 5000, 48000.0, {}, 0.1f);
+        const auto rep12 = rp.relinkAudio (proc);
+        CHECK (rep12.byName == 1 && rp.missingAudioCount() == 0 && ed.regions[0].files[0].file == proc.getChildFile ("003 - Kyrie - ORTF L (declick).wav"));
+        rp.undoTick (false, true);
+        CHECK (rp.undoDepth() == 0 && ! rp.undo());
+        tw.groups[0].label = {}; ed.regions[0].takeName = "003 - Kyrie"; ed.regions[0].files[0].file = tw.groups[0].files[0].file;
+        // an imported take window is looked at afresh (the other project's "found whole" marks are dropped), and the import counts its own missing files
+        {
+            tw.groups[0].verified = true; rp.name = "Relink";
+            juce::String er2; CHECK (rp.save (er2));
+            const auto twFile = base.getChildFile (rp.windowFiles[tw.id.toString()].rel);
+            CHECK (twFile.existsAsFile());
+            Project q; q.createDefaultDesign(); q.projectFile = base.getChildFile ("q/q.fermata");
+            juce::String msg; juce::Uuid nid; int miss = -1;
+            CHECK (q.importWindowFile (twFile, msg, &nid, &miss) && miss == 0 && ! q.takeWindows.back()->groups[0].verified);
+            tw.groups[0].files[0].file = rec.getChildFile ("gone for the import.wav"); CHECK (rp.save (er2));
+            Project q2; q2.createDefaultDesign(); q2.projectFile = base.getChildFile ("q2/q2.fermata");
+            CHECK (q2.importWindowFile (twFile, msg, &nid, &miss) && miss == 1 && msg.contains ("1 of its audio files"));
+            tw.groups[0].files[0].file = two.getChildFile ("take 3 ORTF L.wav"); tw.groups[0].verified = false;
+        }
+
+        // a file nothing is known about (a piece waiting for corrected audio) is found by name only
+        { WaitingPiece wp; wp.name = "fix"; wp.from = 0; wp.to = 100; wp.files.push_back (rec.getChildFile ("fix 1.wav")); tw.groups[0].waiting.push_back (wp); }
+        writeWav (twice.getChildFile ("z.wav"), 24, 1, 24000, 48000.0, {}, 0.2f);
+        const auto rep4 = rp.relinkAudio (twice);
+        CHECK (rep4.byName == 0 && rep4.renamed == 0 && rep4.unsure == 0 && rep4.stillMissing == 1 && rep4.missing[0] == "fix 1.wav");
+        tw.groups[0].waiting.clear();
+        // the quick count leaves the takes found whole last time alone (one file gone from a folder that is still there), but a folder that is gone
+        // (moved, renamed) counts every file in it, verified or not
+        tw.groups[0].files[0].file = rec.getChildFile ("gone again.wav"); tw.groups[0].verified = true;
+        for (auto& r : ed.regions) r.files[0].file = tw.groups[0].files[0].file;
+        CHECK (rp.missingAudioCount() == 1 && rp.missingAudioCount (true) == 0);
+        rp.filesMoved = true; CHECK (rp.missingAudioCount (true) == 1); rp.filesMoved = false;
+        for (auto& tf : tw.groups[0].files) tf.file = base.getChildFile ("Moved away").getChildFile (tf.file.getFileName());
+        for (auto& r : ed.regions) for (size_t i = 0; i < 3; ++i) r.files[i].file = tw.groups[0].files[i].file;
+        CHECK (rp.missingAudioCount (true) == 3 && rp.missingAudioCount() == 3);
+        // the summary reads
+        CHECK (rep.summary().contains ("1 file found by its name") && rep.summary().contains ("2 renamed files found") && rep2.summary().contains ("fit several"));
+        base.deleteRecursively();
     }
     SECTION ("VCAs: numbers, members, gains, mute, save and load");
     {

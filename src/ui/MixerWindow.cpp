@@ -1,5 +1,6 @@
 #include "MixerWindow.h"
 #include "ColourPicker.h"
+#include "PluginManager.h"
 #include "ValueEntry.h"
 
 namespace td
@@ -212,7 +213,7 @@ class SlotButtons;
 
 /** One insert slot as drawn: the name (click it to open the plug-in straight away) and a little dot on the right (click it for the menu).
     Drag the name onto another slot, in this mixer or another one, to MOVE the plug-in with all its settings (two plug-ins swap places);
-    hold Shift while dropping to put a COPY there instead, with all its current settings. */
+    hold Alt while dropping to put an exact COPY there instead, with all its current settings (Shift does the same). */
 class SlotCell : public juce::Component, public juce::SettableTooltipClient
 {
 public:
@@ -223,6 +224,8 @@ public:
     void mouseDrag (const juce::MouseEvent& e) override;
     void mouseUp (const juce::MouseEvent& e) override;
     juce::Rectangle<int> dotArea() const { return getLocalBounds().removeFromRight (16); }
+    /** Alt (or Shift) held while dragging: the plug-in is copied, not moved. */
+    static bool isCopyDrag (const juce::ModifierKeys& m) { return m.isAltDown() || m.isShiftDown(); }
     SlotButtons& owner; int index;
     bool dropHighlight = false, dropCopy = false;
 private:
@@ -240,7 +243,7 @@ public:
         {
             auto* b = cells.add (new SlotCell (*this, i));
             b->setTooltip ("Insert slot. Click the name to open the plug-in (an empty slot opens the list), click the dot for the menu (load, bypass, remove). "
-                           "Drag the name onto another slot, in any mixer, to move the plug-in with its settings; hold Shift to drop a copy instead.");
+                           "Drag the name onto another slot, in any mixer, to move the plug-in with its settings; hold Alt to drop an exact copy instead (all its settings).");
             addAndMakeVisible (b);
         }
         refresh();
@@ -340,6 +343,7 @@ private:
         }
         m.addSeparator();
         m.addItem (9, app.plugins.isScanning() ? "Scanning..." : "Scan for VST3 plug-ins", ! app.plugins.isScanning());
+        m.addItem (10, "Plug-ins: ignore one, try one again...");
 
         auto safe = juce::Component::SafePointer<SlotButtons> (this);
         m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (cells[i]), [safe, i, descs] (int r)
@@ -365,6 +369,7 @@ private:
             app.plugins.startScan ([safe] { if (safe != nullptr) safe->refresh(); });
             return;
         }
+        if (r == 10) { showPluginManager (app); return; }
         if (r >= 1000 && (size_t) (r - 1000) < descs.size())
         {
             juce::String err;
@@ -405,7 +410,7 @@ void SlotCell::mouseDrag (const juce::MouseEvent& e)
     auto* now = SlotButtons::cellAt (e.getScreenPosition());
     if (now == this) now = nullptr;
     if (hovered != now) { if (hovered != nullptr) hovered->dropHighlight = false, hovered->repaint(); hovered = now; }
-    if (hovered != nullptr) { hovered->dropHighlight = true; hovered->dropCopy = e.mods.isShiftDown(); hovered->repaint(); }
+    if (hovered != nullptr) { hovered->dropHighlight = true; hovered->dropCopy = isCopyDrag (e.mods); hovered->repaint(); }
 }
 
 void SlotCell::mouseUp (const juce::MouseEvent& e)
@@ -417,12 +422,49 @@ void SlotCell::mouseUp (const juce::MouseEvent& e)
     hovered = nullptr;
     if (wasDragging)
     {
-        if (target != nullptr && target != this) owner.dropTo (index, target->owner, target->index, e.mods.isShiftDown());
+        if (target != nullptr && target != this) owner.dropTo (index, target->owner, target->index, isCopyDrag (e.mods));
         return;
     }
     if (e.mods.isPopupMenu() || (downOnDot && dotArea().contains (e.getPosition()))) { owner.menu (index); return; }
     if (getLocalBounds().contains (e.getPosition())) owner.openOrMenu (index);
 }
+
+/** Whether the channel a send comes from has its MUTE on (an audio track or an Int Bus of this mixer). */
+bool channelMuteOn (AppContext& app, MixerState& m, const juce::Uuid& src)
+{
+    switch (app.project.kindOf (src))
+    {
+        case NodeKind::Track:  return m.stripFor (src)->mute.get();
+        case NodeKind::IntBus: return m.busFor (src)->mute.get();
+        default: break;
+    }
+    return false;
+}
+
+/** A send's own MUTE (in its panel): lit red while the send is muted; a red outline while the channel's MUTE silences it (Follow mute ticked and the
+    channel muted), so it is plain why the send is silent although its own button is off. */
+class SendMuteButton : public juce::Button
+{
+public:
+    SendMuteButton() : juce::Button ("MUTE") { setClickingTogglesState (true); }
+    void setFollowMuted (bool b) { if (b != followMuted) { followMuted = b; repaint(); } }
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        const juce::Colour red (0xffe0312b);
+        const bool on = getToggleState();
+        auto b = getLocalBounds().toFloat().reduced (1.0f);
+        auto base = on ? red : theme::button;
+        if (down) base = base.darker (0.2f); else if (over) base = base.brighter (0.12f);
+        g.setColour (base); g.fillRoundedRectangle (b, 4.0f);
+        if (followMuted && ! on) { g.setColour (red); g.drawRoundedRectangle (b.reduced (1.0f), 4.0f, 2.0f); }
+        else { g.setColour (on ? red.darker (0.5f) : theme::border); g.drawRoundedRectangle (b, 4.0f, 1.0f); }
+        g.setColour (on ? juce::Colours::white : followMuted ? red.brighter (0.25f) : theme::inkOn (theme::button));
+        g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        g.drawText ("MUTE", getLocalBounds(), juce::Justification::centred, false);
+    }
+private:
+    bool followMuted = false;
+};
 
 juce::TextButton* makeToggle (juce::Component& parent, juce::OwnedArray<juce::TextButton>& list, const juce::String& text, juce::Colour on)
 {
@@ -435,8 +477,8 @@ juce::TextButton* makeToggle (juce::Component& parent, juce::OwnedArray<juce::Te
 } // namespace
 
 
-/** What opens when you click (without dragging) a send dial: the level on a small fader, pre / post fader, and up to two inserts on the send. */
-class SendPanel : public juce::Component
+/** What opens when you click (without dragging) a send dial: the level on a small fader, pre / post fader, the send's own MUTE, and up to two inserts on the send. */
+class SendPanel : public juce::Component, private juce::Timer
 {
 public:
     SendPanel (AppContext& a, MixerState& m, const juce::Uuid& src, const juce::Uuid& dest, std::function<void()> changed)
@@ -451,6 +493,7 @@ public:
         fader.setRange (kSendOffDb, 6.0, 0.1);
         fader.setSkewFactorFromMidPoint (-18.0);
         fader.setDoubleClickReturnValue (true, 0.0);
+        fader.setScrollWheelEnabled (false);                       // (a wheel never moves a fader in the mixer)
         fader.textFromValueFunction = [] (double v) { return v <= kSendOffDb + 0.05 ? juce::String ("off") : juce::String (v, 1) + " dB"; };
         fader.setValue (send.active() ? (double) send.gainDb.get() : (double) kSendOffDb, juce::dontSendNotification);
         fader.onValueChange = [this]
@@ -477,13 +520,19 @@ public:
         followMute.setToggleState (send.followMute.get(), juce::dontSendNotification);
         followMute.setTooltip ("Ticked: muting the channel mutes this send too, whether it is taken before or after the fader. "
                                "Not ticked: the send carries on when the channel is muted (a solo elsewhere still silences it).");
-        followMute.onClick = [this] { send.followMute.set (followMute.getToggleState()); app.project.markDirty(); if (onChanged) onChanged(); };
+        followMute.onClick = [this] { send.followMute.set (followMute.getToggleState()); app.project.markDirty(); refreshMute(); if (onChanged) onChanged(); };
         addAndMakeVisible (followMute);
+        muteButton.setTooltip ("Mutes this send only (its level is kept). Lit red: muted. A red outline: the channel's own MUTE is silencing it (Follow mute is ticked).");
+        muteButton.setToggleState (send.mute.get(), juce::dontSendNotification);
+        muteButton.onClick = [this] { send.mute.set (muteButton.getToggleState()); app.project.markDirty(); if (onChanged) onChanged(); };
+        addAndMakeVisible (muteButton);
         insertsCaption.setText ("Inserts on this send only", juce::dontSendNotification);
         insertsCaption.setFont (juce::FontOptions (11.0f, juce::Font::bold));
         insertsCaption.setColour (juce::Label::textColourId, theme::dimText);
         addAndMakeVisible (insertsCaption); addAndMakeVisible (slots);
-        setSize (250, 222);
+        refreshMute();
+        startTimerHz (8);                                           // (the channel's MUTE may change while this is open)
+        setSize (250, 254);
     }
     void paint (juce::Graphics& g) override { g.fillAll (theme::row); }
     void resized() override
@@ -496,6 +545,8 @@ public:
         auto pp = r.removeFromTop (28);
         preButton.setBounds (pp.removeFromLeft (pp.getWidth() / 2).reduced (1));
         postButton.setBounds (pp.reduced (1));
+        r.removeFromTop (4);
+        muteButton.setBounds (r.removeFromTop (28));
         r.removeFromTop (2);
         followMute.setBounds (r.removeFromTop (24));
         r.removeFromTop (6);
@@ -503,9 +554,22 @@ public:
         slots.setBounds (r.removeFromTop (kSendSlots * 28));
     }
 private:
+    void refreshMute()
+    {
+        if (muteButton.getToggleState() != send.mute.get()) muteButton.setToggleState (send.mute.get(), juce::dontSendNotification);
+        muteButton.setFollowMuted (send.followMute.get() && channelMuteOn (app, mixer, srcId));
+    }
+    void timerCallback() override
+    {
+        bool alive = false;                                         // (the mixer deleted while this is open: close instead of reading it)
+        for (auto& m : app.project.mixers) if (m.get() == &mixer) alive = true;
+        if (! alive) { stopTimer(); if (auto* box = findParentComponentOfClass<juce::CallOutBox>()) box->dismiss(); return; }
+        refreshMute();
+    }
     AppContext& app; MixerState& mixer; juce::Uuid srcId, destId; std::function<void()> onChanged; SendState& send;
     juce::Label title, insertsCaption; juce::Slider fader; juce::TextButton preButton { "PRE" }, postButton { "POST" };
     juce::ToggleButton followMute;
+    SendMuteButton muteButton;
     SlotButtons slots;
 };
 
@@ -551,13 +615,23 @@ public:
         showValue();
         const auto arc = (juce::int64) chan::of (app.project, destId).getARGB();
         if ((juce::int64) knob.getProperties().getWithDefault ("arc", (juce::int64) 0) != arc) { knob.getProperties().set ("arc", arc); knob.repaint(); }
+        // taken before the fader: a yellow square round the dial (the name stays the name). Its own MUTE: the ring goes grey and the read-out says MUTE;
+        // silenced by the channel's MUTE (Follow mute ticked): a red outline round the read-out
+        const bool pre = s != nullptr && s->pre.get(), own = s != nullptr && s->mute.get();
+        const bool byChannel = s != nullptr && ! own && s->followMute.get() && channelMuteOn (app, mixer, srcId);
+        if ((bool) knob.getProperties().getWithDefault ("pre", false) != pre || (bool) knob.getProperties().getWithDefault ("muted", false) != own)
+        {
+            knob.getProperties().set ("pre", pre); knob.getProperties().set ("muted", own); knob.repaint();
+        }
+        if (own != ownMute || byChannel != channelMute) { ownMute = own; channelMute = byChannel; showValue(); }
         if (! refused)
         {
-            label.setText (destName + (s != nullptr && s->pre.get() ? " (pre)" : "") + (s != nullptr && ! s->followMute.get() ? " *" : ""), juce::dontSendNotification);
+            label.setText (destName + (s != nullptr && ! s->followMute.get() ? " *" : ""), juce::dontSendNotification);
             label.setColour (juce::Label::textColourId, s != nullptr && s->active() ? mixTheme().text : mixTheme().dim);
         }
-        knob.setTooltip ("Send to " + destName + ". Drag up / down to change, double-click for 0 dB (Ctrl + double-click to type a level), click once for pre / post fader, inserts and a fader. "
-                         + (s != nullptr && s->pre.get() ? "(Taken before the fader.)" : "(Taken after the fader.)")
+        knob.setTooltip ("Send to " + destName + ". Drag up / down to change, double-click for 0 dB (Ctrl + double-click to type a level), click once for pre / post fader, MUTE, inserts and a fader. "
+                         + (pre ? "(Taken before the fader: the yellow square.)" : "(Taken after the fader.)")
+                         + (own ? " MUTED (its own MUTE, in the panel)." : byChannel ? " Silenced by the channel's MUTE (red outline)." : "")
                          + (s != nullptr && ! s->followMute.get() ? " * = does not follow mute: it carries on when the channel is muted." : ""));
     }
     void resized() override
@@ -597,8 +671,10 @@ private:
     void showValue()
     {
         const double v = knob.getValue();
-        value.setText (v <= kSendOffDb + 0.05 ? juce::String ("off") : juce::String (v, 1), juce::dontSendNotification);
-        value.setColour (juce::Label::textColourId, v <= kSendOffDb + 0.05 ? mixTheme().dim : mixTheme().text);
+        const juce::Colour red (0xffe0312b);
+        value.setText (ownMute ? juce::String ("MUTE") : v <= kSendOffDb + 0.05 ? juce::String ("off") : juce::String (v, 1), juce::dontSendNotification);
+        value.setColour (juce::Label::textColourId, ownMute ? red.brighter (0.2f) : v <= kSendOffDb + 0.05 ? mixTheme().dim : mixTheme().text);
+        value.setColour (juce::Label::outlineColourId, channelMute ? red : mixTheme().line);
     }
     void refuse()
     {
@@ -618,7 +694,7 @@ private:
         juce::CallOutBox::launchAsynchronously (std::move (panel), getScreenBounds(), nullptr);
     }
     AppContext& app; MixerState& mixer; juce::Uuid srcId, destId; juce::String destName;
-    bool refused = false;
+    bool refused = false, ownMute = false, channelMute = false;
     juce::Label label, value; Knob knob;
 };
 
@@ -1811,7 +1887,31 @@ void MixerComponent::applyHeight()
     window is still made exactly the strips' size by the code (and snaps back to it when it grows too big). */
 static constexpr int kLimitSlack = 120;
 
-/** The window never grows bigger than the strips need: it stops there (and snaps back if it was bigger). Smaller is fine: scroll bars appear. */
+/** The biggest inside size the window can have where it is: no wider than its display (its frame included), and no taller than the room from its top
+    down to the bottom of the display, so its bottom edge - where the horizontal scroll bar is - is always on the screen. */
+static juce::Point<int> roomOnScreen (const juce::DocumentWindow& win)
+{
+    const auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (win.getBounds())->userArea;
+    int frameLR = 16, frameBottom = 8;
+    if (auto* peer = win.getPeer()) if (peer->getFrameSizeIfPresent()) { const auto f = *peer->getFrameSizeIfPresent(); frameLR = f.getLeftAndRight(); frameBottom = f.getBottom(); }
+    return { juce::jmax (300, area.getWidth() - frameLR), juce::jmax (260, area.getBottom() - frameBottom - juce::jmax (win.getY(), area.getY())) };
+}
+
+/** The limits for resizing the window by hand: never narrower than the top bar; as wide as the strips need, even past the edge of the display (only
+    a drag takes it there: Fermata itself never opens or fits a mixer wider than its display); taller is free (a tall window shows more empty insert
+    slots). 'fullW' / 'fullH' are the size that shows everything within the display, 'stripsW' the strips' whole width (frame included). */
+static void setMixerLimits (juce::DocumentWindow& win, int minW, int fullW, int fullH, int stripsW)
+{
+    const auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (win.getBounds())->userArea;
+    if (auto* c = win.getConstrainer())
+    {
+        c->setMinimumSize (juce::jmin (minW, fullW), juce::jmin (260, fullH));
+        c->setMaximumSize (juce::jmax (stripsW + kLimitSlack, area.getWidth() + 40), juce::jmax (fullH + kLimitSlack, area.getHeight() + 40));
+    }
+}
+
+/** A window that showed every strip keeps showing every strip when they change (another insert slot, a strip more or less, the strip width) - but
+    never wider than the display, nor so tall that its bottom edge is off the screen: then the strips scroll. A smaller window keeps its size. */
 void MixerComponent::updateWindowLimits()
 {
     auto* win = dynamic_cast<juce::DocumentWindow*> (getTopLevelComponent());
@@ -1820,22 +1920,18 @@ void MixerComponent::updateWindowLimits()
     // content its own size is still a placeholder, which used to make the limits - and so the window - tiny).
     const auto frame = win->getContentComponentBorder();
     const int borderW = frame.getLeftAndRight(), borderH = frame.getTopAndBottom();
-    // The biggest the window may be is exactly what the strips need, so there is no scroll bar at all at that size. (Only when the strips cannot fit
-    // on the screen do they need bars; a bar then takes room from the other direction, so the window may be that much bigger.)
+    // The biggest the window may be: what the strips need (so there is no scroll bar at all at that size), within the room on the screen. (It used to
+    // be the strips' whole width even when that was wider than the display: the window grew off the edge, the scroll bar went, and a change of strip
+    // width left the view at the first strip with the METERS strip somewhere off the screen.)
     const auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (win->getBounds())->userArea;
-    const int maxW = naturalContentW() + borderW + 0;
-    const int maxH = juce::jmin (naturalContentH() + borderH, area.getHeight());          // never taller than the screen when opened
-    if (auto* c = win->getConstrainer())
-    {
-        c->setMinimumSize (juce::jmin (topBarMinWidth() + borderW, maxW), juce::jmin (260, maxH));
-        c->setMaximumSize (juce::jmax (maxW + kLimitSlack, area.getWidth() + 40), juce::jmax (maxH + kLimitSlack, area.getHeight() + 40));   // free to grow: a big window shows more
-    }
+    const auto room = roomOnScreen (*win);
+    const int maxW = juce::jmin (naturalContentW() + borderW, room.x);
+    const int maxH = juce::jmin (naturalContentH() + borderH, room.y);
+    setMixerLimits (*win, topBarMinWidth() + borderW, maxW, maxH, naturalContentW() + borderW);
     const bool firstTime = lastMaxW == 0 || lastMaxH == 0;          // a window that has never been fitted opens showing everything
     const bool wasFullW = firstTime || win->getWidth() == lastMaxW, wasFullH = firstTime || win->getHeight() == lastMaxH;
     lastMaxW = maxW; lastMaxH = maxH;
-    // a window that showed everything keeps showing everything when the strips change (e.g. another insert slot appears).
-    // It may be taller than the screen: the whole strip is always reachable (the title bar stays on the screen, the rest hangs off the bottom).
-    const int w = wasFullW ? maxW : win->getWidth();
+    const int w = wasFullW ? maxW : win->getWidth();                // (a window dragged wider than the display by hand keeps that width)
     const int h = wasFullH ? maxH : win->getHeight();
     if ((w != win->getWidth() || h != win->getHeight()) && ! win->isFullScreen())
     {
@@ -1844,18 +1940,26 @@ void MixerComponent::updateWindowLimits()
     }
 }
 
-void MixerComponent::fitWindowToStrips()
+void MixerComponent::fitWindowToStrips (juce::Rectangle<int> remembered)
 {
     auto* win = dynamic_cast<juce::DocumentWindow*> (getTopLevelComponent());
     if (win == nullptr || win->getContentComponent() != this || win->isFullScreen()) return;
-    const auto frame = win->getContentComponentBorder();
-    const auto scr = juce::Desktop::getInstance().getDisplays().getDisplayForRect (win->getBounds())->userArea;
-    const int w = juce::jmin (naturalContentW() + frame.getLeftAndRight(), scr.getWidth()), h = juce::jmin (naturalContentH() + frame.getTopAndBottom(), scr.getHeight());   // (never wider than the screen: a scroll bar instead)
-    if (auto* c = win->getConstrainer()) { c->setMinimumSize (juce::jmin (topBarMinWidth() + frame.getLeftAndRight(), w), juce::jmin (260, h)); c->setMaximumSize (juce::jmax (w + kLimitSlack, scr.getWidth() + 40), juce::jmax (h + kLimitSlack, scr.getHeight() + 40)); }
-    lastMaxW = w; lastMaxH = h;
-    win->setSize (w, h);
     const auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (win->getBounds())->userArea;
-    if (win->getY() < area.getY() + 44) win->setTopLeftPosition (win->getX(), area.getY() + 44);
+    if (remembered.isEmpty() && win->getY() < area.getY() + 44) win->setTopLeftPosition (win->getX(), area.getY() + 44);   // a new window opens below the menu bar
+    const auto frame = win->getContentComponentBorder();
+    const auto room = roomOnScreen (*win);                          // (from where its top now is)
+    const int fullW = juce::jmin (naturalContentW() + frame.getLeftAndRight(), room.x);
+    const int fullH = juce::jmin (naturalContentH() + frame.getTopAndBottom(), room.y);
+    int w = fullW, h = fullH;
+    if (! remembered.isEmpty())                                     // the size it had when it was last closed, within the same limits
+    {
+        w = juce::jlimit (juce::jmin (topBarMinWidth() + frame.getLeftAndRight(), fullW), fullW, remembered.getWidth());
+        h = juce::jlimit (juce::jmin (260, room.y), room.y, remembered.getHeight());
+    }
+    setMixerLimits (*win, topBarMinWidth() + frame.getLeftAndRight(), fullW, fullH, naturalContentW() + frame.getLeftAndRight());
+    lastMaxW = fullW; lastMaxH = fullH;
+    win->setSize (w, h);
+    if (win->getRight() > area.getRight()) win->setTopLeftPosition (juce::jmax (area.getX(), area.getRight() - win->getWidth()), win->getY());   // all of it on its display
 }
 
 void MixerComponent::parentHierarchyChanged() { updateWindowLimits(); }
@@ -1902,6 +2006,14 @@ void MixerComponent::rebuild()
     for (auto* b : busStrips) b->setSendRows (rows);
     for (auto* v : vcaStrips) { v->setSendRows (rows); v->setSlotCount (slotCount); }
     holder->add (new MeterSettingsStrip (app, mixerId, [this] { holder->resetPeaks(); }), 112);
+    {   // no fader, pan or send dial in a mixer turns with the mouse wheel: it passes the wheel on to the view, which moves the strips left / right
+        std::function<void (juce::Component&)> noWheel = [&noWheel] (juce::Component& c)
+        {
+            if (auto* s = dynamic_cast<juce::Slider*> (&c)) s->setScrollWheelEnabled (false);
+            for (auto* ch : c.getChildren()) noWheel (*ch);
+        };
+        noWheel (*holder);
+    }
     maxDialsCached = maxDials;
     applyHeight();
     updateBars();
@@ -2130,20 +2242,19 @@ void MixerComponent::timerCallback()
     {
         const bool widthChanged = shownWidthGen != stripWidthGen();
         shownDark = mixTheme().dark; shownGen = theme::generation(); shownWidthGen = stripWidthGen();
-        // a strip width change keeps the meter strip (the last one, with the - / + buttons) where it is: the window keeps its right edge, and a view that
-        // is scrolled keeps the same distance from its right end, so - / + can be pressed again without scrolling to them
+        // a strip width change keeps the meter strip (the last one, with the - / + buttons) where it is: the window keeps its right edge, and the view
+        // keeps the same distance from the right end of the strips, so - / + can be pressed again and again without the strip moving away
         auto* win = dynamic_cast<juce::DocumentWindow*> (getTopLevelComponent());
         const int oldRight = win != nullptr ? win->getRight() : 0;
         const int rightGap = juce::jmax (0, holder->getWidth() - (viewport.getViewPositionX() + viewport.getViewWidth()));
         mixLook.apply();
-        rebuild(); updateAuditionButton(); resized();
+        rebuild(); updateAuditionButton(); resized();       // (a window that showed every strip takes their new width; a smaller one keeps its size)
         if (widthChanged)
         {
-            fitWindowToStrips();                            // the window takes the new width of the strips at once (as when it is opened) ...
             if (win != nullptr && win->getContentComponent() == this && ! win->isFullScreen())
             {
                 const auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (win->getBounds())->userArea;
-                win->setTopLeftPosition (juce::jmax (area.getX(), oldRight - win->getWidth()), win->getY());     // ... growing / shrinking to the left
+                win->setTopLeftPosition (juce::jmax (area.getX(), oldRight - win->getWidth()), win->getY());     // growing / shrinking to the left
             }
             viewport.setViewPosition (juce::jmax (0, holder->getWidth() - viewport.getViewWidth() - rightGap), viewport.getViewPositionY());
         }

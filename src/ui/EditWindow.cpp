@@ -158,7 +158,74 @@ public:
             paintAll (g);
             headerPass = false;
         }
+        if (lassoMoved)                                              // Alt + drag: the lasso
+        {
+            const auto lr = lassoRect();
+            g.setColour (theme::accent.withAlpha (0.13f)); g.fillRect (lr);
+            g.setColour (theme::accent.withAlpha (0.9f));  g.drawRect (lr, 1);
+        }
         if (paintprof::enabled()) paintprof::paintDone ("edit window", juce::Time::getMillisecondCounterHiRes() - tPaint0, g.getClipBounds().getWidth(), g.getClipBounds().getHeight());
+    }
+    // ---- Alt + drag: a lasso; every piece it touches is selected (whole pieces, overdubs too)
+    bool lassoActive = false, lassoMoved = false; juce::Point<int> lassoFrom, lassoTo;
+    juce::Rectangle<int> lassoRect() const
+    {
+        return juce::Rectangle<int>::leftTopRightBottom (juce::jmin (lassoFrom.x, lassoTo.x), juce::jmin (lassoFrom.y, lassoTo.y),
+                                                         juce::jmax (lassoFrom.x, lassoTo.x) + 1, juce::jmax (lassoFrom.y, lassoTo.y) + 1);
+    }
+    /** The pieces (and overdubs) that 'box' touches: the rows of the tracks each one has audio on, over the time it covers. */
+    std::vector<juce::Uuid> piecesIn (const EditDef& ed, juce::Rectangle<int> box) const
+    {
+        std::vector<juce::Uuid> out;
+        const double rate = juce::jmax (1.0, ed.sampleRate);
+        const auto& rt = rowTracks();
+        std::map<juce::Uuid, int> rowOf;
+        for (size_t i = 0; i < rt.size(); ++i) rowOf[rt[i].id] = (int) i;
+        const int top = kRulerH + kLaneH;
+        auto touches = [&] (const EditRegion& r)
+        {
+            const int x0 = xOf ((double) r.startSample / rate), x1 = juce::jmax (x0 + 2, xOf ((double) r.endSample() / rate));
+            if (x1 < box.getX() || x0 > box.getRight()) return false;
+            for (auto& f : r.files)
+                if (auto it = rowOf.find (f.trackId); it != rowOf.end() && juce::Rectangle<int> (x0, top + it->second * rowH, x1 - x0, rowH).intersects (box)) return true;
+            return false;
+        };
+        for (auto& r : ed.regions)  if (touches (r)) out.push_back (r.id);
+        for (auto& r : ed.overdubs) if (touches (r)) out.push_back (r.id);
+        return out;
+    }
+    void applyLasso (const EditDef& ed)
+    {
+        selectedRegions = piecesIn (ed, lassoRect());
+        selectedRegion = selectedRegions.size() == 1 ? selectedRegions.front() : juce::Uuid::null();      // (one piece: as if it had been clicked)
+        moveRegion = juce::Uuid::null(); selectedJoin = -1;
+    }
+    // ---- the corner above the first track's name: what Ctrl / Alt / Shift do here, while they are held
+    int shownMods = 0;
+    juce::StringArray modifierHints (int bits) const
+    {
+        using namespace modhint;
+        auto* e = edit();
+        if (e != nullptr && lanesOn (*e))                      // automation showing: a click in a row works on the automation
+            switch (bits)
+            {
+                case ctrl:         return { "Click an automation point: delete it", "Ctrl + Z / Ctrl + Y: undo / redo" };
+                case shift:        return { "Click an automation point: delete it" };
+                case alt:          return { "While dragging an automation point: fine steps" };
+                case ctrl | shift: return { "Ctrl + Shift + Z: redo" };
+                default:           return {};
+            }
+        switch (bits)
+        {
+            case ctrl:         return { "Click a piece: select it whole (then drag it to move it); Ctrl + click more pieces to add them", "Ctrl + Z / Ctrl + Y: undo / redo" };
+            case alt:  case alt | shift:
+                               return { "Drag: lasso - selects every piece it touches" };
+            case ctrl | alt:   return { "Drag over audio: mark 1 - 2 on only the tracks you drag over" };
+            case shift:  case ctrl | alt | shift:
+                               return { "Drag a track's clip: move it to another track (same time)" };
+            case ctrl | shift: return { "Ctrl + Shift + Z: redo" };
+            default:           return {};
+        }
     }
     bool headerPass = false;
     int hdrShift = 0;                          // while the mouse works in the sticky band: how far down it has been moved
@@ -205,7 +272,7 @@ public:
         {
             const int x = xOf (s);
             g.setColour (theme::grid); g.drawVerticalLine (x, (float) kRulerH - 8, (float) getHeight());
-            g.setColour (theme::dimText); g.drawText (formatTime (s).substring (3, 8), x + 3, 2 + kRulerTop, 60, 16, juce::Justification::left);
+            g.setColour (theme::dimText); g.drawText (formatTimeShort (s, 0), x + 3, 2 + kRulerTop, 60, 16, juce::Justification::left);
         }
 
         if (e->isEmpty())
@@ -237,7 +304,7 @@ public:
                 g.setColour (selected ? juce::Colour (0xffc26500) : theme::accent);
                 g.fillRect (lane);
                 g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
-                g.drawText (r.takeName + "   " + formatTime ((double) r.srcIn / rate).substring (3, 11) + " - " + formatTime ((double) r.srcOut / rate).substring (3, 11),
+                g.drawText (r.takeName + "   " + formatTimeShort ((double) r.srcIn / rate, 2) + " - " + formatTimeShort ((double) r.srcOut / rate, 2),
                             lane.reduced (6, 0), juce::Justification::centredLeft, true);
                 drawFadeHandles (g, lane, r, rate, k == 0, k + 1 == e->regions.size());
             }
@@ -510,6 +577,8 @@ public:
         g.drawText (e->showMarkers ? "Markers" : "Markers (hidden)", sx + 6, 0, kNameW - 12, markerui::kStripH, juce::Justification::centredLeft, true);
         g.setColour (e->showFeedback ? juce::Colour (0xff35b7c9) : theme::dimText.withAlpha (0.6f));
         g.drawText (e->showFeedback ? "Feedback" : "Feedback (hidden)", sx + 6, markerui::kStripH, kNameW - 12, kFbH, juce::Justification::centredLeft, true);
+        if (shownMods != 0 && (headerPass || viewport.getViewPositionY() == 0))         // the keys being held: what they do here (under those two lines)
+            modhint::paint (g, { sx, markerui::kStripH + kFbH, kNameW, top - markerui::kStripH - kFbH }, shownMods, modifierHints (shownMods));
     }
 
     void mouseDown (const juce::MouseEvent& e0) override { hdrShift = stickyShift (e0); mouseDownImpl (shifted (e0, hdrShift)); }
@@ -520,7 +589,7 @@ public:
     void mouseDownImpl (const juce::MouseEvent& e)
     {
         grabKeyboardFocus();
-        dragging = false; markDrag = false; markActive = false;
+        dragging = false; markDrag = false; markActive = false; lassoActive = lassoMoved = false;
         auto* ed = this->edit();
         if (ed == nullptr) return;
         markers.setNameWidth (viewport.getViewPositionX() + kNameW);
@@ -584,6 +653,14 @@ public:
         {
             const int row = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
             if (juce::isPositiveAndBelow (row, (int) rowTracks().size())) { rowDragFrom = row; rowDragTo = row; return; }
+        }
+        EditRegion* fadeHit = nullptr; bool fadeIn = true;
+        if (! e.mods.isPopupMenu() && e.mods.isAltDown() && ! (e.mods.isCommandDown() || e.mods.isCtrlDown())
+            && e.y >= kRulerH + kLaneH && e.x >= viewport.getViewPositionX() + kNameW
+            && ! fadeHandleAt (*ed, e.getPosition(), rate, fadeHit, fadeIn))                 // Alt + drag: a lasso (the playhead stays where it is; a fade corner is still a fade)
+        {
+            lassoActive = true; lassoMoved = false; lassoFrom = lassoTo = e.getPosition();
+            return;
         }
         const double t = (e.x - kNameW) / pixelsPerSecond;
         cursorSeconds = juce::jmax (0.0, t);
@@ -679,7 +756,8 @@ public:
         }
 
         // otherwise select the piece under the mouse and start sliding it
-        const bool additive = e.mods.isCommandDown() || e.mods.isCtrlDown();
+        const bool trackMark = (e.mods.isCommandDown() || e.mods.isCtrlDown()) && e.mods.isAltDown();     // Ctrl + Alt + drag: marks on chosen tracks only
+        const bool additive = (e.mods.isCommandDown() || e.mods.isCtrlDown()) && ! trackMark;
         const auto previous = selectedRegion;
         selectedRegion = juce::Uuid::null();
         const juce::int64 sample = (juce::int64) (juce::jmax (0.0, t) * rate);
@@ -688,7 +766,7 @@ public:
         // A plain drag over audio always marks a part of it: mark 1 where the mouse went down, mark 2 where it is let go.
         // To MOVE a piece, Ctrl + click it (that selects the whole piece); once it is selected the Ctrl key can be let go and the piece dragged sideways.
         const bool hitArmed = ! selectedRegion.isNull() && selectedRegion == moveRegion;
-        const bool canMove = additive || hitArmed;
+        const bool canMove = (additive || hitArmed) && ! trackMark;
         const bool wantMarkDrag = ! canMove && e.x > kNameW && e.y >= kRulerH + kLaneH && ! e.mods.isPopupMenu() && e.getNumberOfClicks() < 2;
         if (! additive && ! hitArmed) moveRegion = juce::Uuid::null();
         if (additive)                                        // Ctrl + click: select the whole piece (more than one for 'Selected' in Bounce Out) and arm it for moving
@@ -722,7 +800,7 @@ public:
         if (wantMarkDrag)
         {
             markDrag = true; markAnchor = juce::jmax (0.0, t); markStartX = e.x;
-            markAlt = e.mods.isAltDown();                                  // Alt + drag: only the track(s) the mouse covers are marked
+            markAlt = trackMark;                                           // Ctrl + Alt + drag: only the track(s) the mouse covers are marked
             markRow0 = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
         }
         else if (auto* od = canMove && ed->isOverdub (selectedRegion) ? ed->findAny (selectedRegion) : nullptr)
@@ -756,6 +834,18 @@ public:
     {
         auto* ed = edit();
         if (ed == nullptr) return;
+        if (lassoActive)
+        {
+            const auto before = lassoMoved ? lassoRect() : juce::Rectangle<int>();
+            lassoTo = e.getPosition();
+            if (! lassoMoved && lassoTo.getDistanceFrom (lassoFrom) < 4) return;
+            lassoMoved = true;
+            const auto had = selectedRegions;
+            applyLasso (*ed);
+            if (had != selectedRegions) repaint();                              // (the pieces change colour: all of it)
+            else repaint (before.getUnion (lassoRect()).expanded (2));
+            return;
+        }
         if (markers.mouseDrag (e)) return;
         if (insertDrag) { insertDragMove (e.x); return; }
         if (! shuffleId.isNull())
@@ -860,6 +950,12 @@ public:
 
     void mouseUpImpl (const juce::MouseEvent& e)
     {
+        if (lassoActive)
+        {
+            if (auto* ed = edit(); ed != nullptr && ! lassoMoved) applyLasso (*ed);       // Alt + click (no drag): the piece under the mouse, or none
+            lassoActive = lassoMoved = false;
+            repaint(); return;
+        }
         if (markers.mouseUp (e)) return;
         if (insertDrag)
         {
@@ -1460,6 +1556,11 @@ private:
     }
     void timerCallback() override
     {
+        if (const int held = modhint::heldFor (*this); held != shownMods)      // the corner box: what the keys being held do here
+        {
+            shownMods = held;
+            repaint (viewport.getViewPositionX(), viewport.getViewPositionY(), kNameW, kRulerH + kLaneH);
+        }
         if (auto* ed = edit())                      // the playhead moved by itself (Stop leaves it where playback got to): the cursor follows
             if (std::abs (ed->playheadSeconds - lastHead) > 1.0e-9) { lastHead = ed->playheadSeconds; cursorSeconds = ed->playheadSeconds; repaint(); }
         // Waveforms being read (after an import, or the first time a project is shown) report every little step. Redrawing the whole window for each
@@ -1560,7 +1661,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
         if (auto* e = edit()) if (nameEditor.getText().isNotEmpty() && e->name != nameEditor.getText()) { e->name = nameEditor.getText(); if (app.project.syncEditMixers()) app.project.structureChanged(); else app.project.changed(); }
     };
     nameEditor.onFocusLost = commitEditName;
-    nameEditor.onReturnKey = [commitEditName] { commitEditName(); juce::Component::unfocusAllComponents(); };
+    nameEditor.onReturnKey = [this, commitEditName] { commitEditName(); timeline->grabKeyboardFocus(); };     // Enter: the keyboard goes back to the timeline (its keys work at once)
     infoLabel.setColour (juce::Label::textColourId, theme::text);
 
     tracksButton.setTooltip ("The tracks (audio rows) of THIS edit: add one, remove one, or show every project track again. Drag a track's name up or down to change the order. Each track has its own mixer strip.");
@@ -1620,6 +1721,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
         timeline->refTrack = juce::isPositiveAndBelow (i, (int) refIds.size()) ? refIds[(size_t) i] : juce::Uuid::null();
         timeline->repaint();
     };
+    refBox.setWantsKeyboardFocus (false);                       // changed only by clicking: the arrow keys stay the window's (zoom, track heights)
     addChildComponent (refCaption); addChildComponent (refBox);
     // With no 1 / 2 flags set, a piece that was selected whole (Ctrl + click) is loaded in full into the process window.
     auto withWholePiece = [this] (std::function<void()> run)
@@ -2278,9 +2380,9 @@ void EditWindowComponent::timerCallback()
     if (waveColourBtn.getToggleState() != app.waveColour) { waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification); repaint(); }
     clock.setSampleRate (app.engine.getSampleRate());
     if (auto* e = edit())
-        infoLabel.setText (juce::String (takesInEdit (*e)) + (takesInEdit (*e) == 1 ? " Take" : " Takes") + (e->overdubs.empty() ? juce::String() : ", " + juce::String ((int) e->overdubs.size()) + " overdub(s)") + ", " + formatTime (e->lengthSeconds()).substring (3, 8)
-                           + (e->fixIn >= 0 ? "   [1] " + formatTime (e->fixIn).substring (3, 11) : juce::String())
-                           + (e->fixOut >= 0 ? "   [2] " + formatTime (e->fixOut).substring (3, 11) : juce::String())
+        infoLabel.setText (juce::String (takesInEdit (*e)) + (takesInEdit (*e) == 1 ? " Take" : " Takes") + (e->overdubs.empty() ? juce::String() : ", " + juce::String ((int) e->overdubs.size()) + " overdub(s)") + ", " + formatTimeShort (e->lengthSeconds(), 0)
+                           + (e->fixIn >= 0 ? "   [1] " + formatTimeShort (e->fixIn, 2) : juce::String())
+                           + (e->fixOut >= 0 ? "   [2] " + formatTimeShort (e->fixOut, 2) : juce::String())
                            + (e->regions.size() > 1 ? "   -   click a join and press T (or double-click it) to trim.  Drag a piece to slide it.  Right-click a piece for its volume." : ""), juce::dontSendNotification);
 }
 } // namespace td

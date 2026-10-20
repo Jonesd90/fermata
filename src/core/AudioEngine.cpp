@@ -969,7 +969,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
         for (size_t k = mp.order.size(); k-- > 0;)
         {
             auto& nd = *mp.order[k];
-            for (auto& sp : nd.sends) if (sp.dest->soloHeard && (sp.st->active() || sp.st->lastGain > 0.0f)) { nd.soloHeard = true; break; }     // (a send held in the plan while off keeps nothing open)
+            for (auto& sp : nd.sends) if (sp.dest->soloHeard && ((sp.st->active() && ! sp.st->mute.get()) || sp.st->lastGain > 0.0f)) { nd.soloHeard = true; break; }     // (a send held in the plan while off, or muted, keeps nothing open)
         }
 
     for (auto& nd : mp.order) if (nd->receives) nd->incoming.clear (0, n);
@@ -1187,7 +1187,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
         for (auto& sp : nd.sends)
         {
             auto* sd = sp.st;
-            const float st1 = sd->active() ? dbToGain (sd->gainDb.get()) : 0.0f;
+            const float st1 = sd->active() && ! sd->mute.get() ? dbToGain (sd->gainDb.get()) : 0.0f;     // (its own MUTE: faded out like a level change; the level is kept)
             if (st1 == 0.0f && sd->lastGain == 0.0f) continue;
             const juce::AudioBuffer<float>* src = sd->pre.get() ? &mp.preSend : &mp.post;
             if (! sd->followMute.get())                           // carries on when the channel is muted: its own copy, before (1) or after (the fader) the fader

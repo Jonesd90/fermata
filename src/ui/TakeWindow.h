@@ -52,11 +52,12 @@ private:
 
     AppContext& app;
     juce::Uuid windowId;
-    juce::Label nameLabel, timeLabel, statusLabel, markLabel;
+    juce::Label nameLabel, statusLabel, markLabel;
     juce::TextEditor nameEditor;
     StackedField nameBlock { nameLabel, nameEditor };          // "Piece / Take Window Name:" above the name box, as tall as the Next Take box
     NextTakeBox takeBox;
     TimeReadout clock;                                        // the big time readout in the top bar
+    TimeReadout lengthClock;                                  // the take's length (setLengthStyle: quieter, beside it)
     static constexpr int kClockH = 58;                        // as tall as the Next Take box
     juce::Label sendCaption;
     juce::ComboBox sendBox;

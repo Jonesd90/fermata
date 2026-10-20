@@ -179,6 +179,10 @@ public:
     bool sendAllowed (const MixerState&, const juce::Uuid& src, const juce::Uuid& dest) const;
     /** Sets a send level (<= -60 dB = off). RoutingChanged means a send was switched on: the engine must re-plan. */
     SendResult setSendLevel (MixerState&, const juce::Uuid& src, const juce::Uuid& dest, float db);
+    /** A project file's backup put back on purpose: its text with the lists of take window, edit and mixer files (and the windows / mixers kept in
+        the file itself) taken from the project file there now ('currentText'), because those files are not put back - the windows and mixers
+        open as they are now. Returns 'backupText' as it is when the current text cannot be read. */
+    static juce::String backupWithCurrentWindows (const juce::String& backupText, const juce::String& currentText);
     MixerState& addMixer (const juce::String& mixerName);
     void removeMixer (int index);
     TakeWindowDef& addTakeWindow (const juce::String& windowName);
@@ -268,14 +272,33 @@ public:
         so a "please wait" window can show it. Nothing else depends on it. */
     std::function<void (const juce::String& what, double progress)> loadProgress;
     void reportLoad (const juce::String& what, double progress) const { if (loadProgress) loadProgress (what, progress); }
-    /** Reads a .fmedit / .fmtake file (from another project, or a copy) and adds it. Same-named windows get a number, ids that clash are renewed, tracks are matched by name. */
-    bool importWindowFile (const juce::File&, juce::String& message, juce::Uuid* newId = nullptr);
+    /** Reads a .fmedit / .fmtake file (from another project, or a copy) and adds it. Same-named windows get a number, ids that clash are renewed, tracks are matched by name.
+        'missingFiles' (optional) is told how many of the audio files the imported window uses cannot be found. */
+    bool importWindowFile (const juce::File&, juce::String& message, juce::Uuid* newId = nullptr, int* missingFiles = nullptr);
     /** Reads a .fmmix mixer file and adds it as a new mixer (the strips are matched with this project's tracks and buses by name). */
     bool importMixerFile (const juce::File&, juce::String& message);
-    /** How many audio files used by the edits and take windows cannot be found. */
-    int missingAudioCount() const;
-    /** Looks for the missing audio files by name inside a folder (and its sub-folders). Returns how many were found. */
-    int relinkAudio (const juce::File& searchFolder);
+    /** How many audio files used by the edits and take windows cannot be found (each file counted once, however many places use it). With 'quick',
+        the files of takes found whole at the last open (verified) are not asked about - unless the project has moved since - so a big project is not
+        slowed down: a file that went missing since then is found out when it is played, or by missingAudioCount() in full. */
+    int missingAudioCount (bool quick = false) const;
+    /** The missing audio files, each once, with where it is used ("Takes - Mass in B minor, 003 - Kyrie, ORTF L"). */
+    juce::StringArray missingAudioList (int atMost = 40) const;
+    /** What "Find missing audio files" did. */
+    struct RelinkReport
+    {
+        int byName = 0, renamed = 0, unsure = 0, stillMissing = 0;     // files found by name; found renamed (by their length, rate, depth, channels ...); fitting several files; not found
+        juce::StringArray found;                                        // "old name  ->  new name  (how)"
+        juce::StringArray unsureLines;                                  // "old name: fits 3 files (a.wav, b.wav, c.wav)"
+        juce::StringArray missing;                                      // the names still missing
+        juce::String summary() const;
+    };
+    /** Looks for the missing audio files inside a folder (and its sub-folders): first by name (a same-named file with another length, rate or channel count
+        is not it), then - for a file that was renamed - by what the project knows about it (length in samples, sample rate, channels, and bit depth for
+        Fermata's own recordings), taking it only when exactly one file fits (the files of one take are told apart by the names Fermata wrote in their
+        headers, their recording time, or the track name in the file name). A file the project uses as it is is never taken for a missing one.
+        'progress' (optional) is told what is being looked at. Every place that used a file is pointed at the file found. The undo history is cleared
+        (the relink is not an undo step). */
+    RelinkReport relinkAudio (const juce::File& searchFolder, const std::function<void (const juce::String&, double)>& progress = {});
     /** Removes the edit / take window from the project AND moves its file to the recycle bin. The audio recordings are not touched. The caller closes its windows first. */
     bool deleteEditAndFile (const juce::Uuid&);
     bool deleteTakeWindowAndFile (const juce::Uuid&);
