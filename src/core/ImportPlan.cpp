@@ -186,45 +186,77 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
         }
     }
 
-    // ---- names that carry the take number as a number word, whatever the lengths ("Ave Maria 8 AB 01.L", "Ave Maria 8 SPOT1 01", "Ave Maria 8 ROOM 414 01.R":
-    //      Pro Tools and others): the k-th whole number from the end of the name (a last L / R does not count) is the same in every file of a take
-    //      and different from take to take. Grouping by it does not need the files of a take to have the same length (in Pro Tools they
-    //      often do not). Used below when the grouping by length leaves every take with tracks of its own.
-    struct NumGroup { int value; std::vector<std::pair<Item, juce::String>> items; };      // the item and its track name (the take word taken out)
+    // ---- names that carry the take number in a word, whatever the lengths ("Ave Maria 8 AB 01.L", "Ave Maria 8 SPOT1 01", "Ave Maria 8 ROOM 414 01.R",
+    //      "12 Ave Maria 8 AB 12.L": Pro Tools and others). A word with a number in it at a fixed place - the k-th word from the start, or from the
+    //      end with a last L / R not counted - is the same in every file of a take and different from take to take: grouping by it does not need
+    //      the files of a take to have the same length (in Pro Tools they often do not). A second number that also goes with the take (a clip
+    //      number at the end when the take number is at the start) comes off the track names too. Used below when the grouping by length
+    //      leaves every take with tracks of its own.
+    struct NumGroup { int value; std::vector<std::pair<Item, juce::String>> items; };      // the item and its track name (the take words taken out)
     std::vector<NumGroup> numGroups;
     if (flat.size() >= 4)
     {
         auto isSideWord = [] (const juce::String& w) { return w.equalsIgnoreCase ("L") || w.equalsIgnoreCase ("R") || w.equalsIgnoreCase ("Left") || w.equalsIgnoreCase ("Right"); };
-        auto isNumWord = [] (const juce::String& w) { return w.isNotEmpty() && w.length() <= 4 && w.containsOnly ("0123456789"); };
+        auto isNumWord = [] (const juce::String& w) { return w.isNotEmpty() && w.length() <= 6 && w.containsOnly ("0123456789"); };
+        auto coreEnd = [&] (const juce::StringArray& t) { return t.size() - (t.size() >= 2 && isSideWord (t[t.size() - 1]) ? 1 : 0); };   // (exclusive)
+        auto groupKey = [] (const juce::String& w) { return w.toLowerCase().removeCharacters ("0123456789") + "#" + juce::String (numberIn (w)); };   // "01" = "1"
         double bestScore = -1.0;
-        for (int k = 1; k <= 2; ++k)
-        {
-            std::map<int, NumGroup> groups; bool ok = true;
-            for (auto& it : flat)
+        for (int fromStart = 0; fromStart <= 1; ++fromStart)
+            for (int k = 1; k <= 6; ++k)
             {
-                juce::StringArray t = it.tok;
-                const int last = t.size() - 1 - (t.size() >= 2 && isSideWord (t[t.size() - 1]) ? 1 : 0);
-                int idx = -1, seen = 0;
-                for (int i = last; i >= 0; --i) if (isNumWord (t[i]) && ++seen == k) { idx = i; break; }
-                if (idx < 0 || (idx == 0 && last == 0)) { ok = false; break; }
-                const int v = t[idx].getIntValue(); t.remove (idx);
-                auto& g = groups[v]; g.value = v; g.items.push_back ({ it, t.joinIntoString (" ").trim() });
+                struct G { int value = 0; std::vector<std::pair<Item, juce::StringArray>> items; };
+                std::map<juce::String, G> groups; bool ok = true;
+                for (auto& it : flat)
+                {
+                    juce::StringArray t = it.tok;
+                    const int end = coreEnd (t), idx = fromStart ? k - 1 : end - k;
+                    if (idx < 0 || idx >= end || end < 2 || ! hasDigit (t[idx])) { ok = false; break; }
+                    auto& g = groups[groupKey (t[idx])]; g.value = numberIn (t[idx]);
+                    t.remove (idx); g.items.push_back ({ it, t });
+                }
+                if (! ok || groups.size() < 2) continue;
+                // a second number that goes with the take: the j-th whole number from the end (before an L / R), the same in every file of a
+                // take, not the same in every take ("12 Ave Maria 8 AB 12.L": the 12 at the end; the 8 is in every name and stays)
+                for (int j = 1; j <= 2; ++j)
+                {
+                    auto numIdx = [&] (const juce::StringArray& t) { int seen = 0; for (int i = coreEnd (t) - 1; i >= 0; --i) if (isNumWord (t[i]) && ++seen == j) return i; return -1; };
+                    bool constant = true; std::set<int> values;
+                    for (auto& kv : groups)
+                    {
+                        int v0 = -1;
+                        for (auto& x : kv.second.items)
+                        {
+                            const int i = numIdx (x.second); if (i < 0) { constant = false; break; }
+                            const int v = x.second[i].getIntValue();
+                            if (v0 < 0) v0 = v; else if (v != v0) { constant = false; break; }
+                        }
+                        if (! constant) break;
+                        values.insert (v0);
+                    }
+                    if (! constant || values.size() < 2) continue;
+                    for (auto& kv : groups) for (auto& x : kv.second.items) x.second.remove (numIdx (x.second));
+                    break;
+                }
+                std::set<juce::String> all; size_t biggest = 0; int sameLength = 0;
+                for (auto& kv : groups)
+                {
+                    std::set<juce::String> keys;
+                    for (auto& x : kv.second.items) if (! keys.insert (x.second.joinIntoString (" ").trim().toLowerCase()).second) ok = false;     // the same track twice in a take
+                    for (auto& x : keys) all.insert (x);
+                    biggest = juce::jmax (biggest, kv.second.items.size());
+                    bool same = true; for (auto& x : kv.second.items) if (std::abs (S[(size_t) x.first.src].length - S[(size_t) kv.second.items.front().first.src].length) > 64) same = false;
+                    if (same) ++sameLength;
+                }
+                if (! ok || biggest < 2 || (double) all.size() > 1.5 * (double) biggest) continue;   // the takes must share their tracks
+                // takes whose files are the same length (a grouping by track number would make 'takes' of different lengths); then more takes;
+                // then the last word
+                const double score = 10.0 * std::round (10.0 * (double) sameLength / (double) groups.size()) + 0.001 * (double) groups.size() + (! fromStart && k == 1 ? 0.0001 : 0.0);
+                if (score > bestScore)
+                {
+                    bestScore = score; numGroups.clear();
+                    for (auto& kv : groups) { NumGroup ng; ng.value = kv.second.value; for (auto& x : kv.second.items) ng.items.push_back ({ x.first, x.second.joinIntoString (" ").trim() }); numGroups.push_back (std::move (ng)); }
+                }
             }
-            if (! ok || groups.size() < 2) continue;
-            std::set<juce::String> all; size_t biggest = 0; int sameLength = 0;
-            for (auto& kv : groups)
-            {
-                std::set<juce::String> keys;
-                for (auto& x : kv.second.items) if (! keys.insert (x.second.toLowerCase()).second) ok = false;     // the same track twice in a take
-                for (auto& x : keys) all.insert (x);
-                biggest = juce::jmax (biggest, kv.second.items.size());
-                bool same = true; for (auto& x : kv.second.items) if (std::abs (S[(size_t) x.first.src].length - S[(size_t) kv.second.items.front().first.src].length) > 64) same = false;
-                if (same) ++sameLength;
-            }
-            if (! ok || biggest < 2 || (double) all.size() > 1.5 * (double) biggest) continue;   // the takes must share their tracks
-            const double score = (double) sameLength / (double) groups.size() + (k == 1 ? 0.01 : 0.0);   // (a tie: the last number)
-            if (score > bestScore) { bestScore = score; numGroups.clear(); for (auto& kv : groups) numGroups.push_back (kv.second); }
-        }
     }
 
     // ---- mono / stereo files: the ones with the same length (and rate) are one take
@@ -442,6 +474,27 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
             tryTidy ([] (const juce::StringArray& t) { juce::StringArray r = t; r.remove (0); return r.joinIntoString (" "); });
         if (allNames ([&] (const juce::StringArray& t) { return t.size() >= 2 && isTakeWord (t[t.size() - 1]); }))
             tryTidy ([] (const juce::StringArray& t) { juce::StringArray r = t; r.remove (r.size() - 1); return r.joinIntoString (" "); });
+        // the words every track name starts with ("Ave Maria 8 AB", "Ave Maria 8 SPOT1" ...: the piece), when there are enough tracks for that to say something
+        {
+            std::set<juce::String> distinct; for (auto* p : all) distinct.insert (p->trackKey);
+            if (distinct.size() >= 4)
+            {
+                const auto first = tokensOf (all.front()->trackName);
+                int common = 0;
+                for (;; ++common)
+                {
+                    bool same = true;
+                    for (auto* p : all) { const auto t = tokensOf (p->trackName); if (t.size() <= common + 1 || ! t[common].equalsIgnoreCase (first[common])) { same = false; break; } }
+                    if (! same) break;
+                }
+                if (common >= 2)          // (two words at least: "Ch 1", "Ch 2" ... keep their "Ch"; and no name may end up a bare number)
+                    tryTidy ([common] (const juce::StringArray& t)
+                    {
+                        juce::StringArray r = t; r.removeRange (0, common); const auto n = r.joinIntoString (" ");
+                        return n.removeCharacters (" ").containsOnly ("0123456789") ? juce::String() : n;
+                    });
+            }
+        }
     }
 
     // ---- tracks: the same key in different takes is the same track

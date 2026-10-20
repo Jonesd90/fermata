@@ -2600,18 +2600,31 @@ int main()
             CHECK (p3.takes.size() == 2 && p3.takes[0].parts.size() == 2);
             { std::vector<ImportSource> one; for (auto n : { "Mic 1", "Mic 2", "Mic 3" }) one.push_back (src (juce::String (n) + ".wav", 1, 96000));
               CHECK (buildImportPlan (one).takes.size() == 1); }
-            // 2.77: a Pro Tools session - "<piece> <track> <take>" with split stereo ".L" / ".R", track names that hold numbers of their own
+            // 2.77.1: a Pro Tools session - "<piece> <track> <take>" with split stereo ".L" / ".R", track names that hold numbers of their own
             // ("ROOM 414", "SPOT10"), files of one take NOT all the same length, and a piece name with a number ("Ave Maria 8"): one set of
             // tracks with the piece name off, every take on it, in take order; also with Pro Tools' "-01" after the take number
-            for (int style = 0; style < 2; ++style)
+            // (style 2: the user's real session - "Ave Maria 8 ORTF.32_31.wav", interleaved stereo: the take number after the dot, Pro Tools' clip
+            //  number after the '_', one behind from take 8 on here (from 32 there); every take's files the same length. 44 takes x 20 tracks
+            //  came in as 860 tracks before 2.77.2. Style 3: the take number at the start, a clip number at the end that repeats once.)
+            for (int style = 0; style < 4; ++style)
             {
                 std::vector<ImportSource> pt; juce::Random rr (5);
                 for (int t = 12; t >= 1; --t)
                 {
                     const int len = 96000 * (10 + t);
-                    auto nm = [&] (const juce::String& trk) { return "Ave Maria 8 " + trk + " " + juce::String (t).paddedLeft ('0', 2) + (style == 1 ? "-01" : ""); };
-                    for (auto st : { "AB", "ROOM 414", "WIDE ROOM" }) for (auto side : { ".L", ".R" }) pt.push_back (src (nm (st) + side + ".wav", 1, len - rr.nextInt (5000)));
-                    for (int k = 1; k <= 10; ++k) pt.push_back (src (nm ("SPOT" + juce::String (k)) + ".wav", 1, len - rr.nextInt (5000)));
+                    const auto tn = juce::String (t).paddedLeft ('0', 2);
+                    auto nm = [&] (const juce::String& trk)
+                    {
+                        if (style == 2) return "Ave Maria 8 " + trk + "." + tn + "_" + juce::String (t >= 8 ? t - 1 : t).paddedLeft ('0', 2);
+                        if (style == 3) return tn + " Ave Maria 8 " + trk + " " + juce::String (t == 12 ? 5 : t).paddedLeft ('0', 2);
+                        return "Ave Maria 8 " + trk + " " + tn + (style == 1 ? "-01" : "");
+                    };
+                    for (auto st : { "AB", "ROOM 414", "WIDE ROOM" })
+                    {
+                        if (style == 2) pt.push_back (src (nm (st) + ".wav", 2, len));
+                        else for (auto side : { ".L", ".R" }) pt.push_back (src (nm (st) + side + ".wav", 1, style == 3 ? len : len - rr.nextInt (5000)));
+                    }
+                    for (int k = 1; k <= 10; ++k) pt.push_back (src (nm ("SPOT" + juce::String (k)) + ".wav", 1, style >= 2 ? len : len - rr.nextInt (5000)));
                 }
                 auto pp = joinStereoPairs (buildImportPlan (pt));
                 CHECK (pp.takes.size() == 12 && pp.tracks.size() == 13);
