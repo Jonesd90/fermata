@@ -84,6 +84,37 @@ public:
     double pixelsPerSecond = 12.0;
     int barHighlight = 0;                       // "Search for bar": takes that contain this bar get a blue-green frame (0 = off)
     std::vector<juce::Uuid> selectedTakes;      // takes picked for Bounce Out (click one; Ctrl + click adds or removes) - drawn a little darker
+    std::vector<juce::Uuid> selectedTracks;     // track names picked (click; Shift + click: every track in between; Ctrl + click: one more / less) - right-click: remove them
+    juce::Uuid trackAnchor;
+    /** A click on a track's name: on its own = only this track (or none, if it was the only one); Shift = every track from the last one clicked to
+        this one; Ctrl = this one in or out. */
+    void clickTrackName (const juce::Uuid& id, const juce::ModifierKeys& mods)
+    {
+        const auto shown = shownTracks();
+        auto rowOfId = [&] (const juce::Uuid& t) { for (size_t i = 0; i < shown.size(); ++i) if (shown[i]->id == t) return (int) i; return -1; };
+        const bool ctrl = mods.isCtrlDown() || mods.isCommandDown();
+        const int a = rowOfId (trackAnchor), b = rowOfId (id);
+        auto has = [this] (const juce::Uuid& t) { return std::find (selectedTracks.begin(), selectedTracks.end(), t) != selectedTracks.end(); };
+        if (mods.isShiftDown() && a >= 0 && b >= 0)
+        {
+            if (! ctrl) selectedTracks.clear();
+            for (int i = juce::jmin (a, b); i <= juce::jmax (a, b); ++i) if (! has (shown[(size_t) i]->id)) selectedTracks.push_back (shown[(size_t) i]->id);
+        }
+        else if (ctrl)
+        {
+            if (has (id)) selectedTracks.erase (std::remove (selectedTracks.begin(), selectedTracks.end(), id), selectedTracks.end());
+            else selectedTracks.push_back (id);
+            trackAnchor = id;
+        }
+        else
+        {
+            if (! mods.isShiftDown() && selectedTracks.size() == 1 && selectedTracks.front() == id) selectedTracks.clear();
+            else selectedTracks.assign (1, id);
+            trackAnchor = id;
+        }
+        repaint();
+    }
+    bool trackSelected (const juce::Uuid& id) const { return std::find (selectedTracks.begin(), selectedTracks.end(), id) != selectedTracks.end(); }
     bool isTakeSelected (const juce::Uuid& id) const { return std::find (selectedTakes.begin(), selectedTakes.end(), id) != selectedTakes.end(); }
     static constexpr int kHeightLevels = 8;          // 0 = smallest (32 tracks per page) ... 7 = largest (one stereo track per page)
     int heightLevel = 3;
@@ -219,12 +250,12 @@ public:
         using namespace modhint;
         switch (bits)
         {
-            case ctrl:         return { "Click a take: add it to the selection or take it out", "Ctrl + Z / Ctrl + Y: undo / redo" };
+            case ctrl:         return { "Click a take or a track's name: add it to the selection or take it out", "Ctrl + Z / Ctrl + Y: undo / redo" };
             case alt:          return { "Drag: lasso - selects every take it touches" };
             case ctrl | alt:   case ctrl | alt | shift:
                                return { "Drag over a take: mark 1 - 2 on only the tracks you drag over" };
             case alt | shift:  return { "Drag: lasso - selects every take it touches" };
-            case shift:        return { "Left / Right arrow: nudge the playhead by 10 ms" };
+            case shift:        return { "Click a track's name: select every track from the last one clicked", "Left / Right arrow: nudge the playhead by 10 ms" };
             case ctrl | shift: return { "Ctrl + Shift + Z: redo" };
             default:           return {};
         }
@@ -487,6 +518,12 @@ public:
             g.setColour (tc.withAlpha (0.20f)); g.fillRect (r);                              // the name plate carries the track's colour
             g.setColour (tc); g.fillRect (r.removeFromLeft (6));
             g.setColour (tc.darker (0.3f).withAlpha (0.8f)); g.fillRect (sx, top + (int) i * rowH + rowH - 1, kNameW, 1);
+            if (trackSelected (tracks[i]->id))                                               // a selected name (right-click: remove the selected tracks)
+            {
+                const auto sel = juce::Rectangle<int> (sx, top + (int) i * rowH, kNameW, rowH);
+                g.setColour (juce::Colour (0xff29b6ff).withAlpha (0.22f)); g.fillRect (sel);
+                g.setColour (juce::Colour (0xff29b6ff)); g.drawRect (sel.reduced (1), 2);
+            }
             g.setColour (theme::text); g.setFont (juce::jlimit (9.0f, 14.0f, (float) rowH - 4.0f));
             const bool tall = rowH >= 44;
             g.drawText (tracks[i]->name, tall ? r.reduced (8, 0).withTrimmedRight (36).withTrimmedTop (22).withTrimmedBottom (14) : r.withTrimmedLeft (46).withTrimmedRight (38), juce::Justification::centredLeft, true);
@@ -630,6 +667,13 @@ public:
                 }
                 return;
             }
+        }
+        if (! e.mods.isPopupMenu() && ! e.mods.isAltDown() && e.x >= sx && e.x < sx + kNameW && e.y >= kRulerH + kLaneH)   // a click on a track's name: select it
+        {
+            const auto shown = shownTracks();
+            const int row = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
+            if (juce::isPositiveAndBelow (row, (int) shown.size())) clickTrackName (shown[(size_t) row]->id, e.mods);
+            return;
         }
         if (e.mods.isPopupMenu() && e.x >= sx && e.x < sx + kNameW && e.y >= kRulerH + kLaneH)      // right-click on a track name
         {
@@ -965,6 +1009,30 @@ private:
         const auto where = juce::Rectangle<int> (juce::Desktop::getMousePosition(), juce::Desktop::getMousePosition()).expanded (4);
         m.addItem ("Colour...", [this, trackId, where] { showColourPickerAt (app, trackId, where); });
         m.addSeparator();
+        if (trackSelected (trackId) && selectedTracks.size() > 1)
+        {
+            const auto ids = selectedTracks;
+            const int n = (int) ids.size();
+            m.addItem ("Remove the " + juce::String (n) + " selected tracks from this take window...", [this, ids, n]
+            {
+                if (app.engine.isRecording()) { showError ("Recording", "Stop recording first."); return; }
+                juce::StringArray names;
+                for (auto& id : ids) if (auto* t = app.project.findTrack (id)) names.add (t->name);
+                confirmAsync ("Remove tracks from this take window",
+                              "Remove these " + juce::String (n) + " tracks from this take window?\n\n" + names.joinIntoString (", ") + "\n\nTheir clips disappear from this window only. "
+                              "Other take windows, the mixers, the edits and the audio files on the disk are not touched. Recording a track again into this window brings it back.",
+                              "Remove " + juce::String (n) + " tracks", [this, ids]
+                              {
+                                  if (auto* w = def())
+                                  {
+                                      for (auto& id : ids) w->removeTrackClips (id);
+                                      selectedTracks.clear(); app.project.changed(); updateSize(); repaint();
+                                  }
+                              });
+            });
+            m.addItem ("Select none", [this] { selectedTracks.clear(); repaint(); });
+            m.addSeparator();
+        }
         m.addItem ("Remove track '" + trackName + "' from this take window...", [this, trackId, trackName]
         {
             if (app.engine.isRecording()) { showError ("Recording", "Stop recording first."); return; }
@@ -973,7 +1041,12 @@ private:
                           "the edits and the audio files on the disk are not touched. Recording the track again into this window brings it back.",
                           "Remove", [this, trackId]
                           {
-                              if (auto* w = def()) { w->removeTrackClips (trackId); app.project.changed(); updateSize(); repaint(); }
+                              if (auto* w = def())
+                              {
+                                  w->removeTrackClips (trackId);
+                                  selectedTracks.erase (std::remove (selectedTracks.begin(), selectedTracks.end(), trackId), selectedTracks.end());
+                                  app.project.changed(); updateSize(); repaint();
+                              }
                           });
         });
         m.showMenuAsync (juce::PopupMenu::Options());

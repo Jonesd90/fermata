@@ -80,6 +80,7 @@ public:
         if (std::abs (slider.getValue() - v) > 0.05) { slider.setValue (v, juce::dontSendNotification); updateLabel(); }
     }
     bool isBeingDragged() const { return slider.isMouseButtonDown(); }
+    void noModeSwap() { slider.setVelocityModeParameters (1.0, 1, 0.0, false); }
     void pushPeaks (float l, float r, float rmsL, float rmsR)
     {
         meterL.setLevel (l, rmsL); meterR.setLevel (r, rmsR);
@@ -209,6 +210,97 @@ static void vcaGhostFor (AppContext& app, const MixerState& m, juce::uint32 mask
         }
 }
 
+/** A mixer strip that can be selected (click its name plate; Shift + click another for every strip in between, Ctrl + click one more or one less)
+    and, while Shift + Alt are held, moved together with the other selected strips. */
+class GangMember
+{
+public:
+    virtual ~GangMember() = default;
+    virtual juce::Uuid gangId() const = 0;
+    virtual StripState& gangState() = 0;
+    virtual int gangChannels() const = 0;
+    virtual void gangRefresh() = 0;                   // show what the model now says (pans, M / S, sends, inserts)
+    virtual juce::Component& gangComponent() = 0;
+};
+
+/** The selected strips of one mixer window, and whether they are linked right now: only while Shift + Alt are held, and only for a strip that is
+    one of two or more selected. Faders, sends and pans then move by the same amount on every selected strip (each keeps its own offset); M, S, a
+    send's MUTE / PRE / Follow mute are set the same; a plug-in inserted, removed or bypassed is on every one of them. Let go of the keys and each
+    strip is on its own again (the selection stays). */
+struct StripGang
+{
+    std::vector<juce::Uuid> selected;
+    juce::Uuid anchor;
+    std::vector<GangMember*> members;                 // the audio-track strips, left to right
+    bool shownLinked = false;
+
+    bool isSelected (const juce::Uuid& id) const { return std::find (selected.begin(), selected.end(), id) != selected.end(); }
+    static bool keysHeld()
+    {
+        const auto m = juce::ModifierKeys::getCurrentModifiersRealtime();
+        return m.isShiftDown() && m.isAltDown() && ! m.isCtrlDown() && ! m.isCommandDown();
+    }
+    bool linked (const juce::Uuid& id) const { return selected.size() > 1 && isSelected (id) && keysHeld(); }
+    /** fn on every OTHER selected strip, when 'id' is linked to them right now (nothing otherwise). */
+    void forOthers (const juce::Uuid& id, const std::function<void (GangMember&)>& fn) const
+    {
+        if (! linked (id)) return;
+        for (auto* m : std::vector<GangMember*> (members)) if (m->gangId() != id && isSelected (m->gangId())) fn (*m);
+    }
+    /** A click on a strip's name plate: on its own = select only this one (or nothing, if it was the only one); Shift = every strip from the last one
+        clicked to this one; Ctrl = this one in or out of the selection. */
+    void click (const juce::Uuid& id, const juce::ModifierKeys& mods)
+    {
+        const bool ctrl = mods.isCtrlDown() || mods.isCommandDown();
+        int a = -1, b = -1;
+        for (int i = 0; i < (int) members.size(); ++i) { if (members[(size_t) i]->gangId() == anchor) a = i; if (members[(size_t) i]->gangId() == id) b = i; }
+        if (mods.isShiftDown() && a >= 0 && b >= 0)
+        {
+            if (! ctrl) selected.clear();
+            for (int i = juce::jmin (a, b); i <= juce::jmax (a, b); ++i) if (! isSelected (members[(size_t) i]->gangId())) selected.push_back (members[(size_t) i]->gangId());
+        }
+        else if (ctrl)
+        {
+            if (isSelected (id)) selected.erase (std::remove (selected.begin(), selected.end(), id), selected.end());
+            else selected.push_back (id);
+            anchor = id;
+        }
+        else
+        {
+            if (! mods.isShiftDown() && selected.size() == 1 && selected.front() == id) selected.clear();
+            else selected.assign (1, id);
+            anchor = id;
+        }
+        repaintAll();
+    }
+    void selectAll() { selected.clear(); for (auto* m : members) selected.push_back (m->gangId()); repaintAll(); }
+    void clear() { selected.clear(); repaintAll(); }
+    void repaintAll() { for (auto* m : members) m->gangComponent().repaint(); }
+    /** From the meter timer: the strips' outlines change when Shift + Alt go down or up. */
+    void tick()
+    {
+        const bool now = selected.size() > 1 && keysHeld();
+        if (now != shownLinked) { shownLinked = now; repaintAll(); }
+    }
+};
+
+/** A send of 'src' moved from oldDb to newDb (-100 = off) on a linked strip: the same send of 'other' moves by as many dB (a send that is off counts
+    as the lowest level, so it comes in from there). A send to an audio track is only moved on a strip that already sends to that track. */
+static void nudgeSend (AppContext& app, MixerState& m, const juce::Uuid& other, const juce::Uuid& dest, float oldDb, float newDb, bool destIsTrack)
+{
+    if (other == dest) return;
+    auto* l = app.project.sendsOf (m, other);
+    auto* s = l != nullptr ? l->find (dest) : nullptr;
+    if (destIsTrack && (s == nullptr || ! s->active())) return;
+    auto fl = [] (float v) { return v <= kSendOffDb + 0.05f ? kSendOffDb : v; };
+    const float cur = s != nullptr && s->active() ? s->gainDb.get() : kSendOffDb;
+    const float nv = juce::jlimit (kSendOffDb, 6.0f, fl (cur) + (fl (newDb) - fl (oldDb)));
+    app.setSendLevel (m, other, dest, nv <= kSendOffDb + 0.05f ? -100.0f : nv);
+}
+
+/** Linked strips must not change how a slider drags: JUCE switches a slider to its velocity mode while Ctrl / Alt is held. */
+static void noModeSwap (juce::Slider& s) { s.setVelocityModeParameters (1.0, 1, 0.0, false); }
+
 class SlotButtons;
 
 /** One insert slot as drawn: the name (click it to open the plug-in straight away) and a little dot on the right (click it for the menu).
@@ -266,6 +358,36 @@ public:
         for (auto* b : cells) b->setBounds (r.removeFromTop (h).reduced (1, 1));
     }
     bool slotLoaded (int i) const { return slots[i].isLoaded(); }
+    /** A channel strip linked to others right now (Shift + Alt held, see StripGang): their insert slots, so a plug-in inserted, removed or bypassed
+        here is on them too; and a function that shows the result on their strips. Empty: on its own. */
+    std::function<std::vector<InsertSlot*>()> gangSlots;
+    std::function<void()> gangRefresh;
+    /** The slot of another strip a linked plug-in goes into: the same one if it is empty, else the first empty one (nothing is replaced); -1: full. */
+    static int slotFor (InsertSlot* arr, int want)
+    {
+        if (! arr[want].isLoaded()) return want;
+        for (int k = 0; k < kNumSlots; ++k) if (! arr[k].isLoaded()) return k;
+        return -1;
+    }
+    /** Puts a fresh instance (made by 'make') into each linked strip; says so if some had no free slot. */
+    void insertOnLinked (const std::vector<InsertSlot*>& others, int want, const std::function<std::unique_ptr<InsertProcessor>()>& make, bool bypassed)
+    {
+        if (others.empty()) return;
+        int full = 0;
+        const double sr = app.engine.getSampleRate(); const int blk = app.engine.getMaxBlock();
+        for (auto* arr : others)
+        {
+            const int k = slotFor (arr, want);
+            if (k < 0) { ++full; continue; }
+            auto p = make();
+            if (p == nullptr) { showError ("Plug-in", "Could not load the plug-in on every selected strip."); break; }
+            if (arr[k].set (std::move (p), sr, blk, 2)) arr[k].bypass.set (bypassed);
+        }
+        app.project.markDirty(); app.engine.checkLatency();
+        if (gangRefresh) gangRefresh();
+        app.project.structure.sendChangeMessage();                                   // (a strip may need another slot row)
+        if (full > 0) showError ("Plug-in", juce::String (full) + " of the selected strips had no free insert slot: the plug-in was not added there.");
+    }
     /** The name was clicked: open the plug-in, or (empty slot) offer the list. */
     void openOrMenu (int i)
     {
@@ -306,6 +428,14 @@ public:
         }
         app.project.markDirty(); app.engine.checkLatency();
         refresh(); target.refresh();
+        if (copy && target.gangSlots)                                          // dropped (as a copy) on a strip linked to others: a copy on each of them too
+        {
+            const auto desc = sp->getDescription(); const auto state = sp->getStateBase64(); const bool byp = src.bypass.get();
+            auto others = target.gangSlots();
+            others.erase (std::remove (others.begin(), others.end(), slots), others.end());                  // (not back onto the strip it came from)
+            auto factory = app.plugins.makeFactory ([sr] { return sr; }, [blk] { return blk; });
+            target.insertOnLinked (others, to, [factory, desc, state] { return factory ? factory (desc, state) : nullptr; }, byp);
+        }
     }
     /** The message when a slot could not be locked within InsertSlot::kLockWaitMs (see InsertSlot). */
     static juce::String stuckText (const InsertSlot& s)
@@ -355,13 +485,27 @@ private:
     void handle (int i, int r, const std::vector<juce::PluginDescription>& descs)
     {
         auto& slot = slots[i];
+        const auto linkedSlots = gangSlots ? gangSlots() : std::vector<InsertSlot*>();      // (Shift + Alt held as the menu item was chosen)
+        const auto name = slot.getName();
         if (r == 1) { app.plugins.showEditor (slot.getProcessorUnsafe()); return; }
-        if (r == 2) { slot.bypass.set (! slot.bypass.get()); app.project.markDirty(); app.engine.checkLatency(); refresh(); return; }
+        if (r == 2)
+        {
+            const bool b = ! slot.bypass.get();
+            slot.bypass.set (b);
+            for (auto* arr : linkedSlots) if (arr[i].isLoaded() && arr[i].getName() == name) arr[i].bypass.set (b);     // the same plug-in in the same slot
+            app.project.markDirty(); app.engine.checkLatency(); refresh(); if (! linkedSlots.empty() && gangRefresh) gangRefresh(); return;
+        }
         if (r == 3)
         {
             app.plugins.closeEditorsFor (slot.getProcessorUnsafe());
             if (! slot.clear (app.engine.getSampleRate(), app.engine.getMaxBlock(), 2)) showError ("Plug-in", stuckText (slot));
-            app.project.markDirty(); app.engine.checkLatency(); refresh(); return;
+            for (auto* arr : linkedSlots)
+                if (arr[i].isLoaded() && arr[i].getName() == name)
+                {
+                    app.plugins.closeEditorsFor (arr[i].getProcessorUnsafe());
+                    if (! arr[i].clear (app.engine.getSampleRate(), app.engine.getMaxBlock(), 2)) showError ("Plug-in", stuckText (arr[i]));
+                }
+            app.project.markDirty(); app.engine.checkLatency(); refresh(); if (! linkedSlots.empty() && gangRefresh) gangRefresh(); return;
         }
         if (r == 9)
         {
@@ -378,6 +522,12 @@ private:
             app.plugins.closeEditorsFor (slot.getProcessorUnsafe());
             if (! slot.set (std::move (p), app.engine.getSampleRate(), app.engine.getMaxBlock(), 2)) { showError ("Plug-in", stuckText (slot)); refresh(); return; }
             app.project.markDirty(); app.engine.checkLatency(); refresh();
+            if (! linkedSlots.empty())                                                  // linked strips: the same plug-in on each (its own instance)
+            {
+                const auto desc = descs[(size_t) (r - 1000)];
+                const double sr = app.engine.getSampleRate(); const int blk = app.engine.getMaxBlock();
+                insertOnLinked (linkedSlots, i, [this, desc, sr, blk] { juce::String e2; return app.plugins.create (desc, sr, blk, e2); }, false);
+            }
             app.plugins.showEditor (slot.getProcessorUnsafe());
         }
     }
@@ -481,10 +631,12 @@ juce::TextButton* makeToggle (juce::Component& parent, juce::OwnedArray<juce::Te
 class SendPanel : public juce::Component, private juce::Timer
 {
 public:
-    SendPanel (AppContext& a, MixerState& m, const juce::Uuid& src, const juce::Uuid& dest, std::function<void()> changed)
+    using ForOthers = std::function<void (const std::function<void (GangMember&)>&)>;
+    SendPanel (AppContext& a, MixerState& m, const juce::Uuid& src, const juce::Uuid& dest, std::function<void()> changed, ForOthers others = {}, bool destTrack = false)
         : app (a), mixer (m), srcId (src), destId (dest), onChanged (std::move (changed)), send (*app.project.sendsOf (m, src)->get (dest)),
-          slots (a, send.slots, kSendSlots)
+          slots (a, send.slots, kSendSlots), forOthers (std::move (others)), toTrack (destTrack)
     {
+        noModeSwap (fader);
         title.setText (app.project.nodeName (src) + "  >  " + app.project.nodeName (dest), juce::dontSendNotification);
         title.setFont (juce::FontOptions (13.0f, juce::Font::bold));
         addAndMakeVisible (title);
@@ -499,7 +651,9 @@ public:
         fader.onValueChange = [this]
         {
             const float db = fader.getValue() <= kSendOffDb + 0.05 ? -100.0f : (float) fader.getValue();
+            const float old = send.active() ? send.gainDb.get() : -100.0f;
             if (app.setSendLevel (mixer, srcId, destId, db) == SendResult::Refused) fader.setValue (kSendOffDb, juce::dontSendNotification);
+            else linked ([&] (GangMember& o) { nudgeSend (app, mixer, o.gangId(), destId, old, db, toTrack); });
             if (onChanged) onChanged();
         };
         addAndMakeVisible (fader);
@@ -514,17 +668,27 @@ public:
         postButton.setTooltip ("Take the send AFTER the channel fader: it follows the fader");
         preButton.setToggleState (send.pre.get(), juce::dontSendNotification);
         postButton.setToggleState (! send.pre.get(), juce::dontSendNotification);
-        preButton.onClick  = [this] { send.pre.set (true);  app.project.markDirty(); if (onChanged) onChanged(); };
-        postButton.onClick = [this] { send.pre.set (false); app.project.markDirty(); if (onChanged) onChanged(); };
+        preButton.onClick  = [this] { send.pre.set (true);  linkedSend ([] (SendState& o) { o.pre.set (true); });  app.project.markDirty(); if (onChanged) onChanged(); };
+        postButton.onClick = [this] { send.pre.set (false); linkedSend ([] (SendState& o) { o.pre.set (false); }); app.project.markDirty(); if (onChanged) onChanged(); };
         followMute.setButtonText ("Follow mute");
         followMute.setToggleState (send.followMute.get(), juce::dontSendNotification);
         followMute.setTooltip ("Ticked: muting the channel mutes this send too, whether it is taken before or after the fader. "
                                "Not ticked: the send carries on when the channel is muted (a solo elsewhere still silences it).");
-        followMute.onClick = [this] { send.followMute.set (followMute.getToggleState()); app.project.markDirty(); refreshMute(); if (onChanged) onChanged(); };
+        followMute.onClick = [this]
+        {
+            const bool on = followMute.getToggleState();
+            send.followMute.set (on); linkedSend ([on] (SendState& o) { o.followMute.set (on); });
+            app.project.markDirty(); refreshMute(); if (onChanged) onChanged();
+        };
         addAndMakeVisible (followMute);
         muteButton.setTooltip ("Mutes this send only (its level is kept). Lit red: muted. A red outline: the channel's own MUTE is silencing it (Follow mute is ticked).");
         muteButton.setToggleState (send.mute.get(), juce::dontSendNotification);
-        muteButton.onClick = [this] { send.mute.set (muteButton.getToggleState()); app.project.markDirty(); if (onChanged) onChanged(); };
+        muteButton.onClick = [this]
+        {
+            const bool on = muteButton.getToggleState();
+            send.mute.set (on); linkedSend ([on] (SendState& o) { o.mute.set (on); });
+            app.project.markDirty(); if (onChanged) onChanged();
+        };
         addAndMakeVisible (muteButton);
         insertsCaption.setText ("Inserts on this send only", juce::dontSendNotification);
         insertsCaption.setFont (juce::FontOptions (11.0f, juce::Font::bold));
@@ -554,6 +718,23 @@ public:
         slots.setBounds (r.removeFromTop (kSendSlots * 28));
     }
 private:
+    /** fn on every strip linked to this one right now (Shift + Alt held), and their strips shown again afterwards. */
+    void linked (const std::function<void (GangMember&)>& fn)
+    {
+        if (! forOthers) return;
+        forOthers ([&] (GangMember& o) { fn (o); o.gangRefresh(); });
+    }
+    /** fn on the same send (to the same place) of every linked strip; a send to an audio track only where that strip already has one. */
+    void linkedSend (const std::function<void (SendState&)>& fn)
+    {
+        linked ([&] (GangMember& o)
+        {
+            auto* l = app.project.sendsOf (mixer, o.gangId());
+            if (l == nullptr || o.gangId() == destId) return;
+            auto* s = toTrack ? l->find (destId) : l->get (destId);
+            if (s != nullptr && (! toTrack || s->active())) fn (*s);
+        });
+    }
     void refreshMute()
     {
         if (muteButton.getToggleState() != send.mute.get()) muteButton.setToggleState (send.mute.get(), juce::dontSendNotification);
@@ -571,6 +752,7 @@ private:
     juce::ToggleButton followMute;
     SendMuteButton muteButton;
     SlotButtons slots;
+    ForOthers forOthers; bool toTrack = false;
 };
 
 /** A rotary dial that sends a channel to another channel: drag up / down to change the level, click once for the details.
@@ -579,8 +761,9 @@ class SendDial : public juce::Component, private juce::Timer
 {
 public:
     SendDial (AppContext& a, MixerState& m, const juce::Uuid& src, const juce::Uuid& dest, bool toTrack)
-        : app (a), mixer (m), srcId (src), destId (dest), destName (app.project.nodeName (dest))
+        : app (a), mixer (m), srcId (src), destId (dest), destName (app.project.nodeName (dest)), destIsTrack (toTrack)
     {
+        noModeSwap (knob);
         styleCaption (label, {}, juce::Justification::centred);
         label.setFont (juce::FontOptions (9.0f, juce::Font::bold));
         addAndMakeVisible (label);
@@ -593,7 +776,11 @@ public:
         {
             const float db = knob.getValue() <= kSendOffDb + 0.05 ? -100.0f : (float) knob.getValue();
             showValue();
+            auto* l = app.project.sendsOf (mixer, srcId);
+            auto* s0 = l != nullptr ? l->find (destId) : nullptr;
+            const float old = s0 != nullptr && s0->active() ? s0->gainDb.get() : -100.0f;
             if (app.setSendLevel (mixer, srcId, destId, db) == SendResult::Refused) refuse();
+            else if (forOthers) forOthers ([&] (GangMember& o) { nudgeSend (app, mixer, o.gangId(), destId, old, db, destIsTrack); o.gangRefresh(); });   // linked strips (Shift + Alt)
         };
         knob.onClickWithoutDrag = [this] { openPanel(); };
         juce::Component::SafePointer<SendDial> safe (this);
@@ -690,12 +877,15 @@ private:
         auto* l = app.project.sendsOf (mixer, srcId);
         if (l == nullptr) return;
         auto safe = juce::Component::SafePointer<SendDial> (this);
-        auto panel = std::make_unique<SendPanel> (app, mixer, srcId, destId, [safe] { if (safe != nullptr) safe->refreshFromModel(); });
+        auto panel = std::make_unique<SendPanel> (app, mixer, srcId, destId, [safe] { if (safe != nullptr) safe->refreshFromModel(); }, forOthers, destIsTrack);
         juce::CallOutBox::launchAsynchronously (std::move (panel), getScreenBounds(), nullptr);
     }
-    AppContext& app; MixerState& mixer; juce::Uuid srcId, destId; juce::String destName;
+    AppContext& app; MixerState& mixer; juce::Uuid srcId, destId; juce::String destName; bool destIsTrack = false;
     bool refused = false, ownMute = false, channelMute = false;
     juce::Label label, value; Knob knob;
+public:
+    /** Set by a channel strip: runs a function on every strip linked to it right now (Shift + Alt held, see StripGang). */
+    SendPanel::ForOthers forOthers;
 };
 
 // ============================================================================ strips
@@ -790,12 +980,26 @@ public:
     void mouseDown (const juce::MouseEvent& e) override
     {
         if (appPtr == nullptr || nodeId.isNull()) return;
+        if (plateRect().contains (e.getPosition()) && plateClicked (e)) return;          // an audio track's name plate: selects it (see StripGang)
         const auto area = bandRect().contains (e.getPosition()) ? bandRect() : plateRect().contains (e.getPosition()) ? plateRect() : juce::Rectangle<int>();
         if (area.isEmpty()) return;
         showColourPickerAt (*appPtr, nodeId, area.translated (getScreenX(), getScreenY()));
     }
+    /** Selected strips have an outline: thin while they are only selected, bold and orange while Shift + Alt link them. */
+    void paintOverChildren (juce::Graphics& g) override
+    {
+        const int look = gangLook();
+        if (look == 0) return;
+        const auto c = look == 2 ? juce::Colour (0xffff9f1c) : juce::Colour (0xff29b6ff);
+        g.setColour (c); g.drawRoundedRectangle (getLocalBounds().toFloat().reduced (look == 2 ? 1.5f : 1.0f), 6.0f, look == 2 ? 3.0f : 2.0f);
+        if (look == 2) { g.setColour (c.withAlpha (0.10f)); g.fillRoundedRectangle (getLocalBounds().toFloat().reduced (2.0f), 6.0f); }
+    }
 
 protected:
+    /** A click on the name plate: true if the strip dealt with it (else it is the colour picker, as on the coloured bar). */
+    virtual bool plateClicked (const juce::MouseEvent&) { return false; }
+    /** 0: not selected; 1: selected; 2: selected and linked right now (Shift + Alt held). */
+    virtual int gangLook() const { return 0; }
     virtual juce::String bandText() const { return {}; }
     virtual juce::String plateText() const { return {}; }
     juce::Rectangle<int> bandRect() const  { return { 1, 1, getWidth() - 2, kBandH }; }
@@ -918,16 +1122,29 @@ private:
     juce::TextButton button; juce::ComboBox box; juce::ToggleButton mainBox; std::vector<juce::Uuid> ids;
 };
 
-class ChannelStrip : public StripBase
+class ChannelStrip : public StripBase, public GangMember
 {
 public:
-    ChannelStrip (AppContext& a, MixerState& m, const TrackDef& t, int slotCount)
+    ChannelStrip (AppContext& a, MixerState& m, const TrackDef& t, int slotCount, StripGang* g = nullptr)
         : StripBase (&a, t.id), app (a), mixer (m), trackId (t.id), strip (*m.stripFor (t.id)), numCh (t.channelCount()),
           slots (a, strip.slots, slotCount),
-          fader ([this] (float db) { strip.gainDb.set (db); app.project.markDirty(); }, strip.gainDb.get()),
-          outRow (a, m, t.id, true, false, &strip.outOn, &strip.outDest)
+          fader ([this] (float db) { const float old = strip.gainDb.get(); strip.gainDb.set (db); app.project.markDirty(); linkFader (old, db); }, strip.gainDb.get()),
+          outRow (a, m, t.id, true, false, &strip.outOn, &strip.outDest), gang (g)
     {
         nSlots = slotCount;
+        if (gang != nullptr)
+        {
+            gang->members.push_back (this);
+            juce::Component::SafePointer<ChannelStrip> safe (this);
+            slots.gangSlots = [safe]
+            {
+                std::vector<InsertSlot*> v;
+                if (safe != nullptr && safe->gang != nullptr) safe->gang->forOthers (safe->trackId, [&] (GangMember& o) { v.push_back (o.gangState().slots); });
+                return v;
+            };
+            slots.gangRefresh = [safe] { if (safe != nullptr && safe->gang != nullptr) for (auto* o : safe->gang->members) if (safe->gang->isSelected (o->gangId())) o->gangRefresh(); };
+        }
+
         addAndMakeVisible (outRow);
         // the ASIO input(s) of this track: the same setting as in the main window and the Project Designer
         const int nBoxes = numCh == 2 ? 2 : 1;
@@ -993,7 +1210,13 @@ public:
             s->setTooltip (numCh == 2 ? juce::String (c == 0 ? "Where the LEFT channel of this track is placed (left .. right). " : "Where the RIGHT channel of this track is placed (left .. right). ")
                                             + "Double-click goes back to hard " + (c == 0 ? "left" : "right") + "; click the read-out beside it to type a position."
                                       : juce::String ("Pan (left .. right). Double-click centres it; click the read-out beside it to type a position."));
-            s->onValueChange = [this, s, v, &p] { p.set ((float) s->getValue()); v->setText (panText ((float) s->getValue()), juce::dontSendNotification); app.project.markDirty(); };
+            s->onValueChange = [this, s, v, &p, c]
+            {
+                const float old = p.get();
+                p.set ((float) s->getValue()); v->setText (panText ((float) s->getValue()), juce::dontSendNotification); app.project.markDirty();
+                linkPan (c, (float) s->getValue() - old);
+            };
+            noModeSwap (*s);
             addAndMakeVisible (s);
         }
 
@@ -1001,12 +1224,36 @@ public:
         solo = makeToggle (*this, toggles, "S", juce::Colour (0xfff2c200));
         solo->setColour (juce::TextButton::textColourOnId, juce::Colours::black);
         mute->setTooltip ("Mute (this mixer only)"); solo->setTooltip ("Solo (this mixer only)");
-        mute->onClick = [this] { strip.mute.set (mute->getToggleState()); app.project.markDirty(); };
-        solo->onClick = [this] { strip.solo.set (solo->getToggleState()); app.project.markDirty(); };
+        mute->onClick = [this] { const bool on = mute->getToggleState(); strip.mute.set (on); linkAll ([on] (StripState& o) { o.mute.set (on); }); app.project.markDirty(); };
+        solo->onClick = [this] { const bool on = solo->getToggleState(); strip.solo.set (on); linkAll ([on] (StripState& o) { o.solo.set (on); }); app.project.markDirty(); };
         mute->setToggleState (strip.mute.get(), juce::dontSendNotification);
         solo->setToggleState (strip.solo.get(), juce::dontSendNotification);
         addAndMakeVisible (fader);
+        fader.noModeSwap();
         refreshFromModel();
+    }
+    ~ChannelStrip() override
+    {
+        if (gang != nullptr) gang->members.erase (std::remove (gang->members.begin(), gang->members.end(), static_cast<GangMember*> (this)), gang->members.end());
+    }
+
+    // ---- GangMember
+    juce::Uuid gangId() const override { return trackId; }
+    StripState& gangState() override { return strip; }
+    int gangChannels() const override { return numCh; }
+    juce::Component& gangComponent() override { return *this; }
+    void gangRefresh() override
+    {
+        mute->setToggleState (strip.mute.get(), juce::dontSendNotification);
+        solo->setToggleState (strip.solo.get(), juce::dontSendNotification);
+        for (int c = 0; c < pans.size(); ++c)
+        {
+            Param& p = numCh == 2 ? (c == 0 ? strip.panL : strip.panR) : strip.pan;
+            if (! pans[c]->isMouseButtonDown()) pans[c]->setValue (p.get(), juce::dontSendNotification);
+            panValues[c]->setText (panText (p.get()), juce::dontSendNotification);
+        }
+        for (auto* d : dials) d->refreshFromModel();
+        slots.refresh();
     }
 
     void fillInputs()
@@ -1040,6 +1287,11 @@ public:
     void refreshFromModel() override
     {
         setLatencyTip (shownLatency(), mixer);
+        if (gang != nullptr)
+            setTooltip (getTooltip() + "\n\nClick the name plate to select this strip (Shift + click another: every strip in between; Ctrl + click: one more or one less). "
+                        "Hold Shift + Alt and whatever you do to one selected strip happens to all of them: faders, sends and pans move by the same amount; "
+                        "M, S, a send's MUTE / PRE; inserting, removing or bypassing a plug-in (hold the keys as you choose it in the menu, or drop a copy with them held). "
+                        "Right-click the name plate to hide strips from this mixer (+ Strip shows them again).");
         repaint();
         slots.refresh();
         refreshInputs();
@@ -1072,6 +1324,8 @@ public:
         auto addDial = [this] (const juce::Uuid& dest, bool toTrack)
         {
             auto* d = dials.add (new SendDial (app, mixer, trackId, dest, toTrack));
+            juce::Component::SafePointer<ChannelStrip> safe (this);
+            d->forOthers = [safe] (const std::function<void (GangMember&)>& fn) { if (safe != nullptr && safe->gang != nullptr) safe->gang->forOthers (safe->trackId, fn); };
             addAndMakeVisible (d);
         };
         for (auto& b : app.project.buses) if (! b.external) addDial (b.id, false);
@@ -1179,7 +1433,92 @@ public:
 protected:
     juce::String bandText() const override { return numCh == 1 ? "AUDIO  MONO" : numCh == 2 ? "AUDIO  STEREO" : "AUDIO  " + juce::String (numCh) + " CH"; }
     juce::String plateText() const override { auto* t = app.project.findTrack (trackId); return t != nullptr ? t->name : juce::String(); }
+    int gangLook() const override { return gang == nullptr || ! gang->isSelected (trackId) ? 0 : gang->linked (trackId) ? 2 : 1; }
+    bool plateClicked (const juce::MouseEvent& e) override
+    {
+        if (gang == nullptr) return false;
+        if (e.mods.isPopupMenu()) { plateMenu(); return true; }
+        gang->click (trackId, e.mods);
+        return true;
+    }
 
+private:
+    /** The fader moved from oldDb to newDb: every linked strip's fader moves by as many dB (each keeps its own level; -inf counts as the bottom of the fader). */
+    void linkFader (float oldDb, float newDb)
+    {
+        if (gang == nullptr) return;
+        auto fl = [] (float v) { return v <= -79.5f ? -80.0f : v; };
+        const float d = fl (newDb) - fl (oldDb);
+        if (std::abs (d) < 1.0e-4f) return;
+        gang->forOthers (trackId, [&] (GangMember& o)
+        {
+            auto& st = o.gangState();
+            const float nv = juce::jlimit (-80.0f, 12.0f, fl (st.gainDb.get()) + d);
+            st.gainDb.set (nv <= -79.5f ? -100.0f : nv);
+        });                                                       // (their faders follow on the next meter tick)
+    }
+    /** Pan 'side' (0 / 1 of a stereo strip, 0 of a mono one) moved by d: the linked strips' pans move by as much - a stereo strip's same side, or both
+        sides when the strip moved is mono; a mono strip's one pan. */
+    void linkPan (int side, float d)
+    {
+        if (gang == nullptr || std::abs (d) < 1.0e-6f) return;
+        gang->forOthers (trackId, [&] (GangMember& o)
+        {
+            auto& st = o.gangState();
+            auto move = [d] (Param& p) { p.set (juce::jlimit (-1.0f, 1.0f, p.get() + d)); };
+            if (o.gangChannels() == 2) { if (numCh == 2) move (side == 0 ? st.panL : st.panR); else { move (st.panL); move (st.panR); } }
+            else move (st.pan);
+            o.gangRefresh();
+        });
+    }
+    void linkAll (const std::function<void (StripState&)>& fn)
+    {
+        if (gang == nullptr) return;
+        gang->forOthers (trackId, [&] (GangMember& o) { fn (o.gangState()); o.gangRefresh(); });
+    }
+    /** Right-click on the name plate: colour, select, and hide strips from this mixer. */
+    void plateMenu()
+    {
+        juce::PopupMenu m;
+        const bool sel = gang->isSelected (trackId);
+        const int n = sel ? (int) gang->selected.size() : 1;
+        m.addItem (1, "Colour...");
+        m.addSeparator();
+        m.addItem (2, n > 1 ? "Hide the " + juce::String (n) + " selected strips from this mixer" : "Hide this strip from this mixer");
+        m.addSeparator();
+        m.addItem (3, "Select every audio strip");
+        m.addItem (4, "Select none", ! gang->selected.empty());
+        juce::Component::SafePointer<ChannelStrip> safe (this);
+        const auto where = plateRect().translated (getScreenX(), getScreenY());
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea (where), [safe, where] (int r)
+        {
+            if (safe == nullptr || r == 0) return;
+            auto& self = *safe;
+            if (r == 1) { showColourPickerAt (self.app, self.trackId, where); return; }
+            if (r == 3) { self.gang->selectAll(); return; }
+            if (r == 4) { self.gang->clear(); return; }
+            if (r == 2)
+            {
+                std::vector<juce::Uuid> ids;
+                if (self.gang->isSelected (self.trackId)) ids = self.gang->selected; else ids.push_back (self.trackId);
+                hideStrips (self.app, self.mixer, ids);            // (the window is rebuilt: 'self' is gone after this)
+            }
+        });
+    }
+public:
+    /** Takes audio tracks out of mixer m: no strips in its window, nothing of them in its mix (a solo on them is let go of first). The + Strip button
+        shows them again. */
+    static void hideStrips (AppContext& app, MixerState& m, const std::vector<juce::Uuid>& ids)
+    {
+        for (auto& id : ids)
+        {
+            if (! m.isStripHidden (id)) m.hiddenStrips.push_back (id);
+            m.stripFor (id)->solo.set (false);
+        }
+        app.engine.rebuildPlan();
+        app.project.markDirty();
+        app.project.structureChanged();
+    }
 private:
     AppContext& app; MixerState& mixer; juce::Uuid trackId; StripState& strip; int numCh;
     bool updating = false;
@@ -1192,6 +1531,7 @@ private:
     juce::OwnedArray<juce::TextButton> toggles;
     juce::TextButton *mute = nullptr, *solo = nullptr;
     SlotButtons slots; FaderBlock fader; StripOutputRow outRow;
+    StripGang* gang = nullptr;
 };
 
 /** An Int Bus (fed by dials on audio tracks and other buses; goes on through its own dials)
@@ -1605,7 +1945,7 @@ public:
         monoButton.onClick = [this] { if (auto* mx = mixerState()) mx->monoCheck.store (monoButton.getToggleState()); };
         addAndMakeVisible (monoButton);
         addStripButton.setButtonText ("+ Strip...");
-        addStripButton.setTooltip ("Add a strip to the project: an Int Bus, an Ext Bus or a VCA (a fader that controls the level of other strips). Int and Ext Buses are added to the whole project (every mixer); a VCA is added to this mixer.");
+        addStripButton.setTooltip ("Add a strip to the project: an Int Bus, an Ext Bus or a VCA (a fader that controls the level of other strips). Int and Ext Buses are added to the whole project (every mixer); a VCA is added to this mixer. Audio strips hidden from this mixer are shown again from here too.");
         addStripButton.onClick = [this] { chooseNewStrip(); };
         addAndMakeVisible (addStripButton);
         styleCaption (widthCap, "STRIP WIDTH"); addAndMakeVisible (widthCap);
@@ -1670,13 +2010,27 @@ private:
         for (auto& v : app.project.vcas)
             if (! (mx->vcaShown.load() & (1u << (v.number - 1)))) { hidden.push_back (v.id); vca.addItem (100 + (int) hidden.size() - 1, "VCA " + v.label() + "  (already in the project)"); }
         m.addSubMenu ("VCA", vca);
+        juce::PopupMenu shows;                                     // audio tracks hidden from this mixer (right-click a name plate: Hide)
+        std::vector<juce::Uuid> hiddenTracks;
+        for (auto& t : app.project.tracks) if (mx->isStripHidden (t.id)) { hiddenTracks.push_back (t.id); shows.addItem (500 + (int) hiddenTracks.size() - 1, t.name); }
+        if (! hiddenTracks.empty()) { shows.addSeparator(); shows.addItem (499, "All of them (" + juce::String ((int) hiddenTracks.size()) + ")"); }
+        m.addSeparator();
+        m.addSubMenu ("Show a hidden audio strip again", shows, ! hiddenTracks.empty());
         const auto mid = mixer;
-        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addStripButton), [this, mid, hidden] (int r)
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addStripButton), [this, mid, hidden, hiddenTracks] (int r)
         {
             if (r <= 0) return;
             MixerState* mx2 = nullptr;
             for (auto& mm : app.project.mixers) if (mm->id == mid) mx2 = mm.get();
             if (mx2 == nullptr) return;
+            if (r == 499 || (r >= 500 && (size_t) (r - 500) < hiddenTracks.size()))
+            {
+                auto& h = mx2->hiddenStrips;
+                if (r == 499) h.clear();
+                else h.erase (std::remove (h.begin(), h.end(), hiddenTracks[(size_t) (r - 500)]), h.end());
+                app.engine.rebuildPlan(); app.project.markDirty(); app.project.structureChanged();
+                return;
+            }
             if (app.engine.isRecording()) { showError ("Recording", "Strips cannot be added while recording."); return; }
             if (r == 1 || r == 2)
             {
@@ -1734,8 +2088,19 @@ public:
     int getNumStrips() const noexcept { return strips.size(); }
     int getNaturalHeight() const noexcept { return naturalH; }
     void refreshFromModel() { for (auto* s : strips) s->refreshFromModel(); }
-    void tick() { for (auto* s : strips) s->tick(); }
+    void tick() { gang.tick(); for (auto* s : strips) s->tick(); }
     void resetPeaks() { for (auto* s : strips) s->resetPeaks(); }
+    /** After a rebuild: a selected strip that is no longer there (hidden, its track deleted) is no longer selected. */
+    void pruneGang()
+    {
+        auto& sel = gang.selected;
+        sel.erase (std::remove_if (sel.begin(), sel.end(), [this] (const juce::Uuid& id)
+        {
+            for (auto* mm : gang.members) if (mm->gangId() == id) return false;
+            return true;
+        }), sel.end());
+    }
+    StripGang gang;                                        // (declared before the strips: it outlives them)
 private:
     juce::OwnedArray<StripBase> strips;
     juce::Array<int> widths;
@@ -1982,10 +2347,12 @@ void MixerComponent::rebuild()
     juce::Array<ChannelStrip*> chans; juce::Array<BusStrip*> busStrips;
     for (auto& t : app.project.tracks)
     {
-        auto* cs = new ChannelStrip (app, *m, t, slotCount);
+        if (m->isStripHidden (t.id)) continue;                    // taken out of this mixer (+ Strip shows it again)
+        auto* cs = new ChannelStrip (app, *m, t, slotCount, &holder->gang);
         chans.add (cs); maxDials = juce::jmax (maxDials, cs->dialCount());
         holder->add (cs);
     }
+    holder->pruneGang();
     for (int pass = 0; pass < 2; ++pass)                          // Int Buses first, then Ext Buses
         for (auto& b : app.project.buses)
             if (b.external == (pass == 1))

@@ -102,12 +102,13 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
         else flat.push_back ({ i, tokensOf (S[(size_t) i].file.getFileNameWithoutExtension()), S[(size_t) i].file.getFileNameWithoutExtension() });
     }
 
-    // ---- names like "A Winter Ride 015_piano-L.wav": <piece> <take number>_<instrument or mic>[-L|-R|-C]. Every file that follows this pattern
-    //      is placed by what its name says: all takes of one piece share the same tracks (one per instrument / mic name).
+    // ---- names like "A Winter Ride 015_piano-L.wav": <piece> <take number>_<instrument or mic>[-L|-R|-C] (Pyramix). The piece may be missing
+    //      ("001_1-C.wav", "0_OMNI-L.wav") and several pieces may be in one import ("CT TEST 002_1-C" beside "104_1-C"). Every file that follows
+    //      this pattern is placed by what its name says: every take shares the same tracks (one per instrument / mic name).
     {
-        static const std::regex pat (R"(^(.*?)[ ]+(\d{2,4})_(.+)$)");
+        static const std::regex pat (R"(^(?:(.*?)[ ]+)?(\d{1,4})_(.+)$)");
         static const std::regex patNoNumber (R"(^(.*?)_(.+)$)");          // "LV1 - Gravity_Omni-L": Pyramix leaves the number off the first take
-        struct Hit { int idx; juce::String piece, inst; int num; };
+        struct Hit { int idx; juce::String piece, inst; int num; bool strict = true; };    // strict: a piece name and 2 - 4 digits (what this pattern was before 2.78)
         // the same piece may be spelt a little differently ("LV01 - Gravity" / "LV1 - Gravity"): numbers are compared without their leading zeros
         auto pieceKey = [] (const juce::String& piece)
         {
@@ -132,9 +133,10 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
         for (int k = 0; k < (int) flat.size(); ++k)
         {
             std::smatch m; const std::string stem = flat[(size_t) k].stem.toStdString();
-            if (std::regex_match (stem, m, pat) && m[1].length() > 0 && ! instIsNumber (juce::String (m[3].str())))
+            if (std::regex_match (stem, m, pat) && ! instIsNumber (juce::String (m[3].str())))
             {
-                hits.push_back ({ k, juce::String (m[1].str()).trim(), juce::String (m[3].str()).trim(), juce::String (m[2].str()).getIntValue() });
+                hits.push_back ({ k, juce::String (m[1].str()).trim(), juce::String (m[3].str()).trim(), juce::String (m[2].str()).getIntValue(),
+                                  m[1].length() > 0 && m[2].length() >= 2 });
                 numberedPieces.insert (pieceKey (hits.back().piece));
             }
         }
@@ -147,7 +149,20 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
                 if (std::regex_match (stem, m, patNoNumber) && m[1].length() > 0 && numberedPieces.count (pieceKey (juce::String (m[1].str()).trim())) != 0)
                     hits.push_back ({ k, juce::String (m[1].str()).trim(), juce::String (m[2].str()).trim(), 0 });       // the take without a number comes first
             }
-        if (hits.size() >= 2 && hits.size() * 5 >= flat.size() * 4)       // at least 80 % of the files follow the pattern
+        bool shared = false;                                               // the takes must share their tracks ("01_Kick", "02_Snare" are one take's tracks, not takes)
+        {
+            std::map<std::pair<juce::String, int>, std::set<juce::String>> g; std::set<juce::String> all;
+            auto instKey = [] (juce::String inst) { if (inst.endsWithIgnoreCase ("-C") || inst.endsWithIgnoreCase ("_C")) inst = inst.dropLastCharacters (2).trim(); return inst.toLowerCase(); };
+            for (auto& h : hits) { g[{ pieceKey (h.piece), h.num }].insert (instKey (h.inst)); all.insert (instKey (h.inst)); }
+            size_t biggest = 0; for (auto& kv : g) biggest = juce::jmax (biggest, kv.second.size());
+            shared = g.size() >= 2 && biggest >= 2 && (double) all.size() <= 1.5 * (double) biggest;
+            if (g.size() == 1)                                             // one take ("Song 001_gtr-L", "Song 001_gtr-R"): only in the strict form
+            {
+                shared = true;
+                for (auto& h : hits) if (! h.strict) shared = false;
+            }
+        }
+        if (shared && hits.size() >= 2 && hits.size() * 5 >= flat.size() * 4)       // at least 80 % of the files follow the pattern
         {
             std::map<juce::String, std::map<juce::String, int>> spellings;      // piece key -> spelling -> how often
             for (auto& h : hits) spellings[pieceKey (h.piece)][h.piece]++;

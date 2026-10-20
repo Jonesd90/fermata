@@ -1006,6 +1006,12 @@ var Project::mixerToVar (const MixerState& mref) const
     put (o, "mainFlags", true);                            // (the main outputs are the Ext buses' own "main" ticks; older projects had one "mainBus")
     if (m->followProcessing.get()) put (o, "followProcessing", true);
     put (o, "ditherBits", m->ditherBits.load());
+    if (! m->hiddenStrips.empty())                         // tracks taken out of this mixer (only those the project still has)
+    {
+        juce::Array<var> hid;
+        for (auto& h : m->hiddenStrips) for (auto& t : tracks) if (t.id == h) { hid.add (h.toString()); break; }
+        if (! hid.isEmpty()) put (o, "hiddenStrips", hid);
+    }
     juce::Array<var> fxs;
     for (auto& f : buses)
     {
@@ -1318,6 +1324,8 @@ bool Project::fromVar (const var& root)
                 if (! mainId.isNull()) m->busFor (mainId)->isMain.set (true);
             }
             m->followProcessing.set ((bool) v.getProperty ("followProcessing", false) && m->editId.isNull());
+            if (auto* hs = v["hiddenStrips"].getArray())
+                for (auto& h : *hs) if (h.toString().isNotEmpty()) m->hiddenStrips.push_back (juce::Uuid (h.toString()));
             mixers.push_back (std::move (m));
         }
 

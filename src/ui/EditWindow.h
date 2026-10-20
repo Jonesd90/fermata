@@ -20,6 +20,7 @@ public:
     void mouseDown (const juce::MouseEvent&) override;
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void goToSeconds (double seconds) { goTo (seconds); }       // (the timeline's feedback flags use it)
+    void removeTracks (const std::vector<juce::Uuid>& ids) { for (auto& t : ids) removeTrackFromEdit (t); }   // (the timeline's name menu)
     void filesDropped (const juce::StringArray& files, int x, int y) override;
 
 private:

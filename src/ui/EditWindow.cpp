@@ -77,6 +77,37 @@ public:
     mutable std::vector<TrackDef> rowsCache;
     juce::Uuid clipMoveRegion, clipMoveTrack; int clipMoveToRow = -1;   // Shift + drag: one track's clip of a piece moves to another track, staying at the same time
     int rowDragFrom = -1, rowDragTo = -1;       // dragging a track's name up or down to move the track (the edit's order only)
+    std::vector<juce::Uuid> selectedTracks;     // track names picked (click; Shift + click: every track in between; Ctrl + click: one more / less) - right-click: remove them
+    juce::Uuid trackAnchor;
+    bool trackSelected (const juce::Uuid& id) const { return std::find (selectedTracks.begin(), selectedTracks.end(), id) != selectedTracks.end(); }
+    /** A click on a track's name: on its own = only this track (or none, if it was the only one); Shift = every track from the last one clicked to
+        this one; Ctrl = this one in or out. */
+    void clickTrackName (const juce::Uuid& id, const juce::ModifierKeys& mods)
+    {
+        const auto& rows = rowTracks();
+        auto rowOfId = [&] (const juce::Uuid& t) { for (size_t i = 0; i < rows.size(); ++i) if (rows[i].id == t) return (int) i; return -1; };
+        const bool ctrl = mods.isCtrlDown() || mods.isCommandDown();
+        const int a = rowOfId (trackAnchor), b = rowOfId (id);
+        if (mods.isShiftDown() && a >= 0 && b >= 0)
+        {
+            if (! ctrl) selectedTracks.clear();
+            std::vector<juce::Uuid> add; for (int i = juce::jmin (a, b); i <= juce::jmax (a, b); ++i) add.push_back (rows[(size_t) i].id);
+            for (auto& t : add) if (! trackSelected (t)) selectedTracks.push_back (t);
+        }
+        else if (ctrl)
+        {
+            if (trackSelected (id)) selectedTracks.erase (std::remove (selectedTracks.begin(), selectedTracks.end(), id), selectedTracks.end());
+            else selectedTracks.push_back (id);
+            trackAnchor = id;
+        }
+        else
+        {
+            if (! mods.isShiftDown() && selectedTracks.size() == 1 && selectedTracks.front() == id) selectedTracks.clear();
+            else selectedTracks.assign (1, id);
+            trackAnchor = id;
+        }
+        repaint();
+    }
 
     /** The viewport would use the arrow keys to scroll: hand every key straight to the edit window instead (it zooms with them). */
     bool keyPressed (const juce::KeyPress& k) override
@@ -217,11 +248,12 @@ public:
             }
         switch (bits)
         {
-            case ctrl:         return { "Click a piece: select it whole (then drag it to move it); Ctrl + click more pieces to add them", "Ctrl + Z / Ctrl + Y: undo / redo" };
+            case ctrl:         return { "Click a piece: select it whole (then drag it to move it); Ctrl + click more pieces to add them", "Click a track's name: add it to the selection or take it out", "Ctrl + Z / Ctrl + Y: undo / redo" };
             case alt:  case alt | shift:
                                return { "Drag: lasso - selects every piece it touches" };
             case ctrl | alt:   return { "Drag over audio: mark 1 - 2 on only the tracks you drag over" };
-            case shift:  case ctrl | alt | shift:
+            case shift:        return { "Drag a track's clip: move it to another track (same time)", "Click a track's name: select every track from the last one clicked" };
+            case ctrl | alt | shift:
                                return { "Drag a track's clip: move it to another track (same time)" };
             case ctrl | shift: return { "Ctrl + Shift + Z: redo" };
             default:           return {};
@@ -534,6 +566,12 @@ public:
             g.setColour (tc.withAlpha (0.20f)); g.fillRect (r);
             g.setColour (tc); g.fillRect (r.removeFromLeft (6));
             g.setColour (tc.darker (0.3f).withAlpha (0.8f)); g.fillRect (sx, top + (int) i * rowH + rowH - 1, kNameW, 1);
+            if (! busView && trackSelected (tracks[i].id))                                  // a selected name (right-click: remove the selected tracks)
+            {
+                const auto sel = juce::Rectangle<int> (sx, top + (int) i * rowH, kNameW, rowH);
+                g.setColour (juce::Colour (0xff29b6ff).withAlpha (0.22f)); g.fillRect (sel);
+                g.setColour (juce::Colour (0xff29b6ff)); g.drawRect (sel.reduced (1), 2);
+            }
             g.setColour (theme::text); g.setFont (14.0f);
             if (lanesOn (*e))
             {
@@ -637,22 +675,50 @@ public:
             }
         }
         if (lanesOn (*ed) && automationMouseDown (e, *ed)) return;
-        if (e.mods.isPopupMenu() && e.x >= viewport.getViewPositionX() && e.x < viewport.getViewPositionX() + kNameW && e.y >= kRulerH + kLaneH)   // right-click on a track name: its colour
+        if (e.mods.isPopupMenu() && e.x >= viewport.getViewPositionX() && e.x < viewport.getViewPositionX() + kNameW && e.y >= kRulerH + kLaneH)   // right-click on a track name: colour, remove
         {
             const int row = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
             if (juce::isPositiveAndBelow (row, (int) rowTracks().size()))
             {
                 const auto id = rowTracks()[(size_t) row].id;
+                const auto name = rowTracks()[(size_t) row].name;
                 const auto pos = juce::Desktop::getMousePosition();
-                showColourPickerAt (app, id, juce::Rectangle<int> (pos, pos).expanded (4));
+                const auto where = juce::Rectangle<int> (pos, pos).expanded (4);
+                if (busView) { showColourPickerAt (app, id, where); return; }      // (a bus / VCA row: only its colour)
+                juce::PopupMenu m;
+                m.addItem ("Colour...", [this, id, where] { showColourPickerAt (app, id, where); });
+                m.addSeparator();
+                juce::Component::SafePointer<EditTimeline> safe (this);
+                auto removeIds = [safe] (std::vector<juce::Uuid> ids)
+                {
+                    if (safe == nullptr) return;
+                    if (auto* w = safe->findParentComponentOfClass<EditWindowComponent>())
+                    {
+                        w->removeTracks (ids);
+                        safe->selectedTracks.clear(); safe->updateSize(); safe->repaint();
+                    }
+                };
+                if (trackSelected (id) && selectedTracks.size() > 1)
+                {
+                    const auto ids = selectedTracks;
+                    m.addItem ("Remove the " + juce::String ((int) ids.size()) + " selected tracks from this edit (their audio leaves it; Undo brings it back)", [removeIds, ids] { removeIds (ids); });
+                    m.addItem ("Select none", [this] { selectedTracks.clear(); repaint(); });
+                    m.addSeparator();
+                }
+                m.addItem ("Remove track '" + name + "' from this edit (its audio leaves it; Undo brings it back)", [removeIds, id] { removeIds ({ id }); });
+                m.showMenuAsync (juce::PopupMenu::Options());
             }
             return;
         }
         if (busView && e.y >= kRulerH + kLaneH) return;                    // the bus / VCA view has no audio to select or move, and its rows keep their order
-        if (! e.mods.isPopupMenu() && e.x >= viewport.getViewPositionX() && e.x < viewport.getViewPositionX() + kNameW && e.y >= kRulerH + kLaneH)   // a track's name: drag it to another row
+        if (! e.mods.isPopupMenu() && e.x >= viewport.getViewPositionX() && e.x < viewport.getViewPositionX() + kNameW && e.y >= kRulerH + kLaneH)   // a track's name: drag it to another row, or click it to select it
         {
             const int row = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
-            if (juce::isPositiveAndBelow (row, (int) rowTracks().size())) { rowDragFrom = row; rowDragTo = row; return; }
+            if (juce::isPositiveAndBelow (row, (int) rowTracks().size()))
+            {
+                if (e.mods.isShiftDown() || e.mods.isCtrlDown() || e.mods.isCommandDown()) { clickTrackName (rowTracks()[(size_t) row].id, e.mods); return; }
+                rowDragFrom = row; rowDragTo = row; return;
+            }
         }
         EditRegion* fadeHit = nullptr; bool fadeIn = true;
         if (! e.mods.isPopupMenu() && e.mods.isAltDown() && ! (e.mods.isCommandDown() || e.mods.isCtrlDown())
@@ -982,6 +1048,11 @@ public:
         if (rowDragFrom >= 0)
         {
             const int from = rowDragFrom, to = rowDragTo; rowDragFrom = rowDragTo = -1;
+            if (from == to && ! e.mouseWasDraggedSinceMouseDown() && juce::isPositiveAndBelow (from, (int) rowTracks().size()))   // a click (no drag): select the track
+            {
+                clickTrackName (rowTracks()[(size_t) from].id, e.mods);
+                setMouseCursor (juce::MouseCursor::NormalCursor); return;
+            }
             if (auto* ed = edit(); ed != nullptr && from != to && from >= 0 && to >= 0)
             {
                 app.project.materialiseEditTracks (*ed);

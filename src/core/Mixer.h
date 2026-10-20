@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.h"
+#include <algorithm>
 
 namespace td
 {
@@ -308,6 +309,11 @@ struct MixerState
     std::vector<std::unique_ptr<BusState>>    busPool;
     VcaState vcas[kMaxVcas];                                // by VCA number - 1
     std::atomic<juce::uint32> vcaShown { 0 };               // bit n set: the strip of VCA number n+1 is in this mixer (the processing mixer gets the VCAs of the design, other mixers add them with their + button)
+    /** Audio tracks taken out of THIS mixer (right-click a strip's name plate: Hide): no strip in its window, and nothing of the track reaches this
+        mixer's buses or outputs (the engine leaves its output and sends out of the plan). Its levels and plug-ins are kept for when it is shown
+        again (the + button). Message thread only. */
+    std::vector<juce::Uuid> hiddenStrips;
+    bool isStripHidden (const juce::Uuid& trackId) const { return std::find (hiddenStrips.begin(), hiddenStrips.end(), trackId) != hiddenStrips.end(); }
 
     /** Audio thread: what the VCAs in 'mask' do to a strip: their gains multiplied together, or 0 when one of them is muted. For the VCAs in
         'ownMask' the strip's own automated value (own[i]) is used instead of the VCA's fader. */

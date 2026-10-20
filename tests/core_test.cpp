@@ -260,6 +260,20 @@ int main()
     CHECK (std::abs (muteB[0] - base[0]) < 1e-6);
     mixB.stripFor (violaId)->mute.set (false);
 
+    SECTION ("2.78: a track hidden from one mixer reaches nothing in it (its levels are kept); the other mixer is untouched; saved and loaded");
+    {
+        mixB.hiddenStrips.push_back (violaId); eng.rebuildPlan();
+        auto hid = rig.measure (eng);
+        CHECK (hid[2] < base[2] * 0.95 && std::abs (hid[2] - muteB[2]) < 1e-5);     // as if muted in B
+        CHECK (std::abs (hid[0] - base[0]) < 1e-6);                                    // A untouched
+        CHECK (mixB.stripFor (violaId)->gainDb.get() == mixA.stripFor (violaId)->gainDb.get());
+        const auto saved = p.mixerToVar (mixB);
+        CHECK (saved["hiddenStrips"].size() == 1 && saved["hiddenStrips"][0].toString() == violaId.toString());
+        mixB.hiddenStrips.clear(); eng.rebuildPlan();
+        auto back = rig.measure (eng);
+        CHECK (std::abs (back[2] - base[2]) < 1e-6);
+    }
+
     SECTION ("insert slot processes audio and survives swapping");
     auto before = rig.measure (eng);
     mixB.stripFor (violaId)->slots[0].set (std::make_unique<HalfGain>(), 48000.0, Rig::block, 1);
@@ -2654,6 +2668,27 @@ int main()
                     CHECK (pyp.takes[0].number == 0 && pyp.takes[7].number == 7 && pyp.takes[3].parts.size() == 6 && pyp.takes[3].length == 48000 * 30);
                     CHECK (pyp.tracks[0].name == "1" && pyp.tracks[3].name == "4" && pyp.tracks[4].name == "OMNI" && pyp.tracks[4].channels == 2 && pyp.tracks[5].name == "Room");
                 }
+            }
+            // 2.78: the user's folder - Pyramix files with no piece ("0_1-C" ... "106_OMNI-L") AND a second series in it ("CT TEST_1-C", the first
+            // take with no number, "CT TEST 002_1-C" ...): 110 takes on ONE set of 12 tracks (2.77.3: 1320 tracks); a folder of one take's tracks
+            // numbered "01_Kick", "02_Snare" ... stays one take
+            {
+                std::vector<ImportSource> uf;
+                auto series = [&] (const juce::String& pre, int len, int t)
+                {
+                    for (int k = 1; k <= 8; ++k) uf.push_back (src (pre + "_" + juce::String (k) + "-C.wav", 1, len + (k == 3 && t % 5 == 0 ? 777 : 0)));
+                    for (auto st : { "OMNI", "ORTF", "Room", "Wides" }) for (auto side : { "-L", "-R" }) uf.push_back (src (pre + "_" + st + side + ".wav", 1, len));
+                };
+                for (int t = 0; t <= 106; ++t) series (t == 0 ? juce::String ("0") : juce::String (t).paddedLeft ('0', 3), 48000 * 10 + 4800 * t, t);
+                for (int t = 1; t <= 3; ++t) series (t == 1 ? juce::String ("CT TEST") : "CT TEST " + juce::String (t).paddedLeft ('0', 3), 48000 * 7 + 3000 * t, t);
+                auto up = joinStereoPairs (buildImportPlan (uf));
+                CHECK (up.takes.size() == 110 && up.tracks.size() == 12);
+                if (up.tracks.size() == 12) CHECK (up.tracks[0].name == "1" && up.tracks[7].name == "8" && up.tracks[8].name == "OMNI" && up.tracks[8].channels == 2);
+                bool all12 = true; for (auto& t : up.takes) all12 = all12 && t.parts.size() == 12;
+                CHECK (all12);
+                std::vector<ImportSource> one;
+                for (auto n : { "01_Kick", "02_Snare", "03_Hat", "04_Bass" }) one.push_back (src (juce::String (n) + ".wav", 1, 96000));
+                CHECK (buildImportPlan (one).takes.size() == 1);
             }
             // a whole session of mono files named "<piece> <take>_<instrument>-<L|R|C>": all takes share the same tracks
             {

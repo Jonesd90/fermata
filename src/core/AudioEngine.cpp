@@ -151,10 +151,12 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
         // the sends that are on, as edges: source -> destination
         struct Edge { int src, dst; SendState* st; };
         std::vector<Edge> edges, held;
+        // an audio track taken out of this mixer (MixerState::hiddenStrips) reaches nothing in it: no sends, no output
+        auto hidden = [&] (const Node& n) { return n.kind == NodeKind::Track && m->isStripHidden (n.strip->trackId); };
         for (size_t i = 0; i < nodes.size(); ++i)
         {
             SendList* list = nodes[i]->kind == NodeKind::Track ? &nodes[i]->strip->sends : nodes[i]->kind == NodeKind::IntBus ? &nodes[i]->bus->sends : nullptr;
-            if (list == nullptr) continue;
+            if (list == nullptr || hidden (*nodes[i])) continue;
             for (auto& s : list->pool)
             {
                 const int d = indexOfId (s->dest);
@@ -174,7 +176,7 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
                 Flag* on = nullptr; const juce::Uuid* dest = nullptr; SendState* st = nullptr;
                 if (nodes[i]->kind == NodeKind::Track)       { on = &nodes[i]->strip->outOn; dest = &nodes[i]->strip->outDest; st = &nodes[i]->strip->outSend; }
                 else if (nodes[i]->kind == NodeKind::IntBus) { on = &nodes[i]->bus->outOn;   dest = &nodes[i]->bus->outDest;   st = &nodes[i]->bus->outSend; }
-                if (on == nullptr || ! on->get()) continue;
+                if (on == nullptr || ! on->get() || hidden (*nodes[i])) continue;
                 const int d = dest->isNull() ? -1 : indexOfId (*dest);
                 if (d >= 0) { if (d != (int) i) edges.push_back ({ (int) i, d, st }); continue; }
                 for (int mi : mains) if (mi != (int) i) edges.push_back ({ (int) i, mi, st });   // 'Main' (or the chosen bus is gone): every main output
