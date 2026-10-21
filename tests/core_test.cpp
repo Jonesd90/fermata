@@ -4380,6 +4380,84 @@ int main()
             CHECK (r2[0] > 15.0 && r2[0] < 21.0);                               // two: their mean (18)
         }
     }
+    SECTION ("2.79 spectral denoise: a profile from boxes on the picture, the rest of the spectrum untouched, feathers in pitch and time, pieces of files");
+    {
+        const double sr = 48000.0; const int n = (int) (6.0 * sr);
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        // 6 s: steady hiss, a steady 60 Hz rumble (below the part that will be denoised), a 1 kHz tone from 2 to 4 s, and a click at 1.1 s (in the room-tone part: taken out with Alt)
+        std::vector<float> x ((size_t) n); juce::Random rnd (31);
+        for (int i = 0; i < n; ++i)
+        {
+            const float t = (float) i / (float) sr;
+            x[(size_t) i] = 0.003f * (rnd.nextFloat() * 2.0f - 1.0f) + 0.01f * std::sin (2.0f * 3.14159265f * 60.0f * t) + (t > 2.0f && t < 4.0f ? 0.05f * std::sin (2.0f * 3.14159265f * 1000.0f * t) : 0.0f);
+            if (t > 1.1f && t < 1.102f) x[(size_t) i] += 0.5f;
+        }
+        denoise::Params p;
+        std::vector<denoise::SelRect> sel { { 0.2, 1.8, 300.0, 24000.0, true }, { 1.0, 1.2, 0.0, 24000.0, false } };
+        CHECK (denoise::selected (sel, 0.5, 1000.0) && ! denoise::selected (sel, 1.1, 1000.0) && ! denoise::selected (sel, 0.5, 100.0) && ! denoise::selected (sel, 1.9, 1000.0));
+        const auto spans = denoise::selectedSpans (sel); CHECK (spans.size() == 1 && spans[0].first == 0.2 && spans[0].second == 1.8);
+        denoise::ProfileLearner learner; learner.add (x.data(), n, sr, p, sel, 0.0);
+        auto prof = learner.finish();
+        CHECK (prof.valid() && prof.limited() && (int) prof.weight.size() == prof.fftSize / 2 + 1);
+        auto binOf = [&] (double hz) { return (int) std::lround (hz * prof.fftSize / sr); };
+        CHECK (prof.weight[(size_t) binOf (100.0)] == 0.0f && prof.weight[(size_t) binOf (250.0)] == 0.0f && prof.weight[(size_t) binOf (400.0)] == 1.0f && prof.weight[(size_t) binOf (10000.0)] == 1.0f);
+        CHECK (std::abs (prof.psd[(size_t) binOf (100.0)] - prof.psd[(size_t) binOf (200.0)]) < 1.0e-9 * juce::jmax (prof.psd[(size_t) binOf (200.0)], 1.0));     // (uncovered bins: all the nearest covered one's power)
+        CHECK (prof.psd[(size_t) binOf (100.0)] > 0.3 * prof.psd[(size_t) binOf (330.0)] && prof.psd[(size_t) binOf (100.0)] < 3.0 * prof.psd[(size_t) binOf (330.0)]);
+        // the click at 1.1 s was taken out of the room tone: the profile is the hiss, not the click (a profile WITH the click is far louder)
+        std::vector<denoise::SelRect> withClick { { 0.2, 1.8, 300.0, 24000.0, true } };
+        denoise::ProfileLearner l2; l2.add (x.data(), n, sr, p, withClick, 0.0); const auto prof2 = l2.finish();
+        CHECK (prof2.levelDb() > prof.levelDb() + 3.0);
+        // the feather in pitch: 0 at the drawn edge rising to 1 half an octave above it, 1 everywhere else inside
+        auto feathered = prof; denoise::featherProfile (feathered, 0.5);
+        CHECK (feathered.weight[(size_t) binOf (100.0)] == 0.0f && feathered.weight[(size_t) binOf (310.0)] < 0.15f && feathered.weight[(size_t) binOf (360.0)] > 0.2f && feathered.weight[(size_t) binOf (360.0)] < 0.9f && feathered.weight[(size_t) binOf (450.0)] == 1.0f && feathered.weight[(size_t) binOf (5000.0)] == 1.0f);
+        // the whole stretch 0.5 - 5.5 s denoised in memory, with 0.2 s feathers in time: outside it bit for bit the input; the 60 Hz rumble (below the
+        // drawn part) untouched; the hiss above it down; the tone kept; the first sample of the stretch still the input (the feather starts at 0)
+        audioops::DenoiseRun run; run.a = (juce::int64) (0.5 * sr); run.b = (juce::int64) (5.5 * sr); run.featherIn = run.featherOut = (juce::int64) (0.2 * sr); run.threads = 2;
+        std::vector<std::vector<float>> y; juce::String err;
+        CHECK (audioops::denoiseTracks ({ x }, sr, { feathered }, {}, p, run, y, {}, err) && err.isEmpty() && y.size() == 1 && y[0].size() == x.size());
+        bool outsideSame = true;
+        for (int i = 0; i < n; ++i) if (i < run.a || i >= run.b) outsideSame = outsideSame && y[0][(size_t) i] == x[(size_t) i];
+        CHECK (outsideSame && y[0][(size_t) run.a] == x[(size_t) run.a]);
+        auto toneDb = [&] (const std::vector<float>& v, double hz, double t0, double t1)
+        {
+            double re = 0, im = 0; const int a0 = (int) (t0 * sr), a1 = (int) (t1 * sr);
+            for (int i = a0; i < a1; ++i) { const double ph = 2.0 * 3.14159265358979 * hz * i / sr; re += v[(size_t) i] * std::cos (ph); im -= v[(size_t) i] * std::sin (ph); }
+            return 20.0 * std::log10 (std::sqrt (re * re + im * im) / (a1 - a0) + 1e-20);
+        };
+        auto bandDb = [&] (const std::vector<float>& v, double f0, double f1, double t0, double t1)          // the energy between f0 and f1 (a coarse DFT at 50 Hz steps)
+        {
+            double e = 0.0; for (double hz = f0; hz < f1; hz += 50.0) { const double d = toneDb (v, hz, t0, t1); e += std::pow (10.0, d / 10.0); }
+            return 10.0 * std::log10 (e + 1e-20);
+        };
+        CHECK (std::abs (toneDb (y[0], 60.0, 2.5, 3.5) - toneDb (x, 60.0, 2.5, 3.5)) < 0.1);
+        CHECK (std::abs (toneDb (y[0], 1000.0, 2.5, 3.5) - toneDb (x, 1000.0, 2.5, 3.5)) < 1.0);
+        const double hissBefore = bandDb (x, 2000.0, 8000.0, 4.6, 5.2), hissAfter = bandDb (y[0], 2000.0, 8000.0, 4.6, 5.2);
+        std::printf ("  (spectral denoise: hiss 2 - 8 kHz %.1f -> %.1f dB, 60 Hz %.2f -> %.2f dB)\n", hissBefore, hissAfter, toneDb (x, 60.0, 2.5, 3.5), toneDb (y[0], 60.0, 2.5, 3.5));
+        CHECK (hissAfter < hissBefore - 8.0);
+        // a bin with weight 0 everywhere is a bit-exact pass: a profile that covers nothing above 24 kHz... simpler: weight 0 for all bins -> y == x inside the stretch too
+        { auto none = prof; std::fill (none.weight.begin(), none.weight.end(), 0.0f); std::vector<std::vector<float>> y0;
+          CHECK (audioops::denoiseTracks ({ x }, sr, { none }, {}, p, run, y0, {}, err) && y0[0] == x); }
+        // a piece of a file (an edit's piece and its handles): only [writeFrom, writeTo) is written, the handles copied, the stretch inside denoised
+        {
+            const auto dir = tmp.getChildFile ("denoise2"); dir.deleteRecursively(); dir.createDirectory();
+            std::vector<std::vector<float>> st { x, x };
+            const auto src = dir.getChildFile ("piece.wav"), dst = dir.getChildFile ("piece (denoise).wav");
+            CHECK (audioops::writeWav (src, st, sr));
+            audioops::DenoiseProfiles dp; dp.sampleRate = sr; dp.channels = 2; dp.perChannel = { feathered, feathered };
+            audioops::DenoiseRun pr; pr.writeFrom = (juce::int64) (1.0 * sr); pr.writeTo = (juce::int64) (5.0 * sr); pr.a = (juce::int64) (1.5 * sr); pr.b = (juce::int64) (4.5 * sr); pr.featherIn = pr.featherOut = (juce::int64) (0.1 * sr); pr.threads = 2;
+            CHECK (audioops::denoiseFiles (fm, { src }, { dst }, {}, { dp }, p, pr, {}, err) && err.isEmpty());
+            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (dst));
+            CHECK (rd != nullptr && rd->numChannels == 2 && rd->lengthInSamples == pr.writeTo - pr.writeFrom);
+            std::vector<std::vector<float>> o; audioops::readRange (*rd, 0, rd->lengthInSamples, o);
+            double dcopy = 0; for (int i = 0; i < (int) (0.5 * sr); ++i) dcopy = juce::jmax (dcopy, (double) std::abs (o[1][(size_t) i] - x[(size_t) (pr.writeFrom + i)]));
+            CHECK (dcopy < 2.0e-7);                                                                       // the handle: a copy (24-bit)
+            std::vector<float> shifted ((size_t) (pr.writeTo - pr.writeFrom)); for (size_t i = 0; i < shifted.size(); ++i) shifted[i] = o[0][i];
+            CHECK (bandDb (shifted, 2000.0, 8000.0, 3.1, 3.4) < bandDb (x, 2000.0, 8000.0, 4.1, 4.4) - 8.0);  // (3.1 s of the piece = 4.1 s of the file, inside the stretch: hiss down)
+            CHECK (std::abs (bandDb (shifted, 2000.0, 8000.0, 3.6, 3.9) - bandDb (x, 2000.0, 8000.0, 4.6, 4.9)) < 0.5);   // (past the stretch: as it was)
+            CHECK (std::abs (toneDb (shifted, 60.0, 1.5, 2.5) - toneDb (x, 60.0, 2.5, 3.5)) < 0.1);           // the rumble below the drawn part: as it was
+            dir.deleteRecursively();
+        }
+    }
     SECTION ("VCAs: numbers, members, gains, mute, save and load");
     {
         Project vp; vp.tracks.clear(); vp.buses.clear();

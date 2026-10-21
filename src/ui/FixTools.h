@@ -33,6 +33,9 @@ void pitchCurveEdit (AppContext&, const juce::Uuid& editId, juce::Component* par
 void pitchTabsEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
 /** Re-HarmoniSer: retunes individual out-of-tune notes in the marked part of all tracks, every track in the same way. */
 void reharmoniserEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
+/** Spectral Denoise: the marked part of all tracks as one spectrogram; draw boxes over the room tone (their pitch range limits what is denoised),
+    learn it, see and hear the result, and write the denoised pieces back into the edit (new files; Undo fix brings the originals back). */
+void denoiseEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
 
 /** Undoes the last pitch correction / repair (any window). */
 void undoLastFix (AppContext&);

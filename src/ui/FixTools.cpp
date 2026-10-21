@@ -1009,7 +1009,18 @@ public:
     double selT1() const { return juce::jmax (a.x, b.x); }
     double selF0() const { return juce::jmin (a.y, b.y); }   // Hz
     double selF1() const { return juce::jmax (a.y, b.y); }
-    void clearSelection() { hasSel = false; repaint(); if (onSelection) onSelection(); }
+    void clearSelection() { hasSel = false; extra.clear(); repaint(); if (onSelection) onSelection(); }
+    /** Several boxes (the spectral denoise window): a plain drag starts a fresh selection, Shift + drag ADDS a box to it, Alt + drag TAKES the dragged
+        area OUT of it. The box drawn last can still be resized by its edges; double-click clears them all. */
+    void setMultiSelect (bool on) { multi = on; if (! on) extra.clear(); }
+    bool hasAnySelection() const { return hasSel || ! extra.empty(); }
+    /** The selection as a list of boxes (seconds, Hz), earlier boxes first: each adds to or takes from what the ones before it made. */
+    std::vector<denoise::SelRect> selectionRects() const
+    {
+        auto v = extra;
+        if (hasSel) v.push_back (denoise::SelRect { selT0(), selT1(), selF0(), selF1(), curAdd });
+        return v;
+    }
     /** Seconds from the start of the area; < 0 hides the playhead. */
     void setPlayhead (double t) { if (std::abs (t - playT) > 1.0e-6) { playT = t; repaint(); } }
     /** The playhead you place by clicking the time ruler: where Play starts, and the point the zoom keys keep still. */
@@ -1141,7 +1152,34 @@ public:
                 if (surroundDir != 1) { box (t0 - 2.0 * dt * (1.0 - surroundAfter), t0, f0, f1); box (t1, t1 + 2.0 * dt * surroundAfter, f0, f1); }      // before and after the box: shared out by the before / after weighting (50/50 = equal, 0 = all before)
                 if (surroundDir != 0) { box (t0, t1, f1, f1 + df); box (t0, t1, f0 - df, f0); }          // above and below it
             }
-            if (hasSel)
+            if (multi && hasAnySelection())
+            {
+                // the boxes as one shape: what the adds made minus what the subtracts took out, then each box's outline (a subtract in red)
+                const auto rects = selectionRects();
+                const int W = plot.getWidth(), H = plot.getHeight();
+                if (W > 0 && H > 0)
+                {
+                    std::vector<unsigned char> mask ((size_t) W * (size_t) H, 0);
+                    for (auto& rc : rects)
+                    {
+                        const int x0 = juce::jlimit (0, W, tToX (rc.t0, plot) - plot.getX()), x1 = juce::jlimit (0, W, tToX (rc.t1, plot) - plot.getX());
+                        const int y0 = juce::jlimit (0, H, hzToY (rc.f1, plot) - plot.getY()), y1 = juce::jlimit (0, H, hzToY (rc.f0, plot) - plot.getY());
+                        for (int y = y0; y < y1; ++y) std::fill (mask.begin() + (size_t) y * (size_t) W + (size_t) x0, mask.begin() + (size_t) y * (size_t) W + (size_t) x1, rc.add ? 1 : 0);
+                    }
+                    juce::Image im (juce::Image::ARGB, W, H, true);
+                    { juce::Image::BitmapData bd (im, juce::Image::BitmapData::writeOnly);
+                      const juce::Colour fill (0x44ffd24a);
+                      for (int y = 0; y < H; ++y) for (int x = 0; x < W; ++x) if (mask[(size_t) y * (size_t) W + (size_t) x]) bd.setPixelColour (x, y, fill); }
+                    g.drawImageAt (im, plot.getX(), plot.getY());
+                }
+                for (size_t i = 0; i < rects.size(); ++i)
+                {
+                    const auto& rc = rects[i];
+                    juce::Rectangle<int> r (tToX (rc.t0, plot), hzToY (rc.f1, plot), juce::jmax (2, tToX (rc.t1, plot) - tToX (rc.t0, plot)), juce::jmax (2, hzToY (rc.f0, plot) - hzToY (rc.f1, plot)));
+                    g.setColour (rc.add ? juce::Colour (0xffffd24a) : juce::Colour (0xffff5a5a)); g.drawRect (r, i + 1 == rects.size() ? 2 : 1);
+                }
+            }
+            else if (hasSel)
             {
                 auto r = selRect();
                 g.setColour (juce::Colour (0x44ffd24a)); g.fillRect (r);
@@ -1189,6 +1227,13 @@ public:
             mode = Mode::resize; edgeMask = ed; return;
         }
         if (! pl.contains (e.getPosition())) return;
+        if (multi)
+        {
+            // Shift or Alt: the boxes so far are kept (the current one joins them); otherwise a fresh start
+            if (e.mods.isShiftDown() || e.mods.isAltDown()) { if (hasSel) extra.push_back (denoise::SelRect { selT0(), selT1(), selF0(), selF1(), curAdd }); }
+            else extra.clear();
+            curAdd = ! e.mods.isAltDown();
+        }
         mode = Mode::select; a = toTF (e.getPosition()); b = a; hasSel = true; repaint();
     }
     void mouseMove (const juce::MouseEvent& e) override
@@ -1441,6 +1486,7 @@ private:
     std::array<juce::Colour, 256> lut, lutD;
     SpectroSettings ss; bool mel = true; DetailPicture detail; bool detailStale = true; juce::int64 detailSeq = 0; PictureOptions detailOpt, lastOpt;
     bool hasSel = false; juce::Point<double> a, b; double playT = -1.0, cueT = -1.0;
+    bool multi = false, curAdd = true; std::vector<denoise::SelRect> extra;        // several boxes: the earlier ones, and whether the current one adds or subtracts
     bool showSurround = false; double surroundPct = 100.0; int surroundDir = 0; double surroundAfter = 0.5;
 };
 
@@ -3201,6 +3247,730 @@ static void openRepair (AppContext& app, const juce::Uuid& eid, juce::Component*
     else launchDialog (std::move (dlg), nm, parent, true);
 }
 
+
+// ======================================================================================================== Spectral Denoise (edit window)
+/** What the spectral denoise window asks of the edit (as RepairContext, but the "fix" is a room-tone profile and the denoiser's settings). */
+struct SpectralDenoiseSettings
+{
+    denoise::Params params;
+    double featherSeconds = 0.2, featherOctaves = 0.25;
+    std::vector<denoise::SelRect> sel;                        // the boxes the room tone was learned from (its time ranges and its part of the spectrum)
+    std::vector<denoise::Decay> decayPerTrack;                // the room's decay per track, measured on the picture's tracks (the files use the same)
+    int learnSerial = 0;                                      // changes when the boxes change: the files' profiles are learned again
+};
+struct SpectralDenoiseContext
+{
+    juce::String title, what;
+    double rate = 48000.0;
+    juce::int64 length = 0;                                                             // samples in the marked area
+    std::vector<juce::String> trackNames;
+    std::function<std::vector<std::vector<float>> (AudioJob&)> load;                     // job thread: one mono vector per track, 'length' samples
+    std::function<juce::String (const SpectralDenoiseSettings&, AudioJob&)> prepare;    // job thread: makes the denoised files of every piece; nothing is changed yet
+    std::function<bool()> apply;                                                        // message thread: puts the prepared files in place
+    std::function<void()> unapply, discard, accept, stop;
+    std::function<void (double fromSec, double toSec, bool loop)> play;
+    std::function<void (bool)> setLooping, hold;
+    std::function<double()> position;
+};
+
+class SpectralDenoiseDialog : public JobDialogBase
+{
+public:
+    explicit SpectralDenoiseDialog (SpectralDenoiseContext c) : ctx (std::move (c))
+    {
+        setSize (1040, 760);
+        intro.setText (ctx.what, juce::dontSendNotification); intro.setColour (juce::Label::textColourId, theme::text); intro.setJustificationType (juce::Justification::topLeft);
+        addAndMakeVisible (intro); addAndMakeVisible (view); addAndMakeVisible (info);
+        info.setColour (juce::Label::textColourId, theme::text);
+        view.setMultiSelect (true);
+        auto cap = [this] (juce::Label& l, const juce::String& t) { l.setText (t, juce::dontSendNotification); l.setColour (juce::Label::textColourId, theme::text); addAndMakeVisible (l); };
+        cap (amountCap, "Amount"); cap (residualCap, "Residual"); cap (tailCap, "Tail"); cap (groupCap, "Other tracks"); cap (fTimeCap, "Feather: time"); cap (fPitchCap, "Feather: pitch"); cap (hearCap, "Listen to");
+        auto slider = [this] (juce::Slider& sl, double lo, double hi, double step, double v, const juce::String& suffix, int boxW)
+        {
+            sl.setSliderStyle (juce::Slider::LinearHorizontal); sl.setRange (lo, hi, step); sl.setValue (v, juce::dontSendNotification); sl.setScrollWheelEnabled (false);
+            sl.setTextBoxStyle (juce::Slider::TextBoxRight, false, boxW, 22); sl.setTextValueSuffix (suffix);
+            sl.onValueChange = [this] { invalidate(); };
+            addAndMakeVisible (sl);
+        };
+        slider (amount, -6.0, 12.0, 0.5, 0.0, " dB", 62); slider (residual, -30.0, -3.0, 1.0, -12.0, " dB", 62);
+        slider (fTime, 0.0, 2000.0, 10.0, 200.0, " ms", 70); slider (fPitch, 0.0, 1.0, 0.05, 0.25, " oct", 66);
+        amount.setDoubleClickReturnValue (true, 0.0); residual.setDoubleClickReturnValue (true, -12.0); fTime.setDoubleClickReturnValue (true, 200.0); fPitch.setDoubleClickReturnValue (true, 0.25);
+        amount.setTooltip ("How much louder than measured the room tone is taken to be. 0 = as drawn; +3 dB takes a little more out everywhere, -3 dB a little less. Double-click for 0.");
+        residual.setTooltip ("How much of the room tone is left in (the gain never goes below this). -12 dB leaves a quiet, natural floor; -24 dB is a lot. Double-click for -12.");
+        fTime.setTooltip ("The denoising fades in over this long at mark 1 and fades out over this long before mark 2, so there is no step where it starts and stops. "
+                          "At an edit point inside the marked area the piece's own crossfade does the joining. Double-click for 200 ms.");
+        fPitch.setTooltip ("Above and below the part of the spectrum you drew, the denoising rises from nothing at the edge of the box to its full amount this many octaves inside it. "
+                           "Outside the box nothing is touched at all. Double-click for a quarter of an octave.");
+        tail.addItem ("Auto (measured from the audio, per band)", 1);
+        for (int i = 1; i <= 10; ++i) tail.addItem (juce::String (i) + " s", 1 + i);
+        tail.setSelectedId (1, juce::dontSendNotification);
+        tail.setTooltip ("How fast the room dies away (its reverberation time). The denoiser never lets a tail fall faster than this, so a long tail into a church is followed down smoothly. Auto measures it from the marked area itself, band by band.");
+        group.addItem ("ignored (each track on its own)", 1); group.addItem ("help keep the music", 2); group.addItem ("help keep the music, and decide what is noise", 3);
+        group.setSelectedId (2, juce::dontSendNotification);
+        group.setTooltip ("The tracks hear the same music: a spot mic hears a quiet partial clearly that a distant mic has down in its noise. \"Help keep the music\": wherever another track hears music, this track keeps that sound too (the usual choice). "
+                          "\"... and decide what is noise\": a sound no other track hears at all (a rumble, the audience) is treated as noise on this track as well.");
+        for (auto* cb : { &tail, &group }) { cb->onChange = [this] { invalidate(); }; addAndMakeVisible (cb); }
+        specBtn.setTooltip ("How the picture is drawn: sharpness, colours, and the levels shown.");
+        specBtn.onClick = [this] { openSpectroSettings(); };
+        view.onNeedDetail = [this] (const PictureRequest& rq) { startDetail (rq); };
+        for (auto* x : std::initializer_list<juce::Component*> { &specBtn, &learnBtn, &denoiseBtn, &compareBtn, &revertBtn, &finishBtn, &close, &playBtn, &stopBtn, &loopBtn, &hearBox, &scaleBox, &detailBox }) addAndMakeVisible (x);
+        scaleBox.addItem ("Pitch scale: Mel (as iZotope RX)", 6); scaleBox.addItem ("Pitch scale: linear (even Hz)", 1); scaleBox.addItem ("Pitch scale: mostly linear", 2); scaleBox.addItem ("Pitch scale: halfway", 3);
+        scaleBox.addItem ("Pitch scale: mostly musical", 4); scaleBox.addItem ("Pitch scale: musical (every octave the same height)", 5);
+        scaleBox.setSelectedId (6, juce::dontSendNotification); view.setMel();
+        scaleBox.setTooltip ("How the pitches are spread up the picture. Linear: every 1000 Hz takes the same height. Musical: every octave takes the same height (like a piano). The steps in between blend the two.");
+        detailBox.addItem ("Bass detail: blended (sharp top, fine bass)", 1); detailBox.addItem ("Bass detail: off (sharpest in time)", 2); detailBox.addItem ("Bass detail: extra fine", 3);
+        detailBox.setSelectedId (1, juce::dontSendNotification);
+        detailBox.onChange = [this] { rescan(); };
+        scaleBox.onChange = [this] { static const double w[] = { 0.0, 0.25, 0.5, 0.75, 1.0 }; const int id = scaleBox.getSelectedId(); if (id == 6) view.setMel(); else view.setScale (w[juce::jlimit (0, 4, id - 1)]); };
+        view.onNote = [this] (const juce::String& t) { status.setText (t, juce::dontSendNotification); };
+        hearBox.addItem ("Original", 1); hearBox.addItem ("Denoised", 2); hearBox.setSelectedId (1, juce::dontSendNotification);
+        hearBox.setTooltip ("Which sound Play plays: the audio as it is, or the denoised audio (made ready the first time you ask for it). Press Play while a loop runs to hear the other one.");
+        playBtn.setColour (juce::TextButton::buttonColourId, theme::accent);
+        playBtn.setTooltip ("Plays the part of the picture you can see, from the red playhead if you have clicked the time ruler to place one, through the mixers, with a playhead on the picture. Key: Space");
+        loopBtn.setTooltip ("Repeat what is playing until you press Stop");
+        stopBtn.setTooltip ("Stops playing");
+        playBtn.onClick = [this] { playPressed(); };
+        stopBtn.onClick = [this] { if (ctx.stop) ctx.stop(); };
+        loopBtn.onClick = [this] { if (! isPlayingNow()) return; if (loopBtn.getToggleState()) playPressed(); else if (ctx.setLooping) ctx.setLooping (false); };
+        hearBox.onChange = [this] { if (isPlayingNow()) playPressed(); };
+        ticker.owner = this; ticker.startTimerHz (30);
+        if (ctx.hold) ctx.hold (true);
+        learnBtn.onClick = [this] { learn(); };
+        denoiseBtn.onClick = [this] { denoise(); };
+        compareBtn.onClick = [this] { toggleCompare(); };
+        revertBtn.onClick = [this] { revert(); };
+        finishBtn.onClick = [this] { finish(); };
+        close.onClick = [this] { if (running) job.requestCancel(); else closeDialogOf (this); };
+        learnBtn.setColour (juce::TextButton::buttonColourId, theme::accent); denoiseBtn.setColour (juce::TextButton::buttonColourId, theme::accent);
+        finishBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1f7a46));
+        learnBtn.setTooltip ("Draw a box over a part of the picture that holds nothing but the room (on every track), then press this: the room tone is learned from it, for all the tracks. "
+                             "The box's time range says WHEN the room is heard on its own; its pitch range says WHICH PART of the spectrum is denoised - everything above and below the box is left completely untouched. "
+                             "Shift + drag adds another box (more room tone, or another part of the spectrum); Alt + drag takes an area out (a cough in the middle of the room tone). "
+                             "Change the boxes and press it again to update the profile. Key: L");
+        denoiseBtn.setTooltip ("Denoises the whole marked area, on every track, with the profile and the settings as they are, and shows the result. Nothing is written yet: press Play to listen (Listen to: Denoised), "
+                               "change the settings and press it again, Undo to go back to the original picture. Key: R");
+        finishBtn.setTooltip ("Writes the denoised sound into the edit: every piece between the marks is made again as a new file (the originals are never touched) and the Undo fix command brings the original back.");
+        close.setTooltip ("Closes the window and puts everything back as it was (nothing is kept).");
+        revertBtn.setTooltip ("Takes the denoising off again: the picture and the sound go back to the original (the profile is kept).");
+        compareBtn.setTooltip ("Switches the picture between the original and the denoised sound.");
+        view.onSelection = [this] { refreshControls(); };
+        loadControls();
+        refreshControls();
+        setWantsKeyboardFocus (true);
+        for (auto* ch : getChildren()) if (dynamic_cast<juce::Button*> (ch) != nullptr || dynamic_cast<juce::ComboBox*> (ch) != nullptr) ch->setWantsKeyboardFocus (false);
+        juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<SpectralDenoiseDialog> (this)] { if (safe != nullptr) safe->grabKeyboardFocus(); });
+        status.setText ("Scanning all the tracks...", juce::dontSendNotification);
+        auto load = ctx.load; double rate = ctx.rate; double secs = (double) ctx.length / ctx.rate;
+        juce::Component::SafePointer<SpectralDenoiseDialog> self (this);
+        auto spec = std::make_shared<MergedSpectrogram>();
+        origTracks = std::make_shared<std::vector<std::vector<float>>>();
+        auto keep = origTracks;
+        const int detailN = detailSize();
+        runJob ([load, rate, spec, keep, detailN] (AudioJob& j) -> juce::String
+                {
+                    auto tracks = load (j);
+                    if (j.cancelled()) return "Cancelled.";
+                    if (tracks.empty()) return "There is no audio here.";
+                    *spec = SpectralRepair::spectrogram (tracks, rate, 1600, detailN);
+                    *keep = std::move (tracks);
+                    return spec->frames > 0 ? juce::String() : juce::String ("The marked area is too short to show (it needs at least about 0.05 s).");
+                },
+                [self, spec, secs] (const juce::String& err)
+                {
+                    if (self == nullptr) return;
+                    if (err.isNotEmpty()) { self->status.setText (err, juce::dontSendNotification); return; }
+                    self->origSpec = std::make_shared<MergedSpectrogram> (*spec);
+                    self->view.setData (std::move (*spec), secs);
+                    self->status.setText ("Draw a box over a part of the picture with nothing but the room in it (Shift + drag adds a box, Alt + drag takes an area out), then press \"This is the room tone\" (L). "
+                                          "Space plays what is in view; left / right arrows zoom in time, down / up in pitch; click the ruler to place the playhead.", juce::dontSendNotification);
+                    self->scanned = true; self->refreshControls();
+                });
+    }
+    juce::String prefKey (const char* k) const { return juce::String ("sdenoise.") + k; }
+    void loadControls()
+    {
+        auto& p = uiPrefs();
+        auto num = [&] (const char* k, juce::Slider& s) { const auto key = prefKey (k); if (p.containsKey (key)) s.setValue (juce::jlimit (s.getMinimum(), s.getMaximum(), p.getDoubleValue (key)), juce::dontSendNotification); };
+        auto id = [&] (const char* k, juce::ComboBox& b) { const auto key = prefKey (k); if (p.containsKey (key) && b.indexOfItemId (p.getIntValue (key)) >= 0) b.setSelectedId (p.getIntValue (key), juce::dontSendNotification); };
+        num ("amount", amount); num ("residual", residual); num ("ftime", fTime); num ("fpitch", fPitch);
+        id ("tail", tail); id ("group", group); id ("scale", scaleBox); id ("detail", detailBox);
+        if (p.containsKey (prefKey ("roll"))) view.setRoll (p.getDoubleValue (prefKey ("roll")));
+        const int sc = scaleBox.getSelectedId();
+        if (sc == 6) view.setMel(); else { static const double w[] = { 0.0, 0.25, 0.5, 0.75, 1.0 }; view.setScale (w[juce::jlimit (0, 4, sc - 1)]); }
+    }
+    void saveControls()
+    {
+        auto& p = uiPrefs();
+        p.setValue (prefKey ("amount"), amount.getValue()); p.setValue (prefKey ("residual"), residual.getValue()); p.setValue (prefKey ("ftime"), fTime.getValue()); p.setValue (prefKey ("fpitch"), fPitch.getValue());
+        p.setValue (prefKey ("tail"), tail.getSelectedId()); p.setValue (prefKey ("group"), group.getSelectedId());
+        p.setValue (prefKey ("scale"), scaleBox.getSelectedId()); p.setValue (prefKey ("detail"), detailBox.getSelectedId()); p.setValue (prefKey ("roll"), view.rollValue());
+    }
+    ~SpectralDenoiseDialog() override
+    {
+        saveControls();
+        ticker.stopTimer(); ticker.owner = nullptr;
+        if (detailCancel != nullptr) detailCancel->store (true);
+        if (ctx.stop) ctx.stop();
+        if (! accepted)
+        {
+            if (applied && ctx.unapply) ctx.unapply();
+            if (prepared && ctx.discard) ctx.discard();
+        }
+        if (ctx.hold) ctx.hold (false);
+    }
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (10);
+        intro.placeTopRight (*this, 6);
+        auto rowC = r.removeFromBottom (32);
+        r.removeFromBottom (4);
+        auto rowT = r.removeFromBottom (30);
+        r.removeFromBottom (4);
+        auto rowB = r.removeFromBottom (28);
+        auto rowA = r.removeFromBottom (28);
+        r.removeFromBottom (4);
+        close.setBounds (rowC.removeFromRight (90)); rowC.removeFromRight (8);
+        finishBtn.setBounds (rowC.removeFromRight (160)); rowC.removeFromRight (8);
+        revertBtn.setBounds (rowC.removeFromRight (90)); rowC.removeFromRight (8);
+        compareBtn.setBounds (rowC.removeFromRight (150)); rowC.removeFromRight (14);
+        learnBtn.setBounds (rowC.removeFromLeft (220)); rowC.removeFromLeft (8);
+        denoiseBtn.setBounds (rowC.removeFromLeft (120));
+        playBtn.setBounds (rowT.removeFromLeft (90)); rowT.removeFromLeft (6);
+        stopBtn.setBounds (rowT.removeFromLeft (70)); rowT.removeFromLeft (8);
+        loopBtn.setBounds (rowT.removeFromLeft (70)); rowT.removeFromLeft (14);
+        hearCap.setBounds (rowT.removeFromLeft (70)); hearBox.setBounds (rowT.removeFromLeft (160)); rowT.removeFromLeft (14);
+        bar.setBounds (rowT.reduced (0, 4));
+        amountCap.setBounds (rowA.removeFromLeft (100)); amount.setBounds (rowA.removeFromLeft (260)); rowA.removeFromLeft (10);
+        residualCap.setBounds (rowA.removeFromLeft (100)); residual.setBounds (rowA.removeFromLeft (260)); rowA.removeFromLeft (10);
+        tailCap.setBounds (rowA.removeFromLeft (36)); tail.setBounds (rowA);
+        fTimeCap.setBounds (rowB.removeFromLeft (100)); fTime.setBounds (rowB.removeFromLeft (260)); rowB.removeFromLeft (10);
+        fPitchCap.setBounds (rowB.removeFromLeft (100)); fPitch.setBounds (rowB.removeFromLeft (260)); rowB.removeFromLeft (10);
+        groupCap.setBounds (rowB.removeFromLeft (90)); group.setBounds (rowB);
+        status.setBounds (r.removeFromBottom (22).reduced (2, 0));
+        { auto ir = r.removeFromBottom (22); specBtn.setBounds (ir.removeFromRight (150)); ir.removeFromRight (6); scaleBox.setBounds (ir.removeFromRight (300)); ir.removeFromRight (6); detailBox.setBounds (ir.removeFromRight (210)); info.setBounds (ir.reduced (2, 0)); }
+        view.setBounds (r);
+    }
+protected:
+    bool keyPressed (const juce::KeyPress& k) override
+    {
+        if (k == juce::KeyPress::spaceKey)
+        {
+            if (spaceIsForRecording()) return true;
+            if (scanned && ! running) { if (isPlayingNow()) { if (ctx.stop) ctx.stop(); } else playPressed(); }
+            return true;
+        }
+        const auto ch = k.getTextCharacter();
+        if ((ch == 'r' || ch == 'R') && ! k.getModifiers().isAnyModifierKeyDown()) { if (denoiseBtn.isEnabled()) denoise(); return true; }
+        if ((ch == 'l' || ch == 'L') && ! k.getModifiers().isAnyModifierKeyDown()) { if (learnBtn.isEnabled()) learn(); return true; }
+        if (scanned && view.zoomKey (k)) return true;
+        return false;
+    }
+private:
+    bool isPlayingNow() const { return ctx.position && ctx.position() >= 0.0; }
+    void tick()
+    {
+        const double t = ctx.position ? ctx.position() : -1.0;
+        view.setPlayhead (t);
+        playBtn.setButtonText (t >= 0.0 ? "Restart" : "Play");
+    }
+    struct Ticker : juce::Timer { SpectralDenoiseDialog* owner = nullptr; void timerCallback() override { if (owner != nullptr) owner->tick(); } } ticker;
+    double seconds() const { return (double) ctx.length / ctx.rate; }
+    int detailSize() const { return juce::jlimit (0, 2, detailBox.getSelectedId() - 1); }
+    bool haveDenoise() const { return dnTracks != nullptr; }
+    /** The settings as the controls are now (and the profile's boxes and decays). */
+    SpectralDenoiseSettings settings() const
+    {
+        SpectralDenoiseSettings s;
+        s.params.amountDb = amount.getValue(); s.params.residualDb = residual.getValue();
+        s.params.tailSeconds = tail.getSelectedId() <= 1 ? 0.0 : (double) (tail.getSelectedId() - 1);
+        s.params.groupMode = juce::jlimit (0, 2, group.getSelectedId() - 1);
+        s.featherSeconds = fTime.getValue() / 1000.0; s.featherOctaves = fPitch.getValue();
+        s.sel = learnedSel; s.decayPerTrack = decays; s.learnSerial = learnSerial;
+        return s;
+    }
+    /** The settings changed: the denoised picture and the prepared files no longer match them. */
+    void invalidate()
+    {
+        if (running) { changedWhileRunning = true; return; }
+        settingsStale = haveDenoise();
+        dropPrepared();
+        if (settingsStale) status.setText ("The settings changed: press Denoise (R) to see and hear them.", juce::dontSendNotification);
+        refreshControls();
+    }
+    void dropPrepared()
+    {
+        if (applied) { if (ctx.stop) ctx.stop(); if (ctx.unapply) ctx.unapply(); applied = false; }
+        if (prepared) { if (ctx.discard) ctx.discard(); prepared = false; }
+        preparedSerial = -1;
+    }
+    void refreshControls()
+    {
+        const bool ready = scanned && ! running;
+        const auto rects = view.selectionRects();
+        juce::String sel;
+        if (! rects.empty())
+        {
+            double t0 = 1e9, t1 = 0, f0 = 1e9, f1 = 0; int adds = 0, subs = 0;
+            for (auto& rc : rects) { if (rc.add) { ++adds; t0 = juce::jmin (t0, rc.t0); t1 = juce::jmax (t1, rc.t1); f0 = juce::jmin (f0, rc.f0); f1 = juce::jmax (f1, rc.f1); } else ++subs; }
+            if (adds > 0) sel = "Boxes: " + juce::String (t0, 2) + " - " + juce::String (t1, 2) + " s, " + juce::String ((int) f0) + " - " + juce::String ((int) f1) + " Hz" + (adds > 1 ? " (" + juce::String (adds) + " added" + (subs > 0 ? ", " + juce::String (subs) + " taken out)" : ")") : subs > 0 ? " (" + juce::String (subs) + " taken out)" : juce::String());
+        }
+        juce::String prof = learned.empty() ? juce::String ("No room tone learned yet") : "Room tone: " + juce::String (learnedSel.empty() ? 0 : (int) learnedSel.size()) + " box(es), " + juce::String ((int) learnLoHz) + " - " + juce::String ((int) learnHiHz) + " Hz" + (selectionDiffers() ? "  (the boxes changed: press \"Update the profile\")" : juce::String());
+        info.setText (prof + (sel.isNotEmpty() ? "      " + sel : juce::String()), juce::dontSendNotification);
+        learnBtn.setButtonText (learned.empty() ? "This is the room tone [L]" : "Update the profile [L]");
+        playBtn.setEnabled (ready); stopBtn.setEnabled (ready); loopBtn.setEnabled (ready); hearBox.setEnabled (ready);
+        learnBtn.setEnabled (ready && view.hasAnySelection());
+        denoiseBtn.setEnabled (ready && ! learned.empty());
+        finishBtn.setEnabled (ready && haveDenoise() && ! settingsStale);
+        revertBtn.setEnabled (ready && haveDenoise());
+        compareBtn.setEnabled (ready && haveDenoise());
+        compareBtn.setButtonText (showingAfter ? "Show original" : "Show denoised");
+    }
+    bool selectionDiffers() const
+    {
+        const auto rects = view.selectionRects();
+        if (rects.size() != learnedSel.size()) return ! rects.empty();
+        for (size_t i = 0; i < rects.size(); ++i)
+            if (rects[i].add != learnedSel[i].add || std::abs (rects[i].t0 - learnedSel[i].t0) > 1e-6 || std::abs (rects[i].t1 - learnedSel[i].t1) > 1e-6 || std::abs (rects[i].f0 - learnedSel[i].f0) > 1e-6 || std::abs (rects[i].f1 - learnedSel[i].f1) > 1e-6) return true;
+        return false;
+    }
+    /** "This is the room tone": the profile of every track from the boxes, and the room's decay per track (then the denoising is run at once). */
+    void learn()
+    {
+        if (! scanned || running || origTracks == nullptr || ! view.hasAnySelection()) return;
+        const auto sel = view.selectionRects();
+        auto src = origTracks; const double rate = ctx.rate;
+        const auto s = settings();
+        struct Out { std::vector<denoise::Profile> prof; std::vector<denoise::Decay> decay; double lo = 0, hi = 0; };
+        auto out = std::make_shared<Out>();
+        status.setText ("Learning the room tone of every track from the boxes, and measuring the room's decay...", juce::dontSendNotification);
+        learnBtn.setEnabled (false); denoiseBtn.setEnabled (false); finishBtn.setEnabled (false); revertBtn.setEnabled (false); compareBtn.setEnabled (false); playBtn.setEnabled (false);
+        juce::Component::SafePointer<SpectralDenoiseDialog> self (this);
+        runJob ([src, sel, rate, s, out] (AudioJob& j) -> juce::String
+                {
+                    const auto& tracks = *src;
+                    for (size_t i = 0; i < tracks.size(); ++i)
+                    {
+                        if (j.cancelled()) return "Cancelled.";
+                        j.setProgress ((float) i / (float) juce::jmax ((size_t) 1, tracks.size()));
+                        denoise::ProfileLearner l; l.add (tracks[i].data(), (juce::int64) tracks[i].size(), rate, s.params, sel, 0.0);
+                        if (l.covered() == 0) return "The boxes hold too little: draw a box at least about 0.3 s long over a part that is only room (it can be short in pitch).";
+                        auto prof = l.finish();
+                        out->prof.push_back (prof);
+                        const auto& x = tracks[i];
+                        out->decay.push_back (denoise::measureDecay (prof, s.params, (juce::int64) x.size(), [&x] (juce::int64 start, int n, float* dst)
+                            { for (int k = 0; k < n; ++k) { const auto q = start + k; dst[k] = q < (juce::int64) x.size() ? x[(size_t) q] : 0.0f; } }, [&j] (double) { return ! j.cancelled(); }));
+                    }
+                    if (! out->prof.empty())
+                    {
+                        const auto& w = out->prof[0].weight; const int bins = (int) w.size();
+                        int lo = -1, hi = -1; for (int k = 0; k < bins; ++k) if (w[(size_t) k] > 0.0f) { if (lo < 0) lo = k; hi = k; }
+                        out->lo = lo >= 0 ? (double) lo * rate / out->prof[0].fftSize : 0.0; out->hi = hi >= 0 ? (double) hi * rate / out->prof[0].fftSize : 0.0;
+                    }
+                    return {};
+                },
+                [self, out, sel] (const juce::String& err)
+                {
+                    if (self == nullptr) return;
+                    if (err.isNotEmpty()) { self->status.setText (err, juce::dontSendNotification); self->refreshControls(); return; }
+                    self->learned = out->prof; self->decays = out->decay; self->learnedSel = sel; self->learnLoHz = out->lo; self->learnHiHz = out->hi; ++self->learnSerial;
+                    self->dropPrepared(); self->changedWhileRunning = false;
+                    self->status.setText ("Room tone learned (" + juce::String ((int) out->lo) + " - " + juce::String ((int) out->hi) + " Hz). Denoising...", juce::dontSendNotification);
+                    self->refreshControls();
+                    self->denoise();
+                });
+    }
+    /** Denoise: the whole marked area, every track, with the profile and the settings as they are; the picture then shows the result. */
+    void denoise()
+    {
+        if (! scanned || running || origTracks == nullptr || learned.empty()) return;
+        dropPrepared();
+        const auto s = settings();
+        auto src = origTracks; const double rate = ctx.rate;
+        std::vector<denoise::Profile> profs = learned; for (auto& pr : profs) denoise::featherProfile (pr, s.featherOctaves);
+        auto decayCopy = decays;
+        struct Out { MergedSpectrogram spec; std::shared_ptr<std::vector<std::vector<float>>> tracks; };
+        auto out = std::make_shared<Out>();
+        status.setText ("Denoising every track...", juce::dontSendNotification);
+        learnBtn.setEnabled (false); denoiseBtn.setEnabled (false); finishBtn.setEnabled (false); revertBtn.setEnabled (false); compareBtn.setEnabled (false);
+        juce::Component::SafePointer<SpectralDenoiseDialog> self (this);
+        const int detailN = detailSize();
+        runJob ([src, out, s, profs, decayCopy, rate, detailN] (AudioJob& j) -> juce::String
+                {
+                    audioops::DenoiseRun run; run.a = 0; run.b = std::numeric_limits<juce::int64>::max();
+                    run.featherIn = run.featherOut = (juce::int64) std::llround (s.featherSeconds * rate);
+                    run.threads = juce::jlimit (1, 8, (int) std::thread::hardware_concurrency());
+                    auto y = std::make_shared<std::vector<std::vector<float>>>();
+                    juce::String err;
+                    if (! audioops::denoiseTracks (*src, rate, profs, decayCopy, s.params, run, *y, [&j] (float p) { j.setProgress (0.8f * p); return ! j.cancelled(); }, err)) return err.isNotEmpty() ? err : "Cancelled.";
+                    out->spec = SpectralRepair::spectrogram (*y, rate, 1600, detailN);
+                    out->tracks = y;
+                    return {};
+                },
+                [self, out] (const juce::String& err)
+                {
+                    if (self == nullptr) return;
+                    if (err.isNotEmpty()) { self->status.setText (err, juce::dontSendNotification); self->refreshControls(); return; }
+                    self->dnTracks = out->tracks; self->dnSpec = std::make_shared<MergedSpectrogram> (out->spec);
+                    self->view.setData (std::move (out->spec), self->seconds(), true);
+                    self->showingAfter = true; self->settingsStale = false; ++self->dnSerial;
+                    if (self->changedWhileRunning) { self->changedWhileRunning = false; self->invalidate(); return; }
+                    self->hearBox.setSelectedId (2, juce::dontSendNotification);
+                    self->status.setText ("Denoised (not written yet). Press Play to listen (Listen to: Denoised; switch to Original to compare), Show original to compare the picture, change the settings and press Denoise again, "
+                                          "or draw new boxes and update the profile. Write back to clip when you are happy.", juce::dontSendNotification);
+                    self->refreshControls();
+                });
+    }
+    void rescan()
+    {
+        if (! scanned || running || origTracks == nullptr) return;
+        auto src = showingAfter && dnTracks != nullptr ? dnTracks : origTracks; const double rate = ctx.rate; const int n = detailSize();
+        const bool after = showingAfter && dnTracks != nullptr;
+        auto out = std::make_shared<MergedSpectrogram>();
+        status.setText ("Redrawing with another low-end detail...", juce::dontSendNotification);
+        juce::Component::SafePointer<SpectralDenoiseDialog> self (this);
+        runJob ([src, out, rate, n] (AudioJob&) -> juce::String { *out = SpectralRepair::spectrogram (*src, rate, 1600, n); return {}; },
+                [self, out, after] (const juce::String& err)
+                {
+                    if (self == nullptr) return;
+                    if (err.isEmpty() && out->frames > 0)
+                    {
+                        if (after) self->dnSpec = std::make_shared<MergedSpectrogram> (*out); else self->origSpec = std::make_shared<MergedSpectrogram> (*out);
+                        self->view.setData (std::move (*out), self->seconds(), true);
+                        self->status.setText ("Redrawn.", juce::dontSendNotification);
+                    }
+                    self->refreshControls();
+                });
+    }
+    std::shared_ptr<std::vector<std::vector<float>>> shownTracks() const { return showingAfter && dnTracks != nullptr ? dnTracks : origTracks; }
+    void startDetail (const PictureRequest& rq)
+    {
+        auto tr = shownTracks(); if (tr == nullptr || tr->empty()) return;
+        if (detailCancel != nullptr) detailCancel->store (true);
+        auto cancel = std::make_shared<std::atomic<bool>> (false); detailCancel = cancel;
+        const double rate = ctx.rate; juce::Component::SafePointer<SpectralDenoiseDialog> self (this);
+        std::thread ([tr, rq, rate, cancel, self]
+        {
+            auto pic = picture::render (*tr, rate, rq.t0, rq.t1, rq.w, rq.h, rq.axis, rq.opt, [cancel] { return cancel->load(); });
+            pic.id = rq.id;
+            if (cancel->load()) return;
+            juce::MessageManager::callAsync ([self, p = std::make_shared<DetailPicture> (std::move (pic))] { if (self != nullptr) self->view.setDetail (std::move (*p)); });
+        }).detach();
+    }
+    void openSpectroSettings()
+    {
+        juce::Component::SafePointer<SpectralDenoiseDialog> self (this);
+        launchDialog (std::make_unique<SpectroSettingsDialog> (view.settings(), [self] (const SpectroSettings& n)
+        {
+            if (self == nullptr) return;
+            self->view.setSettings (n); n.save (gSpecPrefs);
+            if (gSpecPrefs != nullptr) gSpecPrefs->saveIfNeeded();
+        }), "Spectrogram settings", this);
+    }
+    void toggleCompare()
+    {
+        if (dnSpec == nullptr || origSpec == nullptr) return;
+        showingAfter = ! showingAfter;
+        view.setData (showingAfter ? *dnSpec : *origSpec, seconds(), true);
+        status.setText (showingAfter ? "Showing the denoised sound." : "Showing the original sound.", juce::dontSendNotification);
+        refreshControls();
+    }
+    /** Undo: the denoising off again (the profile stays). */
+    void revert()
+    {
+        if (! haveDenoise() || running) return;
+        if (ctx.stop) ctx.stop();
+        dropPrepared();
+        dnTracks = nullptr; dnSpec = nullptr; showingAfter = false; settingsStale = false;
+        hearBox.setSelectedId (1, juce::dontSendNotification);
+        if (origSpec != nullptr) view.setData (*origSpec, seconds(), true);
+        status.setText ("Back to the original. The room tone is still learned: change the settings or the boxes and press Denoise again.", juce::dontSendNotification);
+        refreshControls();
+    }
+    /** What is played: the part of the picture that is in view. */
+    void playRange() { if (ctx.play) ctx.play (view.playFrom(), juce::jmin (seconds(), view.visT1()), loopBtn.getToggleState()); }
+    void playOriginal()
+    {
+        if (applied) { if (ctx.stop) ctx.stop(); if (ctx.unapply) ctx.unapply(); applied = false; }
+        playRange();
+        status.setText ("Playing the ORIGINAL sound, the part you can see.", juce::dontSendNotification);
+        refreshControls();
+    }
+    void playDenoised()
+    {
+        if (! applied)
+        {
+            if (! ctx.apply || ! ctx.apply()) { status.setText ("The audio changed while the denoised sound was being made, so it cannot be played. Press Denoise again.", juce::dontSendNotification); prepared = false; preparedSerial = -1; refreshControls(); return; }
+            applied = true;
+        }
+        playRange();
+        status.setText ("Playing the DENOISED sound. Write back to clip keeps it; Undo takes it off.", juce::dontSendNotification);
+        refreshControls();
+    }
+    /** Makes the denoised files of every piece (once per set of settings), then plays them or - with 'thenWrite' - writes them into the edit. */
+    void prepareThen (bool thenWrite)
+    {
+        if (running || ! haveDenoise() || settingsStale) return;
+        if (prepared && preparedSerial == dnSerial) { if (thenWrite) finishCommit(); else playDenoised(); return; }
+        dropPrepared();
+        auto prep = ctx.prepare; const auto s = settings();
+        status.setText (thenWrite ? "Writing: denoising every piece between the marks and making the new files..." : "Making the denoised sound ready to listen to (every piece, every track)...", juce::dontSendNotification);
+        learnBtn.setEnabled (false); denoiseBtn.setEnabled (false); finishBtn.setEnabled (false); revertBtn.setEnabled (false); compareBtn.setEnabled (false); playBtn.setEnabled (false);
+        juce::Component::SafePointer<SpectralDenoiseDialog> self (this);
+        const int serial = dnSerial;
+        runJob ([prep, s] (AudioJob& j) { return prep (s, j); },
+                [self, serial, thenWrite] (const juce::String& err)
+                {
+                    if (self == nullptr) return;
+                    if (err.isNotEmpty()) { self->status.setText (err, juce::dontSendNotification); self->refreshControls(); return; }
+                    self->prepared = true; self->preparedSerial = serial;
+                    if (self->changedWhileRunning) { self->changedWhileRunning = false; self->invalidate(); return; }
+                    if (thenWrite) self->finishCommit(); else self->playDenoised();
+                });
+    }
+    void playPressed()
+    {
+        if (! scanned || running) return;
+        if (ctx.stop) ctx.stop();
+        if (hearBox.getSelectedId() == 2)
+        {
+            if (haveDenoise() && ! settingsStale) { prepareThen (false); return; }
+            status.setText (haveDenoise() ? "The settings changed: press Denoise first. Playing the original." : "Nothing is denoised yet: learn the room tone and press Denoise first. Playing the original.", juce::dontSendNotification);
+        }
+        playOriginal();
+    }
+    void finish()
+    {
+        if (running) return;
+        if (! haveDenoise() || settingsStale) { status.setText (haveDenoise() ? "The settings changed: press Denoise first, then Write back." : "Nothing is denoised yet: learn the room tone first.", juce::dontSendNotification); return; }
+        prepareThen (true);
+    }
+    void finishCommit()
+    {
+        if (ctx.stop) ctx.stop();
+        if (! applied)
+        {
+            if (! ctx.apply || ! ctx.apply()) { status.setText ("The audio changed while the denoised sound was being made, so nothing was changed. Please try again.", juce::dontSendNotification); prepared = false; preparedSerial = -1; refreshControls(); return; }
+            applied = true;
+        }
+        if (ctx.accept) ctx.accept();
+        accepted = true;
+        closeDialogOf (this);
+    }
+    SpectralDenoiseContext ctx;
+    InfoNote intro; juce::Label info, amountCap, residualCap, tailCap, groupCap, fTimeCap, fPitchCap, hearCap;
+    SpectrogramView view; juce::ComboBox scaleBox, detailBox, tail, group, hearBox; juce::TextButton specBtn { "Spectrogram settings..." };
+    std::shared_ptr<std::atomic<bool>> detailCancel; juce::Slider amount, residual, fTime, fPitch;
+    juce::TextButton playBtn { "Play" }, stopBtn { "Stop" }; juce::ToggleButton loopBtn { "Loop" };
+    juce::TextButton learnBtn { "This is the room tone [L]" }, denoiseBtn { "Denoise [R]" }, compareBtn { "Show original" }, revertBtn { "Undo" }, finishBtn { "Write back to clip" }, close { "Cancel" };
+    bool prepared = false, applied = false, accepted = false, changedWhileRunning = false, scanned = false, showingAfter = false, settingsStale = false;
+    int preparedSerial = -1, dnSerial = 0, learnSerial = 0;
+    std::shared_ptr<std::vector<std::vector<float>>> origTracks, dnTracks;
+    std::shared_ptr<MergedSpectrogram> origSpec, dnSpec;
+    std::vector<denoise::Profile> learned;                     // per track, from the boxes (unfeathered)
+    std::vector<denoise::Decay> decays;                        // per track
+    std::vector<denoise::SelRect> learnedSel; double learnLoHz = 0.0, learnHiHz = 0.0;
+};
+
+void denoiseEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent)
+{
+    const juce::String nm = "Spectral Denoise";
+    auto* e = editOf (app, eid); if (e == nullptr) return;
+    if (e->fixIn < 0.0 || e->fixOut <= e->fixIn) { say (nm, "First mark the area with keys 1 (IN) and 2 (OUT) in this window: put the white playhead where you want it and press the key. The whole of it is denoised; draw the room tone inside it."); return; }
+    const double rate = e->sampleRate > 0 ? e->sampleRate : 48000.0;
+    const auto tIn = (juce::int64) std::llround (e->fixIn * rate), tOut = (juce::int64) std::llround (e->fixOut * rate);
+    juce::int64 lastEnd = 0; int pieces = 0;
+    for (auto& r : e->regions) if (r.endSample() > tIn && r.startSample < tOut) { ++pieces; lastEnd = juce::jmax (lastEnd, r.endSample()); }
+    if (pieces == 0) { say (nm, "There is no audio between the marks."); return; }
+    const auto from = tIn, to = juce::jmin (tOut, lastEnd);
+    if (to - from < (juce::int64) (1.0 * rate)) { say (nm, "The marked area is too short (at least a second, with some room tone in it)."); return; }
+    const auto only = e->fixTracks;
+    // the tracks (one picture row each) and, for each, where its audio comes from along the marked area: whoever owns each moment
+    struct Part { juce::File file; juce::int64 fileStart = 0, srcA = 0, n = 0, dst = 0; };
+    std::vector<juce::Uuid> trackIds; std::vector<juce::String> trackNames; std::vector<std::vector<Part>> parts;
+    for (auto& r : e->regions) if (r.endSample() > from && r.startSample < to)
+        for (auto& f : r.files)
+        {
+            if (! only.empty() && std::find (only.begin(), only.end(), f.trackId) == only.end()) continue;
+            if (std::find (trackIds.begin(), trackIds.end(), f.trackId) == trackIds.end()) { trackIds.push_back (f.trackId); trackNames.push_back (f.trackName); parts.emplace_back(); }
+        }
+    {
+        std::vector<juce::int64> cuts { from, to };
+        for (auto& r : e->regions) { if (r.startSample > from && r.startSample < to) cuts.push_back (r.startSample); if (r.endSample() > from && r.endSample() < to) cuts.push_back (r.endSample()); }
+        std::sort (cuts.begin(), cuts.end()); cuts.erase (std::unique (cuts.begin(), cuts.end()), cuts.end());
+        for (size_t k = 0; k + 1 < cuts.size(); ++k)
+        {
+            const auto t0 = cuts[k], t1 = cuts[k + 1];
+            const int ri = e->regionAt (t0 + (t1 - t0) / 2);
+            if (ri < 0) continue;
+            const auto& r = e->regions[(size_t) ri];
+            for (auto& f : r.files)
+            {
+                const auto ti = std::find (trackIds.begin(), trackIds.end(), f.trackId);
+                if (ti == trackIds.end()) continue;
+                parts[(size_t) (ti - trackIds.begin())].push_back ({ f.file, f.fileStart, r.srcIn + (t0 - r.startSample), t1 - t0, t0 - from });
+            }
+        }
+    }
+    if (trackIds.empty()) { say (nm, "None of the tracks you marked with Alt + drag are in the marked area."); return; }
+    SpectralDenoiseContext c; c.rate = rate; c.length = to - from; c.trackNames = trackNames;
+    c.what = juce::String (only.empty() ? "All " : "The ") + juce::String ((int) trackIds.size()) + " tracks between marks 1 and 2 are shown as one picture" + (pieces > 1 ? ", across the edit points (" + juce::String (pieces) + " pieces)" : juce::String()) + ". "
+             "Draw a box over a part that holds nothing but the room: its time range is where the room tone is learned (on every track), its pitch range is the part of the spectrum that is denoised - above and below it nothing is touched. "
+             "Shift + drag adds a box, Alt + drag takes an area out. Press \"This is the room tone\", listen (Original / Denoised), adjust Amount and Residual and press Denoise again, and Write back to clip when you are happy. "
+             "The whole marked area is denoised, with the feathers at its ends. Each piece is made again in its own place: the edit points and their fades stay exactly as they are, and the original files are not touched (Undo fix brings them back).";
+    const auto total = to - from;
+    c.load = [parts, total] (AudioJob& j)
+    {
+        std::vector<std::vector<float>> tracks;
+        for (size_t i = 0; i < parts.size(); ++i)
+        {
+            if (j.cancelled()) break;
+            j.setProgress ((float) i / (float) juce::jmax ((size_t) 1, parts.size()));
+            std::vector<float> mono ((size_t) total, 0.0f);
+            for (auto& pt : parts[i])
+            {
+                auto r = audioops::openReader (formats(), pt.file); if (r == nullptr) continue;
+                juce::int64 rel = pt.srcA - pt.fileStart, n = pt.n, dst = pt.dst;
+                if (rel < 0) { n += rel; dst -= rel; rel = 0; }
+                if (n <= 0) continue;
+                std::vector<std::vector<float>> ch; audioops::readRange (*r, rel, n, ch);
+                for (auto& x : ch) for (size_t k = 0; k < x.size() && dst + (juce::int64) k < total; ++k) mono[(size_t) dst + k] += x[k] / (float) ch.size();
+            }
+            tracks.push_back (std::move (mono));
+        }
+        return tracks;
+    };
+    struct State
+    {
+        std::vector<RegionJob> jobs; std::vector<EditRegion> old; bool applied = false;
+        int profilesFor = -1; std::vector<std::vector<denoise::Profile>> fileProfiles;    // per track, per channel: learned from the real files under the boxes
+    };
+    auto st = std::make_shared<State>();
+    const auto fixFolder = app.project.audioFolder().getChildFile ("Fixes");
+    const auto regionsCopy = std::make_shared<std::vector<EditRegion>> (e->regions);
+    auto deleteFiles = [st] { for (auto& rj : st->jobs) for (auto& r : rj.results) r.file.deleteFile(); st->jobs.clear(); };
+    c.prepare = [fixFolder, regionsCopy, from, to, rate, st, only, deleteFiles, parts, trackIds] (const SpectralDenoiseSettings& s, AudioJob& j) -> juce::String
+    {
+        deleteFiles();
+        // the profiles of the real files (each channel its own), from the parts of them that lie under the boxes - once per set of boxes
+        if (st->profilesFor != s.learnSerial)
+        {
+            st->fileProfiles.assign (trackIds.size(), {});
+            const auto spans = denoise::selectedSpans (s.sel);
+            for (size_t i = 0; i < parts.size(); ++i)
+            {
+                std::vector<denoise::ProfileLearner> learners;
+                for (auto& pt : parts[i])
+                {
+                    if (j.cancelled()) return "Cancelled.";
+                    // does any box reach into this part?
+                    const double p0 = (double) pt.dst / rate, p1 = (double) (pt.dst + pt.n) / rate;
+                    bool touched = false; for (auto& sp : spans) if (sp.second > p0 && sp.first < p1) touched = true;
+                    if (! touched) continue;
+                    auto r = audioops::openReader (formats(), pt.file); if (r == nullptr) continue;
+                    juce::int64 rel = pt.srcA - pt.fileStart, n = pt.n, dst = pt.dst;
+                    if (rel < 0) { n += rel; dst -= rel; rel = 0; }
+                    if (n <= 0) continue;
+                    std::vector<std::vector<float>> ch; audioops::readRange (*r, rel, n, ch);
+                    if (learners.size() < ch.size()) learners.resize (ch.size());
+                    for (size_t cc = 0; cc < ch.size(); ++cc) learners[cc].add (ch[cc].data(), (juce::int64) ch[cc].size(), rate, s.params, s.sel, (double) dst / rate);
+                }
+                for (auto& l : learners) { if (l.covered() == 0) return "The boxes lie over a part of the edit that has no audio on " + juce::String ((int) i + 1) + " of the tracks."; st->fileProfiles[i].push_back (l.finish()); }
+                if (st->fileProfiles[i].empty()) return "The boxes do not reach any audio of track " + juce::String ((int) i + 1) + ".";
+            }
+            st->profilesFor = s.learnSerial;
+        }
+        const auto h = (juce::int64) (1.0 * rate);                   // each piece is made again with 1 s of its own sound either side (the handles, for the fades)
+        for (auto& r : *regionsCopy)
+        {
+            if (r.endSample() <= from || r.startSample >= to) continue;
+            const auto r0 = juce::jmax (from, r.startSample), r1 = juce::jmin (to, r.endSample());
+            if (r1 - r0 < 2) continue;
+            const auto a = r.srcIn + (r0 - r.startSample), b = r.srcIn + (r1 - r.startSample);
+            RegionJob rj; rj.regionId = r.id; rj.a = a; rj.b = b; rj.outFrom = a - h; rj.outTo = b + h;
+            // the stretch denoised: the piece, and - where the piece's edge is a real edge of its region (an edit point) - its handle too, so the
+            // crossfade there is between two denoised sounds; where the mark cuts the region, the feather fades the denoising in or out at the mark
+            rj.fixFrom = r0 == r.startSample ? rj.outFrom : a; rj.fixTo = r1 == r.endSample() ? rj.outTo : b;
+            std::vector<audioops::DenoiseProfiles> profs;
+            for (size_t fi = 0; fi < r.files.size(); ++fi)
+            {
+                auto& f = r.files[fi];
+                const auto ti = std::find (trackIds.begin(), trackIds.end(), f.trackId);
+                if (ti == trackIds.end()) continue;
+                const size_t t = (size_t) (ti - trackIds.begin());
+                auto rd = audioops::openReader (formats(), f.file);
+                if (rd == nullptr) { deleteFiles(); return "Could not read " + f.file.getFileName(); }
+                audioops::DenoiseProfiles dp; dp.sampleRate = rate; dp.channels = (int) rd->numChannels;
+                for (int cc = 0; cc < dp.channels; ++cc)
+                {
+                    auto pr = st->fileProfiles[t][juce::jmin ((size_t) cc, st->fileProfiles[t].size() - 1)];
+                    denoise::featherProfile (pr, s.featherOctaves);
+                    dp.perChannel.push_back (pr);
+                    dp.decay.push_back (t < s.decayPerTrack.size() ? s.decayPerTrack[t] : denoise::Decay());
+                }
+                rj.idx.push_back (fi); rj.src.push_back (f.file); rj.fileStart.push_back (f.fileStart);
+                rj.dest.push_back (audioops::uniqueFile (fixFolder.getChildFile (sanitiseForFile (r.takeName.upToFirstOccurrenceOf (" (", false, false) + " - " + f.trackName) + " (denoise).wav")));
+                for (size_t k = 0; k + 1 < rj.dest.size(); ++k) if (rj.dest[k] == rj.dest.back()) rj.dest.back() = audioops::uniqueFile (rj.dest.back().getSiblingFile (rj.dest.back().getFileNameWithoutExtension() + " b.wav"));
+                profs.push_back (std::move (dp));
+            }
+            if (rj.src.empty()) continue;
+            fixFolder.createDirectory();
+            // every file of the piece has the same fileStart in a take as recorded; a piece already corrected may be a short file that starts later: the
+            // spans are given relative to the first file and the denoiser clips them to each file
+            audioops::DenoiseRun run; run.threads = juce::jlimit (1, 8, (int) std::thread::hardware_concurrency());
+            run.featherIn = run.featherOut = (juce::int64) std::llround (s.featherSeconds * rate);
+            if (rj.fileStart.size() > 1) for (size_t k = 1; k < rj.fileStart.size(); ++k) if (rj.fileStart[k] != rj.fileStart[0]) { deleteFiles(); return "The files of one piece start at different places (a piece corrected earlier on some tracks only): denoise it before other corrections, or Undo fix first."; }
+            const auto fs = rj.fileStart[0];
+            run.writeFrom = rj.outFrom - fs; run.writeTo = rj.outTo - fs; run.a = rj.fixFrom - fs; run.b = rj.fixTo - fs;
+            juce::String err;
+            const float p0 = (float) (r0 - from) / (float) (to - from), p1 = (float) (r1 - from) / (float) (to - from);
+            if (! audioops::denoiseFiles (formats(), rj.src, rj.dest, {}, profs, s.params, run, [&j, p0, p1] (float p) { j.setProgress (p0 + (p1 - p0) * p); return ! j.cancelled(); }, err))
+            { deleteFiles(); return err.isNotEmpty() ? err : "Cancelled."; }
+            for (size_t k = 0; k < rj.dest.size(); ++k)
+            {
+                auto rd = audioops::openReader (formats(), rj.dest[k]);
+                if (rd == nullptr) { deleteFiles(); return "Could not read back " + rj.dest[k].getFileName(); }
+                audioops::PieceResult res; res.file = rj.dest[k]; res.from = juce::jmax (fs, rj.outFrom); res.to = res.from + rd->lengthInSamples; res.ok = true;
+                rj.results.push_back (res);
+            }
+            st->jobs.push_back (std::move (rj));
+        }
+        if (st->jobs.empty()) return "Nothing to do in this area.";
+        return {};
+    };
+    c.apply = [&app, eid, st, deleteFiles]
+    {
+        auto* e2 = app.project.findEdit (eid); if (e2 == nullptr || st->jobs.empty()) return false;
+        st->old = e2->regions;
+        const bool ok = applyRegionJobs (*e2, st->old, st->jobs, "denoise");
+        if (! ok) { e2->regions = st->old; deleteFiles(); return false; }
+        st->applied = true; app.project.changed();
+        return true;
+    };
+    c.unapply = [&app, eid, st]
+    {
+        if (! st->applied) return;
+        if (auto* e2 = app.project.findEdit (eid)) { e2->regions = st->old; app.project.changed(); }
+        st->applied = false;
+    };
+    c.accept = [&app, eid, st] { for (auto& rj : st->jobs) rj.results.clear(); st->applied = false; setUndoForEdit (app, eid, st->old, "spectral denoise"); app.project.changed(); };
+    c.discard = deleteFiles;
+    const double areaStart = (double) from / rate;
+    c.play = [&app, eid, areaStart, nm] (double x, double y, bool loop)
+    {
+        const auto err = app.playEdit (eid, areaStart + x, areaStart + y, loop);
+        if (err.isNotEmpty()) say (nm, err);
+    };
+    c.setLooping = [&app] (bool on) { app.engine.setPlaybackLooping (on); };
+    c.position = [&app, eid, areaStart]
+    {
+        if (! app.isPlaying() || app.playInfo.kind != AppContext::PlayInfo::Kind::Edit || app.playInfo.id != eid) return -1.0;
+        return juce::jmax (0.0, app.playheadSeconds() - areaStart);
+    };
+    c.stop = [&app] { app.stopPlayback(); };
+    c.hold = [&app] (bool on) { app.undoHold += on ? 1 : -1; };
+    gSpecPrefs = app.props.getUserSettings();
+    launchDialog (std::make_unique<SpectralDenoiseDialog> (std::move (c)), nm, parent, true);
+}
 
 // ======================================================================================================== Re-HarmoniSer (edit window)
 class ReHarmoniserDialog : public JobDialogBase

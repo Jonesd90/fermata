@@ -134,10 +134,26 @@ DenoiseProfiles learnDenoise (juce::AudioFormatManager&, const juce::File&, juce
 struct DenoiseRun
 {
     juce::int64 a = 0, b = std::numeric_limits<juce::int64>::max();   // the stretch to denoise (samples); the rest is copied
+    juce::int64 writeFrom = 0, writeTo = std::numeric_limits<juce::int64>::max();   // the part of each source the destination file holds (the whole file by default; a piece of an edit: just that piece and its handles)
+    juce::int64 featherIn = 0, featherOut = 0;                        // (samples) the denoising fades in over the first featherIn samples of the stretch and out over its last featherOut, so it has no hard edge in time
     bool preview = false;                                             // a preview: the part before the stretch is written as silence and the file ends with the stretch
     bool removed = false;                                             // also write what was taken out (input - output) to the 'removed' files
     int threads = 1;                                                  // tracks (channels) done at once
 };
+/** The share of the denoised sound at sample i of the stretch [a, b) with the run's feathers (0 at the very edge rising to 1 feather samples in, a raised cosine). */
+inline float denoiseFeather (const DenoiseRun& run, juce::int64 a, juce::int64 b, juce::int64 i)
+{
+    double w = 1.0;
+    if (run.featherIn > 0 && i - a < run.featherIn) w = juce::jmin (w, (double) (i - a) / (double) run.featherIn);
+    if (run.featherOut > 0 && b - 1 - i < run.featherOut) w = juce::jmin (w, (double) (b - 1 - i) / (double) run.featherOut);
+    w = juce::jlimit (0.0, 1.0, w);
+    return (float) (0.5 - 0.5 * std::cos (w * juce::MathConstants<double>::pi));
+}
+/** The denoiser on channels held in memory (the spectral denoise window's picture): x[i] is one channel, each its own source (with Params::groupMode > 0
+    they listen to each other), profiles[i] / decay[i] (decay may be empty) belong to it. y[i] comes out the same length: [run.a, run.b) denoised (with
+    the run's feathers), the rest exactly as it went in. */
+bool denoiseTracks (const std::vector<std::vector<float>>& x, double sampleRate, const std::vector<denoise::Profile>& profiles, const std::vector<denoise::Decay>& decay,
+                    const denoise::Params&, const DenoiseRun&, std::vector<std::vector<float>>& y, const std::function<bool (float)>& progress, juce::String& error);
 /** Writes dests[i]: sources[i] with the stretch denoised (24-bit, same rate and channels) and, when run.removed, removed[i] with what was taken out.
     All sources must have the same sample rate; each has its own DenoiseProfiles. 'progress' (optional) is told how far it has got, 0..1, and stops the
     work by returning false; false (and no files) when cancelled or failed. */

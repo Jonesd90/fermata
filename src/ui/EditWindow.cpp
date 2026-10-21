@@ -1812,6 +1812,9 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     pitchButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::pitchTabsEdit (app, editId, this); }); };
     repairButton.setTooltip ("Shows the audio between marks 1 and 2 of all tracks as one spectrogram. Draw a box round a noise (drag its edges to adjust it) and rebuild it from the clean sound next to it, or use De-click to find and mend clicks. Key: Enter, with marks 1 and 2 set.");
     repairButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::repairEdit (app, editId, this, false); }); };
+    denoiseButton.setTooltip ("Spectral Denoise: shows the audio between marks 1 and 2 of all tracks as one spectrogram. Draw a box over a part that is only room tone (its pitch range is the part of the spectrum that is denoised; "
+                              "Shift + drag adds a box, Alt + drag takes an area out), learn it, see and hear the result, and write the denoised pieces back. For whole takes use the take window's Denoise.");
+    denoiseButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::denoiseEdit (app, editId, this); }); };
     reharmoniserButton.setTooltip ("ReHarmoniSer: retunes single out-of-tune notes in the audio between marks 1 and 2 of all tracks, every track in exactly the same way; check it by ear, then Write back to clip");
     reharmoniserButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::reharmoniserEdit (app, editId, this); }); };
     exportProcButton.setTooltip ("Export for Processing: sends the part between marks 1 and 2 (all tracks) to the Processing Media folder to be corrected in other software (e.g. iZotope RX). Re-link it afterwards with a right-click on the 'Waiting for corrected audio' block");
@@ -1847,7 +1850,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     timeline->slipLeft = app.trimSlipLeft; timeline->slipRight = app.trimSlipRight;
     slipLeftToggle.onClick  = [this] { timeline->slipLeft = slipLeftToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
     slipRightToggle.onClick = [this] { timeline->slipRight = slipRightToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
-    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &ltcButton, &automationButton, &busViewButton, &pitchButton, &repairButton, &reharmoniserButton, &exportProcButton, &undoFixButton,
+    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &ltcButton, &automationButton, &busViewButton, &pitchButton, &repairButton, &denoiseButton, &reharmoniserButton, &exportProcButton, &undoFixButton,
                                                           &slipLeftToggle, &slipRightToggle, &shuffleToggle, &insertFlagToggle })
     {
         addAndMakeVisible (b);
@@ -1858,7 +1861,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     fwdButton.setIcon (Icon::Forward, "Forward 5 seconds"); endTransportButton.setIcon (Icon::End, "Go to the end [End]");
     trimButton.setIcon (Icon::Trim, "Trim Window [T]"); deleteButton.setIcon (Icon::Delete, "Delete piece"); leftButton.setIcon (Icon::Earlier, "Move earlier"); rightButton.setIcon (Icon::Later, "Move later");
     bounceButton.setIcon (Icon::Bounce, "Bounce Out"); mixerButton.setIcon (Icon::Mixer, "Edit Mixer"); automationButton.setIcon (Icon::Automation, "Automation"); busViewButton.setIcon (Icon::Buses, "Buses / VCAs");
-    pitchButton.setIcon (Icon::Pitch, "Pitch & Pitch curve"); repairButton.setIcon (Icon::Repair, "Repair & DeClick [Enter]"); reharmoniserButton.setIcon (Icon::Reharm, "ReHarmoniSer [H]");
+    pitchButton.setIcon (Icon::Pitch, "Pitch & Pitch curve"); repairButton.setIcon (Icon::Repair, "Repair & DeClick [Enter]"); denoiseButton.setIcon (Icon::Denoise, "Spectral Denoise"); reharmoniserButton.setIcon (Icon::Reharm, "ReHarmoniSer [H]");
     undoFixButton.setIcon (Icon::Undo, "Undo fix"); tracksButton.setIcon (Icon::Tracks, "Tracks"); feedbackButton.setIcon (Icon::Feedback, "Feedback");
     endButton.setIcon (Icon::NextAtEnd, "Next goes at end"); exportProcButton.setIcon (Icon::ExportProc, "Export for Processing"); importButton.setIcon (Icon::ImportMulti, "Multitrack import");
     markersToggle.setIcon (Icon::Markers, "Markers"); feedbackToggle.setIcon (Icon::FeedbackMarkers, "Feedback markers");
@@ -1903,7 +1906,7 @@ void EditWindowComponent::resized()
         { &leftButton, IW, IH, 2 }, { &rightButton, IW, IH, 6 }, { &endButton, IW, IH, 14 },
         { &bounceButton, IW, IH, 2 }, { &mixerButton, IW, IH, 6 }, { &ltcButton, 74, grid::btnH, 14 },
         { &automationButton, IW, IH, 2 }, { &busViewButton, IW, IH, 14 },
-        { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 2 }, { &reharmoniserButton, IW, IH, 10 }, { &exportProcButton, IW + 8, IH, 2 }, { &undoFixButton, IW, IH, 14 },
+        { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 2 }, { &denoiseButton, IW, IH, 2 }, { &reharmoniserButton, IW, IH, 10 }, { &exportProcButton, IW + 8, IH, 2 }, { &undoFixButton, IW, IH, 14 },
         { &tracksButton, IW, IH, 2 }, { &importButton, IW + 8, IH, 14 }, { &feedbackButton, IW, IH, 8 }, { &markersToggle, IW, IH, 2 }, { &feedbackToggle, IW + 8, IH, 14 },
         { &slipLeftToggle, IW + 8, IH, 2 }, { &slipRightToggle, IW + 8, IH, 6 }, { &shuffleToggle, IW, IH, 2 }, { &insertFlagToggle, IW, IH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }

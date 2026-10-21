@@ -2,6 +2,7 @@
 #include "Dsp.h"
 #include <juce_core/juce_core.h>
 #include <cstdint>
+#include <algorithm>
 #include <atomic>
 #include <complex>
 #include <functional>
@@ -64,7 +65,12 @@ struct Profile
 {
     int fftSize = 0; double sampleRate = 0.0;
     std::vector<double> psd;                               // fftSize / 2 + 1 bins
+    /** Empty: the whole spectrum is denoised. Else one value per bin, 0..1: how much of the denoising that bin gets (its gain in dB is scaled by it);
+        a bin at 0 passes through exactly as it came in (the spectral denoise window: the room tone was drawn over part of the spectrum only, and the
+        rest is left completely untouched; the edges of that part are feathered). */
+    std::vector<float> weight;
     bool valid() const { return fftSize > 0 && ! psd.empty(); }
+    bool limited() const { return ! weight.empty(); }
     /** The room tone's level (dB FS, RMS) as learned. */
     double levelDb() const
     {
@@ -322,6 +328,126 @@ inline Profile learnProfile (const std::vector<std::vector<float>>& regions, dou
     return prof;
 }
 
+/** A box drawn on a spectrogram (seconds, Hz); a list of them is a selection: each box adds itself to (add) or takes itself out of (! add) what the
+    boxes before it made. The spectral denoise window learns the room tone from such a selection. */
+struct SelRect { double t0 = 0.0, t1 = 0.0, f0 = 0.0, f1 = 0.0; bool add = true; };
+inline bool selected (const std::vector<SelRect>& s, double t, double f)
+{
+    bool in = false;
+    for (auto& r : s) if (t >= r.t0 && t < r.t1 && f >= r.f0 && f < r.f1) in = r.add;
+    return in;
+}
+/** The stretches of time the selection covers at all (seconds), merged and sorted. */
+inline std::vector<std::pair<double, double>> selectedSpans (const std::vector<SelRect>& s)
+{
+    std::vector<std::pair<double, double>> v;
+    for (auto& r : s) if (r.add && r.t1 > r.t0) v.push_back ({ r.t0, r.t1 });
+    std::sort (v.begin(), v.end());
+    std::vector<std::pair<double, double>> out;
+    for (auto& x : v) { if (! out.empty() && x.first <= out.back().second) out.back().second = juce::jmax (out.back().second, x.second); else out.push_back (x); }
+    return out;
+}
+
+/** Learns a profile from the selected cells of one or more stretches of a channel: every bin's noise power is the mean over the frames whose
+    centre lies in a box of the selection at that bin's frequency. A bin no box covers gets the nearest covered bin's power (so the analysis
+    next to the edge behaves normally) and a weight of 0: its sound is passed through untouched. Call add() for each stretch (the same channel,
+    or the same microphone in another file), then finish(). */
+struct ProfileLearner
+{
+    int fftSize = 0; double sampleRate = 0.0;
+    std::vector<double> acc; std::vector<juce::int64> count;
+    /** x: len samples that start at 'tOffset' seconds on the selection's time scale. Only the parts under the selection's boxes are analysed. */
+    void add (const float* x, juce::int64 len, double sr, const Params& p, const std::vector<SelRect>& sel, double tOffset)
+    {
+        if (fftSize == 0) { fftSize = p.fftSize (sr); sampleRate = sr; acc.assign ((size_t) fftSize / 2 + 1, 0.0); count.assign (acc.size(), 0); }
+        if (std::abs (sr - sampleRate) > 0.5) return;
+        detail::Stft st (fftSize);
+        const int bins = fftSize / 2 + 1;
+        std::vector<double> freqs ((size_t) bins); for (int k = 0; k < bins; ++k) freqs[(size_t) k] = (double) k * sr / fftSize;
+        std::vector<std::complex<float>> X;
+        const auto spans = selectedSpans (sel);
+        for (auto& sp : spans)
+        {
+            // the samples of this stretch of time (a window either side, so the frames at its ends are whole), on this channel
+            const juce::int64 s0 = juce::jmax<juce::int64> (0, (juce::int64) std::llround ((sp.first - tOffset) * sr) - fftSize);
+            const juce::int64 s1 = juce::jmin (len, (juce::int64) std::llround ((sp.second - tOffset) * sr) + fftSize);
+            if (s1 - s0 < fftSize) continue;
+            int frames = 0; st.forward (x + s0, s1 - s0, X, frames);
+            std::vector<unsigned char> inTime ((size_t) frames, 0);
+            for (int t = 0; t < frames; ++t)
+            {
+                // the frame covers [t*hop - n, t*hop) of the stretch: its centre, and the whole of it, must lie under a box
+                const double c0 = tOffset + (double) (s0 + (juce::int64) t * st.hop - st.n) / sr, c1 = c0 + (double) st.n / sr;
+                bool whole = false;
+                for (auto& q : spans) if (c0 >= q.first && c1 <= q.second) whole = true;
+                inTime[(size_t) t] = whole ? 1 : 0;
+            }
+            for (int k = 0; k < bins; ++k)
+            {
+                const auto* row = X.data() + (size_t) k * (size_t) frames;
+                for (int t = 0; t < frames; ++t)
+                {
+                    if (! inTime[(size_t) t]) continue;
+                    const double tc = tOffset + (double) (s0 + (juce::int64) t * st.hop - st.n / 2) / sr;
+                    if (! selected (sel, tc, freqs[(size_t) k])) continue;
+                    acc[(size_t) k] += (double) std::norm (row[t]); ++count[(size_t) k];
+                }
+            }
+        }
+    }
+    /** How many bins the selection covered (0: nothing was learned). */
+    int covered() const { int n = 0; for (auto c : count) if (c > 0) ++n; return n; }
+    Profile finish() const
+    {
+        Profile prof;
+        if (fftSize == 0 || covered() == 0) return prof;
+        prof.fftSize = fftSize; prof.sampleRate = sampleRate;
+        const int bins = fftSize / 2 + 1;
+        std::vector<double> mean ((size_t) bins, 0.0); std::vector<unsigned char> has ((size_t) bins, 0);
+        for (int k = 0; k < bins; ++k) if (count[(size_t) k] > 0) { mean[(size_t) k] = acc[(size_t) k] / (double) count[(size_t) k]; has[(size_t) k] = 1; }
+        // uncovered bins: the nearest covered bin's power (the analysis next to the edge of the drawn part then behaves as it would with a full profile)
+        for (int k = 0; k < bins; ++k)
+            if (! has[(size_t) k])
+            {
+                int best = -1;
+                for (int d = 1; d < bins && best < 0; ++d) { if (k - d >= 0 && has[(size_t) (k - d)]) best = k - d; else if (k + d < bins && has[(size_t) (k + d)]) best = k + d; }
+                mean[(size_t) k] = best >= 0 ? mean[(size_t) best] : 1e-20;
+            }
+        prof.psd.assign ((size_t) bins, 0.0);
+        for (int k = 0; k < bins; ++k)
+        {
+            const double v = k == 0 ? mean[0] : k == bins - 1 ? mean[(size_t) k] : 0.25 * mean[(size_t) k - 1] + 0.5 * mean[(size_t) k] + 0.25 * mean[(size_t) k + 1];
+            prof.psd[(size_t) k] = juce::jmax (v, 1e-20);
+        }
+        prof.weight.assign ((size_t) bins, 0.0f);
+        for (int k = 0; k < bins; ++k) prof.weight[(size_t) k] = has[(size_t) k] ? 1.0f : 0.0f;
+        return prof;
+    }
+};
+
+/** Feathers the edges of a limited profile: inside each covered run of bins the weight rises from 0 at the edge to 1 'octaves' above (or below)
+    it, so the denoising has no hard edge in frequency. 0 = no feathering (the weight stays 0 / 1). The weight itself is never widened. */
+inline void featherProfile (Profile& prof, double octaves)
+{
+    if (! prof.limited() || octaves <= 0.0) return;
+    const int bins = (int) prof.weight.size();
+    auto freq = [&] (int k) { return juce::jmax (1.0, (double) k * prof.sampleRate / prof.fftSize); };
+    std::vector<float> w = prof.weight;
+    for (int k = 0; k < bins; ++k)
+    {
+        if (prof.weight[(size_t) k] <= 0.0f) continue;
+        // the edges of this run: half a bin beyond the last covered bin on each side (none at the ends of the spectrum)
+        int lo = k; while (lo > 0 && prof.weight[(size_t) lo - 1] > 0.0f) --lo;
+        int hi = k; while (hi + 1 < bins && prof.weight[(size_t) hi + 1] > 0.0f) ++hi;
+        double d = 1e9;
+        if (lo > 0) d = juce::jmin (d, std::log2 (freq (k) / juce::jmax (1.0, 0.5 * (freq (lo) + freq (lo - 1)))));
+        if (hi + 1 < bins) d = juce::jmin (d, std::log2 (juce::jmax (1.0, 0.5 * (freq (hi) + freq (hi + 1))) / freq (k)));
+        const double u = juce::jlimit (0.0, 1.0, d / octaves);
+        w[(size_t) k] = prof.weight[(size_t) k] * (float) (u * u * (3.0 - 2.0 * u));
+    }
+    prof.weight = w;
+}
+
 /** Pass 1 over a whole channel: measures the room's decay per 1/3-octave band. 'read' fills n samples from 'start' (zeros beyond the end). */
 inline Decay measureDecay (const Profile& prof, const Params& p, juce::int64 length,
                            const std::function<void (juce::int64 start, int n, float* dst)>& read,
@@ -375,6 +501,7 @@ struct Analysis
     std::vector<unsigned char> prot;                       // harmonic protection (bins x T)
     std::vector<float> stepDb;                             // the tail rule on the gain: dB a bin's gain may fall per hop
     std::vector<double> freqs;
+    const float* x = nullptr;                              // the input (finish() adds the change to it)
 };
 
 /** The analysis of one stretch of a channel (len samples): everything up to the presence map, which is what the other tracks of a take can use.
@@ -387,7 +514,7 @@ inline void analyse (const Profile& prof, const Params& p, const Decay& decay, c
     const int bins = prof.fftSize / 2 + 1;
     int T = 0;
     st.forward (x, len, A.X, T);
-    A.bins = bins; A.T = T; A.len = len;
+    A.bins = bins; A.T = T; A.len = len; A.x = x;
     const double dt = (double) st.hop / sr;
     A.freqs.assign ((size_t) bins, 0.0); for (int k = 0; k < bins; ++k) A.freqs[(size_t) k] = (double) k * sr / prof.fftSize;
     const auto& freqs = A.freqs;
@@ -567,9 +694,22 @@ inline void finish (const Profile& prof, const Params& p, Analysis& A, const uns
         for (int t = 0; t < T; ++t) g[t] = std::pow (10.0f, g[t] / 20.0f);
     }
     if (p.timeSmoothFrames > 0) { Grid tmp; smoothFrames (G, tmp, p.timeSmoothFrames); G = tmp; }
-    for (size_t i = 0; i < G.v.size(); ++i) { const float g = juce::jlimit ((float) gmin, 1.0f, G.v[i]); A.X[i] *= g; }
+    // a limited profile (the spectral denoise window): each bin gets its share of the denoising - its gain in dB scaled by the weight - and a bin
+    // with no share keeps its gain at exactly 1
+    if (prof.limited() && (int) prof.weight.size() == bins)
+        for (int k = 0; k < bins; ++k)
+        {
+            const float w = juce::jlimit (0.0f, 1.0f, prof.weight[(size_t) k]); float* g = G.row (k);
+            if (w >= 1.0f) continue;
+            if (w <= 0.0f) { for (int t = 0; t < T; ++t) g[t] = 1.0f; continue; }
+            for (int t = 0; t < T; ++t) g[t] = std::pow (juce::jlimit ((float) gmin, 1.0f, g[t]), w);
+        }
+    // the output is the input plus the CHANGE (the inverse transform of (gain - 1) times the spectrum): where the gain is 1 nothing is added,
+    // so an untouched bin, frame or stretch comes out exactly as it went in, not through a round trip of the transform
+    for (size_t i = 0; i < G.v.size(); ++i) { const float g = juce::jlimit ((float) gmin, 1.0f, G.v[i]); A.X[i] *= (g - 1.0f); }
     Stft st (prof.fftSize);
     st.inverse (A.X, T, A.len, out);
+    if (A.x != nullptr) for (juce::int64 i = 0; i < A.len; ++i) out[i] += A.x[i];
 }
 
 /** Processes one stretch of a channel in memory on its own: x (len samples) -> out (len samples). This is the single-track algorithm (what the
