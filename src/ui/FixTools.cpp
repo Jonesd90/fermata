@@ -7,6 +7,7 @@
 #include "../core/Aaf.h"
 #include "../core/SpectralPicture.h"
 #include "../core/EditFix.h"
+#include "../core/SpectralPyramid.h"
 #include <array>
 #include <atomic>
 #include <thread>
@@ -987,12 +988,31 @@ public:
     void setData (MergedSpectrogram s, double seconds, bool keepSelection = false)
     {
         const bool same = spec.frames > 0 && std::abs (seconds - duration) < 1.0e-9;
-        spec = std::move (s); duration = juce::jmax (0.001, seconds);
+        spec = std::move (s); duration = juce::jmax (0.001, seconds); dT0 = 0.0; dT1 = duration;
         if (! keepSelection) hasSel = false;
         if (! same) resetView();
         detailStale = true; scheduleDetail();
         dirty = true; repaint();
     }
+    /** A quick picture that covers only part of the time (Noise mode: a slice of the whole edit's pyramid for what is in view): its first frame
+        stands for 'dataT0' seconds and its last for 'dataT1'; 'seconds' is the whole length. The view, the selection and the sharp picture stay. */
+    void setDataRange (MergedSpectrogram s, double dataT0, double dataT1, double seconds)
+    {
+        const bool fresh = spec.frames == 0;
+        spec = std::move (s); duration = juce::jmax (0.001, seconds); dT0 = dataT0; dT1 = juce::jmax (dataT0 + 1.0e-6, dataT1);
+        if (fresh) { resetView(); scheduleDetail(); }
+        dirty = true; repaint();
+    }
+    std::function<void()> onView;                                  // the part of the time in view changed (zoom, pan, reset)
+    /** The sound changed under the picture: the sharp picture is made again. */
+    void invalidateDetail() { detailStale = true; dirty = true; repaint(); scheduleDetail(); }
+    bool detailWanted() const { return ss.sharp; }
+    /** Marks 1 / 2 on the picture (seconds; < 0 = none): the stretch Noise mode's denoise applies to. */
+    void setMarks (double in, double out) { markIn = in; markOut = out; repaint(); }
+    double markInTime() const { return markIn; }
+    double markOutTime() const { return markOut; }
+    /** Where a mark goes: the running playhead, else the one placed on the ruler, else the left edge of the view. */
+    double markPoint() const { return playT >= 0.0 ? playT : cueT >= 0.0 ? cueT : vt0; }
     /** The sharp picture asked for with onNeedDetail (ignored if the view has moved on and asked again since). */
     void setDetail (DetailPicture p)
     {
@@ -1029,7 +1049,7 @@ public:
     // ---- the view: which part of the time is shown (this is what Play plays), which pitches, and how the pitches are spread up the picture
     double visT0() const { return vt0; }
     double visT1() const { return vt1; }
-    void resetView() { vt0 = 0.0; vt1 = duration; fLo = kMinHz; fHi = maxHz(); dirty = true; repaint(); scheduleDetail(); }
+    void resetView() { vt0 = 0.0; vt1 = duration; fLo = kMinHz; fHi = maxHz(); dirty = true; repaint(); scheduleDetail(); if (onView) onView(); }
     /** factor < 1 zooms in, > 1 zooms out, around the middle of what is shown. */
     void zoomTime (double factor)
     {
@@ -1194,6 +1214,15 @@ public:
             {
                 const int x = tToX (playT, plot);
                 g.setColour (theme::playhead); g.fillRect (x - 1, plot.getY(), 2, plot.getHeight());
+            }
+            for (int m = 0; m < 2; ++m)                                             // marks 1 / 2 (Noise mode)
+            {
+                const double t = m == 0 ? markIn : markOut;
+                if (t < 0.0 || t < vt0 || t > vt1) continue;
+                const int x = tToX (t, plot);
+                g.setColour (juce::Colour (0xff4fc3f7)); g.fillRect (x - 1, plot.getY(), 2, plot.getHeight());
+                g.setColour (juce::Colour (0xff4fc3f7)); g.fillRoundedRectangle ((float) x - 7.0f, (float) plot.getY() + 2.0f, 14.0f, 14.0f, 3.0f);
+                g.setColour (juce::Colours::black); g.setFont (juce::FontOptions (11.0f, juce::Font::bold)); g.drawText (m == 0 ? "1" : "2", x - 7, plot.getY() + 2, 14, 14, juce::Justification::centred);
             }
         }
         // the round colour control
@@ -1386,7 +1415,7 @@ private:
     {
         span = juce::jlimit (juce::jmin (0.05, duration), duration, span);
         t0 = juce::jlimit (0.0, juce::jmax (0.0, duration - span), t0);
-        vt0 = t0; vt1 = t0 + span; dirty = true; repaint(); scheduleDetail();
+        vt0 = t0; vt1 = t0 + span; dirty = true; repaint(); scheduleDetail(); if (onView) onView();
     }
     void setFreqWindow (double logLo, double logSpan)
     {
@@ -1444,7 +1473,7 @@ private:
         for (int x = 0; x < W; ++x)
         {
             const double t = vt0 + ((double) x + 0.5) / (double) W * (vt1 - vt0);
-            const double fp = juce::jlimit (0.0, (double) spec.frames - 1.0001, t / duration * (double) (spec.frames - 1));
+            const double fp = juce::jlimit (0.0, (double) spec.frames - 1.0001, (t - dT0) / (dT1 - dT0) * (double) (spec.frames - 1));
             const int f0 = (int) fp; const float ff = (float) (fp - f0); const int f1 = juce::jmin (spec.frames - 1, f0 + 1);
             for (int y = 0; y < H; ++y)
             {
@@ -1480,7 +1509,7 @@ private:
             }
         }
     }
-    MergedSpectrogram spec; double duration = 1.0; juce::Image image; bool dirty = true;
+    MergedSpectrogram spec; double duration = 1.0, dT0 = 0.0, dT1 = 1.0, markIn = -1.0, markOut = -1.0; juce::Image image; bool dirty = true;
     double vt0 = 0.0, vt1 = 1.0, fLo = kMinHz, fHi = 20000.0, warp = 1.0;
     int preset = 0; double rollPos = 0.0, rollStart = 0.0; Mode mode = Mode::none; double panT0 = 0.0, panF = kMinHz, panF1 = 20000.0;
     std::array<juce::Colour, 256> lut, lutD;
@@ -3771,6 +3800,200 @@ private:
     std::vector<denoise::SelRect> learnedSel; double learnLoHz = 0.0, learnHiHz = 0.0;
 };
 
+/** The tracks of an edit between 'from' and 'to' and, for each, where its audio comes from along that stretch: whoever owns each moment (the piece that is on
+    top there). 'only' (Alt + drag) limits the tracks. Built on the message thread from the regions as they are now; read on any thread. */
+struct TrackPart { juce::File file; juce::int64 fileStart = 0, srcA = 0, n = 0, dst = 0; };     // srcA: the take sample the part starts at; dst: the sample of the stretch it lands on
+struct TrackParts
+{
+    std::vector<juce::Uuid> ids; std::vector<juce::String> names; std::vector<std::vector<TrackPart>> parts;
+    juce::int64 from = 0, to = 0; int pieces = 0;
+};
+static TrackParts buildTrackParts (const EditDef& e, juce::int64 from, juce::int64 to, const std::vector<juce::Uuid>& only)
+{
+    TrackParts tp; tp.from = from; tp.to = to;
+    for (auto& r : e.regions) if (r.endSample() > from && r.startSample < to)
+    {
+        ++tp.pieces;
+        for (auto& f : r.files)
+        {
+            if (! only.empty() && std::find (only.begin(), only.end(), f.trackId) == only.end()) continue;
+            if (std::find (tp.ids.begin(), tp.ids.end(), f.trackId) == tp.ids.end()) { tp.ids.push_back (f.trackId); tp.names.push_back (f.trackName); tp.parts.emplace_back(); }
+        }
+    }
+    std::vector<juce::int64> cuts { from, to };
+    for (auto& r : e.regions) { if (r.startSample > from && r.startSample < to) cuts.push_back (r.startSample); if (r.endSample() > from && r.endSample() < to) cuts.push_back (r.endSample()); }
+    std::sort (cuts.begin(), cuts.end()); cuts.erase (std::unique (cuts.begin(), cuts.end()), cuts.end());
+    for (size_t k = 0; k + 1 < cuts.size(); ++k)
+    {
+        const auto t0 = cuts[k], t1 = cuts[k + 1];
+        const int ri = e.regionAt (t0 + (t1 - t0) / 2);
+        if (ri < 0) continue;
+        const auto& r = e.regions[(size_t) ri];
+        for (auto& f : r.files)
+        {
+            const auto ti = std::find (tp.ids.begin(), tp.ids.end(), f.trackId);
+            if (ti == tp.ids.end()) continue;
+            tp.parts[(size_t) (ti - tp.ids.begin())].push_back ({ f.file, f.fileStart, r.srcIn + (t0 - r.startSample), t1 - t0, t0 - from });
+        }
+    }
+    return tp;
+}
+/** The mono mix of track i over [at, at + n) of the stretch (samples from its start): silence where no piece is heard. Readers are opened as needed
+    ('cache', optional, keeps the last one per track). */
+struct ReaderCache { std::map<juce::String, std::unique_ptr<juce::AudioFormatReader>> readers; std::mutex lock; };
+static void readTrackMix (const std::vector<TrackPart>& parts, juce::int64 at, juce::int64 n, float* dst, ReaderCache* cache = nullptr)
+{
+    std::fill (dst, dst + n, 0.0f);
+    for (auto& pt : parts)
+    {
+        const auto p0 = juce::jmax (at, pt.dst), p1 = juce::jmin (at + n, pt.dst + pt.n);     // the part of this piece inside the range (stretch samples)
+        if (p1 <= p0) continue;
+        juce::int64 rel = pt.srcA - pt.fileStart + (p0 - pt.dst), cnt = p1 - p0, o = p0 - at;
+        if (rel < 0) { cnt += rel; o -= rel; rel = 0; }
+        if (cnt <= 0) continue;
+        std::vector<std::vector<float>> ch;
+        if (cache != nullptr)
+        {
+            std::lock_guard<std::mutex> l (cache->lock);
+            auto& r = cache->readers[pt.file.getFullPathName()];
+            if (r == nullptr) r = audioops::openReader (formats(), pt.file);
+            if (r == nullptr) continue;
+            audioops::readRange (*r, rel, cnt, ch);
+        }
+        else { auto r = audioops::openReader (formats(), pt.file); if (r == nullptr) continue; audioops::readRange (*r, rel, cnt, ch); }
+        for (auto& x : ch) for (size_t k = 0; k < x.size(); ++k) dst[(size_t) o + k] += x[k] / (float) ch.size();
+    }
+}
+/** The files' room-tone profiles, per track per channel, from the parts of them that lie under the boxes (the boxes' times are seconds from the start of the
+    stretch). Empty + error if a track's files hold nothing under the boxes. */
+static juce::String learnFileProfiles (const TrackParts& tp, const SpectralDenoiseSettings& s, double rate, std::vector<std::vector<denoise::Profile>>& out, AudioJob& j)
+{
+    out.assign (tp.ids.size(), {});
+    const auto spans = denoise::selectedSpans (s.sel);
+    for (size_t i = 0; i < tp.parts.size(); ++i)
+    {
+        std::vector<denoise::ProfileLearner> learners;
+        for (auto& pt : tp.parts[i])
+        {
+            if (j.cancelled()) return "Cancelled.";
+            const double p0 = (double) pt.dst / rate, p1 = (double) (pt.dst + pt.n) / rate;          // does any box reach into this part?
+            bool touched = false; for (auto& sp : spans) if (sp.second > p0 && sp.first < p1) touched = true;
+            if (! touched) continue;
+            auto r = audioops::openReader (formats(), pt.file); if (r == nullptr) continue;
+            juce::int64 rel = pt.srcA - pt.fileStart, n = pt.n, dst = pt.dst;
+            if (rel < 0) { n += rel; dst -= rel; rel = 0; }
+            if (n <= 0) continue;
+            std::vector<std::vector<float>> ch; audioops::readRange (*r, rel, n, ch);
+            if (learners.size() < ch.size()) learners.resize (ch.size());
+            for (size_t cc = 0; cc < ch.size(); ++cc) learners[cc].add (ch[cc].data(), (juce::int64) ch[cc].size(), rate, s.params, s.sel, (double) dst / rate);
+        }
+        for (auto& l : learners) { if (l.covered() == 0) return "The boxes lie over a part of the edit that has no audio on " + tp.names[i] + "."; out[i].push_back (l.finish()); }
+        if (out[i].empty()) return "The boxes do not reach any audio of " + tp.names[i] + ".";
+    }
+    return {};
+}
+/** One denoise job per piece of 'regions' between 'from' and 'to' (edit samples), the files made (job thread). Each piece is made again with 1 s handles; the
+    denoised stretch is the piece and, where the piece's edge is the region's own edge (an edit point), its handle too, so the crossfade there is between two
+    denoised sounds; where a mark cuts the region the feather fades the denoising in or out at the mark. The files of one piece must start at the same place. */
+static juce::String prepareDenoiseJobs (const juce::File& fixFolder, const std::vector<EditRegion>& regions, juce::int64 from, juce::int64 to, double rate, const TrackParts& tp,
+                                        const std::vector<std::vector<denoise::Profile>>& fileProfiles, const SpectralDenoiseSettings& s, std::vector<RegionJob>& jobs, AudioJob& j)
+{
+    auto deleteFiles = [&jobs] { for (auto& rj : jobs) for (auto& r : rj.results) r.file.deleteFile(); jobs.clear(); };
+    const auto h = (juce::int64) (1.0 * rate);
+    for (auto& r : regions)
+    {
+        if (r.endSample() <= from || r.startSample >= to) continue;
+        const auto r0 = juce::jmax (from, r.startSample), r1 = juce::jmin (to, r.endSample());
+        if (r1 - r0 < 2) continue;
+        const auto a = r.srcIn + (r0 - r.startSample), b = r.srcIn + (r1 - r.startSample);
+        RegionJob rj; rj.regionId = r.id; rj.a = a; rj.b = b; rj.outFrom = a - h; rj.outTo = b + h;
+        rj.fixFrom = r0 == r.startSample ? rj.outFrom : a; rj.fixTo = r1 == r.endSample() ? rj.outTo : b;
+        std::vector<audioops::DenoiseProfiles> profs;
+        for (size_t fi = 0; fi < r.files.size(); ++fi)
+        {
+            auto& f = r.files[fi];
+            const auto ti = std::find (tp.ids.begin(), tp.ids.end(), f.trackId);
+            if (ti == tp.ids.end()) continue;
+            const size_t t = (size_t) (ti - tp.ids.begin());
+            if (t >= fileProfiles.size() || fileProfiles[t].empty()) continue;
+            auto rd = audioops::openReader (formats(), f.file);
+            if (rd == nullptr) { deleteFiles(); return "Could not read " + f.file.getFileName(); }
+            audioops::DenoiseProfiles dp; dp.sampleRate = rate; dp.channels = (int) rd->numChannels;
+            for (int cc = 0; cc < dp.channels; ++cc)
+            {
+                auto pr = fileProfiles[t][juce::jmin ((size_t) cc, fileProfiles[t].size() - 1)];
+                denoise::featherProfile (pr, s.featherOctaves);
+                dp.perChannel.push_back (pr);
+                dp.decay.push_back (t < s.decayPerTrack.size() ? s.decayPerTrack[t] : denoise::Decay());
+            }
+            rj.idx.push_back (fi); rj.src.push_back (f.file); rj.fileStart.push_back (f.fileStart);
+            rj.dest.push_back (audioops::uniqueFile (fixFolder.getChildFile (sanitiseForFile (r.takeName.upToFirstOccurrenceOf (" (", false, false) + " - " + f.trackName) + " (denoise).wav")));
+            for (size_t k = 0; k + 1 < rj.dest.size(); ++k) if (rj.dest[k] == rj.dest.back()) rj.dest.back() = audioops::uniqueFile (rj.dest.back().getSiblingFile (rj.dest.back().getFileNameWithoutExtension() + " b.wav"));
+            profs.push_back (std::move (dp));
+        }
+        if (rj.src.empty()) continue;
+        fixFolder.createDirectory();
+        audioops::DenoiseRun run; run.threads = juce::jlimit (1, 8, (int) std::thread::hardware_concurrency());
+        run.featherIn = run.featherOut = (juce::int64) std::llround (s.featherSeconds * rate);
+        for (size_t k = 1; k < rj.fileStart.size(); ++k) if (rj.fileStart[k] != rj.fileStart[0]) { deleteFiles(); return "The files of one piece start at different places (a piece corrected earlier on some tracks only): denoise it before other corrections, or Undo fix first."; }
+        const auto fs = rj.fileStart[0];
+        run.writeFrom = rj.outFrom - fs; run.writeTo = rj.outTo - fs; run.a = rj.fixFrom - fs; run.b = rj.fixTo - fs;
+        juce::String err;
+        const float p0 = (float) (r0 - from) / (float) (to - from), p1 = (float) (r1 - from) / (float) (to - from);
+        if (! audioops::denoiseFiles (formats(), rj.src, rj.dest, {}, profs, s.params, run, [&j, p0, p1] (float p) { j.setProgress (p0 + (p1 - p0) * p); return ! j.cancelled(); }, err))
+        { deleteFiles(); return err.isNotEmpty() ? err : "Cancelled."; }
+        for (size_t k = 0; k < rj.dest.size(); ++k)
+        {
+            auto rd = audioops::openReader (formats(), rj.dest[k]);
+            if (rd == nullptr) { deleteFiles(); return "Could not read back " + rj.dest[k].getFileName(); }
+            audioops::PieceResult res; res.file = rj.dest[k]; res.from = juce::jmax (fs, rj.outFrom); res.to = res.from + rd->lengthInSamples; res.ok = true;
+            rj.results.push_back (res);
+        }
+        jobs.push_back (std::move (rj));
+    }
+    if (jobs.empty()) return "Nothing to do in this area.";
+    return {};
+}
+/** One repair / de-click / gain job per piece of 'regions' between 'from' and 'to': the changes that fall inside each piece, in its own samples (as the
+    repair window's prepare, without the OUT / IN streams), the files made (job thread). */
+static juce::String prepareRepairJobs (const juce::File& fixFolder, const std::vector<EditRegion>& regions, juce::int64 from, juce::int64 to, double rate, const std::vector<RepairOp>& ops,
+                                       const std::vector<juce::Uuid>& only, std::vector<RegionJob>& jobs, AudioJob& j)
+{
+    if (ops.empty()) return "Nothing to do.";
+    auto deleteFiles = [&jobs] { for (auto& rj : jobs) for (auto& r : rj.results) r.file.deleteFile(); jobs.clear(); };
+    const auto h = (juce::int64) (1.0 * rate), shortest = (juce::int64) (0.03 * rate);
+    for (auto& r : regions)
+    {
+        if (r.endSample() <= from || r.startSample >= to) continue;
+        const auto r0 = juce::jmax (from, r.startSample), r1 = juce::jmin (to, r.endSample());
+        if (r1 - r0 < 2) continue;
+        std::vector<audioops::FixOp> mine;
+        juce::int64 lo = r1, hi = r0;                                           // the piece that is made again: just the span of the changes inside this region
+        for (auto& o : ops)
+        {
+            const auto i0 = juce::jmax (r0, from + o.t0), i1 = juce::jmin (r1, from + o.t1);
+            if (i1 - i0 < 2) continue;
+            if (o.t1 - o.t0 > shortest && i1 - i0 <= shortest) continue;
+            mine.push_back (audioops::FixOp { o.spec, r.srcIn + (i0 - r.startSample), r.srcIn + (i1 - r.startSample) });
+            lo = juce::jmin (lo, i0); hi = juce::jmax (hi, i1);
+        }
+        if (mine.empty() || hi <= lo) continue;
+        const auto pa = r.srcIn + (lo - r.startSample), pb = r.srcIn + (hi - r.startSample);
+        RegionJob rj;
+        fixFolder.createDirectory();
+        prepRegionJob (fixFolder, r, rj, pa, pb, pa - h, pb + h, pa, pb, ops.back().spec, only);
+        rj.ops = mine;
+        jobs.push_back (std::move (rj));
+    }
+    if (jobs.empty()) return "Nothing to do in this area.";
+    for (size_t i = 0; i < jobs.size(); ++i)
+    {
+        const auto err = runRegionJob (jobs[i], ops.back().spec, j, (float) i / (float) jobs.size(), (float) (i + 1) / (float) jobs.size());
+        if (err.isNotEmpty()) { deleteFiles(); return err; }
+    }
+    return {};
+}
+
 void denoiseEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent)
 {
     const juce::String nm = "Spectral Denoise";
@@ -3784,57 +4007,24 @@ void denoiseEdit (AppContext& app, const juce::Uuid& eid, juce::Component* paren
     const auto from = tIn, to = juce::jmin (tOut, lastEnd);
     if (to - from < (juce::int64) (1.0 * rate)) { say (nm, "The marked area is too short (at least a second, with some room tone in it)."); return; }
     const auto only = e->fixTracks;
-    // the tracks (one picture row each) and, for each, where its audio comes from along the marked area: whoever owns each moment
-    struct Part { juce::File file; juce::int64 fileStart = 0, srcA = 0, n = 0, dst = 0; };
-    std::vector<juce::Uuid> trackIds; std::vector<juce::String> trackNames; std::vector<std::vector<Part>> parts;
-    for (auto& r : e->regions) if (r.endSample() > from && r.startSample < to)
-        for (auto& f : r.files)
-        {
-            if (! only.empty() && std::find (only.begin(), only.end(), f.trackId) == only.end()) continue;
-            if (std::find (trackIds.begin(), trackIds.end(), f.trackId) == trackIds.end()) { trackIds.push_back (f.trackId); trackNames.push_back (f.trackName); parts.emplace_back(); }
-        }
-    {
-        std::vector<juce::int64> cuts { from, to };
-        for (auto& r : e->regions) { if (r.startSample > from && r.startSample < to) cuts.push_back (r.startSample); if (r.endSample() > from && r.endSample() < to) cuts.push_back (r.endSample()); }
-        std::sort (cuts.begin(), cuts.end()); cuts.erase (std::unique (cuts.begin(), cuts.end()), cuts.end());
-        for (size_t k = 0; k + 1 < cuts.size(); ++k)
-        {
-            const auto t0 = cuts[k], t1 = cuts[k + 1];
-            const int ri = e->regionAt (t0 + (t1 - t0) / 2);
-            if (ri < 0) continue;
-            const auto& r = e->regions[(size_t) ri];
-            for (auto& f : r.files)
-            {
-                const auto ti = std::find (trackIds.begin(), trackIds.end(), f.trackId);
-                if (ti == trackIds.end()) continue;
-                parts[(size_t) (ti - trackIds.begin())].push_back ({ f.file, f.fileStart, r.srcIn + (t0 - r.startSample), t1 - t0, t0 - from });
-            }
-        }
-    }
+    const auto tp = buildTrackParts (*e, from, to, only);
+    const auto& trackIds = tp.ids;
     if (trackIds.empty()) { say (nm, "None of the tracks you marked with Alt + drag are in the marked area."); return; }
-    SpectralDenoiseContext c; c.rate = rate; c.length = to - from; c.trackNames = trackNames;
+    SpectralDenoiseContext c; c.rate = rate; c.length = to - from; c.trackNames = tp.names;
     c.what = juce::String (only.empty() ? "All " : "The ") + juce::String ((int) trackIds.size()) + " tracks between marks 1 and 2 are shown as one picture" + (pieces > 1 ? ", across the edit points (" + juce::String (pieces) + " pieces)" : juce::String()) + ". "
              "Draw a box over a part that holds nothing but the room: its time range is where the room tone is learned (on every track), its pitch range is the part of the spectrum that is denoised - above and below it nothing is touched. "
              "Shift + drag adds a box, Alt + drag takes an area out. Press \"This is the room tone\", listen (Original / Denoised), adjust Amount and Residual and press Denoise again, and Write back to clip when you are happy. "
              "The whole marked area is denoised, with the feathers at its ends. Each piece is made again in its own place: the edit points and their fades stay exactly as they are, and the original files are not touched (Undo fix brings them back).";
     const auto total = to - from;
-    c.load = [parts, total] (AudioJob& j)
+    c.load = [tp, total] (AudioJob& j)
     {
         std::vector<std::vector<float>> tracks;
-        for (size_t i = 0; i < parts.size(); ++i)
+        for (size_t i = 0; i < tp.parts.size(); ++i)
         {
             if (j.cancelled()) break;
-            j.setProgress ((float) i / (float) juce::jmax ((size_t) 1, parts.size()));
+            j.setProgress ((float) i / (float) juce::jmax ((size_t) 1, tp.parts.size()));
             std::vector<float> mono ((size_t) total, 0.0f);
-            for (auto& pt : parts[i])
-            {
-                auto r = audioops::openReader (formats(), pt.file); if (r == nullptr) continue;
-                juce::int64 rel = pt.srcA - pt.fileStart, n = pt.n, dst = pt.dst;
-                if (rel < 0) { n += rel; dst -= rel; rel = 0; }
-                if (n <= 0) continue;
-                std::vector<std::vector<float>> ch; audioops::readRange (*r, rel, n, ch);
-                for (auto& x : ch) for (size_t k = 0; k < x.size() && dst + (juce::int64) k < total; ++k) mono[(size_t) dst + k] += x[k] / (float) ch.size();
-            }
+            readTrackMix (tp.parts[i], 0, total, mono.data());
             tracks.push_back (std::move (mono));
         }
         return tracks;
@@ -3848,94 +4038,16 @@ void denoiseEdit (AppContext& app, const juce::Uuid& eid, juce::Component* paren
     const auto fixFolder = app.project.audioFolder().getChildFile ("Fixes");
     const auto regionsCopy = std::make_shared<std::vector<EditRegion>> (e->regions);
     auto deleteFiles = [st] { for (auto& rj : st->jobs) for (auto& r : rj.results) r.file.deleteFile(); st->jobs.clear(); };
-    c.prepare = [fixFolder, regionsCopy, from, to, rate, st, only, deleteFiles, parts, trackIds] (const SpectralDenoiseSettings& s, AudioJob& j) -> juce::String
+    c.prepare = [fixFolder, regionsCopy, from, to, rate, st, deleteFiles, tp] (const SpectralDenoiseSettings& s, AudioJob& j) -> juce::String
     {
         deleteFiles();
-        // the profiles of the real files (each channel its own), from the parts of them that lie under the boxes - once per set of boxes
         if (st->profilesFor != s.learnSerial)
         {
-            st->fileProfiles.assign (trackIds.size(), {});
-            const auto spans = denoise::selectedSpans (s.sel);
-            for (size_t i = 0; i < parts.size(); ++i)
-            {
-                std::vector<denoise::ProfileLearner> learners;
-                for (auto& pt : parts[i])
-                {
-                    if (j.cancelled()) return "Cancelled.";
-                    // does any box reach into this part?
-                    const double p0 = (double) pt.dst / rate, p1 = (double) (pt.dst + pt.n) / rate;
-                    bool touched = false; for (auto& sp : spans) if (sp.second > p0 && sp.first < p1) touched = true;
-                    if (! touched) continue;
-                    auto r = audioops::openReader (formats(), pt.file); if (r == nullptr) continue;
-                    juce::int64 rel = pt.srcA - pt.fileStart, n = pt.n, dst = pt.dst;
-                    if (rel < 0) { n += rel; dst -= rel; rel = 0; }
-                    if (n <= 0) continue;
-                    std::vector<std::vector<float>> ch; audioops::readRange (*r, rel, n, ch);
-                    if (learners.size() < ch.size()) learners.resize (ch.size());
-                    for (size_t cc = 0; cc < ch.size(); ++cc) learners[cc].add (ch[cc].data(), (juce::int64) ch[cc].size(), rate, s.params, s.sel, (double) dst / rate);
-                }
-                for (auto& l : learners) { if (l.covered() == 0) return "The boxes lie over a part of the edit that has no audio on " + juce::String ((int) i + 1) + " of the tracks."; st->fileProfiles[i].push_back (l.finish()); }
-                if (st->fileProfiles[i].empty()) return "The boxes do not reach any audio of track " + juce::String ((int) i + 1) + ".";
-            }
+            const auto err = learnFileProfiles (tp, s, rate, st->fileProfiles, j);
+            if (err.isNotEmpty()) return err;
             st->profilesFor = s.learnSerial;
         }
-        const auto h = (juce::int64) (1.0 * rate);                   // each piece is made again with 1 s of its own sound either side (the handles, for the fades)
-        for (auto& r : *regionsCopy)
-        {
-            if (r.endSample() <= from || r.startSample >= to) continue;
-            const auto r0 = juce::jmax (from, r.startSample), r1 = juce::jmin (to, r.endSample());
-            if (r1 - r0 < 2) continue;
-            const auto a = r.srcIn + (r0 - r.startSample), b = r.srcIn + (r1 - r.startSample);
-            RegionJob rj; rj.regionId = r.id; rj.a = a; rj.b = b; rj.outFrom = a - h; rj.outTo = b + h;
-            // the stretch denoised: the piece, and - where the piece's edge is a real edge of its region (an edit point) - its handle too, so the
-            // crossfade there is between two denoised sounds; where the mark cuts the region, the feather fades the denoising in or out at the mark
-            rj.fixFrom = r0 == r.startSample ? rj.outFrom : a; rj.fixTo = r1 == r.endSample() ? rj.outTo : b;
-            std::vector<audioops::DenoiseProfiles> profs;
-            for (size_t fi = 0; fi < r.files.size(); ++fi)
-            {
-                auto& f = r.files[fi];
-                const auto ti = std::find (trackIds.begin(), trackIds.end(), f.trackId);
-                if (ti == trackIds.end()) continue;
-                const size_t t = (size_t) (ti - trackIds.begin());
-                auto rd = audioops::openReader (formats(), f.file);
-                if (rd == nullptr) { deleteFiles(); return "Could not read " + f.file.getFileName(); }
-                audioops::DenoiseProfiles dp; dp.sampleRate = rate; dp.channels = (int) rd->numChannels;
-                for (int cc = 0; cc < dp.channels; ++cc)
-                {
-                    auto pr = st->fileProfiles[t][juce::jmin ((size_t) cc, st->fileProfiles[t].size() - 1)];
-                    denoise::featherProfile (pr, s.featherOctaves);
-                    dp.perChannel.push_back (pr);
-                    dp.decay.push_back (t < s.decayPerTrack.size() ? s.decayPerTrack[t] : denoise::Decay());
-                }
-                rj.idx.push_back (fi); rj.src.push_back (f.file); rj.fileStart.push_back (f.fileStart);
-                rj.dest.push_back (audioops::uniqueFile (fixFolder.getChildFile (sanitiseForFile (r.takeName.upToFirstOccurrenceOf (" (", false, false) + " - " + f.trackName) + " (denoise).wav")));
-                for (size_t k = 0; k + 1 < rj.dest.size(); ++k) if (rj.dest[k] == rj.dest.back()) rj.dest.back() = audioops::uniqueFile (rj.dest.back().getSiblingFile (rj.dest.back().getFileNameWithoutExtension() + " b.wav"));
-                profs.push_back (std::move (dp));
-            }
-            if (rj.src.empty()) continue;
-            fixFolder.createDirectory();
-            // every file of the piece has the same fileStart in a take as recorded; a piece already corrected may be a short file that starts later: the
-            // spans are given relative to the first file and the denoiser clips them to each file
-            audioops::DenoiseRun run; run.threads = juce::jlimit (1, 8, (int) std::thread::hardware_concurrency());
-            run.featherIn = run.featherOut = (juce::int64) std::llround (s.featherSeconds * rate);
-            if (rj.fileStart.size() > 1) for (size_t k = 1; k < rj.fileStart.size(); ++k) if (rj.fileStart[k] != rj.fileStart[0]) { deleteFiles(); return "The files of one piece start at different places (a piece corrected earlier on some tracks only): denoise it before other corrections, or Undo fix first."; }
-            const auto fs = rj.fileStart[0];
-            run.writeFrom = rj.outFrom - fs; run.writeTo = rj.outTo - fs; run.a = rj.fixFrom - fs; run.b = rj.fixTo - fs;
-            juce::String err;
-            const float p0 = (float) (r0 - from) / (float) (to - from), p1 = (float) (r1 - from) / (float) (to - from);
-            if (! audioops::denoiseFiles (formats(), rj.src, rj.dest, {}, profs, s.params, run, [&j, p0, p1] (float p) { j.setProgress (p0 + (p1 - p0) * p); return ! j.cancelled(); }, err))
-            { deleteFiles(); return err.isNotEmpty() ? err : "Cancelled."; }
-            for (size_t k = 0; k < rj.dest.size(); ++k)
-            {
-                auto rd = audioops::openReader (formats(), rj.dest[k]);
-                if (rd == nullptr) { deleteFiles(); return "Could not read back " + rj.dest[k].getFileName(); }
-                audioops::PieceResult res; res.file = rj.dest[k]; res.from = juce::jmax (fs, rj.outFrom); res.to = res.from + rd->lengthInSamples; res.ok = true;
-                rj.results.push_back (res);
-            }
-            st->jobs.push_back (std::move (rj));
-        }
-        if (st->jobs.empty()) return "Nothing to do in this area.";
-        return {};
+        return prepareDenoiseJobs (fixFolder, *regionsCopy, from, to, rate, tp, st->fileProfiles, s, st->jobs, j);
     };
     c.apply = [&app, eid, st, deleteFiles]
     {
@@ -3970,6 +4082,560 @@ void denoiseEdit (AppContext& app, const juce::Uuid& eid, juce::Component* paren
     c.hold = [&app] (bool on) { app.undoHold += on ? 1 : -1; };
     gSpecPrefs = app.props.getUserSettings();
     launchDialog (std::make_unique<SpectralDenoiseDialog> (std::move (c)), nm, parent, true);
+}
+
+// ======================================================================================================== Noise mode (edit window)
+/** The whole edit in one spectral window, built once at several resolutions (SpectralPyramid), with Gain, ReTouch, De-click and the background denoiser
+    all to hand: each is applied the moment it is made, on the result of the last, as new piece files put into the edit (the edit plays through them at once);
+    Undo takes the last one off; Write back to clip keeps what has been done (the window stays open); Finished closes and throws away what was not written. */
+class NoiseModeDialog : public JobDialogBase
+{
+public:
+    NoiseModeDialog (AppContext& a, const juce::Uuid& editId, double sampleRate, juce::int64 editLength, std::vector<juce::Uuid> onlyTracks, const juce::String& what)
+        : app (a), eid (editId), rate (sampleRate), length (editLength), only (std::move (onlyTracks))
+    {
+        setSize (1100, 830);
+        fixFolder = app.project.audioFolder().getChildFile ("Fixes");
+        if (auto* e = app.project.findEdit (eid)) { base = e->regions; cur = std::make_shared<TrackParts> (buildTrackParts (*e, 0, length, only)); }
+        intro.setText (what, juce::dontSendNotification); intro.setColour (juce::Label::textColourId, theme::text); intro.setJustificationType (juce::Justification::topLeft);
+        addAndMakeVisible (intro); addAndMakeVisible (view); addAndMakeVisible (info);
+        info.setColour (juce::Label::textColourId, theme::text);
+        view.setMultiSelect (true);
+        auto cap = [this] (juce::Label& l, const juce::String& t) { l.setText (t, juce::dontSendNotification); l.setColour (juce::Label::textColourId, theme::text); addAndMakeVisible (l); };
+        cap (sensCap, "Click sensitivity"); cap (strengthCap, "Strength"); cap (dirCap, "Direction"); cap (surroundCap, "Surrounding"); cap (weightCap, "Before <-> After");
+        cap (amountCap, "Amount"); cap (residualCap, "Residual"); cap (tailCap, "Tail"); cap (groupCap, "Other tracks"); cap (fTimeCap, "Feather: time"); cap (fPitchCap, "Feather: pitch");
+        auto slider = [this] (juce::Slider& sl, double lo, double hi, double step, double v, const juce::String& suffix, int boxW)
+        {
+            sl.setSliderStyle (juce::Slider::LinearHorizontal); sl.setRange (lo, hi, step); sl.setValue (v, juce::dontSendNotification); sl.setScrollWheelEnabled (false);
+            sl.setTextBoxStyle (juce::Slider::TextBoxRight, false, boxW, 22); sl.setTextValueSuffix (suffix);
+            sl.onValueChange = [this] { updateSurround(); };
+            addAndMakeVisible (sl);
+        };
+        slider (sens, 1, 10, 1, 6, "", 50); slider (strength, 0, 100, 1, 80, " %", 56); slider (surround, 10, 400, 5, 100, " %", 56); slider (weight, 0, 100, 1, 50, " %", 56);
+        slider (amount, -6.0, 12.0, 0.5, 0.0, " dB", 62); slider (residual, -30.0, -3.0, 1.0, -12.0, " dB", 62);
+        slider (fTime, 0.0, 2000.0, 10.0, 200.0, " ms", 70); slider (fPitch, 0.0, 1.0, 0.05, 0.25, " oct", 66);
+        amount.setDoubleClickReturnValue (true, 0.0); residual.setDoubleClickReturnValue (true, -12.0); fTime.setDoubleClickReturnValue (true, 200.0); fPitch.setDoubleClickReturnValue (true, 0.25);
+        methodBox.addItem ("Attenuate (turns the noise down to match its surroundings)", 1); methodBox.addItem ("Replace (rebuilds the box from the surroundings)", 2);
+        methodBox.addItem ("Attenuate a stray consonant (an early / late s, sh, t, d)", 3);
+        methodBox.setSelectedId (1, juce::dontSendNotification);
+        dirBox.addItem ("Horizontal (before / after)", 1); dirBox.addItem ("Vertical (above / below)", 2); dirBox.addItem ("2D (both)", 3);
+        dirBox.setSelectedId (1, juce::dontSendNotification);
+        for (int b : { 128, 256, 512, 1024, 2048, 4096 }) bandsBox.addItem ("Bands: " + juce::String (b), b);
+        bandsBox.setSelectedId (1024, juce::dontSendNotification);
+        multiBtn.setToggleState (true, juce::dontSendNotification); linkBtn.setToggleState (true, juce::dontSendNotification);
+        tail.addItem ("Tail: auto (measured, per band)", 1);
+        for (int i = 1; i <= 10; ++i) tail.addItem ("Tail: " + juce::String (i) + " s", 1 + i);
+        tail.setSelectedId (1, juce::dontSendNotification);
+        group.addItem ("Other tracks: ignored", 1); group.addItem ("Other tracks: help keep the music", 2); group.addItem ("Other tracks: help, and decide what is noise", 3);
+        group.setSelectedId (2, juce::dontSendNotification);
+        methodBox.setTooltip ("ReTouch: Attenuate keeps the music under the noise and only turns down what sticks out; Replace rebuilds the box from the surroundings; a stray consonant is matched to the side away from the main one.");
+        strength.setTooltip ("How much of the repair replaces the original sound inside the box."); surround.setTooltip ("How much of the sound around the box is used, as a percentage of the box.");
+        weight.setTooltip ("0 uses only the sound before the box, 100 only the sound after it, 50 both."); sens.setTooltip ("De-click: how readily clicks are found (1 few .. 10 many).");
+        amount.setTooltip ("Denoise: how much louder than measured the room tone is taken to be."); residual.setTooltip ("Denoise: how much of the room tone is left in (the gain never goes below this).");
+        fTime.setTooltip ("Denoise: fades the denoising in at mark 1 and out before mark 2 over this long."); fPitch.setTooltip ("Denoise: the denoising rises from nothing at the edge of the room-tone box to its full amount this many octaves inside it.");
+        specBtn.setTooltip ("How the picture is drawn: sharpness, colours, and the levels shown.");
+        specBtn.onClick = [this] { openSpectroSettings(); };
+        for (auto* x : std::initializer_list<juce::Component*> { &methodBox, &dirBox, &bandsBox, &multiBtn, &linkBtn, &tail, &group, &specBtn, &scaleBox, &gainBtn, &retouchBtn, &declickBtn, &learnBtn, &denoiseBtn,
+                                                                 &revertBtn, &finishBtn, &doneBtn, &playBtn, &stopBtn, &loopBtn }) addAndMakeVisible (x);
+        scaleBox.addItem ("Pitch scale: Mel (as iZotope RX)", 6); scaleBox.addItem ("Pitch scale: linear (even Hz)", 1); scaleBox.addItem ("Pitch scale: mostly linear", 2); scaleBox.addItem ("Pitch scale: halfway", 3);
+        scaleBox.addItem ("Pitch scale: mostly musical", 4); scaleBox.addItem ("Pitch scale: musical (every octave the same height)", 5);
+        scaleBox.setSelectedId (6, juce::dontSendNotification); view.setMel();
+        scaleBox.onChange = [this] { static const double w[] = { 0.0, 0.25, 0.5, 0.75, 1.0 }; const int id = scaleBox.getSelectedId(); if (id == 6) view.setMel(); else view.setScale (w[juce::jlimit (0, 4, id - 1)]); };
+        view.onNote = [this] (const juce::String& t) { status.setText (t, juce::dontSendNotification); };
+        view.onNeedDetail = [this] (const PictureRequest& rq) { startDetail (rq); };
+        view.onView = [this] { sliceForView(); };
+        view.onSelection = [this] { refreshControls(); };
+        dirBox.onChange = [this] { refreshControls(); }; methodBox.onChange = [this] { refreshControls(); };
+        playBtn.setColour (juce::TextButton::buttonColourId, theme::accent);
+        playBtn.setTooltip ("Plays the part of the picture you can see (from the red playhead if you placed one on the ruler) through the mixers, with a playhead on the picture. Every fix is heard the moment it is made. Key: Space");
+        loopBtn.setTooltip ("Repeat what is playing until you press Stop"); stopBtn.setTooltip ("Stops playing");
+        playBtn.onClick = [this] { playPressed(); };
+        stopBtn.onClick = [this] { app.stopPlayback(); };
+        loopBtn.onClick = [this] { if (! isPlayingNow()) return; if (loopBtn.getToggleState()) playPressed(); else app.engine.setPlaybackLooping (false); };
+        gainBtn.onClick = [this] { openGain(); }; retouchBtn.onClick = [this] { retouch (false); }; declickBtn.onClick = [this] { retouch (true); };
+        learnBtn.onClick = [this] { learn(); }; denoiseBtn.onClick = [this] { denoise(); };
+        revertBtn.onClick = [this] { revert(); }; finishBtn.onClick = [this] { writeBack(); }; doneBtn.onClick = [this] { if (running) job.requestCancel(); else closeDialogOf (this); };
+        for (auto* b : { &gainBtn, &retouchBtn, &declickBtn, &learnBtn, &denoiseBtn }) b->setColour (juce::TextButton::buttonColourId, theme::accent);
+        finishBtn.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1f7a46));
+        gainBtn.setTooltip ("Gain: makes the sound inside the box louder or quieter (fading in and out at its edges), and nothing else. Key: G");
+        retouchBtn.setTooltip ("ReTouch: rebuilds or turns down the box you drew from its surroundings, on every track, and puts it into the edit at once. Key: R");
+        declickBtn.setTooltip ("De-click: finds and mends the clicks in the time span of the box (or of the whole edit if there is no box). Key: D");
+        learnBtn.setTooltip ("Draw boxes over parts that hold nothing but the room (Shift + drag adds, Alt + drag takes out), then press this: the room tone is learned from them on every track; the boxes' pitch range is the part of the spectrum the denoiser works on. Key: L");
+        denoiseBtn.setTooltip ("Denoises the stretch between marks 1 and 2 (keys 1 / 2 put them at the playhead; no marks = the whole edit) on every track with the room tone learned, and puts it into the edit at once. Key: N");
+        revertBtn.setTooltip ("Takes the last fix off again (as many times as there are fixes since the last Write back).");
+        finishBtn.setTooltip ("Keeps everything done so far in the edit (the Undo fix command of the edit window brings the audio back to how it was when this window opened, or when you last wrote back) and carries on: the window stays open.");
+        doneBtn.setTooltip ("Closes the window. Fixes made since the last Write back are thrown away.");
+        ticker.owner = this; ticker.startTimerHz (30);
+        app.undoHold += 1;
+        loadControls();
+        setWantsKeyboardFocus (true);
+        for (auto* ch : getChildren()) if (dynamic_cast<juce::Button*> (ch) != nullptr || dynamic_cast<juce::ComboBox*> (ch) != nullptr) ch->setWantsKeyboardFocus (false);
+        juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<NoiseModeDialog> (this)] { if (safe != nullptr) safe->grabKeyboardFocus(); });
+        refreshControls();
+        buildPicture();
+    }
+    ~NoiseModeDialog() override
+    {
+        saveControls();
+        ticker.stopTimer(); ticker.owner = nullptr;
+        if (detailCancel != nullptr) detailCancel->store (true);
+        app.stopPlayback();
+        discardUncommitted();
+        app.undoHold -= 1;
+    }
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (10);
+        intro.placeTopRight (*this, 6);
+        auto rowC = r.removeFromBottom (32); r.removeFromBottom (4);
+        auto rowT = r.removeFromBottom (30); r.removeFromBottom (4);
+        auto rowE = r.removeFromBottom (28);
+        auto rowD = r.removeFromBottom (28);
+        auto rowB = r.removeFromBottom (28);
+        auto rowA = r.removeFromBottom (28); r.removeFromBottom (4);
+        doneBtn.setBounds (rowC.removeFromRight (150)); rowC.removeFromRight (8);
+        finishBtn.setBounds (rowC.removeFromRight (150)); rowC.removeFromRight (8);
+        revertBtn.setBounds (rowC.removeFromRight (90)); rowC.removeFromRight (14);
+        gainBtn.setBounds (rowC.removeFromLeft (90)); rowC.removeFromLeft (6);
+        retouchBtn.setBounds (rowC.removeFromLeft (110)); rowC.removeFromLeft (6);
+        declickBtn.setBounds (rowC.removeFromLeft (110)); rowC.removeFromLeft (14);
+        learnBtn.setBounds (rowC.removeFromLeft (190)); rowC.removeFromLeft (6);
+        denoiseBtn.setBounds (rowC.removeFromLeft (110));
+        playBtn.setBounds (rowT.removeFromLeft (90)); rowT.removeFromLeft (6);
+        stopBtn.setBounds (rowT.removeFromLeft (70)); rowT.removeFromLeft (8);
+        loopBtn.setBounds (rowT.removeFromLeft (70)); rowT.removeFromLeft (14);
+        bar.setBounds (rowT.reduced (0, 4));
+        // row A: ReTouch;  row B: ReTouch's second row and De-click;  row D: Denoise
+        methodBox.setBounds (rowA.removeFromLeft (340)); rowA.removeFromLeft (8);
+        dirCap.setBounds (rowA.removeFromLeft (62)); dirBox.setBounds (rowA.removeFromLeft (190)); rowA.removeFromLeft (8);
+        strengthCap.setBounds (rowA.removeFromLeft (60)); strength.setBounds (rowA.removeFromLeft (190)); rowA.removeFromLeft (8);
+        surroundCap.setBounds (rowA.removeFromLeft (80)); surround.setBounds (rowA);
+        bandsBox.setBounds (rowB.removeFromLeft (110)); rowB.removeFromLeft (6); multiBtn.setBounds (rowB.removeFromLeft (130)); linkBtn.setBounds (rowB.removeFromLeft (100)); rowB.removeFromLeft (8);
+        weightCap.setBounds (rowB.removeFromLeft (110)); weight.setBounds (rowB.removeFromLeft (190)); rowB.removeFromLeft (14);
+        sensCap.setBounds (rowB.removeFromLeft (100)); sens.setBounds (rowB.removeFromLeft (160));
+        amountCap.setBounds (rowD.removeFromLeft (60)); amount.setBounds (rowD.removeFromLeft (220)); rowD.removeFromLeft (10);
+        residualCap.setBounds (rowD.removeFromLeft (62)); residual.setBounds (rowD.removeFromLeft (220)); rowD.removeFromLeft (10);
+        fTimeCap.setBounds (rowD.removeFromLeft (92)); fTime.setBounds (rowD.removeFromLeft (200)); rowD.removeFromLeft (10);
+        fPitchCap.setBounds (rowD.removeFromLeft (94)); fPitch.setBounds (rowD);
+        tail.setBounds (rowE.removeFromLeft (290)); rowE.removeFromLeft (8); group.setBounds (rowE.removeFromLeft (360));
+        status.setBounds (r.removeFromBottom (22).reduced (2, 0));
+        { auto ir = r.removeFromBottom (22); specBtn.setBounds (ir.removeFromRight (150)); ir.removeFromRight (6); scaleBox.setBounds (ir.removeFromRight (300)); ir.removeFromRight (6); info.setBounds (ir.reduced (2, 0)); }
+        view.setBounds (r);
+    }
+protected:
+    bool keyPressed (const juce::KeyPress& k) override
+    {
+        if (k == juce::KeyPress::spaceKey)
+        {
+            if (spaceIsForRecording()) return true;
+            if (built && ! running) { if (isPlayingNow()) app.stopPlayback(); else playPressed(); }
+            return true;
+        }
+        const auto ch = k.getTextCharacter();
+        if (! k.getModifiers().isAnyModifierKeyDown())
+        {
+            if (ch == 'r' || ch == 'R') { if (retouchBtn.isEnabled()) retouch (false); return true; }
+            if (ch == 'g' || ch == 'G') { if (gainBtn.isEnabled()) openGain(); return true; }
+            if (ch == 'd' || ch == 'D') { if (declickBtn.isEnabled()) retouch (true); return true; }
+            if (ch == 'l' || ch == 'L') { if (learnBtn.isEnabled()) learn(); return true; }
+            if (ch == 'n' || ch == 'N') { if (denoiseBtn.isEnabled()) denoise(); return true; }
+            if (ch == '1') { view.setMarks (view.markPoint(), view.markOutTime()); refreshControls(); return true; }
+            if (ch == '2') { view.setMarks (view.markInTime(), view.markPoint()); refreshControls(); return true; }
+        }
+        if (built && view.zoomKey (k)) return true;
+        return false;
+    }
+private:
+    struct Step { std::vector<EditRegion> before; std::vector<RegionJob> jobs; juce::String label; double t0 = 0.0, t1 = 0.0; };
+    juce::String prefKey (const char* k) const { return juce::String ("noisemode.") + k; }
+    void loadControls()
+    {
+        auto& p = uiPrefs();
+        auto num = [&] (const char* k, juce::Slider& s) { const auto key = prefKey (k); if (p.containsKey (key)) s.setValue (juce::jlimit (s.getMinimum(), s.getMaximum(), p.getDoubleValue (key)), juce::dontSendNotification); };
+        auto id = [&] (const char* k, juce::ComboBox& b) { const auto key = prefKey (k); if (p.containsKey (key) && b.indexOfItemId (p.getIntValue (key)) >= 0) b.setSelectedId (p.getIntValue (key), juce::dontSendNotification); };
+        num ("sens", sens); num ("strength", strength); num ("surround", surround); num ("weight", weight); num ("amount", amount); num ("residual", residual); num ("ftime", fTime); num ("fpitch", fPitch);
+        id ("method", methodBox); id ("bands", bandsBox); id ("dir", dirBox); id ("tail", tail); id ("group", group); id ("scale", scaleBox);
+        if (p.containsKey (prefKey ("multi"))) multiBtn.setToggleState (p.getBoolValue (prefKey ("multi")), juce::dontSendNotification);
+        if (p.containsKey (prefKey ("link"))) linkBtn.setToggleState (p.getBoolValue (prefKey ("link")), juce::dontSendNotification);
+        if (p.containsKey (prefKey ("roll"))) view.setRoll (p.getDoubleValue (prefKey ("roll")));
+        const int sc = scaleBox.getSelectedId();
+        if (sc == 6) view.setMel(); else { static const double w[] = { 0.0, 0.25, 0.5, 0.75, 1.0 }; view.setScale (w[juce::jlimit (0, 4, sc - 1)]); }
+    }
+    void saveControls()
+    {
+        auto& p = uiPrefs();
+        p.setValue (prefKey ("sens"), sens.getValue()); p.setValue (prefKey ("strength"), strength.getValue()); p.setValue (prefKey ("surround"), surround.getValue()); p.setValue (prefKey ("weight"), weight.getValue());
+        p.setValue (prefKey ("amount"), amount.getValue()); p.setValue (prefKey ("residual"), residual.getValue()); p.setValue (prefKey ("ftime"), fTime.getValue()); p.setValue (prefKey ("fpitch"), fPitch.getValue());
+        p.setValue (prefKey ("method"), methodBox.getSelectedId()); p.setValue (prefKey ("bands"), bandsBox.getSelectedId()); p.setValue (prefKey ("dir"), dirBox.getSelectedId());
+        p.setValue (prefKey ("tail"), tail.getSelectedId()); p.setValue (prefKey ("group"), group.getSelectedId()); p.setValue (prefKey ("scale"), scaleBox.getSelectedId());
+        p.setValue (prefKey ("multi"), multiBtn.getToggleState()); p.setValue (prefKey ("link"), linkBtn.getToggleState()); p.setValue (prefKey ("roll"), view.rollValue());
+    }
+    double seconds() const { return (double) length / rate; }
+    EditDef* edit() const { return app.project.findEdit (eid); }
+    bool isPlayingNow() const { return app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == eid; }
+    void tick()
+    {
+        view.setPlayhead (isPlayingNow() ? juce::jmax (0.0, app.playheadSeconds()) : -1.0);
+        playBtn.setButtonText (isPlayingNow() ? "Restart" : "Play");
+    }
+    struct Ticker : juce::Timer { NoiseModeDialog* owner = nullptr; void timerCallback() override { if (owner != nullptr) owner->tick(); } } ticker;
+    bool consonantMethod() const { return methodBox.getSelectedId() == 3; }
+    void updateSurround() { view.setSurround (built && view.hasSelection() && ! consonantMethod(), surround.getValue(), dirBox.getSelectedId() - 1, dirBox.getSelectedId() != 2 ? weight.getValue() / 100.0 : 0.5); }
+    void refreshControls()
+    {
+        updateSurround();
+        const bool ready = built && ! running;
+        const bool cons = consonantMethod();
+        for (auto* c : std::initializer_list<juce::Component*> { &dirBox, &dirCap, &surround, &surroundCap }) c->setVisible (! cons);
+        playBtn.setEnabled (ready); stopBtn.setEnabled (ready); loopBtn.setEnabled (ready);
+        gainBtn.setEnabled (ready && view.hasSelection()); retouchBtn.setEnabled (ready && view.hasSelection()); declickBtn.setEnabled (ready);
+        learnBtn.setEnabled (ready && view.hasAnySelection()); denoiseBtn.setEnabled (ready && ! fileProfiles.empty());
+        revertBtn.setEnabled (ready && ! steps.empty()); finishBtn.setEnabled (ready && ! steps.empty());
+        learnBtn.setButtonText (fileProfiles.empty() ? "Room tone [L]" : "Update room tone [L]");
+        juce::String t;
+        if (view.hasSelection()) t << "Box: " << juce::String (view.selT0(), 2) << " - " << juce::String (view.selT1(), 2) << " s, " << (int) view.selF0() << " - " << (int) view.selF1() << " Hz.  ";
+        if (view.markInTime() >= 0.0 || view.markOutTime() >= 0.0) t << "Marks: " << (view.markInTime() >= 0.0 ? juce::String (view.markInTime(), 2) : juce::String ("?")) << " - " << (view.markOutTime() >= 0.0 ? juce::String (view.markOutTime(), 2) : juce::String ("?")) << " s.  ";
+        t << (fileProfiles.empty() ? juce::String ("No room tone yet.  ") : "Room tone: " + juce::String ((int) learnLoHz) + " - " + juce::String ((int) learnHiHz) + " Hz.  ");
+        t << juce::String ((int) steps.size()) << " fix(es) not yet written back";
+        info.setText (t, juce::dontSendNotification);
+    }
+    // ---- the picture: the pyramid (built once), slices of it for what is in view, and the sharp picture of a zoomed-in view read from the files
+    void buildPicture()
+    {
+        pyramid = std::make_shared<SpectralPyramid>();
+        auto py = pyramid; auto parts = cur; const double sr = rate; const double secs = seconds();
+        status.setText ("Building the picture of the whole edit (" + juce::String (secs / 60.0, 1) + " min, " + juce::String ((int) parts->ids.size()) + " tracks)... you can wait, or close and come back.", juce::dontSendNotification);
+        juce::Component::SafePointer<NoiseModeDialog> self (this);
+        pyramidBusy = true;
+        runJob ([py, parts, sr, secs] (AudioJob& j) -> juce::String
+                {
+                    if (parts->ids.empty()) return "There is no audio in this edit.";
+                    py->setUp (sr, secs);
+                    const int frames = py->levels[0].frames;
+                    ReaderCache cache;
+                    for (size_t i = 0; i < parts->parts.size(); ++i)
+                    {
+                        const auto& pp = parts->parts[i];
+                        const bool ok = py->addTrack (0, frames, [&pp, &cache] (juce::int64 start, int n, float* dst) { readTrackMix (pp, start, n, dst, &cache); }, i == 0,
+                                                      [&j, &i, &parts] { j.setProgress ((float) i / (float) parts->parts.size()); return j.cancelled(); });
+                        if (! ok) return "Cancelled.";
+                    }
+                    py->settle();
+                    return {};
+                },
+                [self] (const juce::String& err)
+                {
+                    if (self == nullptr) return;
+                    self->pyramidBusy = false;
+                    if (err.isNotEmpty()) { self->status.setText (err, juce::dontSendNotification); return; }
+                    self->built = true;
+                    self->sliceForView();
+                    self->status.setText ("Ready. Space plays what is in view (arrows zoom: right / left in time, down / up in pitch; click the ruler to place the playhead, drag it to move, double-click it for the whole edit). "
+                                          "Draw a box and press G (gain), R (ReTouch) or D (de-click); draw boxes over room tone, press L, place marks with 1 / 2 and press N to denoise. Each fix goes into the edit at once; Undo takes it off; Write back keeps them.", juce::dontSendNotification);
+                    self->refreshControls();
+                });
+    }
+    /** The quick picture for what is in view: a slice of the best level of the pyramid (the whole picture is far too big to hand over at once). */
+    void sliceForView()
+    {
+        if (pyramid == nullptr || ! pyramid->valid() || pyramidBusy) return;
+        const double t0 = juce::jmax (0.0, view.visT0() - 0.0), t1 = juce::jmin (seconds(), view.visT1());
+        if (t1 <= t0) return;
+        double a = 0.0, b = 0.0;
+        auto s = pyramid->slice (t0, t1, 2400, a, b);
+        view.setDataRange (std::move (s), a, b, seconds());
+    }
+    /** Makes the quick picture again over [t0, t1] seconds (after a fix): the frames of that stretch, every track, read from the pieces as they are now. */
+    void refreshPicture (double t0, double t1, std::function<void()> then = {})
+    {
+        if (pyramid == nullptr || ! pyramid->valid()) { if (then) then(); return; }
+        auto py = pyramid; auto parts = cur;
+        const int f0 = juce::jmax (0, py->frameAt (t0 - 1.0)), f1 = juce::jmin (py->levels[0].frames, py->frameAt (t1 + 1.0) + 1);
+        pyramidBusy = true;
+        juce::Component::SafePointer<NoiseModeDialog> self (this);
+        runJob ([py, parts, f0, f1] (AudioJob& j) -> juce::String
+                {
+                    ReaderCache cache;
+                    for (size_t i = 0; i < parts->parts.size(); ++i)
+                    {
+                        const auto& pp = parts->parts[i];
+                        if (! py->addTrack (f0, f1, [&pp, &cache] (juce::int64 start, int n, float* dst) { readTrackMix (pp, start, n, dst, &cache); }, i == 0, [&j] { return j.cancelled(); })) return "Cancelled.";
+                    }
+                    py->settle (f0, f1);
+                    return {};
+                },
+                [self, then] (const juce::String&)
+                {
+                    if (self == nullptr) return;
+                    self->pyramidBusy = false;
+                    self->sliceForView(); self->view.invalidateDetail();
+                    self->refreshControls();
+                    if (then) then();
+                });
+        refreshControls();                                                   // (the fixes and Undo wait until the picture is made again)
+    }
+    void startDetail (const PictureRequest& rq)
+    {
+        if (! built || cur == nullptr) return;
+        if (rq.t1 - rq.t0 > kDetailMaxSeconds) return;                               // zoomed far out: the quick picture is all there is (the sharp one would read the whole edit)
+        if (detailCancel != nullptr) detailCancel->store (true);
+        auto cancel = std::make_shared<std::atomic<bool>> (false); detailCancel = cancel;
+        auto parts = cur; const double sr = rate; juce::Component::SafePointer<NoiseModeDialog> self (this);
+        std::thread ([parts, rq, sr, cancel, self]
+        {
+            const double margin = 0.5;
+            const juce::int64 s0 = juce::jmax<juce::int64> (0, (juce::int64) std::llround ((rq.t0 - margin) * sr)), s1 = (juce::int64) std::llround ((rq.t1 + margin) * sr);
+            std::vector<std::vector<float>> tracks (parts->parts.size(), std::vector<float> ((size_t) juce::jmax<juce::int64> (0, s1 - s0), 0.0f));
+            ReaderCache cache;
+            for (size_t i = 0; i < parts->parts.size(); ++i) { if (cancel->load()) return; readTrackMix (parts->parts[i], s0, s1 - s0, tracks[i].data(), &cache); }
+            const double off = (double) s0 / sr;
+            auto pic = picture::render (tracks, sr, rq.t0 - off, rq.t1 - off, rq.w, rq.h, rq.axis, rq.opt, [cancel] { return cancel->load(); });
+            pic.id = rq.id; pic.t0 = rq.t0; pic.t1 = rq.t1;
+            if (cancel->load()) return;
+            juce::MessageManager::callAsync ([self, p = std::make_shared<DetailPicture> (std::move (pic))] { if (self != nullptr) self->view.setDetail (std::move (*p)); });
+        }).detach();
+    }
+    void openSpectroSettings()
+    {
+        juce::Component::SafePointer<NoiseModeDialog> self (this);
+        launchDialog (std::make_unique<SpectroSettingsDialog> (view.settings(), [self] (const SpectroSettings& n)
+        {
+            if (self == nullptr) return;
+            self->view.setSettings (n); n.save (gSpecPrefs);
+            if (gSpecPrefs != nullptr) gSpecPrefs->saveIfNeeded();
+        }), "Spectrogram settings", this);
+    }
+    // ---- playing
+    void playRange (double from)
+    {
+        lastPlayTo = juce::jmin (seconds(), view.visT1());
+        const auto err = app.playEdit (eid, from, lastPlayTo, loopBtn.getToggleState());
+        if (err.isNotEmpty()) status.setText (err, juce::dontSendNotification);
+    }
+    void playPressed() { if (! built || running) return; app.stopPlayback(); playRange (view.playFrom()); }
+    /** The edit changed under a running playback (a fix went in or came out): it starts again from where it was. */
+    void restartIfPlaying()
+    {
+        if (! isPlayingNow()) return;
+        const double pos = app.playheadSeconds();
+        app.stopPlayback();
+        if (loopBtn.getToggleState()) { const auto err = app.playEdit (eid, view.playFrom(), lastPlayTo, true); if (err.isNotEmpty()) status.setText (err, juce::dontSendNotification); }
+        else if (pos < lastPlayTo) { const auto err = app.playEdit (eid, pos, lastPlayTo, false); if (err.isNotEmpty()) status.setText (err, juce::dontSendNotification); }
+    }
+    // ---- the fixes: each is made on the job thread from the pieces as they are now, then put into the edit (the next one works on the result)
+    using Prepare = std::function<juce::String (const std::vector<EditRegion>& regions, std::vector<RegionJob>& jobs, AudioJob& j)>;
+    void runFix (const juce::String& label, const juce::String& suffix, double t0, double t1, Prepare prepare)
+    {
+        auto* e = edit(); if (e == nullptr || running || ! built) return;
+        auto regions = std::make_shared<std::vector<EditRegion>> (e->regions);
+        auto jobs = std::make_shared<std::vector<RegionJob>>();
+        status.setText (label + "...", juce::dontSendNotification);
+        juce::Component::SafePointer<NoiseModeDialog> self (this);
+        refreshControls();
+        for (auto* b : { &gainBtn, &retouchBtn, &declickBtn, &learnBtn, &denoiseBtn, &revertBtn, &finishBtn }) b->setEnabled (false);
+        runJob ([regions, jobs, prepare] (AudioJob& j) { return prepare (*regions, *jobs, j); },
+                [self, regions, jobs, label, suffix, t0, t1] (const juce::String& err)
+                {
+                    if (self == nullptr) return;
+                    auto deleteFiles = [jobs] { for (auto& rj : *jobs) for (auto& r : rj.results) r.file.deleteFile(); jobs->clear(); };
+                    if (err.isNotEmpty()) { deleteFiles(); self->status.setText (err, juce::dontSendNotification); self->refreshControls(); return; }
+                    auto* e = self->edit();
+                    if (e == nullptr) { deleteFiles(); return; }
+                    Step st; st.before = e->regions; st.jobs = std::move (*jobs); st.label = label; st.t0 = t0; st.t1 = t1;
+                    if (! applyRegionJobs (*e, st.before, st.jobs, suffix))
+                    {
+                        e->regions = st.before; for (auto& rj : st.jobs) for (auto& r : rj.results) r.file.deleteFile();
+                        self->status.setText ("The fix could not be put into the edit (" + gApplyWhy + ").", juce::dontSendNotification); self->refreshControls(); return;
+                    }
+                    self->steps.push_back (std::move (st));
+                    self->app.project.changed();
+                    self->cur = std::make_shared<TrackParts> (buildTrackParts (*e, 0, self->length, self->only));
+                    self->restartIfPlaying();
+                    self->status.setText (label + " done and in the edit (" + juce::String ((int) self->steps.size()) + " fix(es) not yet written back). Play to listen; Undo takes it off; Write back to clip keeps it.", juce::dontSendNotification);
+                    self->refreshControls();
+                    self->refreshPicture (t0, t1);
+                });
+    }
+    FixSpec repairSpec (bool declick) const
+    {
+        FixSpec spec;
+        if (declick) { spec.kind = FixSpec::Kind::Declick; spec.sensitivity = sens.getValue(); return spec; }
+        spec.kind = FixSpec::Kind::Patch; spec.f0 = view.selF0(); spec.f1 = view.selF1(); spec.sensitivity = sens.getValue();
+        spec.repair.mode = methodBox.getSelectedId() == 2 ? RepairMode::Replace : RepairMode::Attenuate;
+        spec.repair.consonant = consonantMethod();
+        spec.repair.bands = bandsBox.getSelectedId(); spec.repair.multiRes = multiBtn.getToggleState(); spec.repair.linkChannels = linkBtn.getToggleState();
+        spec.repair.strength = strength.getValue() / 100.0;
+        spec.repair.direction = spec.repair.consonant ? RepairDirection::LeftRight : (RepairDirection) (dirBox.getSelectedId() - 1);
+        spec.repair.contextPct = surround.getValue(); spec.repair.weighting = weight.getValue() / 100.0;
+        return spec;
+    }
+    void retouch (bool declick)
+    {
+        if (! declick && ! view.hasSelection()) return;
+        juce::int64 t0 = 0, t1 = length;
+        if (view.hasSelection()) { t0 = (juce::int64) std::llround (view.selT0() * rate); t1 = (juce::int64) std::llround (view.selT1() * rate); }
+        const auto spec = repairSpec (declick);
+        const RepairOp op { spec, t0, t1 };
+        const auto folder = fixFolder; const double sr = rate; const auto len = length; const auto onlyT = only;
+        runFix (declick ? "De-click" : "ReTouch", declick ? "declick" : "repair", (double) t0 / rate, (double) t1 / rate,
+                [folder, sr, len, onlyT, op] (const std::vector<EditRegion>& regions, std::vector<RegionJob>& jobs, AudioJob& j) { return prepareRepairJobs (folder, regions, 0, len, sr, { op }, onlyT, jobs, j); });
+    }
+    void openGain()
+    {
+        if (! built || running || ! view.hasSelection()) return;
+        struct GainPop : public juce::Component
+        {
+            juce::Slider sl; juce::TextButton apply { "Apply" }, cancel { "Cancel" }; juce::Label cap;
+            std::function<void (double)> onApply;
+            GainPop (double start)
+            {
+                cap.setText ("Gain of the box", juce::dontSendNotification); cap.setColour (juce::Label::textColourId, theme::text); addAndMakeVisible (cap);
+                sl.setSliderStyle (juce::Slider::LinearHorizontal); sl.setRange (-60.0, 18.0, 0.1); sl.setValue (start, juce::dontSendNotification);
+                sl.setTextBoxStyle (juce::Slider::TextBoxRight, false, 74, 22); sl.setDoubleClickReturnValue (true, 0.0);
+                sl.textFromValueFunction = [] (double v) { return v <= -59.95 ? juce::String ("-inf dB") : (v > 0.0 ? "+" : "") + juce::String (v, 1) + " dB"; };
+                sl.valueFromTextFunction = [] (const juce::String& t) { return t.containsIgnoreCase ("inf") ? -60.0 : t.retainCharacters ("-+0123456789.").getDoubleValue(); };
+                sl.setSkewFactorFromMidPoint (-6.0);
+                addAndMakeVisible (sl); addAndMakeVisible (apply); addAndMakeVisible (cancel);
+                apply.setColour (juce::TextButton::buttonColourId, theme::accent);
+                apply.onClick = [this] { const double v = sl.getValue(); auto cb = onApply; if (auto* box = findParentComponentOfClass<juce::CallOutBox>()) box->dismiss(); if (cb) cb (v); };
+                cancel.onClick = [this] { if (auto* box = findParentComponentOfClass<juce::CallOutBox>()) box->dismiss(); };
+                setSize (380, 92);
+            }
+            void resized() override
+            {
+                auto r = getLocalBounds().reduced (8);
+                cap.setBounds (r.removeFromTop (20)); sl.setBounds (r.removeFromTop (28)); r.removeFromTop (6);
+                cancel.setBounds (r.removeFromRight (80)); r.removeFromRight (6); apply.setBounds (r.removeFromRight (80));
+            }
+        };
+        auto pop = std::make_unique<GainPop> (uiPrefs().getDoubleValue (prefKey ("gainDb"), -6.0));
+        juce::Component::SafePointer<NoiseModeDialog> self (this);
+        pop->onApply = [self] (double db)
+        {
+            if (self == nullptr || ! self->view.hasSelection()) return;
+            uiPrefs().setValue (self->prefKey ("gainDb"), db);
+            if (std::abs (db) < 0.05) { self->status.setText ("Gain 0 dB: nothing to change.", juce::dontSendNotification); return; }
+            auto spec = self->repairSpec (false);
+            spec.repair.mode = RepairMode::Gain; spec.repair.gainDb = db <= -59.95 ? -200.0 : db; spec.repair.strength = 1.0; spec.repair.consonant = false;
+            const juce::int64 t0 = (juce::int64) std::llround (self->view.selT0() * self->rate), t1 = (juce::int64) std::llround (self->view.selT1() * self->rate);
+            const RepairOp op { spec, t0, t1 };
+            const auto folder = self->fixFolder; const double sr = self->rate; const auto len = self->length; const auto onlyT = self->only;
+            self->runFix ("Gain", "gain", (double) t0 / sr, (double) t1 / sr,
+                          [folder, sr, len, onlyT, op] (const std::vector<EditRegion>& regions, std::vector<RegionJob>& jobs, AudioJob& j) { return prepareRepairJobs (folder, regions, 0, len, sr, { op }, onlyT, jobs, j); });
+        };
+        juce::CallOutBox::launchAsynchronously (std::move (pop), gainBtn.getScreenBounds(), nullptr);
+    }
+    SpectralDenoiseSettings denoiseSettings() const
+    {
+        SpectralDenoiseSettings s;
+        s.params.amountDb = amount.getValue(); s.params.residualDb = residual.getValue();
+        s.params.tailSeconds = tail.getSelectedId() <= 1 ? 0.0 : (double) (tail.getSelectedId() - 1);
+        s.params.groupMode = juce::jlimit (0, 2, group.getSelectedId() - 1);
+        s.featherSeconds = fTime.getValue() / 1000.0; s.featherOctaves = fPitch.getValue();
+        s.sel = learnedSel; s.learnSerial = learnSerial;
+        return s;
+    }
+    /** Room tone: the files' profiles, per track per channel, from the boxes (anywhere in the edit), as the pieces are now. */
+    void learn()
+    {
+        if (! built || running || ! view.hasAnySelection() || cur == nullptr) return;
+        const auto sel = view.selectionRects();
+        auto s = denoiseSettings(); s.sel = sel;
+        auto parts = cur; const double sr = rate;
+        auto out = std::make_shared<std::vector<std::vector<denoise::Profile>>>();
+        status.setText ("Learning the room tone of every track from the boxes...", juce::dontSendNotification);
+        for (auto* b : { &gainBtn, &retouchBtn, &declickBtn, &learnBtn, &denoiseBtn, &revertBtn, &finishBtn }) b->setEnabled (false);
+        juce::Component::SafePointer<NoiseModeDialog> self (this);
+        runJob ([parts, s, sr, out] (AudioJob& j) { return learnFileProfiles (*parts, s, sr, *out, j); },
+                [self, out, sel] (const juce::String& err)
+                {
+                    if (self == nullptr) return;
+                    if (err.isNotEmpty()) { self->status.setText (err, juce::dontSendNotification); self->refreshControls(); return; }
+                    self->fileProfiles = *out; self->learnedSel = sel; ++self->learnSerial;
+                    double lo = 1.0e9, hi = 0.0;
+                    for (auto& t : self->fileProfiles) for (auto& pr : t) { const int bins = (int) pr.weight.size(); for (int k = 0; k < bins; ++k) if (pr.weight[(size_t) k] > 0.0f) { const double f = (double) k * pr.sampleRate / pr.fftSize; lo = juce::jmin (lo, f); hi = juce::jmax (hi, f); } }
+                    self->learnLoHz = lo < 1.0e8 ? lo : 0.0; self->learnHiHz = hi;
+                    self->status.setText ("Room tone learned (" + juce::String ((int) self->learnLoHz) + " - " + juce::String ((int) self->learnHiHz) + " Hz, the part of the spectrum the denoiser will work on). Place marks 1 / 2 round the stretch to denoise (none = the whole edit) and press Denoise (N).", juce::dontSendNotification);
+                    self->refreshControls();
+                });
+    }
+    void denoise()
+    {
+        if (! built || running || fileProfiles.empty() || cur == nullptr) return;
+        double a = view.markInTime(), b = view.markOutTime();
+        if (a < 0.0 && b < 0.0) { a = 0.0; b = seconds(); }
+        else { if (a < 0.0) a = 0.0; if (b < 0.0) b = seconds(); }
+        if (b <= a) std::swap (a, b);
+        const juce::int64 from = (juce::int64) std::llround (a * rate), to = juce::jmin (length, (juce::int64) std::llround (b * rate));
+        if (to - from < (juce::int64) (0.2 * rate)) { status.setText ("The marks are too close together.", juce::dontSendNotification); return; }
+        const auto s = denoiseSettings(); auto parts = cur; const auto profs = fileProfiles; const auto folder = fixFolder; const double sr = rate;
+        runFix ("Denoise", "denoise", a, b,
+                [folder, from, to, sr, parts, profs, s] (const std::vector<EditRegion>& regions, std::vector<RegionJob>& jobs, AudioJob& j) { return prepareDenoiseJobs (folder, regions, from, to, sr, *parts, profs, s, jobs, j); });
+    }
+    void revert()
+    {
+        auto* e = edit(); if (e == nullptr || steps.empty() || running) return;
+        auto st = std::move (steps.back()); steps.pop_back();
+        e->regions = st.before;
+        for (auto& rj : st.jobs) for (auto& r : rj.results) r.file.deleteFile();
+        app.project.changed();
+        cur = std::make_shared<TrackParts> (buildTrackParts (*e, 0, length, only));
+        restartIfPlaying();
+        status.setText (st.label + " taken off again (" + juce::String ((int) steps.size()) + " fix(es) left).", juce::dontSendNotification);
+        refreshPicture (st.t0, st.t1);
+    }
+    /** Write back to clip: what has been done stays in the edit (one Undo fix step back to 'base'); the window carries on. */
+    void writeBack()
+    {
+        auto* e = edit(); if (e == nullptr || steps.empty() || running) return;
+        for (auto& st : steps) for (auto& rj : st.jobs) rj.results.clear();
+        setUndoForEdit (app, eid, base, "noise mode (" + juce::String ((int) steps.size()) + " fixes)");
+        base = e->regions; steps.clear();
+        app.project.changed();
+        status.setText ("Written back: the fixes are in the edit (Undo fix in the edit window brings back the audio as it was). Carry on, or press Finished.", juce::dontSendNotification);
+        refreshControls();
+    }
+    void discardUncommitted()
+    {
+        if (steps.empty()) return;
+        if (auto* e = edit()) { e->regions = base; app.project.changed(); }
+        for (auto& st : steps) for (auto& rj : st.jobs) for (auto& r : rj.results) r.file.deleteFile();
+        steps.clear();
+    }
+    static constexpr double kDetailMaxSeconds = 180.0;
+    AppContext& app; juce::Uuid eid; double rate = 48000.0; juce::int64 length = 0; std::vector<juce::Uuid> only; juce::File fixFolder;
+    InfoNote intro; juce::Label info, sensCap, strengthCap, dirCap, surroundCap, weightCap, amountCap, residualCap, tailCap, groupCap, fTimeCap, fPitchCap;
+    SpectrogramView view; juce::ComboBox methodBox, dirBox, bandsBox, tail, group, scaleBox; juce::ToggleButton multiBtn { "Multi-resolution" }, linkBtn { "Link stereo" };
+    juce::TextButton specBtn { "Spectrogram settings..." };
+    juce::Slider sens, strength, surround, weight, amount, residual, fTime, fPitch;
+    juce::TextButton playBtn { "Play" }, stopBtn { "Stop" }; juce::ToggleButton loopBtn { "Loop" };
+    juce::TextButton gainBtn { "Gain [G]" }, retouchBtn { "ReTouch [R]" }, declickBtn { "De-click [D]" }, learnBtn { "Room tone [L]" }, denoiseBtn { "Denoise [N]" };
+    juce::TextButton revertBtn { "Undo" }, finishBtn { "Write back to clip" }, doneBtn { "Finished de-noising" };
+    std::shared_ptr<std::atomic<bool>> detailCancel;
+    std::shared_ptr<SpectralPyramid> pyramid; bool pyramidBusy = false, built = false;
+    std::shared_ptr<TrackParts> cur;                                    // the tracks and their pieces as the edit is now (replaced after every fix)
+    std::vector<EditRegion> base;                                       // the edit as it was when the window opened, or at the last Write back
+    std::vector<Step> steps;                                            // the fixes since, each with the state before it (for Undo)
+    std::vector<std::vector<denoise::Profile>> fileProfiles; std::vector<denoise::SelRect> learnedSel; int learnSerial = 0; double learnLoHz = 0.0, learnHiHz = 0.0;
+    double lastPlayTo = 0.0;
+};
+
+void noiseModeEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent)
+{
+    const juce::String nm = "Noise mode";
+    auto* e = editOf (app, eid); if (e == nullptr) return;
+    const double rate = e->sampleRate > 0 ? e->sampleRate : 48000.0;
+    juce::int64 end = 0; for (auto& r : e->regions) end = juce::jmax (end, r.endSample());
+    if (end < (juce::int64) (1.0 * rate)) { say (nm, "There is no audio in this edit yet."); return; }
+    const auto only = e->fixTracks;
+    const auto tp = buildTrackParts (*e, 0, end, only);
+    if (tp.ids.empty()) { say (nm, "None of the tracks you marked with Alt + drag are in the edit."); return; }
+    const juce::String what = juce::String (only.empty() ? "All " : "The ") + juce::String ((int) tp.ids.size()) + " tracks of the whole edit (" + juce::String ((double) end / rate / 60.0, 1) + " min, " + juce::String (tp.pieces) + " pieces) in one picture, built once at several zoom levels. "
+        "Gain, ReTouch and De-click work on the box you draw (as in the Repair window); the denoiser learns the room tone from boxes (L) and works on the stretch between marks 1 and 2 (keys 1 / 2 at the playhead; none = the whole edit). "
+        "Every fix goes into the edit the moment it is made, as new piece files (the originals are never touched), and the next fix works on the result; Play hears them at once. "
+        "Undo takes the last one off. Write back to clip keeps what has been done (one Undo fix step in the edit window) and the window stays open; Finished closes it and throws away anything not written back.";
+    gSpecPrefs = app.props.getUserSettings();
+    launchDialog (std::make_unique<NoiseModeDialog> (app, eid, rate, end, only, what), nm, parent, true);
 }
 
 // ======================================================================================================== Re-HarmoniSer (edit window)

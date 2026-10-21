@@ -18,6 +18,7 @@
 #include "../src/core/Aaf.h"
 #include "../src/core/SpectralPicture.h"
 #include "../src/core/EditFix.h"
+#include "../src/core/SpectralPyramid.h"
 #include "../src/core/Feedback.h"
 #include "../src/core/ReviewPage.h"
 #include "../src/core/FileSync.h"
@@ -4457,6 +4458,37 @@ int main()
             CHECK (std::abs (toneDb (shifted, 60.0, 1.5, 2.5) - toneDb (x, 60.0, 2.5, 3.5)) < 0.1);           // the rumble below the drawn part: as it was
             dir.deleteRecursively();
         }
+    }
+    SECTION ("2.79 Noise mode: the whole edit's spectral pyramid (levels, the loudest track per cell, slices for a view, a stretch made again)");
+    {
+        const double sr = 48000.0; const double secs = 400.0;               // (6.7 min: the finest hop is the 10 ms floor, then x4 ... until a level has < 400 frames)
+        SpectralPyramid py; py.setUp (sr, secs);
+        CHECK (py.valid() && py.levels.size() >= 3 && std::abs (py.levels[0].hopSeconds - 0.010) < 1.0e-9 && py.levels[0].frames == 40000 && std::abs (py.levels[1].hopSeconds - 0.040) < 1.0e-9 && py.levels.back().frames < 400);
+        // two "tracks": a 1 kHz tone at -20 dB from 100 to 200 s on the first, a 4 kHz tone at -40 dB over everything on the second; the merged picture holds both
+        auto tone = [sr] (double hz, double db, double t0, double t1) { return [=] (juce::int64 start, int n, float* dst) { for (int i = 0; i < n; ++i) { const double t = (double) (start + i) / sr; dst[i] = t >= t0 && t < t1 ? (float) (std::pow (10.0, db / 20.0) * std::sin (2.0 * 3.14159265358979 * hz * t)) : 0.0f; } }; };
+        CHECK (py.addTrack (0, py.levels[0].frames, tone (1000.0, -20.0, 100.0, 200.0), true));
+        CHECK (py.addTrack (0, py.levels[0].frames, tone (4000.0, -40.0, 0.0, secs), false));
+        py.settle();
+        auto binOf = [&] (double hz) { return (int) std::lround (hz * SpectralPyramid::N / sr); };
+        auto level0 = [&] (double t, double hz) { return SpectralPyramid::fromByte (py.levels[0].db[(size_t) py.frameAt (t) * (size_t) py.bins + (size_t) binOf (hz)]); };
+        CHECK (std::abs (level0 (150.0, 1000.0) + 20.0) < 1.5 && std::abs (level0 (150.0, 4000.0) + 40.0) < 1.5 && level0 (50.0, 1000.0) < -100.0 && std::abs (level0 (50.0, 4000.0) + 40.0) < 1.5);
+        {   // the coarse levels: the loudest of their frames, so the tone shows at every zoom
+            const auto& L2 = py.levels[2]; const int f = juce::jlimit (0, L2.frames - 1, (int) (150.0 / L2.hopSeconds));
+            CHECK (std::abs (SpectralPyramid::fromByte (L2.db[(size_t) f * (size_t) py.bins + (size_t) binOf (1000.0)]) + 20.0) < 1.5);
+        }
+        // a slice for a view: the whole edit at 1600 frames picks a coarse level, 20 s picks the finest; the frames' times come back with it
+        double a = 0.0, b = 0.0;
+        auto whole = py.slice (0.0, secs, 1600, a, b);
+        CHECK (whole.frames > 0 && whole.frames <= 1600 && whole.bins == py.bins && a < 1.0 && b > secs - 2.0 && std::abs (whole.level (whole.frames / 2, 4000.0) + 40.0) < 1.5);
+        auto zoom = py.slice (140.0, 160.0, 2400, a, b);
+        CHECK (py.levelFor (140.0, 160.0, 2400) == 0 && py.levelFor (140.0, 160.0, 1600) == 1 && zoom.frames >= 1990 && zoom.frames <= 2010 && std::abs (a - 140.0) < 0.02 && std::abs (b - 160.0) < 0.02 && std::abs (zoom.level (zoom.frames / 2, 1000.0) + 20.0) < 1.5);
+        // a stretch made again (a fix went in): 120 - 130 s silent on both tracks; only those frames change, and the coarse levels follow
+        CHECK (py.addTrack (py.frameAt (120.0), py.frameAt (130.0), tone (1000.0, -200.0, 0.0, 0.0), true));
+        CHECK (py.addTrack (py.frameAt (120.0), py.frameAt (130.0), tone (1000.0, -200.0, 0.0, 0.0), false));
+        py.settle (py.frameAt (120.0), py.frameAt (130.0));
+        CHECK (level0 (125.0, 1000.0) < -100.0 && level0 (125.0, 4000.0) < -100.0 && std::abs (level0 (119.0, 1000.0) + 20.0) < 1.5 && std::abs (level0 (131.0, 1000.0) + 20.0) < 1.5);
+        { const auto& L2 = py.levels[2]; const int f = (int) (125.0 / L2.hopSeconds); CHECK (SpectralPyramid::fromByte (L2.db[(size_t) f * (size_t) py.bins + (size_t) binOf (4000.0)]) < -100.0); }
+        std::printf ("  (pyramid: %d levels, %.1f MB for %.0f s)\n", (int) py.levels.size(), (double) py.bytes() / 1.0e6, secs);
     }
     SECTION ("VCAs: numbers, members, gains, mute, save and load");
     {

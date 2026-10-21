@@ -36,6 +36,9 @@ void reharmoniserEdit (AppContext&, const juce::Uuid& editId, juce::Component* p
 /** Spectral Denoise: the marked part of all tracks as one spectrogram; draw boxes over the room tone (their pitch range limits what is denoised),
     learn it, see and hear the result, and write the denoised pieces back into the edit (new files; Undo fix brings the originals back). */
 void denoiseEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
+/** Noise mode: the whole edit in one spectral window (built once at several zoom levels) with Gain, ReTouch, De-click and the denoiser all to hand; each fix
+    goes into the edit at once (new piece files), Undo takes it off, Write back to clip keeps them and the window stays open, Finished closes it. */
+void noiseModeEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
 
 /** Undoes the last pitch correction / repair (any window). */
 void undoLastFix (AppContext&);
