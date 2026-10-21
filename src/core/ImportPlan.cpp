@@ -76,8 +76,9 @@ std::vector<ImportSource> inspectFiles (juce::AudioFormatManager& fm, const juce
     return out;
 }
 
-ImportPlan buildImportPlan (std::vector<ImportSource> sources)
+ImportPlan buildImportPlan (std::vector<ImportSource> sources, ImportNaming naming)
 {
+    const bool tryAll = naming == ImportNaming::Auto;
     ImportPlan plan; plan.sources = std::move (sources);
     auto& S = plan.sources;
     struct Item { int src; juce::StringArray tok; juce::String stem; };
@@ -100,6 +101,80 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
             plan.takes.push_back (std::move (t));
         }
         else flat.push_back ({ i, tokensOf (S[(size_t) i].file.getFileNameWithoutExtension()), S[(size_t) i].file.getFileNameWithoutExtension() });
+    }
+
+    // ---- SADiE: "<piece>-<mic><take>.wav", the take number (two digits) stuck to the end of the mic's name: "Beata es Virgo Maria-Omni07" = mic Omni,
+    //      take 7; "...-VO107" = mic VO1, take 7; "...-2007" = mic 20 (a track SADiE was not given a name for), take 7. Every file of a take is exactly
+    //      the same length (SADiE records them together), which is how this reading is confirmed; each piece's takes share its mics.
+    {
+        struct SHit { int idx; juce::String piece, mic; int take; };
+        auto parse = [] (const juce::String& stem, int d, SHit& h)
+        {
+            const int dash = stem.lastIndexOfChar ('-');
+            if (dash <= 0) return false;
+            const auto piece = stem.substring (0, dash).trim(), rest = stem.substring (dash + 1).trim();
+            if (piece.isEmpty() || rest.length() <= d) return false;
+            const auto digits = rest.getLastCharacters (d), mic = rest.dropLastCharacters (d).trim();
+            if (! digits.containsOnly ("0123456789") || mic.isEmpty() || mic.containsAnyOf ("._ ") || ! juce::CharacterFunctions::isLetterOrDigit (mic[0])) return false;
+            h.piece = piece; h.mic = mic; h.take = digits.getIntValue();
+            return true;
+        };
+        std::vector<SHit> best; double bestScore = -1.0;
+        for (int d : { 2, 3 })
+        {
+            std::vector<SHit> hits;
+            for (int k = 0; k < (int) flat.size(); ++k) { SHit h; if (parse (flat[(size_t) k].stem, d, h)) { h.idx = k; hits.push_back (h); } }
+            const bool forced = naming == ImportNaming::Sadie;                                // (chosen in the import window: half the files will do)
+            if (! (tryAll || forced) || hits.size() < 2 || (forced ? hits.size() * 2 < flat.size() : (hits.size() < 4 || hits.size() * 5 < flat.size() * 4))) continue;   // at least 80 % of the files
+            std::map<std::pair<juce::String, int>, std::vector<const SHit*>> groups;
+            for (auto& h : hits) groups[{ h.piece.toLowerCase(), h.take }].push_back (&h);
+            if (groups.size() < 2) continue;
+            bool ok = true; int sameLen = 0;
+            std::map<juce::String, std::pair<std::set<juce::String>, size_t>> perPiece;       // piece -> (all its mics, its biggest take)
+            for (auto& kv : groups)
+            {
+                std::set<juce::String> mics;
+                for (auto* h : kv.second) if (! mics.insert (h->mic.toLowerCase()).second) ok = false;     // the same mic twice in a take
+                auto& pp = perPiece[kv.first.first];
+                for (auto& m : mics) pp.first.insert (m);
+                pp.second = juce::jmax (pp.second, kv.second.size());
+                bool same = true;
+                for (auto* h : kv.second) if (std::abs (S[(size_t) flat[(size_t) h->idx].src].length - S[(size_t) flat[(size_t) kv.second.front()->idx].src].length) > 64) same = false;
+                if (same) ++sameLen;
+            }
+            for (auto& kv : perPiece) if (kv.second.second < 2 || (double) kv.second.first.size() > 1.5 * (double) kv.second.second) ok = false;   // the takes share their mics
+            const double lenShare = (double) sameLen / (double) groups.size();
+            if (! ok || lenShare < (forced ? 0.0 : 0.8)) continue;                             // (SADiE's takes are exactly the same length on every mic)
+            const double score = lenShare + (d == 2 ? 0.001 : 0.0);
+            if (score > bestScore) { bestScore = score; best = std::move (hits); }
+        }
+        if (! best.empty())
+        {
+            std::map<std::pair<juce::String, int>, std::vector<const SHit*>> groups;
+            for (auto& h : best) groups[{ h.piece.toLowerCase(), h.take }].push_back (&h);
+            for (auto& kv : groups)
+            {
+                ImportTake t; const auto& first = S[(size_t) flat[(size_t) kv.second.front()->idx].src];
+                t.length = first.length; t.sampleRate = first.sampleRate; t.modified = first.modified; t.number = kv.first.second;
+                t.piece = kv.second.front()->piece;
+                for (auto* h : kv.second)
+                {
+                    const auto& src = S[(size_t) flat[(size_t) h->idx].src];
+                    ImportPart p; p.source = flat[(size_t) h->idx].src; p.channel = -1;
+                    p.trackName = h->mic; p.trackKey = p.trackName.toLowerCase();
+                    p.trackChannels = src.channels >= 2 ? 2 : 1;
+                    t.length = juce::jmax (t.length, src.length);
+                    if (src.modified < t.modified) t.modified = src.modified;
+                    t.parts.push_back (p);
+                }
+                plan.takes.push_back (std::move (t));
+            }
+            plan.notes.add ("The file names were read as SADiE's (piece-mic + take number): every take of a piece is on the same tracks, one per mic.");
+            plan.readAs = "SADiE";
+            std::set<int> taken; for (auto& h : best) taken.insert (h.idx);
+            std::vector<Item> rest; for (int k = 0; k < (int) flat.size(); ++k) if (! taken.count (k)) rest.push_back (flat[(size_t) k]);
+            flat = std::move (rest);
+        }
     }
 
     // ---- names like "A Winter Ride 015_piano-L.wav": <piece> <take number>_<instrument or mic>[-L|-R|-C] (Pyramix). The piece may be missing
@@ -162,7 +237,8 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
                 for (auto& h : hits) if (! h.strict) shared = false;
             }
         }
-        if (shared && hits.size() >= 2 && hits.size() * 5 >= flat.size() * 4)       // at least 80 % of the files follow the pattern
+        const bool forcedPy = naming == ImportNaming::Pyramix;
+        if ((tryAll || forcedPy) && (shared || forcedPy) && hits.size() >= 2 && (forcedPy ? hits.size() * 2 >= flat.size() : hits.size() * 5 >= flat.size() * 4))   // at least 80 % of the files follow the pattern
         {
             std::map<juce::String, std::map<juce::String, int>> spellings;      // piece key -> spelling -> how often
             for (auto& h : hits) spellings[pieceKey (h.piece)][h.piece]++;
@@ -195,6 +271,7 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
                 plan.takes.push_back (std::move (t));
             }
             plan.notes.add ("The file names (piece, take number, instrument) were used to put every take of a piece on the same tracks.");
+            plan.readAs = "Pyramix";
             std::set<int> taken; for (auto& h : hits) taken.insert (h.idx);
             std::vector<Item> rest; for (int k = 0; k < (int) flat.size(); ++k) if (! taken.count (k)) rest.push_back (flat[(size_t) k]);
             flat = std::move(rest);
@@ -209,7 +286,7 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
     //      leaves every take with tracks of its own.
     struct NumGroup { int value; std::vector<std::pair<Item, juce::String>> items; };      // the item and its track name (the take words taken out)
     std::vector<NumGroup> numGroups;
-    if (flat.size() >= 4)
+    if (flat.size() >= 4 && (tryAll || naming == ImportNaming::ProTools))
     {
         auto isSideWord = [] (const juce::String& w) { return w.equalsIgnoreCase ("L") || w.equalsIgnoreCase ("R") || w.equalsIgnoreCase ("C") || w.equalsIgnoreCase ("Left") || w.equalsIgnoreCase ("Right"); };   // (C: Pyramix's mono "-C")
         auto isNumWord = [] (const juce::String& w) { return w.isNotEmpty() && w.length() <= 6 && w.containsOnly ("0123456789"); };
@@ -402,6 +479,7 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
         std::set<juce::String> keys; size_t biggest = 0;
         for (auto& c : takesFlat) { biggest = juce::jmax (biggest, c.size()); for (auto& it : c) keys.insert (keyOf (it).toLowerCase()); }
         useNumbers = takesFlat.size() < 2 || (double) keys.size() > 1.5 * (double) juce::jmax<size_t> (1, biggest);
+        if (naming == ImportNaming::ProTools) useNumbers = true;              // (chosen in the import window)
     }
     if (useNumbers)
     {
@@ -448,8 +526,10 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
             plan.takes.push_back (std::move (t));
         }
         plan.notes.add ("The take number in the file names was used to put every take on the same tracks (the files of a take need not be the same length).");
+        plan.readAs = "Pro Tools";
     }
 
+    if (! takesFlat.empty() && plan.readAs.isEmpty()) plan.readAs = "file lengths";
     for (auto& c : takesFlat)
     {
         ImportTake t; const auto& first = S[(size_t) c.front().src];
@@ -551,6 +631,7 @@ ImportPlan buildImportPlan (std::vector<ImportSource> sources)
     }
     std::set<double> rates; for (auto& t : plan.takes) rates.insert (t.sampleRate);
     if (rates.size() > 1) plan.notes.add ("The files have different sample rates; they are imported as they are.");
+    if (plan.readAs.isEmpty() && ! plan.takes.empty()) plan.readAs = "multichannel files";
     // a take that lacks tracks the others have
     for (auto& t : plan.takes)
         if (t.parts.size() < plan.tracks.size() && plan.takes.size() > 1) { plan.notes.add ("Some takes have fewer tracks than others."); break; }

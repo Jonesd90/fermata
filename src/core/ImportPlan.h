@@ -47,10 +47,15 @@ struct ImportPlan
     std::vector<ImportTake>   takes;         // in the order they will be placed (take 1 first)
     std::vector<ImportTrack>  tracks;        // in the order they will appear
     juce::StringArray         notes;         // things the person should know (skipped files, mixed sample rates ...)
+    juce::String              readAs;        // how the names were read: "SADiE", "Pyramix", "Pro Tools", "file lengths" (shown in the import window)
 };
 
+/** How the file names are to be read. Auto tries them all (SADiE, then Pyramix, then the take number Pro Tools-style, then the lengths); the others
+    use that one way only (the import window's "Recorded with" choice, for when Auto guesses wrong). */
+enum class ImportNaming { Auto, Pyramix, ProTools, Sadie, ByLength };
+
 /** Looks at the files (header information only) and groups them. Pure logic: no files are read beyond what 'sources' already holds. */
-ImportPlan buildImportPlan (std::vector<ImportSource> sources);
+ImportPlan buildImportPlan (std::vector<ImportSource> sources, ImportNaming naming = ImportNaming::Auto);
 
 /** True when some mono files are the left / right halves of a pair ('Piano-L' and 'Piano-R', 'Piano L' and 'Piano R', 'Piano4099L' and 'Piano4099R', 'L' and 'R' ...) in the same take.
     With numbers = true, names ending in 1 and 2 ('Mic 1' and 'Mic 2') count as a pair too. */

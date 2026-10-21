@@ -2641,7 +2641,8 @@ int main()
                     for (int k = 1; k <= 10; ++k) pt.push_back (src (nm ("SPOT" + juce::String (k)) + ".wav", 1, style >= 2 ? len : len - rr.nextInt (5000)));
                 }
                 auto pp = joinStereoPairs (buildImportPlan (pt));
-                CHECK (pp.takes.size() == 12 && pp.tracks.size() == 13);
+                CHECK (pp.takes.size() == 12 && pp.tracks.size() == 13 && pp.readAs == "Pro Tools");
+                CHECK (joinStereoPairs (buildImportPlan (pt, ImportNaming::ProTools)).tracks.size() == 13);
                 if (pp.takes.size() == 12 && pp.tracks.size() == 13)
                 {
                     CHECK (pp.takes[0].number == 1 && pp.takes[11].number == 12 && pp.takes[7].parts.size() == 13);
@@ -2682,13 +2683,43 @@ int main()
                 for (int t = 0; t <= 106; ++t) series (t == 0 ? juce::String ("0") : juce::String (t).paddedLeft ('0', 3), 48000 * 10 + 4800 * t, t);
                 for (int t = 1; t <= 3; ++t) series (t == 1 ? juce::String ("CT TEST") : "CT TEST " + juce::String (t).paddedLeft ('0', 3), 48000 * 7 + 3000 * t, t);
                 auto up = joinStereoPairs (buildImportPlan (uf));
-                CHECK (up.takes.size() == 110 && up.tracks.size() == 12);
+                CHECK (up.takes.size() == 110 && up.tracks.size() == 12 && up.readAs == "Pyramix");
+                CHECK (joinStereoPairs (buildImportPlan (uf, ImportNaming::Pyramix)).tracks.size() == 12);
                 if (up.tracks.size() == 12) CHECK (up.tracks[0].name == "1" && up.tracks[7].name == "8" && up.tracks[8].name == "OMNI" && up.tracks[8].channels == 2);
                 bool all12 = true; for (auto& t : up.takes) all12 = all12 && t.parts.size() == 12;
                 CHECK (all12);
                 std::vector<ImportSource> one;
                 for (auto n : { "01_Kick", "02_Snare", "03_Hat", "04_Bass" }) one.push_back (src (juce::String (n) + ".wav", 1, 96000));
                 CHECK (buildImportPlan (one).takes.size() == 1);
+            }
+            // 2.78.2: SADiE - "<piece>-<mic><take>.wav", the two-digit take stuck to the mic's name ("Beata es Virgo Maria-Omni07", "-VO107" = mic VO1,
+            // "-2007" = mic 20), every file of a take exactly the same length, several pieces, one piece without one of the mics; numbered room-tone
+            // clips ("Cantate Domino 01 rt-102" = mic 1, take 2): each piece its takes in order, one track per mic
+            {
+                std::vector<ImportSource> sd; juce::Random rr (4);
+                const char* mics[] = { "20", "Harp", "Omni", "VO1", "VO2", "Wide" };
+                for (auto pc : { "Beata es Virgo Maria", "Benedicite" })
+                    for (int t = 1; t <= 6; ++t)
+                    {
+                        const int len = 96000 * (30 + rr.nextInt (60)) + rr.nextInt (9000);
+                        for (auto* m : mics)
+                            if (! (juce::String (pc) == "Benedicite" && juce::String (m) == "Harp"))
+                                sd.push_back (src (juce::String (pc) + "-" + m + juce::String (t).paddedLeft ('0', 2) + ".wav", juce::String (m) == "Omni" ? 2 : 1, len));
+                    }
+                for (int t = 2; t <= 3; ++t) for (int k = 1; k <= 4; ++k) sd.push_back (src ("Cantate Domino 01 rt-" + juce::String (k) + juce::String (t).paddedLeft ('0', 2) + ".wav", 1, t == 2 ? 249600 : 142080));
+                auto sp = buildImportPlan (sd);
+                CHECK (sp.takes.size() == 14 && sp.tracks.size() == 10);
+                int beata = 0; for (auto& t : sp.takes) if (t.piece == "Beata es Virgo Maria") { ++beata; CHECK (t.parts.size() == 6); }
+                CHECK (beata == 6);
+                if (! sp.takes.empty()) CHECK (sp.takes[0].number == 1 && sp.takes[0].piece == "Beata es Virgo Maria");
+                bool vo1 = false, omni = false, twenty = false;
+                for (auto& t : sp.tracks) { vo1 = vo1 || t.name == "VO1"; omni = omni || (t.name == "Omni" && t.channels == 2); twenty = twenty || t.name == "20"; }
+                CHECK (vo1 && omni && twenty);
+                CHECK (sp.readAs == "SADiE");
+                // the import window's "Recorded with": SADiE chosen gives the same; Pyramix chosen does not read these names as Pyramix's
+                const auto forced = buildImportPlan (sd, ImportNaming::Sadie);
+                CHECK (forced.takes.size() == 14 && forced.tracks.size() == 10 && forced.readAs == "SADiE");
+                CHECK (buildImportPlan (sd, ImportNaming::ByLength).readAs == "file lengths");
             }
             // a whole session of mono files named "<piece> <take>_<instrument>-<L|R|C>": all takes share the same tracks
             {

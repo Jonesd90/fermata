@@ -2190,9 +2190,10 @@ private:
 class ImportDialog : public JobDialogBase
 {
 public:
-    ImportDialog (AppContext& a, const juce::Uuid& wid, const juce::Uuid& eid, ImportPlan p) : app (a), windowId (wid), editId (eid), basePlan (p), plan (std::move (p))
+    ImportDialog (AppContext& a, const juce::Uuid& wid, const juce::Uuid& eid, std::vector<ImportSource> srcs, juce::StringArray problemNotes)
+        : app (a), windowId (wid), editId (eid), sources (std::move (srcs)), problems (std::move (problemNotes))
     {
-        setSize (680, 640);
+        setSize (680, 680);
         for (auto* x : std::initializer_list<juce::Component*> { &summary, &doIt, &cancel }) addAndMakeVisible (x);
         summary.setMultiLine (true); summary.setReadOnly (true); summary.setCaretVisible (false); summary.setScrollbarsShown (true);
         summary.setColour (juce::TextEditor::backgroundColourId, theme::field); summary.setFont (juce::FontOptions (13.0f));
@@ -2201,35 +2202,26 @@ public:
             juce::StringArray ks; ks.addTokens (st->getValue ("importTrackOrder", {}), "|", "");
             for (auto& k : ks) if (k.isNotEmpty()) trackOrder.push_back (k);
         }
-        std::set<juce::String> pieceNames; for (auto& t : basePlan.takes) if (t.piece.isNotEmpty()) pieceNames.insert (t.piece);
-        if (editId.isNull() && pieceNames.size() > 1)
-        {
-            addAndMakeVisible (pieceBox);
-            pieceBox.setButtonText ("The file names name " + juce::String ((int) pieceNames.size()) + " different pieces: put each piece in its own take window (named after the piece)");
-            pieceBox.setToggleState (true, juce::dontSendNotification);
-            pieceBox.onClick = [this] { refreshSummary(); };
-        }
+        // how the file names are read: Automatic, or the program that recorded them (when Automatic gets it wrong)
+        namingCap.setText ("Recorded with:", juce::dontSendNotification); namingCap.setColour (juce::Label::textColourId, theme::text);
+        addAndMakeVisible (namingCap);
+        namingBox.addItem ("Automatic", 1); namingBox.addItem ("Pyramix  (piece 001_mic-L / -R / -C)", 2); namingBox.addItem ("Pro Tools  (piece track 01, .L / .R)", 3);
+        namingBox.addItem ("SADiE  (piece-Mic01)", 4); namingBox.addItem ("Other: by file length (every file of a take is the same length)", 5);
+        namingBox.setSelectedId (1, juce::dontSendNotification);
+        namingBox.setTooltip ("How Fermata reads the file names to find the takes and the tracks. Automatic tries every way it knows and says which it used. "
+                              "If the takes or tracks come out wrong, choose the program that recorded the files: the files are read again that way at once.");
+        namingBox.onChange = [this] { setBase(); };
+        addAndMakeVisible (namingBox);
+        pieceBox.onClick = [this] { refreshSummary(); };
         addAndMakeVisible (orderButton);
         orderButton.setTooltip ("Choose the order of the tracks (top to bottom). Fermata remembers it for the next import.");
         orderButton.onClick = [this] { openOrder(); };
-        refreshSummary();
-        if (hasStereoPairs (basePlan))
-        {
-            addAndMakeVisible (joinBox); addAndMakeVisible (pairView);
-            joinBox.setButtonText ("Join left / right pairs into stereo tracks (one stereo strip and one stereo track each). Tick the ones you want stereo, untick the ones to keep as mono tracks:");
-            joinBox.setToggleState (true, juce::dontSendNotification);
-            joinBox.onClick = [this] { for (auto* b : pairBoxes) b->setToggleState (joinBox.getToggleState(), juce::dontSendNotification); rebuildPlan(); };
-            pairView.setViewedComponent (&pairHolder, false); pairView.setScrollBarsShown (true, false);
-            if (joinStereoPairs (basePlan, true).tracks.size() < joinStereoPairs (basePlan, false).tracks.size())      // there are names ending 1 and 2 as well
-            {
-                addAndMakeVisible (numBox);
-                numBox.setButtonText ("Also join names ending in 1 and 2 (Mic 1 + Mic 2) into stereo tracks");
-                numBox.setToggleState (false, juce::dontSendNotification);
-                numBox.onClick = [this] { buildPairList(); rebuildPlan(); };
-            }
-            buildPairList();
-            rebuildPlan();
-        }
+        joinBox.setButtonText ("Join left / right pairs into stereo tracks (one stereo strip and one stereo track each). Tick the ones you want stereo, untick the ones to keep as mono tracks:");
+        joinBox.onClick = [this] { for (auto* b : pairBoxes) b->setToggleState (joinBox.getToggleState(), juce::dontSendNotification); rebuildPlan(); };
+        pairView.setViewedComponent (&pairHolder, false); pairView.setScrollBarsShown (true, false);
+        numBox.setButtonText ("Also join names ending in 1 and 2 (Mic 1 + Mic 2) into stereo tracks");
+        numBox.onClick = [this] { buildPairList(); rebuildPlan(); };
+        setBase();
         addAndMakeVisible (copyBox); addAndMakeVisible (linkBox);
         copyBox.setButtonText ("Copy the audio into this project's folder (recommended)"); linkBox.setButtonText ("Use the audio files where they are (nothing is copied)");
         copyBox.setRadioGroupId (4711); linkBox.setRadioGroupId (4711);
@@ -2237,6 +2229,34 @@ public:
         copyBox.onClick = [this] { refreshSummary(); }; linkBox.onClick = [this] { refreshSummary(); };
         doIt.setColour (juce::TextButton::buttonColourId, theme::accent);
         doIt.onClick = [this] { start(); }; cancel.onClick = [this] { if (running) job.requestCancel(); else closeDialogOf (this); };
+    }
+    /** (Re)reads the files the way the "Recorded with" box says and sets up everything that depends on it. */
+    void setBase()
+    {
+        static const ImportNaming ways[] = { ImportNaming::Auto, ImportNaming::Pyramix, ImportNaming::ProTools, ImportNaming::Sadie, ImportNaming::ByLength };
+        basePlan = buildImportPlan (sources, ways[juce::jlimit (0, 4, namingBox.getSelectedId() - 1)]);
+        for (auto& pr : problems) basePlan.notes.add (pr);
+        plan = basePlan;
+        std::set<juce::String> pieceNames; for (auto& t : basePlan.takes) if (t.piece.isNotEmpty()) pieceNames.insert (t.piece);
+        const bool pieces = editId.isNull() && pieceNames.size() > 1;
+        pieceBox.setVisible (pieces);
+        if (pieces)
+        {
+            pieceBox.setButtonText ("The file names name " + juce::String ((int) pieceNames.size()) + " different pieces: put each piece in its own take window (named after the piece)");
+            pieceBox.setToggleState (true, juce::dontSendNotification);
+        }
+        pairBoxes.clear(); pairCands.clear();
+        const bool pairs = hasStereoPairs (basePlan);
+        joinBox.setVisible (pairs); pairView.setVisible (pairs);
+        numBox.setVisible (pairs && joinStereoPairs (basePlan, true).tracks.size() < joinStereoPairs (basePlan, false).tracks.size());    // there are names ending 1 and 2 as well
+        if (pairs)
+        {
+            joinBox.setToggleState (true, juce::dontSendNotification); numBox.setToggleState (false, juce::dontSendNotification);
+            buildPairList();
+            rebuildPlan();
+        }
+        else refreshSummary();
+        resized();
     }
     bool numbersOn() const { return numBox.isVisible() && numBox.getToggleState(); }
     /** One tick box per left / right pair that could be a stereo track. What was kept mono last time stays unticked. */
@@ -2299,7 +2319,9 @@ public:
     {
         applyOrder (plan);
         juce::String t;
-        t << juce::String ((int) plan.takes.size()) << " take(s), " << juce::String ((int) plan.tracks.size()) << " track(s).\n\n";
+        t << juce::String ((int) plan.takes.size()) << " take(s), " << juce::String ((int) plan.tracks.size()) << " track(s)."
+          << (plan.readAs.isNotEmpty() ? "   (The names were read as " + plan.readAs + (namingBox.getSelectedId() == 1 ? " - automatically; if this is wrong, choose the program in \"Recorded with\" below" : juce::String()) + ".)" : juce::String())
+          << "\n\n";
         juce::String lastPiece; int n = 0;
         for (size_t i = 0; i < plan.takes.size(); ++i)
         {
@@ -2328,6 +2350,7 @@ public:
         orderButton.setBounds (bottom.removeFromLeft (150));
         cancel.setBounds (bottom.removeFromRight (100)); bottom.removeFromRight (8); doIt.setBounds (bottom.removeFromRight (180));
         linkBox.setBounds (r.removeFromBottom (24)); copyBox.setBounds (r.removeFromBottom (24)); r.removeFromBottom (4);
+        { auto row = r.removeFromBottom (26); namingCap.setBounds (row.removeFromLeft (110)); namingBox.setBounds (row.removeFromLeft (juce::jmin (440, row.getWidth())).reduced (0, 1)); r.removeFromBottom (4); }
         if (pieceBox.isVisible()) pieceBox.setBounds (r.removeFromBottom (24));
         if (numBox.isVisible()) numBox.setBounds (r.removeFromBottom (24));
         if (joinBox.isVisible())
@@ -2341,7 +2364,9 @@ public:
         summary.setBounds (r);
     }
 private:
+    std::vector<ImportSource> sources; juce::StringArray problems;     // the files as read (header information), and what could not be read
     ImportPlan basePlan; std::vector<juce::String> trackOrder;
+    juce::Label namingCap; juce::ComboBox namingBox;
     juce::ToggleButton joinBox, numBox, copyBox, linkBox, pieceBox; juce::TextButton orderButton { "Track order..." };
     std::vector<StereoPairCandidate> pairCands; juce::OwnedArray<juce::ToggleButton> pairBoxes; juce::Component pairHolder; juce::Viewport pairView;
     void start()
@@ -2572,9 +2597,7 @@ static void openImportDialog (AppContext& app, const juce::Uuid& wid, const juce
             busy::end();
             if (sh->cancel.load()) return;
             if (sh->sources.empty()) { say ("Import takes", "None of those files could be read.\n\n" + sh->problems.joinIntoString ("\n")); return; }
-            auto plan = buildImportPlan (std::move (sh->sources));
-            for (auto& pr : sh->problems) plan.notes.add (pr);
-            launchDialog (std::make_unique<ImportDialog> (*appPtr, wid, eid, std::move (plan)), eid.isNull() ? "Import takes" : "Import into the edit", safeParent.getComponent());
+            launchDialog (std::make_unique<ImportDialog> (*appPtr, wid, eid, std::move (sh->sources), sh->problems), eid.isNull() ? "Import takes" : "Import into the edit", safeParent.getComponent());
         });
     });
     if (! launched) { delete ticker; busy::setCancel (nullptr); busy::end(); say ("Import takes", "Could not start reading the files. Please try again."); }
