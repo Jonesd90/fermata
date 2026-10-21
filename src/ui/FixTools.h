@@ -22,9 +22,6 @@ void repairTake (AppContext&, const juce::Uuid& takeWindowId, juce::Component* p
 void pitchCurveTake (AppContext&, const juce::Uuid& takeWindowId, juce::Component* parent);
 /** The Pitch button: one window, Pitch curve on the first tab and Pitch process (semitones / cents) on the second. */
 void pitchTabsTake (AppContext&, const juce::Uuid& takeWindowId, juce::Component* parent);
-/** The background denoiser: marks 1 / 2 hold nothing but the room (the room tone); it is learned from every track of the take, and the whole take is
-    denoised into new files (the originals stay; Undo fix brings them back). A preview of a stretch can be heard first: original, denoised, or what was removed. */
-void denoiseTake (AppContext&, const juce::Uuid& takeWindowId, juce::Component* parent);
 
 // ---- Edit window ----
 void pitchEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);

@@ -1485,11 +1485,8 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
         if (temp) if (auto* w2 = def()) { w2->editTake = oldTake; w2->editIn = oldIn; w2->editOut = oldOut; }
     };
     pitchButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::pitchTabsTake (app, windowId, this); }); };
-    repairButton.setTooltip ("Shows the marked part (Mark 1 / Mark 2) of all tracks as one spectrogram; draw a box round a noise (drag its edges to adjust it) and rebuild it from the clean sound next to it, or use De-click to find and mend clicks");
+    repairButton.setTooltip ("Shows the marked part (Mark 1 / Mark 2) of all tracks as one spectrogram; draw a box round a noise (drag its edges to adjust it) and rebuild it from the clean sound next to it (ReTouch), take the background noise out of it with the room tone (Denoise), or use De-click to find and mend clicks");
     repairButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::repairTake (app, windowId, this, false); }); };
-    denoiseButton.setTooltip ("Denoise: mark a part of one take that holds nothing but the room (mark 1 / mark 2), and every track of that take learns its own room tone and is denoised whole - "
-                              "long reverberation tails are followed down as the room dies away, upper harmonics are kept, and a little of the room tone is left in. Preview the result first (original / denoised / what was removed). New files are made; the originals stay.");
-    denoiseButton.onClick = [this] { fixtools::denoiseTake (app, windowId, this); };
     exportProcButton.setTooltip ("Export for Processing: sends the marked part (Mark 1 / Mark 2, all tracks) to the Processing Media folder to be corrected in other software (e.g. iZotope RX). Re-link it afterwards with a right-click on the 'Waiting for corrected audio' block");
     exportProcButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::exportForProcessingTake (app, windowId, this); }); };
     undoFixButton.setTooltip ("Undo the last pitch correction, repair, de-click, denoise or export for processing (the original audio files were never touched)");
@@ -1498,7 +1495,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     toEditButton.setColour (juce::TextButton::buttonColourId, theme::accent);
     recordButton.setIcon (Icon::Record, "Record [R]"); playButton.setIcon (Icon::Play, "Play / Stop [Space]"); startButton.setIcon (Icon::Start, "Return to start [Home]"); backButton.setIcon (Icon::Rewind, "Rewind 5 seconds");
     fwdButton.setIcon (Icon::Forward, "Forward 5 seconds"); endTransportButton.setIcon (Icon::End, "Go to the end [End]"); bounceButton.setIcon (Icon::Bounce, "Bounce Out");
-    pitchButton.setIcon (Icon::Pitch, "Pitch & Pitch curve"); repairButton.setIcon (Icon::Repair, "Repair & DeClick"); denoiseButton.setIcon (Icon::Denoise, "Denoise"); undoFixButton.setIcon (Icon::Undo, "Undo fix");
+    pitchButton.setIcon (Icon::Pitch, "Pitch & Pitch curve"); repairButton.setIcon (Icon::Repair, "ReTouch, DeClick & Denoise"); undoFixButton.setIcon (Icon::Undo, "Undo fix");
     editInButton.setIcon (Icon::Mark1, "Mark 1 [1]"); editOutButton.setIcon (Icon::Mark2, "Mark 2 [2]");
     toEditButton.setIcon (Icon::ToEdit, "To edit [3]"); toEditAtButton.setIcon (Icon::ToPlayhead, "To playhead [4]"); editWindowButton.setIcon (Icon::EditWin, "Edit window");
     overdubBox.setIcon (Icon::Overdub, "Overdub"); markersToggle.setIcon (Icon::Flag, "Markers");
@@ -1506,10 +1503,10 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     importButton.setIcon (Icon::ImportTakes, "Import takes"); exportProcButton.setIcon (Icon::ImportMulti, "Export for Processing"); barSearchButton.setIcon (Icon::Search, "Search for bar");
     for (auto* t : { &overdubBox, &markersToggle }) { t->setClickingTogglesState (true); t->setColour (juce::TextButton::buttonOnColourId, theme::accent); }
     for (auto* c : std::initializer_list<juce::Component*> { &recordButton, &zoomInButton, &zoomOutButton, &playButton,
-                                                              &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &denoiseButton, &exportProcButton, &undoFixButton, &barSearchButton, &lengthClock, &statusLabel, &markLabel })
+                                                              &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &exportProcButton, &undoFixButton, &barSearchButton, &lengthClock, &statusLabel, &markLabel })
         addAndMakeVisible (c);
     for (auto* b : std::initializer_list<juce::Button*> { &recordButton, &zoomInButton, &zoomOutButton, &playButton,
-                                                          &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &denoiseButton, &exportProcButton, &undoFixButton, &barSearchButton })
+                                                          &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &exportProcButton, &undoFixButton, &barSearchButton })
         b->setWantsKeyboardFocus (false);       // keep the keyboard shortcuts working after a button click
     // the take's length: a quieter box of the same kind as the time readout (fixed digit cells, 30 times a second, so it counts as smoothly);
     // grey with softer digits, always h:m:s.ms, dashes when nothing is recording here
@@ -1609,7 +1606,7 @@ void TakeWindowComponent::resized()
         { &editInButton, IW, IH, 2 }, { &editOutButton, IW, IH, 6 }, { &toEditButton, IW, IH, 2 }, { &toEditAtButton, IW, IH, 2 }, { &overdubBox, IW, IH, 6 }, { &markersToggle, IW, IH, 14 },
         { &editWindowButton, IW, IH, 2 }, { &bounceButton, IW, IH, 14 },
         { &ltcButton, 74, grid::btnH, 14 }, { &armAllButton, IW, IH, 2 }, { &armNoneButton, IW, IH, 14 },
-        { &importButton, IW, IH, 6 }, { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 2 }, { &denoiseButton, IW, IH, 6 }, { &exportProcButton, IW, IH, 2 }, { &undoFixButton, IW, IH, 14 }, { &barSearchButton, IW, IH, 14 },
+        { &importButton, IW, IH, 6 }, { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 6 }, { &exportProcButton, IW, IH, 2 }, { &undoFixButton, IW, IH, 14 }, { &barSearchButton, IW, IH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
     // the head, left to right: the window's name and where "To edit" goes (one column, a line between them), Next Take, REC, the take's length, the time readout
