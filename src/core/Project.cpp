@@ -73,6 +73,7 @@ static const juce::Identifier k_dud ("dud");
 static const juce::Identifier k_verified ("verified");
 static const juce::Identifier k_barIn ("barIn");
 static const juce::Identifier k_barOut ("barOut");
+static const juce::Identifier k_roomTone ("roomTone"), k_roomToneIn ("roomToneIn"), k_roomToneOut ("roomToneOut");
 static const juce::Identifier k_overruns ("overruns");
 static const juce::Identifier k_lost ("lost");
 static const juce::Identifier k_writeFailed ("writeFailed");
@@ -291,7 +292,7 @@ Project::Project() { createDefaultDesign(); }
 
 void Project::createDefaultDesign()
 {
-    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); preampDevices.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); preampDevices.clear();
     windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear(); oldWindowFiles.clear();     // (nothing of the project that was open before: its missing files are not this one's)
     setInputCount (8);
     setOutputCount (4);
@@ -1119,6 +1120,7 @@ var Project::takeWindowToVar (const TakeWindowDef& w) const
         put (go, key::k_rate, g.sampleRate); put (go, key::k_time, g.recordedAt.toMilliseconds());
         put (go, key::k_fadeIn, g.fadeInSeconds); put (go, key::k_fadeOut, g.fadeOutSeconds); put (go, key::k_dud, g.dud); put (go, key::k_barIn, g.barIn); put (go, key::k_barOut, g.barOut);
         if (g.verified) put (go, key::k_verified, true);
+        if (g.roomTone) { put (go, key::k_roomTone, true); put (go, key::k_roomToneIn, g.roomToneIn); put (go, key::k_roomToneOut, g.roomToneOut); }
         if (g.overruns > 0) { put (go, key::k_overruns, g.overruns); put (go, key::k_lost, (juce::int64) g.lostSamples); }
         if (g.writeFailed) put (go, key::k_writeFailed, true);
         juce::Array<var> fs;
@@ -1216,7 +1218,59 @@ var Project::toVar (bool editorialOnly, bool withWindows) const
 
     if (withWindows) addWindowsToVar (root);
     put (root, "mastering", mastering.toVar());
+    if (roomTone.valid()) put (root, "roomTone", roomToneToVar (roomTone));
     return root;
+}
+
+// the room tone: each profile's noise powers as 32-bit floats, base64 (about 16 KB per channel)
+static juce::String profileToString (const denoise::Profile& p)
+{
+    juce::MemoryBlock mb; std::vector<float> v (p.psd.size()); for (size_t i = 0; i < v.size(); ++i) v[i] = (float) p.psd[i];
+    mb.append (v.data(), v.size() * sizeof (float));
+    return mb.toBase64Encoding();
+}
+static denoise::Profile profileFromString (const juce::String& s, int fftSize, double sr)
+{
+    denoise::Profile p; juce::MemoryBlock mb;
+    if (! mb.fromBase64Encoding (s) || mb.getSize() < sizeof (float)) return p;
+    const auto n = mb.getSize() / sizeof (float);
+    if ((int) n != fftSize / 2 + 1) return p;
+    p.fftSize = fftSize; p.sampleRate = sr; p.psd.resize (n);
+    const float* f = static_cast<const float*> (mb.getData());
+    for (size_t i = 0; i < n; ++i) p.psd[i] = juce::jmax (1.0e-20, (double) f[i]);
+    return p;
+}
+var Project::roomToneToVar (const RoomTone& rt)
+{
+    var o = obj(); put (o, "source", rt.source);
+    juce::Array<var> ts;
+    for (auto& t : rt.tracks)
+    {
+        if (! t.mono.valid()) continue;
+        var to = obj(); put (to, "track", t.trackId.toString()); put (to, "name", t.trackName); put (to, "fft", t.mono.fftSize); put (to, "rate", t.mono.sampleRate);
+        put (to, "mono", profileToString (t.mono));
+        juce::Array<var> ch; for (auto& c : t.perChannel) ch.add (profileToString (c)); put (to, "channels", ch);
+        ts.add (to);
+    }
+    put (o, "tracks", ts);
+    return o;
+}
+Project::RoomTone Project::roomToneFromVar (const var& v)
+{
+    RoomTone rt;
+    if (! v.isObject()) return rt;
+    rt.source = v["source"].toString();
+    if (auto* a = v["tracks"].getArray())
+        for (auto& to : *a)
+        {
+            RoomToneTrack t; t.trackId = juce::Uuid (to["track"].toString()); t.trackName = to["name"].toString();
+            const int fft = (int) to["fft"]; const double sr = (double) to["rate"];
+            if (fft < 64 || sr <= 0.0) continue;
+            t.mono = profileFromString (to["mono"].toString(), fft, sr);
+            if (auto* ch = to["channels"].getArray()) for (auto& c : *ch) { auto p = profileFromString (c.toString(), fft, sr); if (p.valid()) t.perChannel.push_back (p); }
+            if (t.mono.valid() && ! t.perChannel.empty()) rt.tracks.push_back (std::move (t));
+        }
+    return rt;
 }
 
 void Project::addWindowsToVar (var& root) const
@@ -1234,7 +1288,7 @@ bool Project::fromVar (const var& root)
     if (! root.isObject() || (root.getProperty ("format", {}).toString() != "Fermata project" && root.getProperty ("format", {}).toString() != "TakeDAW project"))
         return false;
 
-    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); preampDevices.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); preampDevices.clear();
     filesMoved = false;
     name = root.getProperty ("name", "Untitled").toString();
     windowBounds.clear();
@@ -1357,6 +1411,7 @@ bool Project::fromVar (const var& root)
                     if (gv.hasProperty (key::k_fadeOut)) g.fadeOutSeconds = juce::jmax (0.0, (double) gv[key::k_fadeOut]);
                     if (g.fadeOutSeconds <= 0.0011 && g.fadeOutSeconds > 0.0) g.fadeOutSeconds = kDefaultEdgeFade;
                     g.dud = (bool) gv[key::k_dud]; g.verified = (bool) gv[key::k_verified]; g.barIn = juce::jmax (0, (int) gv[key::k_barIn]); g.barOut = juce::jmax (0, (int) gv[key::k_barOut]);
+                    g.roomTone = (bool) gv[key::k_roomTone]; g.roomToneIn = gv.hasProperty (key::k_roomToneIn) ? (double) gv[key::k_roomToneIn] : -1.0; g.roomToneOut = gv.hasProperty (key::k_roomToneOut) ? (double) gv[key::k_roomToneOut] : -1.0;
                     g.overruns = juce::jmax (0, (int) gv[key::k_overruns]); g.lostSamples = juce::jmax<juce::int64> (0, (juce::int64) gv[key::k_lost]); g.writeFailed = (bool) gv[key::k_writeFailed];
                     if (auto* fs = gv[key::k_files].getArray())
                         for (auto& fv : *fs)
@@ -1448,6 +1503,7 @@ bool Project::fromVar (const var& root)
     }
 
     mastering.fromVar (root["mastering"]);
+    roomTone = roomToneFromVar (root["roomTone"]);
     mastering.sync (edits);
     std::stable_partition (mixers.begin(), mixers.end(), [] (const std::unique_ptr<MixerState>& m) { return m->editId.isNull(); });     // the Edit mixers come last
     syncMixers();

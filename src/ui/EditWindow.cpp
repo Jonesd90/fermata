@@ -1810,11 +1810,12 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     pitchButton.setTooltip ("Two tabs. Pitch curve: draw a line of pitch against time between marks 1 and 2 (+100 cents at the top, -100 at the bottom), for a note that drifts flat or sharp; audition it, then accept or revert. "
                             "Pitch process: shifts the audio between the marks by semitones and / or cents (it can also process extra audio at each end, up to 9 s, so the edit points can be moved outward later).");
     pitchButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::pitchTabsEdit (app, editId, this); }); };
-    repairButton.setTooltip ("Shows the audio between marks 1 and 2 of all tracks as one spectrogram. Draw a box round a noise (drag its edges to adjust it) and rebuild it from the clean sound next to it, or use De-click to find and mend clicks. Key: Enter, with marks 1 and 2 set.");
+    repairButton.setTooltip ("Shows the audio between marks 1 and 2 of all tracks as one spectrogram. Draw a box round a noise (drag its edges to adjust it) and rebuild it from the clean sound next to it (ReTouch), turn it up or down (Gain), "
+                             "take the background noise out of it with the room tone (Denoise), or use De-click to find and mend clicks. Key: Enter, with marks 1 and 2 set.");
     repairButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::repairEdit (app, editId, this, false); }); };
-    denoiseButton.setTooltip ("Spectral Denoise: shows the audio between marks 1 and 2 of all tracks as one spectrogram. Draw a box over a part that is only room tone (its pitch range is the part of the spectrum that is denoised; "
-                              "Shift + drag adds a box, Alt + drag takes an area out), learn it, see and hear the result, and write the denoised pieces back. For whole takes use the take window's Denoise.");
-    denoiseButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::denoiseEdit (app, editId, this); }); };
+    roomToneButton.setTooltip ("Room tone: tells Fermata which part of the recording holds nothing but the room, on every track - a take marked as the room tone in a take window (right-click the take), "
+                               "or marks 1 - 2 of this edit. Every track's noise is learned from it once and kept with the project; the ReTouch and Noise mode windows then denoise any box you draw with it.");
+    roomToneButton.onClick = [this] { fixtools::roomToneEdit (app, editId, this); };
     noiseModeButton.setTooltip ("Noise mode: the whole edit in one spectral window (built once at several zoom levels) with Gain, ReTouch, De-click and the denoiser all to hand while it plays. "
                                 "Each fix goes into the edit at once and the next works on the result; Undo takes one off; Write back to clip keeps them (the window stays open); Finished closes it. No marks needed.");
     noiseModeButton.onClick = [this] { fixtools::noiseModeEdit (app, editId, this); };
@@ -1853,7 +1854,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     timeline->slipLeft = app.trimSlipLeft; timeline->slipRight = app.trimSlipRight;
     slipLeftToggle.onClick  = [this] { timeline->slipLeft = slipLeftToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
     slipRightToggle.onClick = [this] { timeline->slipRight = slipRightToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
-    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &ltcButton, &automationButton, &busViewButton, &pitchButton, &repairButton, &denoiseButton, &noiseModeButton, &reharmoniserButton, &exportProcButton, &undoFixButton,
+    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &ltcButton, &automationButton, &busViewButton, &pitchButton, &repairButton, &roomToneButton, &noiseModeButton, &reharmoniserButton, &exportProcButton, &undoFixButton,
                                                           &slipLeftToggle, &slipRightToggle, &shuffleToggle, &insertFlagToggle })
     {
         addAndMakeVisible (b);
@@ -1864,7 +1865,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     fwdButton.setIcon (Icon::Forward, "Forward 5 seconds"); endTransportButton.setIcon (Icon::End, "Go to the end [End]");
     trimButton.setIcon (Icon::Trim, "Trim Window [T]"); deleteButton.setIcon (Icon::Delete, "Delete piece"); leftButton.setIcon (Icon::Earlier, "Move earlier"); rightButton.setIcon (Icon::Later, "Move later");
     bounceButton.setIcon (Icon::Bounce, "Bounce Out"); mixerButton.setIcon (Icon::Mixer, "Edit Mixer"); automationButton.setIcon (Icon::Automation, "Automation"); busViewButton.setIcon (Icon::Buses, "Buses / VCAs");
-    pitchButton.setIcon (Icon::Pitch, "Pitch & Pitch curve"); repairButton.setIcon (Icon::Repair, "Repair & DeClick [Enter]"); denoiseButton.setIcon (Icon::Denoise, "Spectral Denoise"); reharmoniserButton.setIcon (Icon::Reharm, "ReHarmoniSer [H]");
+    pitchButton.setIcon (Icon::Pitch, "Pitch & Pitch curve"); repairButton.setIcon (Icon::Repair, "ReTouch, DeClick & Denoise [Enter]"); reharmoniserButton.setIcon (Icon::Reharm, "ReHarmoniSer [H]");
     undoFixButton.setIcon (Icon::Undo, "Undo fix"); tracksButton.setIcon (Icon::Tracks, "Tracks"); feedbackButton.setIcon (Icon::Feedback, "Feedback");
     endButton.setIcon (Icon::NextAtEnd, "Next goes at end"); exportProcButton.setIcon (Icon::ExportProc, "Export for Processing"); importButton.setIcon (Icon::ImportMulti, "Multitrack import");
     markersToggle.setIcon (Icon::Markers, "Markers"); feedbackToggle.setIcon (Icon::FeedbackMarkers, "Feedback markers");
@@ -1909,7 +1910,7 @@ void EditWindowComponent::resized()
         { &leftButton, IW, IH, 2 }, { &rightButton, IW, IH, 6 }, { &endButton, IW, IH, 14 },
         { &bounceButton, IW, IH, 2 }, { &mixerButton, IW, IH, 6 }, { &ltcButton, 74, grid::btnH, 14 },
         { &automationButton, IW, IH, 2 }, { &busViewButton, IW, IH, 14 },
-        { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 2 }, { &denoiseButton, IW, IH, 2 }, { &noiseModeButton, 84, grid::btnH, 2 }, { &reharmoniserButton, IW, IH, 10 }, { &exportProcButton, IW + 8, IH, 2 }, { &undoFixButton, IW, IH, 14 },
+        { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 2 }, { &roomToneButton, 90, grid::btnH, 2 }, { &noiseModeButton, 84, grid::btnH, 2 }, { &reharmoniserButton, IW, IH, 10 }, { &exportProcButton, IW + 8, IH, 2 }, { &undoFixButton, IW, IH, 14 },
         { &tracksButton, IW, IH, 2 }, { &importButton, IW + 8, IH, 14 }, { &feedbackButton, IW, IH, 8 }, { &markersToggle, IW, IH, 2 }, { &feedbackToggle, IW + 8, IH, 14 },
         { &slipLeftToggle, IW + 8, IH, 2 }, { &slipRightToggle, IW + 8, IH, 6 }, { &shuffleToggle, IW, IH, 2 }, { &insertFlagToggle, IW, IH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }

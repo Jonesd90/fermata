@@ -10,7 +10,7 @@ namespace td
 /** What a fix does to the audio. */
 struct FixSpec
 {
-    enum class Kind { Pitch, Patch, Declick, Reharmonise } kind = Kind::Pitch;
+    enum class Kind { Pitch, Patch, Declick, Reharmonise, Denoise } kind = Kind::Pitch;
     double cents = 0.0;                     // Pitch: +100 = one semitone up
     bool useCurve = false;                  // Pitch: follow 'curve' instead of the fixed 'cents'
     PitchCurve curve;                       // Pitch curve: cents against time (seconds); time 0 is 'curveZero' samples after the first sample of the fixed part
@@ -26,11 +26,19 @@ struct FixSpec
     std::vector<Lost> lost;
     bool lostKnown = false;
     juce::int64 lostLo = -(juce::int64 (1) << 40), lostHi = juce::int64 (1) << 40;     // how far the time squeeze that puts them back may reach (samples from s0): the piece that is put in
+    /** Denoise: the background denoiser (Denoise.h) on the box - its time span is [s0, s1), its pitch range f0 .. f1 (the profile's weight is set to it, feathered a
+        quarter of an octave inside; outside the box nothing is touched), with the room-tone profile of the channels being processed. The profiles are not part of
+        the settings: the caller sets 'dnProfiles' (one per channel of the audio it hands over, or one for all) before each call - the project's room tone, or one
+        learned from a box of the loaded area ('dnBoxT0 / T1', seconds from the start of the area, both < 0 = the project's). */
+    denoise::Params dn;
+    double dnBoxT0 = -1.0, dnBoxT1 = -1.0;
+    std::shared_ptr<const std::vector<denoise::Profile>> dnProfiles;
     juce::String shortName() const
     {
         if (kind == Kind::Pitch && useCurve) return "pitch curve";
         if (kind == Kind::Pitch) return "pitch " + juce::String (cents >= 0 ? "+" : "") + juce::String (cents, 0) + "c";
         if (kind == Kind::Reharmonise) return "reharmonised";
+        if (kind == Kind::Denoise) return "denoise";
         return kind == Kind::Patch ? "repair" : "declick";
     }
 };
@@ -167,7 +175,8 @@ bool denoiseFile (juce::AudioFormatManager&, const juce::File& source, const juc
 struct TakeFixResult { std::vector<juce::File> newFiles; juce::String error; };
 TakeFixResult fixTakeFiles (juce::AudioFormatManager&, const std::vector<juce::File>& sources, const std::vector<juce::File>& dests,
                             juce::int64 s0, juce::int64 s1, const FixSpec&, AudioJob*);
+/** 'profilesFor' (optional): a denoise among the ops gets the room-tone profiles (one per channel) of each source file from it. */
 TakeFixResult fixTakeFiles (juce::AudioFormatManager&, const std::vector<juce::File>& sources, const std::vector<juce::File>& dests,
-                            const std::vector<FixOp>& ops, AudioJob*);
+                            const std::vector<FixOp>& ops, AudioJob*, const std::function<std::shared_ptr<const std::vector<denoise::Profile>> (size_t, const FixSpec&)>& profilesFor = {});
 } // namespace audioops
 } // namespace td

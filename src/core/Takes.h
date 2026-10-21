@@ -35,6 +35,8 @@ struct TakeGroup
     bool         writeFailed = false;       // a file stopped taking data while recording (the drive was full, or gone): the take is cut short
     std::vector<WaitingPiece> waiting;      // parts sent out to be processed in other software, waiting for the corrected files
     int          barIn = 0, barOut = 0;     // the bars of the music this take starts and ends in (0 = not entered); it contains those bars and all the ones between
+    bool         roomTone = false;          // marked (right-click) as the take that holds the room tone: nothing but the room, on every track (one take per take window)
+    double       roomToneIn = -1.0, roomToneOut = -1.0;   // seconds of the take that are the room tone (-1 = the whole take)
 
     double lengthSeconds() const { return sampleRate > 0 ? (double) lengthSamples / sampleRate : 0.0; }
 };

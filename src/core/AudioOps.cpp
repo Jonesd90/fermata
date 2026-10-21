@@ -161,6 +161,34 @@ std::vector<FixSpec::Lost> findLost (const std::vector<std::vector<float>>& trac
     return out;
 }
 
+/** The background denoiser on one channel's box [a, b) with the profile given: the stretch with 6 s before and 2 s after as context, the profile limited
+    to the box's pitch range (feathered a quarter of an octave inside it), the result faded in and out over 100 ms (less for a short box) at the box's ends. */
+static void denoiseBox (std::vector<float>& x, double sr, long a, long b, double f0, double f1, const FixSpec& spec, const denoise::Profile& profIn)
+{
+    if (! profIn.valid() || std::abs (profIn.sampleRate - sr) > 0.5 || b - a < 16) return;
+    denoise::Profile prof = profIn;
+    const int bins = (int) prof.psd.size();
+    prof.weight.assign ((size_t) bins, 0.0f);
+    for (int k = 0; k < bins; ++k) { const double f = (double) k * sr / prof.fftSize; if (f >= f0 && f <= f1) prof.weight[(size_t) k] = 1.0f; }
+    bool any = false; for (auto w : prof.weight) any = any || w > 0.0f;
+    if (! any) return;
+    denoise::featherProfile (prof, 0.25);
+    const long L = (long) x.size();
+    const long c0 = juce::jmax (0L, a - (long) (6.0 * sr)), c1 = juce::jmin (L, b + (long) (2.0 * sr));
+    std::vector<float> seg (x.begin() + c0, x.begin() + c1), out ((size_t) (c1 - c0), 0.0f);
+    denoise::Params p = spec.dn; p.groupMode = 0;
+    denoise::processSegment (prof, p, {}, seg.data(), (juce::int64) seg.size(), out.data());
+    const long xf = juce::jmin ((long) (0.1 * sr), (b - a) / 4);
+    for (long n = a; n < b; ++n)
+    {
+        double w = 1.0;
+        if (xf > 0) w = juce::jmin (1.0, (double) (n - a) / (double) xf, (double) (b - 1 - n) / (double) xf);
+        w = 0.5 - 0.5 * std::cos (w * juce::MathConstants<double>::pi);
+        const float xv = x[(size_t) n], yv = out[(size_t) (n - c0)];
+        x[(size_t) n] = xv + (float) w * (yv - xv);
+    }
+}
+
 void applyFix (std::vector<std::vector<float>>& chans, double sr, long s0, long s1, const FixSpec& spec, long xfade)
 {
     int lostDone = -1;
@@ -186,13 +214,17 @@ void applyFix (std::vector<std::vector<float>>& chans, double sr, long s0, long 
         if (b - a >= 2) SpectralRepair::attenuate (xs, sr, a, b, spec.f0, spec.f1, spec.repair);
         return;
     }
-    for (auto& x : chans)
+    for (size_t ci = 0; ci < chans.size(); ++ci)
     {
+        auto& x = chans[ci];
         const long L = (long) x.size();
         const long a = juce::jlimit (0L, L, s0), b = juce::jlimit (0L, L, s1);
         if (b - a < 2) continue;
         switch (spec.kind)
         {
+            case FixSpec::Kind::Denoise:
+                if (spec.dnProfiles != nullptr && ! spec.dnProfiles->empty()) denoiseBox (x, sr, a, b, spec.f0, spec.f1, spec, (*spec.dnProfiles)[juce::jmin (ci, spec.dnProfiles->size() - 1)]);
+                break;
             case FixSpec::Kind::Pitch:
             {
                 const long ctx = (long) (0.4 * sr);                                    // sound around the part, so the shift is clean right to its edges
@@ -226,8 +258,9 @@ void applyFix (std::vector<std::vector<float>>& chans, double sr, long s0, long 
 
 static juce::int64 marginFor (const FixSpec& spec, double sr, double patchSeconds, double otherSeconds)
 {
-    return (juce::int64) ((spec.kind == FixSpec::Kind::Patch ? patchSeconds : otherSeconds) * sr);
+    return (juce::int64) ((spec.kind == FixSpec::Kind::Patch || spec.kind == FixSpec::Kind::Denoise ? patchSeconds : otherSeconds) * sr);
 }
+
 
 juce::File fixWholeFile (juce::AudioFormatManager& fm, const juce::File& source, juce::int64 s0, juce::int64 s1, const FixSpec& spec,
                          const juce::File& dest, juce::String& error)
@@ -318,14 +351,16 @@ TakeFixResult fixTakeFiles (juce::AudioFormatManager& fm, const std::vector<juce
 }
 
 TakeFixResult fixTakeFiles (juce::AudioFormatManager& fm, const std::vector<juce::File>& sources, const std::vector<juce::File>& dests,
-                            const std::vector<FixOp>& ops, AudioJob* job)
+                            const std::vector<FixOp>& ops, AudioJob* job, const std::function<std::shared_ptr<const std::vector<denoise::Profile>> (size_t, const FixSpec&)>& profilesFor)
 {
     TakeFixResult r;
     for (size_t i = 0; i < sources.size(); ++i)
     {
         if (job != nullptr) { if (job->cancelled()) { r.error = "Cancelled."; break; } job->setProgress ((float) i / (float) juce::jmax ((size_t) 1, sources.size())); }
         juce::String err;
-        auto f = fixWholeFile (fm, sources[i], ops, dests[i], err);
+        auto mine = ops;
+        for (auto& o : mine) if (o.spec.kind == FixSpec::Kind::Denoise) o.spec.dnProfiles = profilesFor ? profilesFor (i, o.spec) : nullptr;
+        auto f = fixWholeFile (fm, sources[i], mine, dests[i], err);
         if (f == juce::File()) { r.error = err; break; }
         r.newFiles.push_back (f);
     }

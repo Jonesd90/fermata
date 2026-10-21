@@ -6,6 +6,7 @@
 #include "Takes.h"
 #include "Edit.h"
 #include "MasterDef.h"
+#include "Denoise.h"
 #include <array>
 
 namespace td
@@ -123,6 +124,20 @@ public:
     std::vector<std::unique_ptr<TakeWindowDef>> takeWindows;
     std::vector<std::unique_ptr<EditDef>>      edits;
     MasteringDef mastering;                                     // the Mastering window: Virtual Master export list and the CD (DDP) layout
+    /** The room tone of the recording, learned once (the Room tone button of an edit window: from a take marked as the room tone, or from marks 1 - 2
+        of the edit) and kept with the project: every track's noise profile, per channel of its file and for the mono mix the pictures show. The ReTouch
+        and Noise mode windows denoise with it. */
+    struct RoomToneTrack { juce::Uuid trackId; juce::String trackName; std::vector<denoise::Profile> perChannel; denoise::Profile mono; };
+    struct RoomTone
+    {
+        juce::String source;                                    // "00:34 - 00:51 of take 8 of New World" (for the windows' labels)
+        std::vector<RoomToneTrack> tracks;
+        bool valid() const { return ! tracks.empty(); }
+        const RoomToneTrack* forTrack (const juce::Uuid& id) const { for (auto& t : tracks) if (t.trackId == id) return &t; return nullptr; }
+    };
+    RoomTone roomTone;
+    static juce::var roomToneToVar (const RoomTone&);
+    static RoomTone roomToneFromVar (const juce::var&);
     std::vector<std::unique_ptr<MixerState>>   retiredMixers;   // removed mixers (and those of a project that was open before) stay alive until the audio thread has certainly left them: see freeRetiredMixers
     void retireAllMixers();
     /** Frees the retired mixers and their plug-ins. Only once the engine has swapped to a plan that no longer knows them (AudioEngine::rebuildPlan

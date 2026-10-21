@@ -396,9 +396,10 @@ public:
                 // "DUD   LOST 0.3 s   Bar 17 - 39" along the bottom of the take (DUD in red; LOST: a disk overrun while it was recorded, that much silence is in
                 // the files; CUT SHORT: a file stopped taking data, the drive was full or gone)
                 const juce::String lost = grp.writeFailed ? juce::String ("CUT SHORT") : grp.lostSamples > 0 ? "LOST " + lostText (grp.lostSamples, grp.sampleRate) : juce::String();
-                if ((grp.barIn > 0 || grp.dud || lost.isNotEmpty()) && r.getWidth() > 50 && r.getHeight() >= 22)
+                if ((grp.barIn > 0 || grp.dud || lost.isNotEmpty() || grp.roomTone) && r.getWidth() > 50 && r.getHeight() >= 22)
                 {
-                    const auto bars = barsLabel (grp.barIn, grp.barOut);
+                    auto bars = barsLabel (grp.barIn, grp.barOut);
+                    if (grp.roomTone) bars = (grp.roomToneIn >= 0.0 ? "ROOM TONE " + juce::String (grp.roomToneIn, 1) + " - " + juce::String (grp.roomToneOut, 1) + " s" : juce::String ("ROOM TONE")) + (bars.isNotEmpty() ? "   " + bars : juce::String());
                     g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
                     const auto font = g.getCurrentFont();
                     const int dudW = grp.dud ? juce::GlyphArrangement::getStringWidthInt (font, "DUD") + ((bars.isNotEmpty() || lost.isNotEmpty()) ? 10 : 0) : 0;
@@ -629,6 +630,12 @@ public:
                 juce::PopupMenu pm;
                 pm.addItem (1, "Re-draw waveform");
                 pm.addItem (2, "Bars it starts and ends in...");
+                pm.addSeparator();
+                // the room tone: the take (or the part of it between marks 1 and 2) that holds nothing but the room, for the denoiser (one take per take window)
+                const bool marksHere = w->editTake == bg->id && w->editIn >= 0.0 && w->editOut > w->editIn;
+                pm.addItem (3, bg->roomTone && bg->roomToneIn < 0.0 ? "This whole take is the room tone  (marked)" : "This whole take is the room tone", true, bg->roomTone && bg->roomToneIn < 0.0);
+                pm.addItem (4, "Marks 1 - 2 of this take are the room tone" + (marksHere ? "  (" + juce::String (w->editIn, 1) + " - " + juce::String (w->editOut, 1) + " s)" : juce::String ("  (set marks 1 / 2 in it first)")), marksHere, bg->roomTone && bg->roomToneIn >= 0.0);
+                if (bg->roomTone) pm.addItem (5, "Not the room tone");
                 const auto gid = bg->id; const auto pos = e.getPosition();
                 juce::Component::SafePointer<juce::Component> self (this);
                 pm.showMenuAsync (juce::PopupMenu::Options(), [this, self, files, gid, pos] (int r)
@@ -636,6 +643,7 @@ public:
                     if (self == nullptr) return;
                     if (r == 1) app.redrawWaveforms (files);
                     else if (r == 2) showBars (gid, pos);
+                    else if (r >= 3 && r <= 5) markRoomTone (gid, r);
                 });
                 return;
             }
@@ -1116,6 +1124,22 @@ private:
         app.project.changed(); repaint();
     }
     std::unique_ptr<BarsPopup> barsPopup;
+
+    /** 3: the whole take is the room tone, 4: marks 1 - 2 of it are, 5: it is not. Only one take of a window can be the room tone. */
+    void markRoomTone (const juce::Uuid& gid, int how)
+    {
+        auto* w = def(); if (w == nullptr) return;
+        auto* g = w->findGroup (gid); if (g == nullptr) return;
+        if (how == 5) { g->roomTone = false; g->roomToneIn = g->roomToneOut = -1.0; }
+        else
+        {
+            for (auto& o : w->groups) { o.roomTone = false; o.roomToneIn = o.roomToneOut = -1.0; }
+            g->roomTone = true;
+            if (how == 4 && w->editTake == gid && w->editIn >= 0.0 && w->editOut > w->editIn) { g->roomToneIn = w->editIn; g->roomToneOut = w->editOut; }
+            else { g->roomToneIn = g->roomToneOut = -1.0; }
+        }
+        app.project.changed(); repaint();
+    }
 
     void showSettings (const juce::Uuid& gid, bool asMenu, bool fromBars = false)
     {

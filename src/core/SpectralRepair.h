@@ -774,6 +774,13 @@ public:
         }
         return true;
     }
+    static double rmsDiffRange (const std::vector<float>& x, long a, long b)
+    {
+        a = juce::jmax (1L, a); b = juce::jmin ((long) x.size(), b);
+        if (b <= a) return 0.0;
+        double e = 0.0; for (long n = a; n < b; ++n) { const double d = (double) x[(size_t) n] - (double) x[(size_t) n - 1]; e += d * d; }
+        return std::sqrt (e / (double) (b - a));
+    }
     static double rmsRange (const std::vector<float>& x, long a, long b)
     {
         a = juce::jmax (0L, a); b = juce::jmin ((long) x.size(), b);
@@ -787,17 +794,21 @@ public:
     {
         const long m = g1 - g0;
         const std::vector<float> keep (x.begin() + g0, x.begin() + g1);
-        if (! interpolate (x, g0, g1, (int) juce::jlimit (48L, 160L, m / 3))) return false;
+        // (2.81: always a long model - 160 poles. A short one cannot carry a low note across the gap: with a bass line under the music the mend of a 5 ms gap came out
+        // 20 % wrong, with 160 poles 0.1 %. The levels below are judged over at least 1024 samples, so a low note's own cycle does not sway them.)
+        if (! interpolate (x, g0, g1, 160)) return false;
+        // the levels below are of the sample-to-sample CHANGE of the sound (a low note's own cycle, which puts a short gap near a zero crossing or a peak, then does not
+        // sway them: they used to call a gap in the trough of a bass note "a hole" and double it)
         if (m > 48)
         {
-            const double rr = 0.5 * (rmsRange (x, g0 - 128, g0) + rmsRange (x, g1, g1 + 128)), rg = rmsRange (x, g0, g1);
+            const double rr = 0.5 * (rmsDiffRange (x, g0 - 1024, g0) + rmsDiffRange (x, g1, g1 + 1024)), rg = rmsDiffRange (x, g0, g1);
             if (rr > 1.0e-7 && rg < 0.55 * rr)
                 if (! extrapolateBlend (x, g0, g1, (int) juce::jlimit (32L, 128L, m / 2))) std::copy (keep.begin(), keep.end(), x.begin() + g0);
         }
         if (m >= 24)                                    // a prediction from both sides tends to be a little weak in the middle of a gap: bring it up to the level around it (smoothly, so the edges stay joined)
         {
-            const long w = juce::jmax (128L, 3 * m);                       // (long windows: a short one of a low note gives a level that depends on where in its cycle it is)
-            const double rb = rmsRange (x, g0 - w, g0), ra = rmsRange (x, g1, g1 + w), rg = rmsRange (x, g0, g1);
+            const long w = juce::jmax (1024L, 3 * m);                      // (long windows: a short one of a low note gives a level that depends on where in its cycle it is)
+            const double rb = rmsDiffRange (x, g0 - w, g0), ra = rmsDiffRange (x, g1, g1 + w), rg = rmsDiffRange (x, g0, g1);
             const double target = std::sqrt (juce::jmax (1.0e-12, rb) * juce::jmax (1.0e-12, ra));
             if (rb > 1.0e-6 && ra > 1.0e-6 && rg > 1.0e-9 && rg < 0.6 * target)
             {
@@ -984,6 +995,107 @@ public:
         return mended;
     }
 
+    /** What the de-clicker did over a stretch (the last call on this thread): the clicks the time-domain finder mended; the short, sharp vertical lines the picture check
+        still found afterwards and mended with a second approach (gap interpolation, then a spectral attenuation across all pitches); and the lines left after that. */
+    struct DeclickReport { int mended, lines, linesMended, linesLeft; };
+    static DeclickReport& lastDeclickReport() { static thread_local DeclickReport r { 0, 0, 0, 0 }; return r; }
+
+    /** The picture check: short, sharp vertical lines in the spectrogram of [t0,t1) - frames whose energy stands at least 10 dB above the frames around them (+-40 ms) in
+        most of the bins from 2 kHz up, for no more than about 8 ms, and that are not the start of a louder sound (an attack: the sound after them stays loud). Each is
+        returned as a range of samples (the frames' span). This is what a click looks like whatever the time-domain finder made of it. */
+    static std::vector<std::pair<long, long>> findLines (const std::vector<float>& x, double sr, long t0, long t1)
+    {
+        std::vector<std::pair<long, long>> out;
+        const long L = (long) x.size();
+        t0 = juce::jlimit (0L, L, t0); t1 = juce::jlimit (0L, L, t1);
+        int N = 256; while ((double) N < sr * 0.005 && N < 2048) N <<= 1;
+        const int H = N / 4;
+        const long ctx = (long) (0.06 * sr);
+        const long s0 = juce::jmax (0L, t0 - ctx), s1 = juce::jmin (L, t1 + ctx);
+        const long F = (s1 - s0 - N) / H + 1;
+        if (F < 12 || t1 - t0 < 8) return out;
+        const int kLo = juce::jmax (1, (int) (2000.0 * N / sr)), kHi = juce::jmin (N / 2, (int) (juce::jmin (20000.0, 0.45 * sr) * N / sr));
+        const int nb = kHi - kLo;
+        if (nb < 8) return out;
+        const dsp::FFT fft (N); const auto win = dsp::hann (N);
+        std::vector<float> E ((size_t) F * (size_t) nb);                        // dB per frame and HF bin
+        std::vector<double> hf ((size_t) F, 0.0), full ((size_t) F, 0.0);         // the HF and the whole energy per frame (linear)
+        std::vector<std::complex<double>> buf ((size_t) N);
+        for (long f = 0; f < F; ++f)
+        {
+            const long o = s0 + f * H;
+            for (int i = 0; i < N; ++i) buf[(size_t) i] = (double) x[(size_t) (o + i)] * win[(size_t) i];
+            fft.forward (buf);
+            for (int k = 1; k < N / 2; ++k) full[(size_t) f] += std::norm (buf[(size_t) k]);
+            for (int k = kLo; k < kHi; ++k) { const double pw = std::norm (buf[(size_t) k]); E[(size_t) f * (size_t) nb + (size_t) (k - kLo)] = (float) (10.0 * std::log10 (pw + 1.0e-20)); hf[(size_t) f] += pw; }
+        }
+        const long M = juce::jmax (8L, (long) (0.04 * sr / H));
+        const long fA = juce::jmax (0L, (t0 - s0 - N / 2) / H), fB = juce::jmin (F - 1, (t1 - s0 - N / 2) / H + 1);
+        std::vector<char> flag ((size_t) F, 0);
+        std::vector<float> ref; ref.reserve ((size_t) (2 * M));
+        std::vector<double> fullRef; fullRef.reserve ((size_t) (2 * M));
+        const double fsPower = (double) N * (double) N / 16.0;                   // |X|^2 of a full-scale sine in one bin with this window
+        for (long f = fA; f <= fB; ++f)
+        {
+            // a line must also be SOUND: at least -50 dB against the sound around it (the whole spectrum) and above -80 dBFS - the trace of a mend in pure digital
+            // silence between harmonics is not a click
+            fullRef.clear();
+            for (long g = juce::jmax (0L, f - M); g <= juce::jmin (F - 1, f + M); ++g) if (std::abs (g - f) >= 3) fullRef.push_back (full[(size_t) g]);
+            if (fullRef.size() < 6) continue;
+            auto fm = fullRef.begin() + (long) fullRef.size() / 2; std::nth_element (fullRef.begin(), fm, fullRef.end());
+            if (hf[(size_t) f] < 1.0e-5 * *fm || hf[(size_t) f] < 1.0e-8 * fsPower * (double) nb) continue;
+            int cnt = 0;
+            for (int k = 0; k < nb; ++k)
+            {
+                ref.clear();
+                for (long g = juce::jmax (0L, f - M); g <= juce::jmin (F - 1, f + M); ++g) if (std::abs (g - f) >= 3) ref.push_back (E[(size_t) g * (size_t) nb + (size_t) k]);
+                if (ref.size() < 6) continue;
+                auto mid = ref.begin() + (long) ref.size() / 2; std::nth_element (ref.begin(), mid, ref.end());
+                if (E[(size_t) f * (size_t) nb + (size_t) k] - *mid > 10.0f) ++cnt;
+            }
+            flag[(size_t) f] = cnt > (int) (0.45 * nb) ? 1 : 0;
+        }
+        const long maxRun = (long) (0.008 * sr) / H + 1, K = juce::jmax (2L, (long) (0.02 * sr / H));
+        for (long f = fA; f <= fB;)
+        {
+            if (! flag[(size_t) f]) { ++f; continue; }
+            long g = f; while (g + 1 <= fB && flag[(size_t) g + 1]) ++g;
+            const long run = g - f + 1;
+            if (run <= maxRun)
+            {
+                // not an attack: the sound after the line is not much louder than before it
+                double before = 0.0, after = 0.0; int nbf = 0, naf = 0;
+                for (long q = f - 3 - K; q < f - 3; ++q) if (q >= 0) { before += full[(size_t) q]; ++nbf; }
+                for (long q = g + 4; q < g + 4 + K; ++q) if (q < F) { after += full[(size_t) q]; ++naf; }
+                const bool onset = nbf > 0 && naf > 0 && after / naf > 4.0 * before / nbf;
+                if (! onset) out.push_back ({ juce::jmax (t0, s0 + f * H + N / 2 - H), juce::jmin (t1, s0 + g * H + N / 2 + H) });
+            }
+            f = g + 1;
+        }
+        return out;
+    }
+
+    /** The damaged samples inside a line the picture found: the line's span is smeared by the analysis window, so the stretch where the sound really is rough - the
+        smoothed size of the sample-to-sample change stands at least 6 dB above its size around the line - is taken instead (the whole span if that is nowhere). */
+    static std::pair<long, long> tightenLine (const std::vector<float>& x, long a, long b, double sr)
+    {
+        const long L = (long) x.size(), ctx = juce::jmax (64L, (long) (0.004 * sr)), sm = juce::jmax (8L, (long) (sr * 0.0003));
+        const long c0 = juce::jmax (1L, a - ctx), c1 = juce::jmin (L, b + ctx);
+        if (c1 - c0 < 4 * sm) return { a, b };
+        std::vector<double> d ((size_t) (c1 - c0));
+        for (long n = c0; n < c1; ++n) d[(size_t) (n - c0)] = std::abs ((double) x[(size_t) n] - (double) x[(size_t) n - 1]);
+        std::vector<double> cum (d.size() + 1, 0.0); for (size_t i = 0; i < d.size(); ++i) cum[i + 1] = cum[i] + d[i];
+        auto smooth = [&] (long n) { const long i0 = juce::jmax (0L, n - c0 - sm / 2), i1 = juce::jmin ((long) d.size(), n - c0 + sm / 2 + 1); return (cum[(size_t) i1] - cum[(size_t) i0]) / (double) juce::jmax (1L, i1 - i0); };
+        std::vector<double> ref; for (long n = c0; n < c1; ++n) if (n < a || n >= b) ref.push_back (smooth (n));
+        if (ref.size() < 8) return { a, b };
+        auto mid = ref.begin() + (long) ref.size() / 2; std::nth_element (ref.begin(), mid, ref.end());
+        const double lim = 2.0 * *mid + 1.0e-9;
+        long ta = -1, tb = -1;
+        for (long n = a; n < b; ++n) if (smooth (n) > lim) { if (ta < 0) ta = n; tb = n + 1; }
+        if (ta < 0) return { a, b };
+        return { juce::jmax (a, ta - sm), juce::jmin (b, tb + sm) };
+    }
+
     /** Finds clicks in [t0,t1) (samples of x) and mends each one. 'sensitivity' 1..10 (10 = finds the faintest clicks). Returns how many were mended.
         Several passes, so what a first mend uncovers is found too. If the stretch is short (30 ms or less) it is taken to BE the click and is mended as a whole.
         Lost samples (a digital jump where a block of samples went missing, see LostSamples) are put back first, with this track alone deciding how many are missing;
@@ -1016,13 +1128,55 @@ public:
             if (interpolate (x, t0, t1, (int) juce::jlimit (40L, 128L, (t1 - t0) / 4))) { if (found) found->push_back ({ t0, t1 }); return 1; }
             return 0;
         }
+        auto& lastDeclick = lastDeclickReport(); lastDeclick = DeclickReport { 0, 0, 0, 0 };
         if (t1 - t0 < 256) return total;
         total += mendDropouts (x, t0, t1, sampleRate, found);                // runs of digital silence: what is left of their edges is then no click
+        // the picture first: what shows as a short, sharp vertical line in the spectrogram is mended whole (the finder, judging sample by sample, used to mend pieces
+        // of a burst - a few samples here and there - and leave the rest standing, so the click was "treated" but still there)
+        const long maxGap = juce::jmin (1500L, (long) (sampleRate * 0.016)), pad = juce::jmax (2L, (long) (sampleRate * 0.0003));
+        auto mendLines = [&] (const std::vector<std::pair<long, long>>& lines)
+        {
+            int n = 0;
+            for (auto& l : lines)
+            {
+                const auto t = tightenLine (x, l.first, l.second, sampleRate);
+                const long g0 = juce::jmax (t0, t.first - pad), g1 = juce::jmin (t1, t.second + pad);
+                if (g1 - g0 < 2 || g1 - g0 > maxGap) continue;
+                if (mendGap (x, g0, g1)) { ++n; if (found) found->push_back ({ g0, g1 }); }
+            }
+            return n;
+        };
+        {
+            auto lines = findLines (x, sampleRate, t0, t1);
+            lastDeclick.lines = (int) lines.size();
+            const int n = mendLines (lines); lastDeclick.linesMended += n; total += n;
+        }
         for (int pass = 0; pass < 3; ++pass)
         {
             const int n = declickPass (x, t0, t1, sensitivity, found, sampleRate, pass > 0);
-            total += n;
+            total += n; lastDeclick.mended += n;
             if (n == 0) break;
+        }
+        // the picture check: a line still there is mended again (what the finder's mends uncovered), and one still there after that is taken down with a
+        // spectral attenuation across all pitches from the sound before and after it - a different approach, for a burst that is not a jump in the waveform
+        {
+            auto left = findLines (x, sampleRate, t0, t1);
+            if (! left.empty())
+            {
+                lastDeclick.lines += (int) left.size();
+                const int n = mendLines (left); lastDeclick.linesMended += n; total += n;
+                auto still = findLines (x, sampleRate, t0, t1);
+                for (auto& l : still)
+                {
+                    const auto t = tightenLine (x, l.first, l.second, sampleRate);
+                    const long g0 = juce::jmax (t0, t.first - 2 * pad), g1 = juce::jmin (t1, t.second + 2 * pad);
+                    if (g1 - g0 < 2 || g1 - g0 > maxGap) continue;
+                    RepairParams p; p.mode = RepairMode::Attenuate; p.direction = RepairDirection::LeftRight; p.strength = 1.0; p.contextPct = 400.0; p.bands = 256; p.multiRes = false;
+                    repair (x, sampleRate, g0, g1, 20.0, 0.5 * sampleRate, p);
+                    ++total; ++lastDeclick.linesMended; if (found) found->push_back ({ g0, g1 });
+                }
+                if (! still.empty()) lastDeclick.linesLeft = (int) findLines (x, sampleRate, t0, t1).size();
+            }
         }
         return total;
     }

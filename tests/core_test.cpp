@@ -2028,6 +2028,34 @@ int main()
             auto z = x; SpectralRepair::declick (z, 99990, 100330, 5, nullptr, sr);               // marked by hand
             CHECK (errOf (z) < before * 0.1);
         }
+        // 2.81 declick: the picture check. Clicks the time-domain finder passes over (an attack-like cluster of four, and a short burst of hiss with no jump in it)
+        // still show as short vertical lines in the spectrogram; they are found there and mended with a second approach, and nothing is left
+        {
+            juce::Random rnd (11);
+            std::vector<float> x ((size_t) (6 * sr));
+            // music with a lot of bass rumble in it (the finder judges a click against the residual of the WHOLE sound, so a click that lives in the top is a small thing to it)
+            for (size_t i = 0; i < x.size(); ++i) { const double t = (double) i / sr; x[i] = (float) (0.2 * std::sin (2 * dsp::kPi * 330.0 * t) + 0.1 * std::sin (2 * dsp::kPi * 660.0 * t) + 0.5 * std::sin (2 * dsp::kPi * 55.0 * t) + 0.3 * std::sin (2 * dsp::kPi * 82.0 * t)) + 0.002f * (rnd.nextFloat() * 2.0f - 1.0f); }
+            auto ref = x;
+            for (int c = 0; c < 4; ++c) x[(size_t) (2.0 * sr) + (size_t) (c * 0.0007 * sr)] += 0.5f;                                                                   // four single-sample spikes 0.7 ms apart: "an attack" to the finder, which leaves them
+            { double prev = 0.0; for (int i = 0; i < 144; ++i) { const double w = rnd.nextDouble() * 2.0 - 1.0; x[(size_t) (3.5 * sr) + (size_t) i] += (float) (0.012 * (w - prev) * std::sin (dsp::kPi * (i + 0.5) / 144.0)); prev = w; } }   // a 3 ms burst of top-heavy hiss: a click with no jump in it
+            const auto linesBefore = SpectralRepair::findLines (x, sr, (long) (1.0 * sr), (long) (5.0 * sr));
+            CHECK (linesBefore.size() >= 1 && linesBefore.size() <= 6);
+            auto y = x; const int n = SpectralRepair::declick (y, (long) (1.0 * sr), (long) (5.0 * sr), 6, nullptr, sr);
+            const auto rep = SpectralRepair::lastDeclickReport();
+            std::printf ("  (declick picture check: %d lines before, finder mended %d, lines after it %d, mended %d, left %d)\n", (int) linesBefore.size(), rep.mended, rep.lines, rep.linesMended, rep.linesLeft);
+            const auto linesAfter = SpectralRepair::findLines (y, sr, (long) (1.0 * sr), (long) (5.0 * sr));
+            CHECK (n >= 2 && linesAfter.empty() && rep.linesLeft == 0);
+            auto errAt = [&] (const std::vector<float>& v, double t) { double e = 0; for (size_t i = (size_t) (t * sr) - 200; i < (size_t) (t * sr) + 400; ++i) e += std::pow (ref[i] - v[i], 2.0); return e; };
+            auto hfErrAt = [&] (const std::vector<float>& v, double t) { double e = 0; for (size_t i = (size_t) (t * sr) - 200; i < (size_t) (t * sr) + 400; ++i) { const double d = ((double) ref[i] - v[i]) - ((double) ref[i - 1] - v[i - 1]); e += d * d; } return e; };
+            std::printf ("  (declick picture check: error at the spikes %.4f -> %.4f, at the burst %.4f -> %.4f, its top %.4f -> %.4f)\n", errAt (x, 2.0), errAt (y, 2.0), errAt (x, 3.5), errAt (y, 3.5), hfErrAt (x, 3.5), hfErrAt (y, 3.5));
+            CHECK (errAt (y, 2.0) < 0.2 * errAt (x, 2.0) && hfErrAt (y, 3.5) < 0.2 * hfErrAt (x, 3.5) && errAt (y, 3.5) < 0.05);   // (the burst is faint: what is left is the mend of 4 ms of bass, 0.3 % of its energy)
+            for (size_t i = 0; i < (size_t) (0.9 * sr); ++i) if (y[i] != ref[i]) { CHECK (false); break; }                                        // nothing else touched
+            // the start of a loud note is not a line: the picture check leaves attacks alone
+            std::vector<float> q ((size_t) (4 * sr), 0.0f);
+            for (size_t i = (size_t) (2.0 * sr); i < q.size(); ++i) q[i] = (float) (0.3 * std::sin (2 * dsp::kPi * 1500.0 * (double) i / sr)) + 0.001f * (rnd.nextFloat() * 2.0f - 1.0f);
+            for (size_t i = 0; i < (size_t) (2.0 * sr); ++i) q[i] = 0.001f * (rnd.nextFloat() * 2.0f - 1.0f);
+            CHECK (SpectralRepair::findLines (q, sr, (long) (1.0 * sr), (long) (3.0 * sr)).empty());
+        }
         // declick: a dropout (a run of digital silence in the middle of sound) is rebuilt, not just its edges smoothed
         {
             auto x = tone; auto ref = x;
@@ -4457,6 +4485,50 @@ int main()
             CHECK (std::abs (bandDb (shifted, 2000.0, 8000.0, 3.6, 3.9) - bandDb (x, 2000.0, 8000.0, 4.6, 4.9)) < 0.5);   // (past the stretch: as it was)
             CHECK (std::abs (toneDb (shifted, 60.0, 1.5, 2.5) - toneDb (x, 60.0, 2.5, 3.5)) < 0.1);           // the rumble below the drawn part: as it was
             dir.deleteRecursively();
+        }
+    }
+    SECTION ("2.81 denoise as a fix: a box (time and pitch) with the room-tone profile; the room tone kept with the project");
+    {
+        const double sr = 48000.0; const int n = (int) (12.0 * sr);
+        std::vector<float> x ((size_t) n); juce::Random rnd (77);
+        for (int i = 0; i < n; ++i) { const float t = (float) i / (float) sr; x[(size_t) i] = 0.003f * (rnd.nextFloat() * 2.0f - 1.0f) + 0.01f * std::sin (2.0f * 3.14159265f * 60.0f * t) + (t > 5.0f && t < 7.0f ? 0.05f * std::sin (2.0f * 3.14159265f * 1000.0f * t) : 0.0f); }
+        denoise::Params p;
+        auto prof = denoise::learnProfile ({ std::vector<float> (x.begin(), x.begin() + (int) (2.0 * sr)) }, sr, p);
+        CHECK (prof.valid() && ! prof.limited());
+        FixSpec spec; spec.kind = FixSpec::Kind::Denoise; spec.f0 = 300.0; spec.f1 = 8000.0; spec.dn.residualDb = -12.0;
+        spec.dnProfiles = std::make_shared<const std::vector<denoise::Profile>> (std::vector<denoise::Profile> { prof });
+        CHECK (spec.shortName() == "denoise");
+        std::vector<std::vector<float>> ch { x };
+        audioops::applyFix (ch, sr, (long) (4.0 * sr), (long) (9.0 * sr), spec, (long) (0.02 * sr));
+        auto toneDb = [&] (const std::vector<float>& v, double hz, double t0, double t1)
+        {
+            double re = 0, im = 0; const int a0 = (int) (t0 * sr), a1 = (int) (t1 * sr);
+            for (int i = a0; i < a1; ++i) { const double ph = 2.0 * 3.14159265358979 * hz * i / sr; re += v[(size_t) i] * std::cos (ph); im -= v[(size_t) i] * std::sin (ph); }
+            return 20.0 * std::log10 (std::sqrt (re * re + im * im) / (a1 - a0) + 1e-20);
+        };
+        auto bandDb = [&] (const std::vector<float>& v, double f0, double f1, double t0, double t1) { double e = 0.0; for (double hz = f0; hz < f1; hz += 50.0) e += std::pow (10.0, toneDb (v, hz, t0, t1) / 10.0); return 10.0 * std::log10 (e + 1e-20); };
+        bool outsideSame = true; for (int i = 0; i < n; ++i) if (i < (long) (4.0 * sr) || i >= (long) (9.0 * sr)) outsideSame = outsideSame && ch[0][(size_t) i] == x[(size_t) i];
+        CHECK (outsideSame);                                                                                  // outside the box in time: bit for bit
+        CHECK (bandDb (ch[0], 2000.0, 6000.0, 7.5, 8.5) < bandDb (x, 2000.0, 6000.0, 7.5, 8.5) - 8.0);        // inside: the hiss down
+        CHECK (std::abs (bandDb (ch[0], 10000.0, 14000.0, 7.5, 8.5) - bandDb (x, 10000.0, 14000.0, 7.5, 8.5)) < 0.3);   // above the box's pitch range: as it was
+        CHECK (std::abs (toneDb (ch[0], 60.0, 7.5, 8.5) - toneDb (x, 60.0, 7.5, 8.5)) < 0.1);                  // below it too
+        CHECK (std::abs (toneDb (ch[0], 1000.0, 5.5, 6.5) - toneDb (x, 1000.0, 5.5, 6.5)) < 1.0);              // the tone inside the box kept
+        std::printf ("  (denoise box: hiss 2 - 6 kHz %.1f -> %.1f dB)\n", bandDb (x, 2000.0, 6000.0, 7.5, 8.5), bandDb (ch[0], 2000.0, 6000.0, 7.5, 8.5));
+        // the room tone kept with the project: a profile per track per channel and for the mono mix, and the take that was marked
+        {
+            Project pr; pr.tracks.clear(); const auto tid = pr.addTrack ("Choir", TrackFormat::Stereo, 0).id;
+            Project::RoomToneTrack rt; rt.trackId = tid; rt.trackName = "Choir"; rt.mono = prof; rt.perChannel = { prof, prof };
+            pr.roomTone.source = "00:34 - 00:51 of take 8 of New World"; pr.roomTone.tracks.push_back (rt);
+            auto& tw = pr.addTakeWindow ("New World"); TakeGroup g; g.id = juce::Uuid(); g.number = 8; g.roomTone = true; g.roomToneIn = 34.0; g.roomToneOut = 51.0; g.sampleRate = sr; g.lengthSamples = (juce::int64) (60.0 * sr);
+            TakeFile tf; tf.trackId = tid; tf.trackName = "Choir"; tf.file = tmp.getChildFile ("rt.wav"); tf.numChannels = 2; g.files.push_back (tf); tw.groups.push_back (g);
+            juce::String err; const auto f = tmp.getChildFile ("roomtone.fermata");
+            CHECK (pr.saveAs (f, err));
+            Project q; q.projectFile = f; CHECK (q.load (f, err));
+            CHECK (q.roomTone.valid() && q.roomTone.source == pr.roomTone.source && q.roomTone.forTrack (tid) != nullptr && q.roomTone.forTrack (tid)->perChannel.size() == 2);
+            const auto* t2 = q.roomTone.forTrack (tid);
+            CHECK (t2->mono.fftSize == prof.fftSize && t2->mono.psd.size() == prof.psd.size() && std::abs (t2->mono.levelDb() - prof.levelDb()) < 0.01);
+            const TakeWindowDef* nw = nullptr; for (auto& w : q.takeWindows) if (w->name == "New World") nw = w.get();
+            CHECK (nw != nullptr && ! nw->groups.empty() && nw->groups[0].roomTone && nw->groups[0].roomToneIn == 34.0 && nw->groups[0].roomToneOut == 51.0);
         }
     }
     SECTION ("2.79 Noise mode: the whole edit's spectral pyramid (levels, the loudest track per cell, slices for a view, a stretch made again)");
