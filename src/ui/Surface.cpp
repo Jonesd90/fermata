@@ -41,14 +41,17 @@ void SurfaceController::defaults()
 {
     map.clear();
     auto bind = [this] (int note, int action) { map[note] = action; };
-    bind (mcu::F1, surface::ZoomOut);  bind (mcu::Left,  surface::ZoomOut);
-    bind (mcu::F2, surface::ZoomIn);   bind (mcu::Right, surface::ZoomIn);
-    bind (mcu::F3, surface::TracksSmaller); bind (mcu::Up,   surface::TracksSmaller);
-    bind (mcu::F4, surface::TracksBigger);  bind (mcu::Down, surface::TracksBigger);
-    bind (mcu::F5, surface::WaveSmaller);
-    bind (mcu::F6, surface::WaveBigger);
-    bind (mcu::F7, surface::MeterBridge);
-    bind (mcu::F8, surface::MixerToggle);
+    // the S1's eight keys along the bottom, left to right: Shift, Control, Opt/Win, Alt, User 1 .. 4. In EuControl's Mackie mode they arrive as
+    // Shift, Control, Option, Alt and the four cursor keys (learned on the user's S1 by the Anubis Bridge: 0x46 0x48 0x47 0x49 0x60 0x61 0x62 0x63).
+    // The Mackie F1 .. F8 keys (a real Mackie surface) do the same eight jobs.
+    bind (mcu::Shift,   surface::ZoomOut);       bind (mcu::F1, surface::ZoomOut);
+    bind (mcu::Control, surface::ZoomIn);        bind (mcu::F2, surface::ZoomIn);
+    bind (mcu::Option,  surface::TracksSmaller); bind (mcu::F3, surface::TracksSmaller);
+    bind (mcu::Alt,     surface::TracksBigger);  bind (mcu::F4, surface::TracksBigger);
+    bind (mcu::Up,      surface::WaveSmaller);   bind (mcu::F5, surface::WaveSmaller);
+    bind (mcu::Down,    surface::WaveBigger);    bind (mcu::F6, surface::WaveBigger);
+    bind (mcu::Left,    surface::MeterBridge);   bind (mcu::F7, surface::MeterBridge);
+    bind (mcu::Right,   surface::MixerToggle);   bind (mcu::F8, surface::MixerToggle);
     bind (mcu::PlugIn, surface::DialGain);
     bind (mcu::Pan, surface::DialPan);
     bind (mcu::Flip, surface::FlipFaders);
@@ -85,6 +88,7 @@ void SurfaceController::load()
         for (int i = 0; i < juce::jmin (v.size(), (int) surface::NumStripButtons); ++i) stripMap[i] = juce::jlimit (0, surface::NumStripActions - 1, v[i].getIntValue());
     }
     meters = st->getBoolValue ("surfaceMeters", true);
+    law = st->getIntValue ("surfaceLaw", 0) == 1 ? mcu::FaderLaw::Screen : mcu::FaderLaw::EuControl;
 }
 
 void SurfaceController::save()
@@ -99,6 +103,7 @@ void SurfaceController::save()
     juce::StringArray sm; for (int i = 0; i < surface::NumStripButtons; ++i) sm.add (juce::String (stripMap[i]));
     st->setValue ("surfaceStrip", sm.joinIntoString (","));
     st->setValue ("surfaceMeters", meters);
+    st->setValue ("surfaceLaw", law == mcu::FaderLaw::Screen ? 1 : 0);
     app.props.saveIfNeeded();
 }
 
@@ -147,6 +152,8 @@ void SurfaceController::setStripAssign (int button, int action)
     stripMap[button] = juce::jlimit (0, surface::NumStripActions - 1, action);
     save(); force = true; sendChangeMessage();
 }
+void SurfaceController::setFaderLaw (mcu::FaderLaw l) { law = l; save(); force = true; }
+
 void SurfaceController::setMetersOn (bool on)
 {
     meters = on; save(); force = true;
@@ -365,7 +372,7 @@ void SurfaceController::moveFader (int strip, int v)
     sent[strip].fader = v;                                             // (what it sent is where it is: no echo back to it)
     const auto* c = chanAt (strip);
     if (c == nullptr) return;
-    if (! flipped) { c->level().set (mcu::faderToDb (v)); app.project.markDirty(); return; }
+    if (! flipped) { c->level().set (mcu::faderToDb (v, law)); app.project.markDirty(); return; }
     if (dialGain)
     {
         if (c->kind != Chan::Kind::Track) return;
@@ -545,7 +552,7 @@ void SurfaceController::show (bool everything)
         int fv = 0;
         if (c != nullptr)
         {
-            if (! flipped) fv = mcu::dbToFader (c->level().get());
+            if (! flipped) fv = mcu::dbToFader (c->level().get(), law);
             else if (dialGain) { bool has = false; const float g = preampGainOf (*c, has, false); fv = has ? juce::roundToInt (g / 66.0f * (float) mcu::kFaderMax) : 0; }
             else if (c->hasPan()) fv = juce::roundToInt ((panMid (*c) + 1.0f) * 0.5f * (float) mcu::kFaderMax);
         }

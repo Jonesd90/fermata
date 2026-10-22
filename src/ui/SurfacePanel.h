@@ -69,10 +69,12 @@ public:
     explicit SurfacePanel (AppContext& a) : app (a), targetBox (a)
     {
         auto* s = app.surface;
-        intro.setText ("An Avid S1 (set EuControl to Mackie Control / MCU for Fermata: its MIDI ports are then listed below) or any Mackie Control surface. "
-                       "Its eight faders, dials and keys work on the mixer chosen in the CONTROLLER box: eight strips at a time, moved along with the Bank and Channel keys. "
-                       "The dials turn the pans; after the Inserts key they turn the preamp gain of the tracks' inputs; Flip swaps the dials and the faders. "
-                       "Every key along the bottom of the S1 can be given a job: press Learn, then the key.", juce::dontSendNotification);
+        intro.setText ("An Avid S1, or any Mackie Control surface. EuControl passes the S1 to Fermata as a Mackie Control surface on its virtual MIDI ports "
+                       "(\"Euphonix EuMidi1\"): press Copy Fermata's path, then in EuControl (the icon by the clock) open MIDI Setup, and for ports 1 - 4 choose "
+                       "Select Mackie Application, paste the path (Ctrl + V) into the file name box and Select; Apply and restart EuControl. Close Pyramix and other EUCON "
+                       "programs: EuControl gives the S1 to the EUCON program you clicked last. Then the ports appear below and the S1 lamp goes green. "
+                       "Eight strips of the chosen mixer at a time (Bank / Channel keys); dials = pan, after Inserts = preamp gain; Flip swaps dials and faders. "
+                       "The eight keys along the bottom of the S1 are set up already; any key can be given another job: press Learn, then the key.", juce::dontSendNotification);
         intro.setFont (juce::FontOptions (12.0f)); intro.setColour (juce::Label::textColourId, theme::dimText); intro.setJustificationType (juce::Justification::topLeft);
         addAndMakeVisible (intro);
 
@@ -85,6 +87,22 @@ public:
         inBox.setTextWhenNothingSelected ("(none)"); outBox.setTextWhenNothingSelected ("(none)");
         inBox.onChange = [this] { applyPorts(); }; outBox.onChange = [this] { applyPorts(); };
         addAndMakeVisible (inBox); addAndMakeVisible (outBox);
+        pathButton.setButtonText ("Copy Fermata's path");
+        pathButton.setTooltip ("Puts the full path of Fermata.exe on the clipboard, to paste into EuControl's MIDI Setup (Select Mackie Application, ports 1 - 4)");
+        pathButton.onClick = [this]
+        {
+            const auto exe = juce::File::getSpecialLocation (juce::File::currentExecutableFile).getFullPathName();
+            juce::SystemClipboard::copyTextToClipboard (exe);
+            app.setNotice ("Copied: " + exe + "  -  paste it into EuControl > MIDI Setup > Select Mackie Application (ports 1 - 4)");
+        };
+        addAndMakeVisible (pathButton);
+        lawBox.addItem ("Fader scale: the S1's own (EuControl)", 1);
+        lawBox.addItem ("Fader scale: as Fermata's screen", 2);
+        lawBox.setSelectedId (s != nullptr && s->faderLaw() == mcu::FaderLaw::Screen ? 2 : 1, juce::dontSendNotification);
+        lawBox.setTooltip ("Where a level puts the fader. The S1's own: where EuControl's dB read-out (the S1's displays) has it, so the number the S1 shows is Fermata's level "
+                           "(0 dB at 85 % of the travel; the top is +6 dB). Fermata's screen: the same curve as the faders on the screen (0 dB at 80 %, +12 at the top).");
+        lawBox.onChange = [this] { if (app.surface != nullptr) app.surface->setFaderLaw (lawBox.getSelectedId() == 2 ? mcu::FaderLaw::Screen : mcu::FaderLaw::EuControl); };
+        addAndMakeVisible (lawBox);
         refreshButton.setButtonText ("Refresh");
         refreshButton.setTooltip ("Look for MIDI ports again (after starting EuControl, or plugging a surface in)");
         refreshButton.onClick = [this] { fillPorts(); };
@@ -114,7 +132,7 @@ public:
             addAndMakeVisible (row);
         }
         resetButton.setButtonText ("Back to the standard keys");
-        resetButton.setTooltip ("F1 .. F8 and the arrows for the zoom keys, Plug-in = Inserts, Pan, Flip, Bank / Channel, the transport");
+        resetButton.setTooltip ("The S1's eight bottom keys (Shift, Control, Opt, Alt, User 1 - 4) and a Mackie's F1 - F8 for the eight jobs; Plug-in = Inserts, Pan, Flip, Bank / Channel, the transport");
         resetButton.onClick = [this] { if (app.surface != nullptr) app.surface->resetMap(); };
         addAndMakeVisible (resetButton);
 
@@ -138,7 +156,7 @@ public:
         refresh();
         if (s != nullptr) s->addChangeListener (this);
         startTimer (500);
-        setSize (780, 800);
+        setSize (780, 860);
     }
     ~SurfacePanel() override
     {
@@ -159,13 +177,19 @@ public:
         rules.clear();
         auto r = getLocalBounds().reduced (16, 10);
         r.removeFromTop (28);
-        intro.setBounds (r.removeFromTop (66));
+        intro.setBounds (r.removeFromTop (96));
         r.removeFromTop (6);
         {
             auto row = r.removeFromTop (24);
             inCap.setBounds (row.removeFromLeft (54)); inBox.setBounds (row.removeFromLeft (250)); row.removeFromLeft (14);
             outCap.setBounds (row.removeFromLeft (62)); outBox.setBounds (row.removeFromLeft (250)); row.removeFromLeft (14);
             refreshButton.setBounds (row.removeFromLeft (80));
+        }
+        r.removeFromTop (6);
+        {
+            auto row = r.removeFromTop (24);
+            pathButton.setBounds (row.removeFromLeft (160)); row.removeFromLeft (14);
+            lawBox.setBounds (row.removeFromLeft (290));
         }
         r.removeFromTop (6);
         {
@@ -268,6 +292,7 @@ private:
         status.setText (s != nullptr ? s->statusText() : juce::String ("(no surface)"), juce::dontSendNotification);
         status.setColour (juce::Label::textColourId, s != nullptr && s->connected() ? juce::Colour (0xff2ecc40) : theme::warn);
         for (int b = 0; b < stripBoxes.size(); ++b) if (s != nullptr && stripBoxes[b]->getSelectedId() != s->stripAssign (b) + 1) stripBoxes[b]->setSelectedId (s->stripAssign (b) + 1, juce::dontSendNotification);
+        if (s != nullptr) { const int want = s->faderLaw() == mcu::FaderLaw::Screen ? 2 : 1; if (lawBox.getSelectedId() != want) lawBox.setSelectedId (want, juce::dontSendNotification); }
         for (auto* row : rows) row->refresh();
         const int n = s != nullptr ? (int) s->monitor().size() : 0;
         if (n != shownLines) { shownLines = n; monitor.updateContent(); if (s != nullptr && ! s->monitorPaused && n > 0) monitor.scrollToEnsureRowIsOnscreen (n - 1); }
@@ -294,7 +319,8 @@ private:
     AppContext& app;
     juce::Label intro, inCap, outCap, targetCap, stripCap, keysCap, monCap, status;
     juce::ComboBox inBox, outBox; juce::StringArray inIds, outIds; bool filling = false;
-    juce::TextButton refreshButton, resetButton, pauseButton, clearButton;
+    juce::TextButton refreshButton, resetButton, pauseButton, clearButton, pathButton;
+    juce::ComboBox lawBox;
     SurfaceTargetBox targetBox;
     juce::ToggleButton metersBox, outToo;
     juce::OwnedArray<juce::Label> stripLabels; juce::OwnedArray<juce::ComboBox> stripBoxes;

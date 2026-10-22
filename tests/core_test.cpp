@@ -6390,11 +6390,20 @@ int main()
 
     SECTION ("2.85 the Mackie Control protocol");
     {
-        // the fader law: round trips, and the same curve as the screen (0 dB about two-thirds up, -80 = bottom = off)
-        CHECK (mcu::dbToFader (-100.0f) == 0 && mcu::dbToFader (-80.0f) == 0 && mcu::dbToFader (12.0f) == mcu::kFaderMax);
-        CHECK (mcu::faderToDb (0) == -100.0f && mcu::faderToDb (mcu::kFaderMax) == 12.0f);
-        for (float db : { -60.0f, -30.0f, -12.0f, -6.0f, 0.0f, 6.0f, 10.0f }) CHECK (std::abs (mcu::faderToDb (mcu::dbToFader (db)) - db) < 0.11f);
-        CHECK (mcu::dbToFader (0.0f) > mcu::kFaderMax * 0.75 && mcu::dbToFader (0.0f) < mcu::kFaderMax * 0.85 && mcu::dbToFader (-20.0f) == mcu::kFaderMax / 2 + 1);   // (the screen's curve: -20 dB half way up, 0 dB four-fifths)
+        // the fader laws: round trips; the screen's curve (0 dB four-fifths up, -20 half way, -80 = bottom = off), and EuControl's (the S1's own read-out:
+        // 0 dB at 84.6 %, -20 at 36.4 %, +6.1 at the top)
+        const auto S = mcu::FaderLaw::Screen, E = mcu::FaderLaw::EuControl;
+        CHECK (mcu::dbToFader (-100.0f, S) == 0 && mcu::dbToFader (-80.0f, S) == 0 && mcu::dbToFader (12.0f, S) == mcu::kFaderMax);
+        CHECK (mcu::faderToDb (0, S) == -100.0f && mcu::faderToDb (mcu::kFaderMax, S) == 12.0f);
+        for (float db : { -60.0f, -30.0f, -12.0f, -6.0f, 0.0f, 6.0f, 10.0f }) CHECK (std::abs (mcu::faderToDb (mcu::dbToFader (db, S), S) - db) < 0.11f);
+        CHECK (mcu::dbToFader (0.0f, S) > mcu::kFaderMax * 0.75 && mcu::dbToFader (0.0f, S) < mcu::kFaderMax * 0.85 && mcu::dbToFader (-20.0f, S) == mcu::kFaderMax / 2 + 1);
+        CHECK (mcu::dbToFader (-100.0f, E) == 0 && mcu::dbToFader (-80.0f, E) == 0 && mcu::dbToFader (6.14f, E) == mcu::kFaderMax && mcu::dbToFader (12.0f, E) == mcu::kFaderMax);
+        CHECK (mcu::faderToDb (0, E) == -100.0f && std::abs (mcu::faderToDb (mcu::kFaderMax, E) - 6.1f) < 0.01f);
+        CHECK (mcu::dbToFader (0.0f, E) == juce::roundToInt (0.84575 * mcu::kFaderMax) && mcu::dbToFader (-20.0f, E) == juce::roundToInt (0.36428 * mcu::kFaderMax));
+        CHECK (std::abs (mcu::faderToDb (juce::roundToInt (0.59574 * mcu::kFaderMax), E) + 10.0f) < 0.11f);
+        for (float db : { -65.0f, -35.0f, -15.0f, -5.0f, 0.0f, 3.0f }) CHECK (std::abs (mcu::faderToDb (mcu::dbToFader (db, E), E) - db) < 0.11f);
+        for (int v = 0; v < mcu::kFaderMax; v += 97) CHECK (mcu::faderToDb (v, E) <= mcu::faderToDb (v + 97, E) && mcu::faderToDb (v, S) <= mcu::faderToDb (v + 97, S));   // (both climb all the way)
+        CHECK (mcu::dbToFader (0.0f) == mcu::dbToFader (0.0f, E));                                   // (EuControl's is the one used unless chosen otherwise)
         CHECK (mcu::dbToFader (-6.0f) < mcu::dbToFader (0.0f) && mcu::dbToFader (-20.0f) < mcu::dbToFader (-6.0f));
         // decoding what the surface sends
         auto ev = mcu::decode (juce::MidiMessage::pitchWheel (3, 8192));

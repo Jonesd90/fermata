@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.h"
+#include <vector>
 
 namespace td
 {
@@ -197,24 +198,56 @@ inline juce::MidiMessage assignmentDigit (int which, juce::juce_wchar c)
 /** A strip's meter: level 0 (off) .. 12 (full); 14 lights the overload, 15 clears it. */
 inline juce::MidiMessage meter (int strip, int level) { return juce::MidiMessage::channelPressureChange (1, ((juce::jlimit (0, kStrips - 1, strip) << 4) | juce::jlimit (0, 15, level)) & 0x7F); }
 
-// ---- the fader law: the same curve as the faders on the screen (LevelMeter::faderFrac in Uikit.h), so the surface's fader stands where the
-// screen's does: -80 dB at the bottom, +12 at the top, 0 dB about two-thirds up. The bottom of the fader = off (-100 dB in the mixer).
+// ---- the fader law. Two to choose from:
+//   Screen:    the same curve as the faders on the screen (LevelMeter::faderFrac in Uikit.h): -80 dB at the bottom, +12 at the top, 0 dB four-fifths up.
+//   EuControl: where EuControl's own dB read-out (the S1's displays in Mackie mode) puts each level, measured on the user's S1 (the Anubis Bridge
+//              calibration): 0 dB at 84.6 % of the travel, -10 at 59.6 %, -20 at 36.4 %, -40 at 15.5 %, +6.1 at the top. With it the number the S1
+//              shows is Fermata's level; a level above +6.1 dB puts the fader at the top.
+// Either way the bottom of the fader = off (-100 dB in the mixer).
+enum class FaderLaw { EuControl = 0, Screen = 1 };
 inline double faderFrac (double db) noexcept
 {
     static const double skew = std::log (0.5) / std::log (60.0 / 92.0);
     return std::pow (juce::jlimit (0.0, 1.0, (db + 80.0) / 92.0), skew);
 }
-inline int dbToFader (float db) noexcept
+struct ScalePoint { double frac, db; };
+inline const std::vector<ScalePoint>& euControlScale()
+{
+    static const std::vector<ScalePoint> t { { 0.0, -80.0 }, { 0.01934, -70.0 }, { 0.03223, -60.0 }, { 0.15528, -40.0 }, { 0.23634, -30.0 }, { 0.36428, -20.0 },
+                                             { 0.59574, -10.0 }, { 0.84575, 0.0 }, { 0.99518, 6.0 }, { 1.0, 6.14 } };
+    return t;
+}
+inline double euFracOf (double db) noexcept
+{
+    const auto& t = euControlScale();
+    if (db <= t.front().db) return 0.0;
+    if (db >= t.back().db) return 1.0;
+    for (size_t i = 1; i < t.size(); ++i)
+        if (db <= t[i].db) return t[i - 1].frac + (t[i].frac - t[i - 1].frac) * (db - t[i - 1].db) / (t[i].db - t[i - 1].db);
+    return 1.0;
+}
+inline double euDbOf (double frac) noexcept
+{
+    const auto& t = euControlScale();
+    if (frac <= 0.0) return t.front().db;
+    if (frac >= 1.0) return t.back().db;
+    for (size_t i = 1; i < t.size(); ++i)
+        if (frac <= t[i].frac) return t[i - 1].db + (t[i].db - t[i - 1].db) * (frac - t[i - 1].frac) / (t[i].frac - t[i - 1].frac);
+    return t.back().db;
+}
+inline int dbToFader (float db, FaderLaw law = FaderLaw::EuControl) noexcept
 {
     if (db <= -79.5f) return 0;
-    return juce::roundToInt (faderFrac ((double) db) * (double) kFaderMax);
+    const double frac = law == FaderLaw::Screen ? faderFrac ((double) db) : euFracOf ((double) db);
+    return juce::jlimit (0, kFaderMax, juce::roundToInt (frac * (double) kFaderMax));
 }
-inline float faderToDb (int value14) noexcept
+inline float faderToDb (int value14, FaderLaw law = FaderLaw::EuControl) noexcept
 {
     if (value14 <= 0) return -100.0f;
-    static const double skew = std::log (0.5) / std::log (60.0 / 92.0);
     const double frac = juce::jlimit (0.0, 1.0, (double) value14 / (double) kFaderMax);
-    const double db = std::pow (frac, 1.0 / skew) * 92.0 - 80.0;
+    double db;
+    if (law == FaderLaw::Screen) { static const double skew = std::log (0.5) / std::log (60.0 / 92.0); db = std::pow (frac, 1.0 / skew) * 92.0 - 80.0; }
+    else db = euDbOf (frac);
     return (float) (std::round (db * 10.0) / 10.0);
 }
 /** A pan (-1 .. 1) as a ring position 1 .. 11 (6 = centre). */

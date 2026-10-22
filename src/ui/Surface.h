@@ -88,6 +88,9 @@ public:
     void setStripAssign (int button, int action);
     bool metersOn() const noexcept { return meters; }
     void setMetersOn (bool on);
+    /** Where the fader stands for a level: EuControl's own scale (the S1's read-out then shows Fermata's level) or the screen's curve. */
+    mcu::FaderLaw faderLaw() const noexcept { return law; }
+    void setFaderLaw (mcu::FaderLaw);
 
     // ---- the MIDI monitor (the panel shows it)
     struct MonitorLine { juce::String time, dir, hex, text; };
@@ -149,6 +152,7 @@ private:
     std::map<int, int> map;                                           // note number -> Action
     int stripMap[surface::NumStripButtons] = { surface::SaLowCut, surface::SaSolo, surface::SaMute, surface::SaSelect, surface::SaDialHome };
     bool meters = true;
+    mcu::FaderLaw law = mcu::FaderLaw::EuControl;
     int learnAction = -1;
     std::deque<MonitorLine> lines;
 
