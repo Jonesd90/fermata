@@ -2,6 +2,7 @@
 #include "ColourPicker.h"
 #include "PluginManager.h"
 #include "ValueEntry.h"
+#include "LowCutPanel.h"
 
 namespace td
 {
@@ -14,6 +15,7 @@ int& stripWidthLevel() { static int level = 3; return level; }
 int& stripWidthGen()   { static int gen = 0; return gen; }        // goes up when the width changes, so every open mixer lays itself out again
 int stripWidth() { return kStripWidths[juce::jlimit (0, 5, stripWidthLevel())]; }
 constexpr int kBandH = 16, kPlateH = 26, kInputRowH = 19, kSlotH = 16, kSendCellH = 50, kPanRowH = 30, kMSH = 24, kFaderH = 280, kFaderMin = 110, kOutRowH = 20, kSecH = 11, kToTrackH = 20, kLatH = 13;
+constexpr int kLcRowH = 18;      // the LC key's row (audio tracks and Int Buses), between the inputs and the inserts
 
 /** A small recessed read-out field (peak value, fader value, pan position). */
 void styleField (juce::Label& l, float size = 10.0f, bool bold = true)
@@ -1172,6 +1174,7 @@ public:
             addAndMakeVisible (cb);
         }
         fillInputs();
+        addAndMakeVisible (lcKey);
         addAndMakeVisible (slots);
         buildSends();
 
@@ -1284,7 +1287,7 @@ public:
         updating = false;
     }
 
-    int shownLatency() const override { int t = 0; for (auto& sl : strip.slots) t += sl.latencySamples(); return t; }
+    int shownLatency() const override { int t = strip.lowCut.latencySamples(); for (auto& sl : strip.slots) t += sl.latencySamples(); return t; }
     juce::uint32 vcaMask() const override { return strip.vcaMask.load(); }
     void refreshFromModel() override
     {
@@ -1296,6 +1299,7 @@ public:
                         "Right-click the name plate to hide strips from this mixer (+ Strip shows them again).");
         repaint();
         slots.refresh();
+        lcKey.refresh();
         refreshInputs();
         outRow.fill();
         fader.setAccent (colour());
@@ -1364,6 +1368,7 @@ public:
     void tick() override
     {
         if (! fader.isBeingDragged()) fader.setDb (strip.gainDb.get());          // the fader follows the level, so automation (and the Stream Deck) moves it on screen
+        followModel();                                                           // (and M / S and the pans follow the control surface)
         fader.pushPeaks (strip.meterL.take(), strip.meterR.take(), strip.rmsL.get(), strip.rmsR.get());
         {   // the VCAs that control this strip: a line beside the fader to the level it really has
             const auto vm = strip.vcaMask.load (std::memory_order_relaxed);
@@ -1373,6 +1378,21 @@ public:
         }
     }
     void resetPeaks() override { fader.resetPeaks(); }
+    /** The M / S keys and the pans show what the model says (the control surface changes it without a mouse): cheap, so it runs on every meter tick. */
+    void followModel()
+    {
+        if (mute->getToggleState() != strip.mute.get()) mute->setToggleState (strip.mute.get(), juce::dontSendNotification);
+        if (solo->getToggleState() != strip.solo.get()) solo->setToggleState (strip.solo.get(), juce::dontSendNotification);
+        for (int c = 0; c < pans.size(); ++c)
+        {
+            const Param& p = numCh == 2 ? (c == 0 ? strip.panL : strip.panR) : strip.pan;
+            if (! pans[c]->isMouseButtonDown() && std::abs (pans[c]->getValue() - p.get()) > 0.0001)
+            {
+                pans[c]->setValue (p.get(), juce::dontSendNotification);
+                panValues[c]->setText (panText (p.get()), juce::dontSendNotification);
+            }
+        }
+    }
 
     void resized() override
     {
@@ -1393,6 +1413,8 @@ public:
             if (c < inBoxes.size()) inBoxes[c]->setBounds (row.reduced (0, 1));
         }
         r.removeFromTop (3);
+        lcKey.setBounds (r.removeFromTop (kLcRowH));
+        r.removeFromTop (2);
         sections.push_back ({ "INSERTS", r.removeFromTop (kSecH) });
         auto slotArea = r.removeFromTop (nSlots * kSlotH + 2);
         wells.push_back (slotArea.expanded (2, 0));
@@ -1428,7 +1450,7 @@ public:
     static int heightFor (int maxDials, int slotCount)
     {
         const int rows = juce::jmax (1, (maxDials + 1) / 2);
-        return 1 + kBandH + 3 + 2 * kInputRowH + 3 + kSecH + slotCount * kSlotH + 2 + 4 + kSecH + rows * kSendCellH + kToTrackH
+        return 1 + kBandH + 3 + 2 * kInputRowH + 3 + kLcRowH + 2 + kSecH + slotCount * kSlotH + 2 + 4 + kSecH + rows * kSendCellH + kToTrackH
                + 2 * kPanRowH + 4 + kMSH + 3 + kFaderH + 3 + kOutRowH + 3 + kLatH + kPlateH + 1 + 4;
     }
 
@@ -1525,6 +1547,7 @@ private:
     AppContext& app; MixerState& mixer; juce::Uuid trackId; StripState& strip; int numCh;
     bool updating = false;
     int sendRows = 1, nSlots = kNumSlots;
+    LowCutKey lcKey { app, strip.lowCut, [this] { auto* tr = app.project.findTrack (trackId); return tr != nullptr ? tr->name : juce::String(); } };
     juce::OwnedArray<juce::ComboBox> inBoxes;
     juce::OwnedArray<SendDial> dials;
     juce::TextButton toTrackButton;
@@ -1554,6 +1577,8 @@ public:
         mute->onClick = [this] { st.mute.set (mute->getToggleState()); app.project.markDirty(); };
         if (! external)
         {
+            lcKey = std::make_unique<LowCutKey> (a, st.lowCut, [this] { auto* b = app.project.findBus (busId); return b != nullptr ? b->name : juce::String(); });
+            addAndMakeVisible (*lcKey);
             solo = makeToggle (*this, toggles, "S", juce::Colour (0xfff2c200));
             solo->setColour (juce::TextButton::textColourOnId, juce::Colours::black);
             solo->setToggleState (st.solo.get(), juce::dontSendNotification);
@@ -1610,13 +1635,14 @@ public:
     }
     int dialCount() const { return dials.size(); }
     void setSendRows (int rows) { sendRows = rows; }
-    int shownLatency() const override { int t = 0; for (auto& sl : st.slots) t += sl.latencySamples(); return t; }
+    int shownLatency() const override { int t = st.lowCut.latencySamples(); for (auto& sl : st.slots) t += sl.latencySamples(); return t; }
     juce::uint32 vcaMask() const override { return st.vcaMask.load(); }
     void refreshFromModel() override
     {
         setLatencyTip (shownLatency(), mixer);
         repaint();
         slots.refresh();
+        if (lcKey != nullptr) lcKey->refresh();
         outRow.fill();
         fader.setAccent (colour());
         mute->setToggleState (st.mute.get(), juce::dontSendNotification);
@@ -1634,6 +1660,13 @@ public:
     void tick() override
     {
         if (! fader.isBeingDragged()) fader.setDb (st.gainDb.get());
+        if (mute->getToggleState() != st.mute.get()) mute->setToggleState (st.mute.get(), juce::dontSendNotification);          // (the control surface)
+        if (solo != nullptr && solo->getToggleState() != st.solo.get()) solo->setToggleState (st.solo.get(), juce::dontSendNotification);
+        if (! external && ! panSlider.isMouseButtonDown() && std::abs (panSlider.getValue() - st.pan.get()) > 0.0001)
+        {
+            panSlider.setValue (st.pan.get(), juce::dontSendNotification);
+            panValue.setText (ChannelStrip::panText (st.pan.get()), juce::dontSendNotification);
+        }
         if (! external)
         {   // an Int Bus controlled by VCAs: the same ghost line
             const auto vm = st.vcaMask.load (std::memory_order_relaxed);
@@ -1672,6 +1705,9 @@ public:
         auto top = r.removeFromTop (2 * kInputRowH);                         // where audio track strips have their input selectors
         if (external) { sections.push_back ({ "DRIVER OUTPUTS", top.removeFromTop (kSecH) }); outBox.setBounds (top.removeFromTop (kInputRowH).reduced (0, 1)); }
         r.removeFromTop (3);
+        auto lcRow = r.removeFromTop (kLcRowH);
+        if (lcKey != nullptr) lcKey->setBounds (lcRow);
+        r.removeFromTop (2);
         sections.push_back ({ "INSERTS", r.removeFromTop (kSecH) });
         auto slotArea = r.removeFromTop (nSlots * kSlotH + 2);
         wells.push_back (slotArea.expanded (2, 0));
@@ -1710,6 +1746,7 @@ private:
     }
     AppContext& app; MixerState& mixer; juce::Uuid busId; BusState& st; bool external; SlotButtons slots; FaderBlock fader; StripOutputRow outRow;
     bool updating = false; int sendRows = 1, nSlots = kNumSlots;
+    std::unique_ptr<LowCutKey> lcKey;                                   // Int Buses only
     InfoNote note; juce::ComboBox outBox;
     juce::OwnedArray<SendDial> dials; juce::TextButton toTrackButton;
     juce::OwnedArray<juce::TextButton> toggles; juce::TextButton *mute = nullptr, *solo = nullptr;
@@ -1838,7 +1875,12 @@ public:
         if (auto* v = app.project.findVca (vcaId); v != nullptr && ! nameEd.hasKeyboardFocus (false)) nameEd.setText (v->name, juce::dontSendNotification);
         repaint();
     }
-    void tick() override { if (! fader.isBeingDragged()) fader.setDb (st.gainDb.get()); }
+    void tick() override
+    {
+        if (! fader.isBeingDragged()) fader.setDb (st.gainDb.get());
+        if (mute->getToggleState() != st.mute.get()) mute->setToggleState (st.mute.get(), juce::dontSendNotification);          // (the control surface)
+        if (solo->getToggleState() != st.solo.get()) solo->setToggleState (st.solo.get(), juce::dontSendNotification);
+    }
     void resized() override
     {
         wells.clear(); sections.clear();
@@ -2336,6 +2378,12 @@ MixerState* MixerComponent::mixer() const
     for (auto& m : app.project.mixers) if (m->id == mixerId) return m.get();
     return nullptr;
 }
+
+void MixerComponent::selectStrip (const juce::Uuid& trackId)
+{
+    for (auto* mm : holder->gang.members) if (mm->gangId() == trackId) { holder->gang.click (trackId, juce::ModifierKeys()); return; }
+}
+bool MixerComponent::isStripSelected (const juce::Uuid& trackId) const { return holder->gang.isSelected (trackId); }
 
 void MixerComponent::rebuild()
 {

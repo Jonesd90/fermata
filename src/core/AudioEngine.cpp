@@ -110,9 +110,12 @@ void AudioEngine::prepare (double sr, int block)
     for (auto& m : project.mixers)                // plug-ins must know the new sample rate / block size
     {
         for (auto& st : m->stripPool) { for (auto& slot : st->slots) slot.reprepare (sampleRate, maxBlock, 2);
-                                        for (auto& sd : st->sends.pool) for (auto& slot : sd->slots) slot.reprepare (sampleRate, maxBlock, 2); }
+                                        for (auto& sd : st->sends.pool) for (auto& slot : sd->slots) slot.reprepare (sampleRate, maxBlock, 2);
+                                        const auto* tr = project.findTrack (st->trackId);
+                                        st->lowCut.prepare (sampleRate, maxBlock, tr != nullptr ? tr->channelCount() : 2); }
         for (auto& f : m->busPool)    { for (auto& slot : f->slots) slot.reprepare (sampleRate, maxBlock, 2);
-                                        for (auto& sd : f->sends.pool) for (auto& slot : sd->slots) slot.reprepare (sampleRate, maxBlock, 2); }
+                                        for (auto& sd : f->sends.pool) for (auto& slot : sd->slots) slot.reprepare (sampleRate, maxBlock, 2);
+                                        f->lowCut.prepare (sampleRate, maxBlock, 2); }
     }
     rebuildPlan();
 }
@@ -242,9 +245,11 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
         // linear phase) on one channel does not put that channel out of time with the others.
         {
             auto chainLat = [] (const InsertSlot* sl, int count) { int t = 0; for (int i = 0; i < count; ++i) t += sl[i].latencySamples(); return t; };
+            for (auto& nd : mp->order) if (nd->kind == NodeKind::Track) nd->strip->lowCut.ensureChannels (p->tracks[(size_t) nd->trackIndex].numCh);   // (a surround track: a low cut per channel)
             for (auto& nd : mp->order)                                       // nodes come after all the nodes that feed them
             {
-                const int own = nd->kind == NodeKind::Track ? chainLat (nd->strip->slots, kNumSlots) : chainLat (nd->bus->slots, kNumSlots);
+                const int lc = nd->kind == NodeKind::Track ? nd->strip->lowCut.latencySamples() : nd->kind == NodeKind::IntBus ? nd->bus->lowCut.latencySamples() : 0;
+                const int own = lc + (nd->kind == NodeKind::Track ? chainLat (nd->strip->slots, kNumSlots) : chainLat (nd->bus->slots, kNumSlots));
                 nd->outLat = nd->inLat + own;
                 for (auto& sp : nd->sends)
                     sp.dest->inLat = juce::jmax (sp.dest->inLat, nd->outLat + chainLat (sp.st->slots, kSendSlots));
@@ -256,7 +261,7 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
                 // where each automatable control acts, how late the sound is there (the automation reads its lane that much earlier: see AutomationPlan)
                 {
                     InsertSlot* sl = nd->kind == NodeKind::Track ? nd->strip->slots : nd->bus->slots;
-                    int at = nd->inLat;
+                    int at = nd->inLat + (nd->kind == NodeKind::Track ? nd->strip->lowCut.latencySamples() : nd->kind == NodeKind::IntBus ? nd->bus->lowCut.latencySamples() : 0);   // (the low cut sits before the inserts)
                     for (int i = 0; i < kNumSlots; ++i) { sl[i].autoLat.store (at, std::memory_order_relaxed); at += sl[i].latencySamples(); }
                     auto& latIn  = nd->kind == NodeKind::Track ? nd->strip->autoLatIn  : nd->bus->autoLatIn;
                     auto& latOut = nd->kind == NodeKind::Track ? nd->strip->autoLatOut : nd->bus->autoLatOut;
@@ -337,9 +342,11 @@ juce::uint64 AudioEngine::latencySignature (bool refresh) const
     for (auto& m : project.mixers)
     {
         for (auto& st : m->stripPool) { one (st->slots, kNumSlots); for (auto& sd : st->sends.pool) one (sd->slots, kSendSlots); one (st->outSend.slots, kSendSlots);
-                                        sig = sig * 1000003u + st->vcaMask.load (std::memory_order_relaxed); }      // (which VCAs control it: a VCA lane's lateness follows its channels)
+                                        sig = sig * 1000003u + st->vcaMask.load (std::memory_order_relaxed);        // (which VCAs control it: a VCA lane's lateness follows its channels)
+                                        sig = sig * 1000003u + (juce::uint64) (st->lowCut.latencySamples() + 7); }
         for (auto& f : m->busPool)    { one (f->slots, kNumSlots);  for (auto& sd : f->sends.pool) one (sd->slots, kSendSlots); one (f->outSend.slots, kSendSlots);
-                                        sig = sig * 1000003u + f->vcaMask.load (std::memory_order_relaxed); }
+                                        sig = sig * 1000003u + f->vcaMask.load (std::memory_order_relaxed);
+                                        sig = sig * 1000003u + (juce::uint64) (f->lowCut.latencySamples() + 7); }
     }
     return sig;
 }
@@ -1056,6 +1063,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                 const float gIn = dbToGain (st->inGainDb.get());
                 if (gIn != 1.0f || st->lastIn != 1.0f) { view.applyGainRamp (0, n, st->lastIn, gIn); st->lastIn = gIn; }
             }
+            st->lowCut.process (view);                                  // the LC key: before the inserts
             for (auto& slot : st->slots) slot.process (view);
 
             // fold to stereo (before the fader, so sends can be taken before or after it)
@@ -1100,6 +1108,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                 const float gIn = dbToGain (b->inGainDb.get());
                 if (gIn != 1.0f || b->lastIn != 1.0f) { view.applyGainRamp (0, n, b->lastIn, gIn); b->lastIn = gIn; }
             }
+            if (nd.kind == NodeKind::IntBus) b->lowCut.process (view);  // the LC key (Int Buses only): before the inserts
             for (auto& slot : b->slots) slot.process (view);
             if (const float pn = juce::jlimit (-1.0f, 1.0f, b->pan.get()); pn != 0.0f)          // balance: the side away from the pan is turned down (cos), the other stays
             {

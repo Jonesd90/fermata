@@ -24,6 +24,7 @@
 #include "../src/core/FileSync.h"
 #include "../src/core/AudioRelink.h"
 #include "../src/core/AudioOps.h"
+#include "../src/core/Mcu.h"
 #include <cstdio>
 #include <thread>
 
@@ -6311,6 +6312,144 @@ int main()
         for (auto& f : q.projectFile.getParentDirectory().findChildFiles (juce::File::findFiles, true)) sawFresh = sawFresh || f.loadFileAsString().contains ("FRESH");
         CHECK (sawFresh);
         (void) q.toVar(); CHECK (fresh == 2);                                  // anything other than a quick save (a render's copy, say) asks afresh
+    }
+
+    SECTION ("2.84 the low cut: linear phase, the right slope, the convolver is the FIR, saved with the mixer");
+    {
+        const double sr = 96000.0;
+        // every slope: a symmetric FIR (linear phase), -3 dB at the cut (the wall: -6 at the cut, nothing an octave below, unity above)
+        for (int slope = 0; slope < lowcut::kNumSlopes; ++slope)
+        {
+            const double fc = 80.0;
+            const auto h = lowcut::design (fc, slope, sr);
+            const int n = (int) h.size();
+            bool sym = true; for (int i = 1; i < n / 2; ++i) sym = sym && std::abs (h[(size_t) i] - h[(size_t) (n - i)]) < 1.0e-7f;   // symmetric about the middle tap n / 2
+            CHECK (sym);
+            auto gainAt = [&] (double f)
+            {
+                double re = 0.0, im = 0.0;
+                for (int i = 0; i < n; ++i) { const double w = 2 * dsp::kPi * f * (double) i / sr; re += h[(size_t) i] * std::cos (w); im -= h[(size_t) i] * std::sin (w); }
+                return 20.0 * std::log10 (std::sqrt (re * re + im * im) + 1.0e-12);
+            };
+            const double atCut = gainAt (fc), octBelow = gainAt (fc * 0.5), twoAbove = gainAt (fc * 4.0), high = gainAt (2000.0);
+            if (slope < lowcut::kBrickwall)
+            {
+                CHECK (std::abs (atCut + 3.0) < 0.7);
+                const double expect = lowcut::slopeDb (slope);                                  // an octave below the cut: about the slope's dB (a little less: -3 at the cut already)
+                CHECK (std::abs (octBelow - lowcut::targetDb (fc * 0.5, fc, slope)) < 5.0 && octBelow < -expect * 0.9);
+            }
+            else { CHECK (atCut < -4.0 && atCut > -9.0); CHECK (octBelow < -70.0); }
+            CHECK (std::abs (high) < 0.2 && twoAbove > -1.5);
+        }
+        // the convolver gives the FIR's output, exactly, 'latency' samples late, whatever the block size
+        {
+            lowcut::Convolver cv; const auto h = lowcut::design (300.0, 3, 48000.0); const int part = lowcut::partitionFor ((int) h.size());
+            cv.prepare (h, part);
+            juce::Random rnd (5);
+            std::vector<float> x (20000), y (20000), direct (20000, 0.0f);
+            for (auto& v : x) v = rnd.nextFloat() * 2.0f - 1.0f;
+            for (size_t i = 0; i < x.size(); ++i) for (size_t k = 0; k < h.size() && k <= i; ++k) direct[i] += h[k] * x[i - k];
+            y = x;
+            for (int pos = 0, step = 37; pos < (int) y.size(); pos += step, step = step == 37 ? 500 : step == 500 ? 1 : 37) cv.process (y.data() + pos, juce::jmin (step, (int) y.size() - pos));
+            double err = 0.0, ref = 0.0;
+            for (size_t i = (size_t) part + 100; i + (size_t) part < x.size(); ++i) { const double d = y[i] - direct[i - (size_t) part]; err += d * d; ref += direct[i - (size_t) part] * direct[i - (size_t) part]; }
+            CHECK (err < 1.0e-8 * ref);
+            CHECK (cv.extraLatency() == part);
+        }
+        // the channel's low cut: off is bit for bit through, on is the filter 'latency' late; the settings survive the project file
+        {
+            Project p; p.projectFile = tmp.getChildFile ("Lc.fermata"); p.setInputCount (2); p.setOutputCount (2); p.tracks.clear();
+            const auto ta = p.addTrack ("A", TrackFormat::Stereo, 0).id;
+            p.retireAllMixers(); p.addBus ("Out", true); p.addMixer ("M");
+            auto& m = *p.mixers.front();
+            auto* st = m.stripFor (ta);
+            st->lowCut.prepare (48000.0, 256, 2);
+            CHECK (st->lowCut.latencySamples() == 0);
+            st->lowCut.setDesign (120.0f, lowcut::kBrickwall);
+            st->lowCut.setOn (true);
+            const int lat = st->lowCut.latencySamples();
+            CHECK (lat > 0 && lat == st->lowCut.filterTaps() / 2 + lowcut::partitionFor (st->lowCut.filterTaps()));
+            juce::AudioBuffer<float> b (2, 256);
+            float atLat = 0.0f, before = 0.0f;                        // an impulse comes out as the FIR's middle sample, 'latency' samples later, and nothing before
+            for (int i = 0; i * 256 <= lat; ++i)
+            {
+                b.clear(); if (i == 0) b.setSample (0, 0, 1.0f);
+                st->lowCut.process (b);
+                for (int k = 0; k < 256; ++k) { const int t = i * 256 + k; if (t == lat) atLat = b.getSample (0, k); else if (t < lat - st->lowCut.filterTaps() / 2) before = juce::jmax (before, std::abs (b.getSample (0, k))); }
+            }
+            CHECK (atLat > 0.5f && before == 0.0f);                   // (the wall's middle tap is near 1 - the passband is most of the spectrum; nothing comes out before the FIR's span)
+            st->lowCut.setOn (false);
+            b.clear(); b.setSample (1, 10, 0.7f); st->lowCut.process (b); CHECK (b.getSample (1, 10) == 0.7f && st->lowCut.latencySamples() == 0);
+            st->lowCut.setOn (true);
+            Project back; CHECK (back.fromVar (p.toVar()));
+            auto* bs = back.mixers.front()->stripFor (ta);
+            CHECK (bs->lowCut.on.get() && std::abs (bs->lowCut.hz.get() - 120.0f) < 0.01f && bs->lowCut.slope.load() == lowcut::kBrickwall);
+            CHECK (m.busFor (p.buses.front().id)->lowCut.hz.get() == lowcut::kDefaultHz && ! m.busFor (p.buses.front().id)->lowCut.on.get());
+        }
+    }
+
+    SECTION ("2.85 the Mackie Control protocol");
+    {
+        // the fader law: round trips, and the same curve as the screen (0 dB about two-thirds up, -80 = bottom = off)
+        CHECK (mcu::dbToFader (-100.0f) == 0 && mcu::dbToFader (-80.0f) == 0 && mcu::dbToFader (12.0f) == mcu::kFaderMax);
+        CHECK (mcu::faderToDb (0) == -100.0f && mcu::faderToDb (mcu::kFaderMax) == 12.0f);
+        for (float db : { -60.0f, -30.0f, -12.0f, -6.0f, 0.0f, 6.0f, 10.0f }) CHECK (std::abs (mcu::faderToDb (mcu::dbToFader (db)) - db) < 0.11f);
+        CHECK (mcu::dbToFader (0.0f) > mcu::kFaderMax * 0.75 && mcu::dbToFader (0.0f) < mcu::kFaderMax * 0.85 && mcu::dbToFader (-20.0f) == mcu::kFaderMax / 2 + 1);   // (the screen's curve: -20 dB half way up, 0 dB four-fifths)
+        CHECK (mcu::dbToFader (-6.0f) < mcu::dbToFader (0.0f) && mcu::dbToFader (-20.0f) < mcu::dbToFader (-6.0f));
+        // decoding what the surface sends
+        auto ev = mcu::decode (juce::MidiMessage::pitchWheel (3, 8192));
+        CHECK (ev.kind == mcu::Event::Kind::Fader && ev.index == 2 && ev.value == 8192);
+        ev = mcu::decode (juce::MidiMessage::noteOn (1, mcu::MuteBase + 4, (juce::uint8) 0x7F));
+        CHECK (ev.kind == mcu::Event::Kind::Button && ev.index == mcu::MuteBase + 4 && ev.down && mcu::buttonName (ev.index) == "Mute 5");
+        ev = mcu::decode (juce::MidiMessage::noteOn (1, mcu::F3, (juce::uint8) 0));
+        CHECK (ev.kind == mcu::Event::Kind::Button && ev.index == mcu::F3 && ! ev.down && mcu::buttonName (mcu::F3) == "F3");
+        ev = mcu::decode (juce::MidiMessage::noteOff (1, mcu::Play, (juce::uint8) 0));
+        CHECK (ev.kind == mcu::Event::Kind::Button && ! ev.down);
+        ev = mcu::decode (juce::MidiMessage::noteOn (1, mcu::TouchBase + 7, (juce::uint8) 0x7F));
+        CHECK (ev.kind == mcu::Event::Kind::Touch && ev.index == 7 && ev.down);
+        ev = mcu::decode (juce::MidiMessage::controllerEvent (1, 0x10 + 1, 0x03));
+        CHECK (ev.kind == mcu::Event::Kind::Dial && ev.index == 1 && ev.delta == 3);
+        ev = mcu::decode (juce::MidiMessage::controllerEvent (1, 0x10 + 6, 0x41));
+        CHECK (ev.kind == mcu::Event::Kind::Dial && ev.index == 6 && ev.delta == -1);
+        ev = mcu::decode (juce::MidiMessage::controllerEvent (1, 0x10 + 6, 0x40));           // (a surface that sends the direction bit alone still turns)
+        CHECK (ev.kind == mcu::Event::Kind::Dial && ev.delta == -1);
+        CHECK (mcu::decode (juce::MidiMessage::controllerEvent (1, 7, 100)).kind == mcu::Event::Kind::Other);
+        // the handshake: the surface's challenge is answered with the Logic Control formula, serial echoed
+        {
+            const juce::uint8 q[] = { 0x00, 0x00, 0x66, 0x14, 0x01, 'S', 'E', 'R', 'I', 'A', 'L', '1', 0x10, 0x20, 0x30, 0x40 };
+            ev = mcu::decode (juce::MidiMessage::createSysExMessage (q, 16));
+            CHECK (ev.kind == mcu::Event::Kind::Handshake && ev.hasReply && ev.reply.isSysEx() && ev.reply.getSysExDataSize() == 16);
+            const auto* r = ev.reply.getSysExData();
+            CHECK (r[4] == 0x02 && r[5] == 'S' && r[11] == '1');
+            juce::uint8 want[4]; const juce::uint8 l[] = { 0x10, 0x20, 0x30, 0x40 }; mcu::handshakeResponse (l, want);
+            CHECK (r[12] == want[0] && r[13] == want[1] && r[14] == want[2] && r[15] == want[3] && (want[0] | want[1] | want[2] | want[3]) < 0x80);
+            const juce::uint8 ok[] = { 0x00, 0x00, 0x66, 0x14, 0x03, 'S', 'E', 'R', 'I', 'A', 'L', '1' };
+            ev = mcu::decode (juce::MidiMessage::createSysExMessage (ok, 12));
+            CHECK (ev.kind == mcu::Event::Kind::Handshake && ! ev.hasReply);
+        }
+        // encoding what Fermata sends
+        {
+            const auto f = mcu::fader (7, 1234); CHECK (f.isPitchWheel() && f.getChannel() == 8 && f.getPitchWheelValue() == 1234);
+            const auto l = mcu::lamp (mcu::SoloBase + 2, true); CHECK (l.isNoteOn() && l.getNoteNumber() == mcu::SoloBase + 2 && l.getVelocity() == 127);
+            const auto off = mcu::lamp (mcu::Flip, false); CHECK (off.isNoteOnOrOff() && off.getVelocity() == 0);
+            const auto rg = mcu::ring (2, 1, mcu::panToRing (0.0f), true);
+            CHECK (rg.isController() && rg.getControllerNumber() == 0x32 && (rg.getControllerValue() & 0x0F) == 6 && (rg.getControllerValue() & 0x30) == 0x10 && (rg.getControllerValue() & 0x40) != 0);
+            CHECK (mcu::panToRing (-1.0f) == 1 && mcu::panToRing (1.0f) == 11 && mcu::levelToRing (0.0f) == 1 && mcu::levelToRing (1.0f) == 11);
+            const auto t = mcu::lcdCellMessage (1, 3, "Violin I");
+            CHECK (t.isSysEx() && t.getSysExDataSize() == 6 + 7 && t.getSysExData()[4] == 0x12 && t.getSysExData()[5] == 56 + 21);
+            CHECK (juce::String::fromUTF8 ((const char*) t.getSysExData() + 6, 7) == "Violin ");
+            CHECK (mcu::lcdCell ("Vn") == "Vn     " && mcu::lcdCell (juce::String::fromUTF8 ("Fl\xc3\xb6te")) == juce::String::fromUTF8 ("Fl\xc3\xb6te  ") && mcu::lcdCell ("Violoncello").length() == 7);
+            const auto q = mcu::lcd (0, juce::String::fromUTF8 ("\xc3\xa9"));    // a character the display cannot show
+            CHECK (q.getSysExDataSize() == 7 && q.getSysExData()[6] == '?');
+            CHECK (mcu::meter (1, 12).isChannelPressure() && mcu::meter (1, 12).getChannelPressureValue() == 0x1C);
+            CHECK (mcu::meterLevel (-61.0f) == 0 && mcu::meterLevel (0.0f) == 12 && mcu::meterLevel (-30.0f) == 6);
+            CHECK (mcu::dbText (-100.0f) == " -inf " && mcu::dbText (0.0f) == " +0.0 " && mcu::dbText (-12.5f) == "-12.5 " && mcu::dbText (6.0f) == " +6.0 ");
+            CHECK (mcu::assignmentDigit (0, '3').getControllerNumber() == 0x4B && mcu::assignmentDigit (0, '3').getControllerValue() == 0x33 && mcu::assignmentDigit (1, 'P').getControllerValue() == 0x10);
+            CHECK (mcu::deviceQuery().isSysEx() && mcu::isMcuSysex (mcu::deviceQuery()));
+            CHECK (mcu::describe (juce::MidiMessage::noteOn (1, mcu::BankRight, (juce::uint8) 0x7F)) == "Bank > pressed");
+            CHECK (mcu::describe (juce::MidiMessage::pitchWheel (1, 0)).contains ("-100.0 dB"));
+            CHECK (mcu::hexOf (juce::MidiMessage::noteOn (1, 0x10, (juce::uint8) 0x7F)) == "90 10 7F");
+        }
     }
 
     tmp.deleteRecursively();

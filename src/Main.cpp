@@ -17,6 +17,8 @@
 #include "ui/Splash.h"
 #include "ui/BusyWindow.h"
 #include "ui/RemoteControl.h"
+#include "ui/Surface.h"
+#include "ui/SurfacePanel.h"
 #include "ui/CpuCoresPanel.h"
 #include "ui/PluginManager.h"
 #if JUCE_WINDOWS
@@ -165,6 +167,40 @@ public:
             if (auto* st = ctx->props.getUserSettings()) port = st->getIntValue ("remotePort", remote::kDefaultPort);
             remoteServer = std::make_unique<RemoteControlServer> (*ctx, port);
         }
+        // ---- the control surface (Avid S1 / Mackie Control over MIDI): the mixer it follows, the keys it sends to the work window, the strip it selects
+        ctx->frontMixerId = [this]
+        {
+            auto& P = ctx->project;
+            if (P.mixers.empty()) return juce::Uuid::null();
+            ToolWindow* best = nullptr; juce::String bestKey;
+            for (auto& kv : windows)
+                if (kv.second != nullptr && kv.first.startsWith ("mixer:") && kv.second->isVisible() && (best == nullptr || kv.second->lastActive > best->lastActive)) { best = kv.second.get(); bestKey = kv.first; }
+            juce::Uuid id = best != nullptr ? juce::Uuid (bestKey.fromFirstOccurrenceOf (":", false, false)) : recentMixer;
+            for (auto& m : P.mixers) if (m->id == id) return id;
+            return P.mixers.front()->id;
+        };
+        ctx->keyToWorkWindow = [this] (const juce::KeyPress& k)
+        {
+            const auto key = lastWorkWindowKey();
+            auto it = windows.find (key);
+            if (key.isEmpty() || it == windows.end() || it->second == nullptr) return false;
+            if (auto* c = it->second->getContentComponent()) return c->keyPressed (k);
+            return false;
+        };
+        ctx->selectStripInMixer = [this] (const juce::Uuid& mixerId, const juce::Uuid& trackId)
+        {
+            auto it = windows.find ("mixer:" + mixerId.toString());
+            if (it != windows.end() && it->second != nullptr) if (auto* mc = dynamic_cast<MixerComponent*> (it->second->getContentComponent())) mc->selectStrip (trackId);
+        };
+        ctx->isStripSelectedInMixer = [this] (const juce::Uuid& mixerId, const juce::Uuid& trackId)
+        {
+            auto it = windows.find ("mixer:" + mixerId.toString());
+            if (it != windows.end() && it->second != nullptr) if (auto* mc = dynamic_cast<MixerComponent*> (it->second->getContentComponent())) return mc->isStripSelected (trackId);
+            return false;
+        };
+        ctx->showSurfacePanel = [this] { showWindow ("surface", "Mixer controller", [this] { return new SurfacePanel (*ctx); }); };
+        surface = std::make_unique<SurfaceController> (*ctx);
+        ctx->surface = surface.get();
         ctx->showAudioSettings = [this] { openAudioSettings(); };
         ctx->showMedia = [this] { openMedia(); };
         ctx->showMastering = [this] { showWindow ("mastering", "Mastering", [this] { return new MasteringComponent (*ctx); }); };
@@ -283,6 +319,8 @@ public:
         busy::setAreaProvider (nullptr);
         splash.reset();
         remoteServer.reset();
+        if (ctx) ctx->surface = nullptr;
+        surface.reset();                                                          // (the surface is blanked: faders down, lamps off)
         if (ctx) ctx->shutdown();
         CoreReservation::get().shutdown();                                       // other programs are given all the cores back
         windows.clear();
@@ -735,6 +773,7 @@ private:
     std::unique_ptr<ToolWindow> audioSettings;
     std::unique_ptr<AppContext> ctx;
     std::unique_ptr<RemoteControlServer> remoteServer;       // the control port for a Stream Deck (127.0.0.1 only)
+    std::unique_ptr<SurfaceController> surface;              // the Avid S1 / Mackie Control surface (MIDI)
     std::unique_ptr<ToolWindowMain> mainWindow;
     std::unique_ptr<ToolWindow::FocusKeeper> focusKeeper;
     std::map<juce::String, std::unique_ptr<ToolWindow>> windows;

@@ -10,6 +10,7 @@ namespace td
 {
 class TakeDisplayHub;
 class TalkbackOverlay;
+class SurfaceController;
 
 /** What the Bounce Out window is asked to bounce. */
 struct BounceContext
@@ -132,6 +133,16 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     void remoteMixer (int index) { if (toggleMixerAt) toggleMixerAt (index); }
     std::function<void (int)> toggleMixerAt;             // set by the application: opens / closes the mixer with this index (0 = the processing mixer)
     std::function<bool (int)> mixerOpenAt;
+    // ---- the control surface (an Avid S1 or any other Mackie Control surface, over MIDI): see Surface.h. Owned by the application. ----
+    SurfaceController* surface = nullptr;
+    /** The mixer whose window is in front, or was in front most recently (the first mixer when none has been opened yet); null without a project. Set by the application. */
+    std::function<juce::Uuid()> frontMixerId;
+    /** Sends a key to the take or edit window that was last in front, as if it had been typed there (the surface's zoom keys). False if there is no such window. */
+    std::function<bool (const juce::KeyPress&)> keyToWorkWindow;
+    /** The strip of this audio track in this mixer's window: selected / unselected (as a click on its name plate), and whether it is selected now. */
+    std::function<void (const juce::Uuid& mixerId, const juce::Uuid& trackId)> selectStripInMixer;
+    std::function<bool (const juce::Uuid& mixerId, const juce::Uuid& trackId)> isStripSelectedInMixer;
+    std::function<void()> showSurfacePanel;              // the "Mixer controller" window (MIDI ports, what the buttons do, the MIDI monitor)
     /** The take or edit window you last worked in registers how its Play button behaves; the remote's play / pause uses it. */
     void setTransportHandler (const void* owner, std::function<void()> fn) { transportOwner = owner; transportHandler = std::move (fn); }
     void clearTransportHandler (const void* owner) { if (transportOwner == owner) { transportOwner = nullptr; transportHandler = nullptr; } }

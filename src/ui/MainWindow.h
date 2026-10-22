@@ -2,6 +2,7 @@
 #include "AppContext.h"
 #include "StageMixer.h"
 #include "DeskLook.h"
+#include "SurfacePanel.h"
 
 namespace td
 {
@@ -326,6 +327,17 @@ private:
                flagM { "Mixers - green: the one you are working in, orange: open, red: minimised, unlit: none open. Click to bring back the mixer you used last (it opens if it was closed)." };
     WindowLamp* flagFor (const juce::Component* b) { return b == &takesButton ? &flagT : b == &editsButton ? &flagE : b == &mixersButton ? &flagM : nullptr; }
     InfoBox projectBox, rateBox { "RATE" }, depthBox { "DEPTH" }, diskBox { "DISK FREE" };
+    /** The control surface (Avid S1): which mixer it controls, and a lamp (lit while it is connected) that opens the Mixer controller window. */
+    struct CaptionLabel : public juce::Component
+    {
+        explicit CaptionLabel (juce::String t) : text (std::move (t)) { setInterceptsMouseClicks (false, false); }
+        void paint (juce::Graphics& g) override { g.setColour (desk::pal().cream); g.setFont (juce::FontOptions (11.0f, juce::Font::bold)); g.drawText (text, getLocalBounds(), juce::Justification::centredLeft, false); }
+        int wantedWidth() const { return juce::roundToInt (juce::GlyphArrangement::getStringWidth (juce::Font (juce::FontOptions (11.0f, juce::Font::bold)), text)) + 8; }
+        juce::String text;
+    } controllerCaption { "CONTROLLER" };
+    SurfaceTargetBox controllerBox;
+    LtcLamp controllerLamp { "S1", "The control surface (Avid S1 / Mackie Control): green = connected on its MIDI ports. Click to set it up: the ports, which mixer it controls, what its keys do, and a MIDI monitor." };
+    int controllerRowWidth() const { return diskBox.wantedWidth() + 12 + controllerCaption.wantedWidth() + 190 + 6 + controllerLamp.wantedWidth(); }
     int headerLineY = -1;                              // the line under the top row
     juce::uint32 lastDiskCheck = 0;
     int lastDiskW = 0;

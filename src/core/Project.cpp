@@ -197,6 +197,25 @@ void sendsFromVar (SendList& l, const var& v, const InsertFactory& factory, doub
         if (std::find (seen.begin(), seen.end(), s.get()) == seen.end()) { s->gainDb.set (-100.0f); s->mute.set (false); }
 }
 
+/** The LC key's settings, saved only once they differ from the defaults (off, 80 Hz, 48 dB / octave). */
+static void lowCutToVar (var& o, const LowCut& lc)
+{
+    if (! lc.on.get() && lc.hz.get() == lowcut::kDefaultHz && lc.slope.load() == lowcut::kDefaultSlope) return;
+    var l = obj();
+    put (l, "on", lc.on.get()); put (l, "hz", lc.hz.get()); put (l, "slope", lc.slope.load());
+    put (o, "lowCut", l);
+}
+static void lowCutFromVar (LowCut& lc, const var& v, double sr, int block)
+{
+    const var l = v["lowCut"];
+    const bool on = l.isObject() && (bool) l["on"];
+    const float hz = l.isObject() && l.hasProperty ("hz") ? (float) (double) l["hz"] : lowcut::kDefaultHz;
+    const int slope = l.isObject() && l.hasProperty ("slope") ? (int) l["slope"] : lowcut::kDefaultSlope;
+    lc.hz.set (hz); lc.slope.store (juce::jlimit (0, lowcut::kNumSlopes - 1, slope));
+    lc.prepare (sr, block, 2);
+    lc.setOn (on);                                                    // (the filter is designed now, so it is in the plan at once)
+}
+
 var stripToVar (const StripState& s, const juce::Uuid& trackId, bool inserts)
 {
     var so = obj();
@@ -207,6 +226,7 @@ var stripToVar (const StripState& s, const juce::Uuid& trackId, bool inserts)
     if (const auto vm = s.vcaMask.load(); vm != 0) put (so, "vcaMask", (juce::int64) vm);
     put (so, "sendList", sendsToVar (s.sends, inserts));
     if (inserts) put (so, "slots", slotsToVar (s.slots));
+    lowCutToVar (so, s.lowCut);
     return so;
 }
 
@@ -228,6 +248,7 @@ void stripFromVar (StripState& s, const var& sv, const InsertFactory& factory, d
         for (int k = 0; k < old->size() && k < (int) legacyFx.size(); ++k)
             if ((double) (*old)[k] > kSendOffDb) s.sends.get (legacyFx[(size_t) k])->gainDb.set ((float) (double) (*old)[k]);
     if (inserts) slotsFromVar (s.slots, sv["slots"], factory, sr, block);
+    if (faders) lowCutFromVar (s.lowCut, sv, sr, block);
 }
 
 var busToVar (const BusState& s, const juce::Uuid& busId, bool inserts, bool withOutput)
@@ -241,6 +262,7 @@ var busToVar (const BusState& s, const juce::Uuid& busId, bool inserts, bool wit
     if (const auto vm = s.vcaMask.load(); vm != 0) put (o, "vcaMask", (juce::int64) vm);
     put (o, "sendList", sendsToVar (s.sends, inserts));
     if (inserts) put (o, "slots", slotsToVar (s.slots));
+    lowCutToVar (o, s.lowCut);
     return o;
 }
 
@@ -259,6 +281,7 @@ void busFromVar (BusState& s, const var& v, const InsertFactory& factory, double
     }
     if (v.hasProperty ("sendList")) sendsFromVar (s.sends, v["sendList"], factory, sr, block, inserts, sendLevels);
     if (inserts) slotsFromVar (s.slots, v["slots"], factory, sr, block);
+    if (faders) lowCutFromVar (s.lowCut, v, sr, block);
 }
 
 var vcaStatesToVar (const MixerState& m, const std::vector<VcaDef>& defs)

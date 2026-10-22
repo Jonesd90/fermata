@@ -448,7 +448,7 @@ void MainComponent::showStartPanel()
     startPanel->toFront (false);
 }
 
-MainComponent::MainComponent (AppContext& a) : app (a)
+MainComponent::MainComponent (AppContext& a) : app (a), controllerBox (a)
 {
     setWantsKeyboardFocus (true);                                 // (the keys come here, never into the first input's name box: see ToolWindow::FocusKeeper)
     addAndMakeVisible (auditionIcon);
@@ -510,6 +510,8 @@ MainComponent::MainComponent (AppContext& a) : app (a)
 
     projectBox.setFontHeight (15.0f);
     for (auto* b : { &projectBox, &rateBox, &depthBox, &diskBox }) addAndMakeVisible (b);
+    addAndMakeVisible (controllerCaption); addAndMakeVisible (controllerBox); addAndMakeVisible (controllerLamp);     // the control surface (S1)
+    controllerLamp.onClick = [this] { if (app.showSurfacePanel) app.showSurfacePanel(); };
     if (auto* st = app.props.getUserSettings())                     // the second recording drive (Project menu)
     {
         const auto path = st->getValue ("backupFolder");
@@ -717,7 +719,7 @@ void MainComponent::resized()
         line.removeFromLeft (8); headerSeps.push_back (line.getX()); line.removeFromLeft (9);      // (a thin line between the mark and the displays)
         // the displays: the project, rate and depth on the top row, the free disk space (and, while recording, the time left) under them
         const int topW = juce::jmin (330, juce::jmax (180, projectBox.wantedWidth())) + 10 + rateBox.wantedWidth() + 10 + depthBox.wantedWidth();
-        const int colW = juce::jmin (juce::jmax (topW, diskBox.wantedWidth()), juce::jmax (200, line.getWidth() / 2));
+        const int colW = juce::jmin (juce::jmax (topW, controllerRowWidth()), juce::jmax (200, line.getWidth() / 2));
         auto col = line.removeFromLeft (colW).withSizeKeepingCentre (colW, 54);
         {
             auto top = col.removeFromTop (26);
@@ -726,7 +728,13 @@ void MainComponent::resized()
             top.removeFromLeft (10); rateBox.setBounds (top.removeFromLeft (rateBox.wantedWidth()).withSizeKeepingCentre (rateBox.wantedWidth(), 22));
             top.removeFromLeft (10); depthBox.setBounds (top.removeFromLeft (depthBox.wantedWidth()).withSizeKeepingCentre (depthBox.wantedWidth(), 22));
             col.removeFromTop (6);
-            diskBox.setBounds (col.removeFromTop (22).withWidth (juce::jmin (col.getWidth(), diskBox.wantedWidth())));
+            auto row2 = col.removeFromTop (22);                                   // the disk, then the control surface's CONTROLLER box and its lamp
+            diskBox.setBounds (row2.removeFromLeft (juce::jmin (row2.getWidth(), diskBox.wantedWidth())));
+            row2.removeFromLeft (12);
+            controllerCaption.setBounds (row2.removeFromLeft (juce::jmin (row2.getWidth(), controllerCaption.wantedWidth())));
+            controllerBox.setBounds (row2.removeFromLeft (juce::jlimit (0, 190, row2.getWidth() - 6 - controllerLamp.wantedWidth())));
+            row2.removeFromLeft (6);
+            controllerLamp.setBounds (row2.removeFromLeft (juce::jmin (row2.getWidth(), controllerLamp.wantedWidth())));
         }
         line.removeFromLeft (8); headerSeps.push_back (line.getX()); line.removeFromLeft (9);      // (and between the displays and the driver lines)
         const int minStage = juce::jmin (StageSpeakerPanel::reservedWidth(), line.getWidth() / 3);          // the boxes always have at least this much
@@ -822,6 +830,7 @@ void MainComponent::timerCallback()
         auto light = [&] (const char* k) { return app.windowLight ? app.windowLight (k) : (kind == k ? 2 : 0); };
         flagT.set (light ("take")); flagE.set (light ("edit")); flagM.set (light ("mixer"));
     }
+    if (auto* sf = app.surface) controllerLamp.set (sf->connected() && sf->target() != SurfaceController::Target::Off, sf->statusText());
     {
         const auto st = app.engine.ltcInStatus();
         ltcInLamp.set (app.project.ltcInput >= 0 && st.present, fpsName (st.fps, st.drop) + " fps");
@@ -951,6 +960,8 @@ void MainComponent::showProjectMenu()
         if (bf != juce::File()) m.addItem (13, "Stop recording to the second drive");
     }
     m.addSeparator();
+    m.addItem (14, "Mixer controller (Avid S1 / Mackie Control)...");
+    m.addSeparator();
     auto picked = std::make_shared<int> (-1);
     {
         juce::PopupMenu style;                                                   // the look of the whole program: the desk, or the illuminated manuscript
@@ -963,6 +974,7 @@ void MainComponent::showProjectMenu()
         if (r == 11) { if (*picked >= 0) pickColour (*picked); return; }
         if (r == 20 || r == 21) { pickStyle (r - 20); return; }
         if (r == 12) { chooseBackupFolder(); return; }
+        if (r == 14) { if (app.showSurfacePanel) app.showSurfacePanel(); return; }
         if (r == 13)
         {
             app.engine.setBackupFolder ({});

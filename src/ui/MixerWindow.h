@@ -104,6 +104,9 @@ public:
         bottom edge (the horizontal scroll bar) is off the screen; strips that do not fit get a scroll bar. 'remembered': the size the window had
         when it was last closed (from the project), kept instead (still within those limits). */
     void fitWindowToStrips (juce::Rectangle<int> remembered = {});
+    /** The control surface's Select key: as a click on the strip's name plate (selected on its own, or unselected if it was the only one). */
+    void selectStrip (const juce::Uuid& trackId);
+    bool isStripSelected (const juce::Uuid& trackId) const;
 
 private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
