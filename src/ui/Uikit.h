@@ -53,6 +53,30 @@ inline juce::Colour desk (juce::uint32 argb) { return deskTint (juce::Colour (ar
 inline bool& darkFlag() { static bool d = false; return d; }     // false: the light look (the desk as it is); true: the dark look (the desk a shade darker)
 inline bool isDark() { return darkFlag(); }
 
+/** The style of the whole interface (Project > UI style): 0 the Fermata style UI (the blue-grey desk, Inter), 1 the Manuscript UI (midnight blue and
+    gilt, parchment writing in a Renaissance serif, staff lines behind the timelines). Everything is drawn from the palette, so the style is mostly
+    the palette; the few places with their own drawing ask manuscript(). */
+inline int& styleIndex() { static int s = 0; return s; }
+inline bool manuscript() { return styleIndex() == 1; }
+inline const char* styleName (int i) { return i == 1 ? "Manuscript UI" : "Fermata style UI"; }
+// the Manuscript UI's own colours (beside the palette): the gilt in two shades, the ink that is written on gilt, the parchment
+inline juce::Colour gilt()       { return juce::Colour (0xffd4a84b); }
+inline juce::Colour giltBright() { return juce::Colour (0xfff0c76a); }
+inline juce::Colour giltDim()    { return juce::Colour (0xff6b5120); }
+inline juce::Colour giltInk()    { return juce::Colour (0xff1a1409); }
+inline juce::Colour parchment()  { return juce::Colour (0xffe9dcc0); }
+inline juce::Colour navyKey()    { return juce::Colour (0xff1f2246); }
+/** The names the two styles' default typefaces go by inside JUCE. Every font that does not name a face is made with the default name, and JUCE keeps
+    its drawn glyphs in a cache keyed by that name: so the Manuscript UI's face is given a name of its own, and a window drawn in one style can never
+    pick up letters drawn in the other. The wordmark's italic face likewise. (See FermataLookAndFeel::getTypefaceForFont.) */
+inline const char* sansName (bool manuscriptStyle) { return manuscriptStyle ? "<Sans-Serif-Manuscript>" : "<Sans-Serif>"; }
+inline const char* wordmarkFontName()              { return manuscript() ? "<Manuscript-Italic>" : "Georgia"; }
+inline bool isSansName (const juce::String& n)     { return n.isEmpty() || n == "<Sans-Serif>" || n == "<Sans-Serif-Manuscript>"; }
+/** Makes new fonts use the style's default name (JUCE hands out the name by reference to a static, which is set here). */
+inline void applyDefaultFontName() { const_cast<juce::String&> (juce::Font::getDefaultSansSerifFontName()) = sansName (manuscript()); }
+/** True for the Manuscript UI's own dark navy keys (any shade of them): their writing is gilt. A key given a colour of its own (a red Record) is not one. */
+inline bool isNavyKey (juce::Colour c) { const float h = c.getHue(); return c.getPerceivedBrightness() < 0.3f && h > 0.58f && h < 0.74f; }
+
 /** All the palette colours in a fixed order (for switching and for re-colouring what was coloured by hand). */
 inline std::array<juce::Colour*, 18> all()
 {
@@ -76,7 +100,16 @@ inline void setDark (bool dark)
                                         0xff2b5f7a, 0xffeef2f6, 0xffc3ccd6, 0xff2f3e50, 0xff2a9cc0, 0xff96abc0, 0xffe0a040, 0xffff4a4a, 0xff0c0e11 };
     // how much of each colour's brightness the dark look keeps: the panels go well down, the lanes (already dark) and the keys a little
     static const float shade[18] = { 0.62f, 0.62f, 0.72f, 0.72f, 1.0f, 0.72f, 0.72f, 0.7f, 0.72f, 0.8f, 1.0f, 1.0f, 0.7f, 1.0f, 0.8f, 1.0f, 1.0f, 1.0f };
+    // the Manuscript UI: midnight blue panels, near-black lanes and fields, gilt outlines and accents, parchment writing (the desk colour is not applied)
+    static const juce::uint32 m[18] = { 0xff161a36, 0xff1b2042, 0xff10132b, 0xff13172f, 0xff090a16, 0xff0b0d1e, 0xff0e1024, 0xff11142b, 0xff2b2a4d,
+                                        0xff3b3468, 0xffe9dcc0, 0xffb89a5a, 0xff8a6a2a, 0xffd4a84b, 0xff1f2246, 0xfff0a040, 0xfff0c76a, 0xff06060f };
+    static const float mshade[18] = { 0.7f, 0.7f, 0.8f, 0.8f, 1.0f, 0.85f, 0.85f, 0.8f, 0.8f, 0.85f, 1.0f, 1.0f, 0.85f, 1.0f, 0.8f, 1.0f, 1.0f, 1.0f };
     auto c = all();
+    if (manuscript())
+    {
+        for (size_t i = 0; i < c.size(); ++i) *c[i] = deskShade (juce::Colour (m[i]), dark, mshade[i]);
+        return;
+    }
     for (size_t i = 0; i < c.size(); ++i)
     {
         const bool keep = (i == 4 || i == 10 || i == 13 || i == 15 || i == 16 || i == 17);     // field, text, accent, warn, playhead, meter wells: the same in every desk colour
@@ -84,7 +117,43 @@ inline void setDark (bool dark)
     }
 }
 /** Dark or light writing for something drawn on 'fill' (the keys are light in the desk look, so their writing and pictures are dark). */
-inline juce::Colour inkOn (juce::Colour fill) { return fill.getPerceivedBrightness() > 0.6f ? juce::Colour (0xff14181f) : text; }
+inline juce::Colour inkOn (juce::Colour fill);
+
+/** A panel's background: flat in the Fermata style; in the Manuscript UI a soft glow from the top, like candlelight on a dark page. */
+inline void paintPanel (juce::Graphics& g, juce::Rectangle<int> area, juce::Colour base)
+{
+    if (! manuscript() || area.isEmpty()) { g.setColour (base); g.fillRect (area); return; }
+    juce::ColourGradient gr (base.brighter (0.22f), (float) area.getCentreX(), (float) area.getY() - (float) area.getHeight() * 0.3f,
+                             base.darker (0.18f), (float) area.getCentreX(), (float) area.getBottom(), true);
+    gr.addColour (0.55, base);
+    g.setGradientFill (gr); g.fillRect (area);
+}
+/** The gilt rule round a panel of the Manuscript UI: a thin line of gold with a hair of shadow inside it. Does nothing in the Fermata style. */
+inline void paintGiltRule (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    if (! manuscript() || area.getWidth() < 4 || area.getHeight() < 4) return;
+    g.setColour (border); g.drawRect (area, 1);
+    g.setColour (juce::Colour (0xff2a1f0e).withAlpha (0.8f)); g.drawRect (area.reduced (1), 1);
+}
+/** Five faint lines across a lane, like the staves of a manuscript (the Manuscript UI's timelines). Does nothing in the Fermata style. */
+inline void paintStaff (juce::Graphics& g, juce::Rectangle<int> lane)
+{
+    if (! manuscript() || lane.getHeight() < 24) return;
+    g.setColour (border.withAlpha (0.16f));
+    const float gap = (float) lane.getHeight() / 6.0f;
+    for (int i = 1; i <= 5; ++i) g.fillRect ((float) lane.getX(), (float) lane.getY() + gap * (float) i - 0.5f, (float) lane.getWidth(), 1.0f);
+}
+/** The playhead line: red in the Fermata style; in the Manuscript UI a line of gold with a soft glow either side. */
+inline void paintPlayhead (juce::Graphics& g, int x, int y, int height, int width = 2)
+{
+    if (manuscript())
+    {
+        g.setColour (playhead.withAlpha (0.10f)); g.fillRect (x - 5, y, width + 10, height);
+        g.setColour (playhead.withAlpha (0.25f)); g.fillRect (x - 2, y, width + 4, height);
+    }
+    g.setColour (playhead); g.fillRect (x, y, width, height);
+}
+inline juce::Colour inkOn (juce::Colour fill) { return fill.getPerceivedBrightness() > 0.6f ? (manuscript() ? giltInk() : juce::Colour (0xff14181f)) : (manuscript() && isNavyKey (fill) ? gilt() : text); }
 
 /** The widget look. */
 inline juce::LookAndFeel_V4::ColourScheme scheme()
@@ -620,8 +689,19 @@ namespace wood
 constexpr int kCheekW = 20;                       // the width of a wooden side panel
 constexpr int kBottomH = 16;                      // the wooden strip along the bottom of a window
 
+/** The Manuscript UI has no wood: the margins of its windows are the dark edge of the page, with a gilt rule towards the panel. */
+inline void paintManuscriptMargin (juce::Graphics& g, juce::Rectangle<int> r, int ruleSide)     // ruleSide: 0 right, 1 left, 2 top
+{
+    g.setColour (juce::Colour (0xff0b0c1a)); g.fillRect (r);
+    g.setColour (theme::border.withAlpha (0.9f));
+    if (ruleSide == 0) { g.fillRect (r.getRight() - 1, r.getY(), 1, r.getHeight()); g.setColour (theme::border.withAlpha (0.35f)); g.fillRect (r.getRight() - 4, r.getY(), 1, r.getHeight()); }
+    else if (ruleSide == 1) { g.fillRect (r.getX(), r.getY(), 1, r.getHeight()); g.setColour (theme::border.withAlpha (0.35f)); g.fillRect (r.getX() + 3, r.getY(), 1, r.getHeight()); }
+    else { g.fillRect (r.getX(), r.getY(), r.getWidth(), 1); g.setColour (theme::border.withAlpha (0.35f)); g.fillRect (r.getX(), r.getY() + 3, r.getWidth(), 1); }
+}
+
 inline void paintCheek (juce::Graphics& g, juce::Rectangle<int> r, bool leftSide)
 {
+    if (theme::manuscript()) { paintManuscriptMargin (g, r, leftSide ? 0 : 1); return; }
     juce::ColourGradient gr (juce::Colour (0xff7a4a28), (float) r.getX(), 0.0f, juce::Colour (0xff6b3f20), (float) r.getRight(), 0.0f, false);
     gr.addColour (0.45, juce::Colour (0xff8c5a32));
     g.setGradientFill (gr); g.fillRect (r);
@@ -643,6 +723,7 @@ inline void paintCheek (juce::Graphics& g, juce::Rectangle<int> r, bool leftSide
 /** The wooden strip along the bottom of a window: square along the top, rounded at the bottom corners, the grain running along it. */
 inline void paintBottom (juce::Graphics& g, juce::Rectangle<int> r, float corner = 6.0f)
 {
+    if (theme::manuscript()) { paintManuscriptMargin (g, r, 2); return; }
     juce::Path shape; shape.addRoundedRectangle ((float) r.getX(), (float) r.getY() - corner - 2.0f, (float) r.getWidth(), (float) r.getHeight() + corner + 2.0f, corner);
     g.saveState();
     g.reduceClipRegion (r);

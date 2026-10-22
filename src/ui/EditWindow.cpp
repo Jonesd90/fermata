@@ -281,6 +281,7 @@ public:
         {
             g.setColour ((i & 1) ? theme::waveAlt : theme::wave);
             g.fillRect (0, top + (int) i * rowH, getWidth(), rowH);
+            theme::paintStaff (g, { 0, top + (int) i * rowH, getWidth(), rowH });                                         // (the Manuscript UI: staves)
         }
         for (int i = (int) tracks.size(), y = top + (int) tracks.size() * rowH; y < getHeight(); ++i, y += rowH)       // empty rows carry on to the bottom of the window
         {
@@ -289,7 +290,7 @@ public:
         }
         g.setColour (theme::ruler); g.fillRect (0, 0, getWidth(), kRulerH);
         g.setColour (juce::Colours::black.withAlpha (0.22f)); g.fillRect (0, 0, getWidth(), markerui::kStripH);          // the marker strip
-        g.setColour (juce::Colour (0x2635b7c9)); g.fillRect (0, markerui::kStripH, getWidth(), kFbH);                    // the feedback strip (its own line, tinted)
+        g.setColour (theme::manuscript() ? theme::accent.withAlpha (0.10f) : juce::Colour (0x2635b7c9)); g.fillRect (0, markerui::kStripH, getWidth(), kFbH);   // the feedback strip (its own line, tinted)
         const double step = pixelsPerSecond >= 200 ? 0.5 : pixelsPerSecond >= 60 ? 1.0 : pixelsPerSecond >= 24 ? 5.0 : pixelsPerSecond >= 8 ? 10.0 : pixelsPerSecond >= 3 ? 60.0 : 300.0;
         // fainter unlabelled lines between the labelled ones: 5 s -> every 1 s, 1 s -> every 0.5 s, then 0.25 s (two zoom steps), then 0.1 s however far in
         const double minor = pixelsPerSecond >= 450 ? 0.1 : pixelsPerSecond >= 200 ? 0.25 : pixelsPerSecond >= 60 ? 0.5 : pixelsPerSecond >= 24 ? 1.0 : pixelsPerSecond >= 8 ? 5.0 : pixelsPerSecond >= 3 ? 10.0 : 60.0;
@@ -333,9 +334,10 @@ public:
             auto lane = juce::Rectangle<int> (x0, kRulerH + 11, wpx, kLaneH - 13);   // below the flags, so the title has a line to itself
             if (lanesVisible)
             {
-                g.setColour (selected ? juce::Colour (0xffc26500) : theme::accent);
+                const auto plate = selected ? juce::Colour (0xffc26500) : theme::accent;
+                g.setColour (plate);
                 g.fillRect (lane);
-                g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
+                g.setColour (theme::manuscript() ? theme::inkOn (plate) : juce::Colours::white); g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
                 g.drawText (r.takeName + "   " + formatTimeShort ((double) r.srcIn / rate, 2) + " - " + formatTimeShort ((double) r.srcOut / rate, 2),
                             lane.reduced (6, 0), juce::Justification::centredLeft, true);
                 drawFadeHandles (g, lane, r, rate, k == 0, k + 1 == e->regions.size());
@@ -506,9 +508,7 @@ public:
             g.drawText ("next take goes here", x + 4, rowsEnd - 16, 130, 14, juce::Justification::left);
         }
         if (shownPhX != kNoLine)                                     // the moving playhead, where movePlayhead last put it
-        {
-            g.setColour (theme::playhead); g.fillRect (shownPhX, kRulerH, 2, rowsEnd - kRulerH);
-        }
+            theme::paintPlayhead (g, shownPhX, kRulerH, rowsEnd - kRulerH);
         if (cursorSeconds >= 0)
         {
             g.setColour (theme::text); g.fillRect (xOf (cursorSeconds), kRulerH, 1, rowsEnd - kRulerH);

@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.82.0
+- **The Manuscript UI**: a second look for the whole program, chosen in the main window's Project menu > **UI style** (Fermata style UI / Manuscript UI; remembered). Midnight blue panels with gilt rules, parchment writing in a Renaissance serif (TeX Gyre Pagella, bundled), dark navy keys with gilt writing that turn gilt when lit, gold in the displays and the clocks, take banners in gold with dark ink, faint staves behind the take and edit timelines, a gold playhead with a soft glow, and the page's dark margins in place of the wood. Take and edit numbers stay as numbers. Every window takes the new look at once - it is the same program underneath, nothing moves - and the sun / moon button still gives it a shade darker. The Fermata style UI is unchanged.
+
 ## 2.81.1
 - The take window's whole-take **Denoise...** button (2.77) is gone: ReTouch's Denoise (draw a box, press N) covers it there too, with the project's room tone or a box of the picture. The engine behind it is unchanged.
 

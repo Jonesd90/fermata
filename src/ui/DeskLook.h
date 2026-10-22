@@ -32,6 +32,17 @@ inline Palette makePalette (int t, bool dark = theme::isDark())
     };
     auto k = [t, dark, shadeOf] (juce::uint32 argb) { return theme::deskShade (tint (juce::Colour (argb), t), dark, shadeOf (argb)); };
     Palette p;
+    if (theme::manuscript())
+    {
+        // midnight blue panels and strips, dark navy keys with gilt rules and gilt writing, gold in the displays, parchment for the small print
+        auto n = [dark] (juce::uint32 argb, float shade = 0.75f) { return theme::deskShade (juce::Colour (argb), dark, shade); };
+        p.window = n (0xff161a36); p.strip = n (0xff1b2042); p.stripEdge = juce::Colour (0xff3d2e12); p.key = n (0xff1f2246, 0.85f); p.keyEdge = theme::giltDim();
+        p.keyOn = theme::gilt();
+        p.ink = theme::gilt();      p.cream = theme::parchment();
+        p.disp = juce::Colour (0xff06060f); p.dispEdge = juce::Colour (0xff3d2e12); p.ringOff = n (0xff2b2a4d, 0.85f);
+        p.menu = n (0xff0d0f22);    p.menuEdge = theme::giltDim(); p.cyan = theme::giltBright(); p.knobEdge = juce::Colour (0xff8a6a2a);
+        return p;
+    }
     p.window = k (0xff566b82);   p.strip = k (0xff617890);  p.stripEdge = k (0xff2f3e50); p.key = k (0xff96abc0);  p.keyEdge = k (0xff3d5066);
     p.keyOn = juce::Colour (0xff1a2a32);
     p.ink = k (0xff1b2a3a);      p.cream = juce::Colour (0xffe2d9c0);
@@ -123,6 +134,7 @@ inline void paintCheek (juce::Graphics& g, juce::Rectangle<int> r, bool leftSide
 /** The rail along the bottom of the main window, like the arm rest of a real desk: square along the top, rounded at the bottom corners. */
 inline void paintRail (juce::Graphics& g, juce::Rectangle<int> r)
 {
+    if (theme::manuscript()) { wood::paintBottom (g, r, 10.0f); return; }
     juce::ColourGradient gr (juce::Colour (0xff8c5a32), 0.0f, (float) r.getY(), juce::Colour (0xff6b3f20), 0.0f, (float) r.getBottom(), false);
     juce::Path shape; shape.addRoundedRectangle ((float) r.getX(), (float) r.getY() - 12.0f, (float) r.getWidth(), (float) r.getHeight() + 12.0f, 10.0f);
     g.saveState(); g.reduceClipRegion (r);
@@ -140,14 +152,14 @@ inline void paintRail (juce::Graphics& g, juce::Rectangle<int> r)
 inline int paintNameplate (juce::Graphics& g, juce::Rectangle<int> area)
 {
     const float h = (float) area.getHeight();
-    const juce::Font f (juce::FontOptions ("Georgia", h * 0.78f, juce::Font::bold));
+    const juce::Font f (juce::FontOptions (theme::wordmarkFontName(), h * 0.78f, juce::Font::bold));
     const int textW = juce::roundToInt (juce::GlyphArrangement::getStringWidth (f, "fermata")) + 6;
     const int markW = juce::roundToInt (h * 1.5f);
     const int total = markW + 6 + textW;
     auto r = area.withLeft (area.getRight() - total);
     auto mark = r.removeFromLeft (markW).toFloat().reduced (0.0f, h * 0.08f);
     r.removeFromLeft (6);
-    const juce::Colour brass (0xffe6cf8e), shadow (0x99301a08);
+    const juce::Colour brass (theme::manuscript() ? 0xffd4a84b : 0xffe6cf8e), shadow (theme::manuscript() ? 0xaa000000 : 0x99301a08);
     drawFermataLogo (g, mark.translated (0.0f, 1.0f), shadow, shadow);
     drawFermataLogo (g, mark, brass, brass.brighter (0.2f));
     g.setFont (f);
@@ -191,30 +203,32 @@ public:
             g.fillRect (r.withTop (r.getBottom() - 3.0f));
             g.restoreState();
         }
-        g.setColour ((on ? led.darker (0.6f) : p.keyEdge).withMultipliedAlpha (alpha));
+        g.setColour ((on ? (theme::manuscript() ? theme::giltBright() : led.darker (0.6f)) : p.keyEdge).withMultipliedAlpha (alpha));
         g.drawRoundedRectangle (r, rad, 1.0f);
 
-        const auto ink = (on ? juce::Colours::white : p.ink).withMultipliedAlpha (alpha);
+        const bool ms = theme::manuscript();
+        const auto ink = (on ? (ms ? theme::giltInk() : juce::Colours::white) : p.ink).withMultipliedAlpha (alpha);
+        const bool lightPic = ms ? ! on : on;                                            // the pictures' outlines: white on a dark key, dark on a light one
         const auto text = getButtonText();
         auto area = getLocalBounds().toFloat().reduced (2.0f, 2.0f);
         if (icon != Ic::None && text.isNotEmpty() && area.getHeight() >= 18.0f && area.getWidth() < 3.0f * area.getHeight())   // tall key: the picture over a small caption
         {
             const float capH = juce::jlimit (7.5f, 10.0f, area.getHeight() * 0.36f);         // (smaller on the compact strips of a short screen)
             auto cap = area.removeFromBottom (capH);
-            drawPicture (g, icon, area.reduced (0.0f, 0.5f), on, alpha);
+            drawPicture (g, icon, area.reduced (0.0f, 0.5f), lightPic, alpha);
             g.setColour (ink); g.setFont (juce::FontOptions (capH - 1.5f + (capH < 9.0f ? 0.5f : 0.0f), juce::Font::bold));
             g.drawText (text, cap.toNearestInt(), juce::Justification::centred, false);
         }
         else if (icon != Ic::None && text.isNotEmpty())                                      // wide, short key: the picture beside the text
         {
             auto pic = area.removeFromLeft (area.getHeight() + 2.0f);
-            drawPicture (g, icon, pic.reduced (2.0f), on, alpha);
+            drawPicture (g, icon, pic.reduced (2.0f), lightPic, alpha);
             g.setColour (ink); g.setFont (juce::FontOptions (juce::jmin (11.0f, area.getHeight() * 0.55f), juce::Font::bold));
             g.drawFittedText (text, area.toNearestInt(), juce::Justification::centred, 1);
         }
         else if (icon != Ic::None)                                                           // picture alone
         {
-            drawPicture (g, icon, area.reduced (2.0f), on, alpha);
+            drawPicture (g, icon, area.reduced (2.0f), lightPic, alpha);
         }
         else
         {
@@ -335,7 +349,7 @@ public:
         if (down) fill = fill.darker (0.2f); else if (over) fill = fill.brighter (0.1f);
         g.setColour (fill.withMultipliedAlpha (isEnabled() ? 1.0f : 0.5f)); g.fillRoundedRectangle (r, 4.0f);
         g.setColour (on ? red.darker (0.35f) : red); g.drawRoundedRectangle (r.reduced (0.5f), 4.0f, on ? 1.0f : 2.0f);
-        g.setColour (on ? juce::Colours::white : juce::Colours::black);
+        g.setColour (on ? juce::Colours::white : theme::inkOn (pal().key));
         g.setFont (juce::FontOptions (juce::jmin (12.5f, r.getHeight() * 0.6f), juce::Font::bold));
         g.drawText ("TALK", getLocalBounds(), juce::Justification::centred, false);
     }

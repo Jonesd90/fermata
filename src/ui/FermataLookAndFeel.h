@@ -1,7 +1,9 @@
 #pragma once
 #include "Uikit.h"
 
-namespace td { namespace fontdata { extern const unsigned char interRegular[]; extern const unsigned long interRegularSize; extern const unsigned char interSemiBold[]; extern const unsigned long interSemiBoldSize; } }
+namespace td { namespace fontdata { extern const unsigned char interRegular[]; extern const unsigned long interRegularSize; extern const unsigned char interSemiBold[]; extern const unsigned long interSemiBoldSize;
+                                     extern const unsigned char pagellaRegular[]; extern const unsigned long pagellaRegularSize; extern const unsigned char pagellaBold[]; extern const unsigned long pagellaBoldSize;
+                                     extern const unsigned char pagellaItalic[]; extern const unsigned long pagellaItalicSize; } }
 
 namespace td
 {
@@ -19,8 +21,8 @@ public:
         setColour (juce::ResizableWindow::backgroundColourId, theme::window);
         setColour (juce::TextButton::buttonColourId, theme::button);
         setColour (juce::TextButton::buttonOnColourId, theme::accent);
-        setColour (juce::TextButton::textColourOffId, theme::text);
-        setColour (juce::TextButton::textColourOnId, juce::Colours::white);
+        setColour (juce::TextButton::textColourOffId, theme::manuscript() ? theme::gilt() : theme::text);
+        setColour (juce::TextButton::textColourOnId, theme::manuscript() ? theme::giltInk() : juce::Colours::white);
         setColour (juce::ComboBox::backgroundColourId, theme::field);
         setColour (juce::ComboBox::outlineColourId, theme::border);
         setColour (juce::ComboBox::textColourId, theme::text);
@@ -43,7 +45,7 @@ public:
         setColour (juce::PopupMenu::textColourId, theme::text);
         setColour (juce::PopupMenu::headerTextColourId, theme::dimText);
         setColour (juce::PopupMenu::highlightedBackgroundColourId, theme::accent);
-        setColour (juce::PopupMenu::highlightedTextColourId, juce::Colours::white);
+        setColour (juce::PopupMenu::highlightedTextColourId, theme::manuscript() ? theme::giltInk() : juce::Colours::white);
         setColour (juce::TableHeaderComponent::backgroundColourId, theme::ruler);
         setColour (juce::TableHeaderComponent::textColourId, theme::text);
         setColour (juce::TableHeaderComponent::outlineColourId, theme::border);
@@ -63,18 +65,31 @@ public:
     FermataLookAndFeel() : juce::LookAndFeel_V4 (theme::scheme())
     {
         if (instance() == nullptr) instance() = this;
+        theme::applyDefaultFontName();
         regular  = juce::Typeface::createSystemTypefaceFor (fontdata::interRegular,  (size_t) fontdata::interRegularSize);
         semibold = juce::Typeface::createSystemTypefaceFor (fontdata::interSemiBold, (size_t) fontdata::interSemiBoldSize);
+        serif       = juce::Typeface::createSystemTypefaceFor (fontdata::pagellaRegular, (size_t) fontdata::pagellaRegularSize);
+        serifBold   = juce::Typeface::createSystemTypefaceFor (fontdata::pagellaBold,    (size_t) fontdata::pagellaBoldSize);
+        serifItalic = juce::Typeface::createSystemTypefaceFor (fontdata::pagellaItalic,  (size_t) fontdata::pagellaItalicSize);
         applyTheme();
     }
 
-    /** Everything that does not name a font uses Inter (regular, and semibold for bold text), bundled inside the program. */
+    /** Everything that does not name a font uses Inter (regular, and semibold for bold text), bundled inside the program. The Manuscript UI writes
+        in TeX Gyre Pagella instead (a Palatino: the Renaissance hand), with its own bold and italic. */
     juce::Typeface::Ptr getTypefaceForFont (const juce::Font& font) override
     {
         const auto n = font.getTypefaceName();
-        if ((n == juce::Font::getDefaultSansSerifFontName() || n.isEmpty()) && regular != nullptr)
+        if (n == "<Sans-Serif-Manuscript>" && serif != nullptr)                  // the Manuscript UI's own name for its face (see theme::sansName)
+            return font.isItalic() && serifItalic != nullptr ? serifItalic : font.isBold() && serifBold != nullptr ? serifBold : serif;
+        if (n == "<Manuscript-Italic>" && serifItalic != nullptr) return serifItalic;
+        if ((n == "<Sans-Serif>" || n.isEmpty()) && regular != nullptr)
             return font.isBold() && semibold != nullptr ? semibold : regular;
         return juce::LookAndFeel_V4::getTypefaceForFont (font);
+    }
+    /** The Manuscript UI's display face (italic Pagella) for a title, a wordmark or a heading; the ordinary bold face in the Fermata style. */
+    static juce::Font displayFont (float height)
+    {
+        return juce::Font (juce::FontOptions (height, theme::manuscript() ? juce::Font::italic | juce::Font::bold : juce::Font::bold));
     }
 
     juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override
@@ -88,20 +103,44 @@ public:
     void drawButtonText (juce::Graphics& g, juce::TextButton& b, bool, bool) override
     {
         const auto fill = b.findColour (b.getToggleState() ? juce::TextButton::buttonOnColourId : juce::TextButton::buttonColourId);
+        if (theme::manuscript())
+        {
+            // gilt writing on the dark keys, dark ink on a lit (gilt) key, and dark ink on any key given a light colour of its own (a green Record, say)
+            const bool light = fill.getPerceivedBrightness() > 0.6f;
+            const bool own = ! b.getToggleState() && ! theme::isNavyKey (fill);
+            g.setColour ((light ? theme::giltInk() : own ? juce::Colours::white : theme::gilt()).withMultipliedAlpha (b.isEnabled() ? 1.0f : 0.5f));
+        }
+        else
         g.setColour ((fill.getPerceivedBrightness() > 0.6f ? juce::Colour (0xff14181f) : juce::Colours::white).withMultipliedAlpha (b.isEnabled() ? 1.0f : 0.5f));
         g.setFont (getTextButtonFont (b, b.getHeight()));
         g.drawFittedText (b.getButtonText(), b.getLocalBounds().reduced (4, 0), juce::Justification::centred, 1);
+    }
+
+    /** A key of the Manuscript UI: a dark navy key with a gilt rule round it and gilt writing; lit, it is gilt itself with dark writing. A key with a
+        colour of its own (red Record, green On) keeps that colour, with the gilt rule. */
+    static void drawManuscriptKey (juce::Graphics& g, juce::Rectangle<float> rf, float rad, juce::Colour fill, bool on, bool over, bool down, float alpha)
+    {
+        const bool plain = theme::isNavyKey (fill);
+        juce::Colour top = plain ? juce::Colour (0xff262a55) : fill.brighter (0.12f), bottom = plain ? juce::Colour (0xff15183a) : fill.darker (0.12f);
+        juce::Colour edge = theme::giltDim();
+        if (on) { top = theme::giltBright().interpolatedWith (theme::gilt(), 0.4f); bottom = juce::Colour (0xffa67c2a); edge = theme::giltBright(); }
+        if (down) { top = top.darker (0.25f); bottom = bottom.darker (0.25f); }
+        else if (over) { top = top.brighter (0.18f); bottom = bottom.brighter (0.18f); edge = on ? theme::giltBright() : theme::gilt(); }
+        g.setGradientFill (juce::ColourGradient (top.withMultipliedAlpha (alpha), 0.0f, rf.getY(), bottom.withMultipliedAlpha (alpha), 0.0f, rf.getBottom(), false));
+        g.fillRoundedRectangle (rf, rad);
+        g.setColour (edge.withMultipliedAlpha (alpha)); g.drawRoundedRectangle (rf, rad, 1.0f);
     }
 
     void drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour& bg, bool highlighted, bool down) override
     {
         auto r = b.getLocalBounds();
         auto c = bg;
+        const auto rf = r.toFloat().reduced (0.5f);
+        const float rad = juce::jmin (4.0f, rf.getHeight() * 0.3f);     // the desk's keys have softly rounded corners
+        if (theme::manuscript()) { drawManuscriptKey (g, rf, juce::jmin (2.5f, rad), bg, b.getToggleState(), highlighted, down, b.isEnabled() ? 1.0f : 0.5f); return; }
         if (! b.isEnabled()) c = c.withMultipliedAlpha (0.5f);
         else if (down) c = c.darker (0.25f);
         else if (highlighted) c = c.brighter (0.18f);
-        const auto rf = r.toFloat().reduced (0.5f);
-        const float rad = juce::jmin (4.0f, rf.getHeight() * 0.3f);     // the desk's keys have softly rounded corners
         g.setColour (c);
         g.fillRoundedRectangle (rf, rad);
         g.setColour (b.getToggleState() ? c.brighter (0.4f) : theme::border);
@@ -114,7 +153,7 @@ public:
         auto box = juce::Rectangle<int> (2, (b.getHeight() - s) / 2, s, s);
         g.setColour (theme::field);
         g.fillRect (box);
-        g.setColour (highlighted ? theme::text : theme::border);
+        g.setColour (highlighted ? (theme::manuscript() ? theme::giltBright() : theme::text) : theme::border);
         g.drawRect (box, 1);
         if (b.getToggleState())
         {
@@ -174,7 +213,7 @@ public:
             g.setColour (fill);                      g.fillRect (x, cy - 2, juce::jmax (0, p - x), 4);
             g.setColour (theme::border);             g.drawRect (x, cy - 2, w, 4, 1);
             auto th = juce::Rectangle<int> (p - 4, cy - 9, 9, 18);
-            g.setColour (juce::Colour (0xffb7bfca)); g.fillRect (th);
+            g.setColour (thumbColour()); g.fillRect (th);
             g.setColour (juce::Colour (0xff10141a));               g.drawRect (th, 1);
         }
         else
@@ -186,11 +225,14 @@ public:
             g.setColour (theme::border.withAlpha (0.6f));
             for (int i = 0; i <= 8; ++i) { const int ty = y + (int) ((double) h * i / 8.0); g.fillRect (cx + 6, ty, 5, 1); g.fillRect (cx - 10, ty, 5, 1); }
             auto th = juce::Rectangle<int> (cx - 12, p - 6, 24, 12);
-            g.setColour (juce::Colour (0xffb7bfca)); g.fillRect (th);
+            g.setColour (thumbColour()); g.fillRect (th);
             g.setColour (juce::Colour (0xff10141a));               g.drawRect (th, 1);
             g.fillRect (th.getX() + 2, th.getCentreY(), th.getWidth() - 4, 1);
         }
     }
+
+    /** The thumb of a slider: pale grey in the Fermata style, parchment in the Manuscript UI. */
+    static juce::Colour thumbColour() { return theme::manuscript() ? theme::parchment() : juce::Colour (0xffb7bfca); }
 
     void drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos, float startA, float endA, juce::Slider&) override
     {
@@ -231,12 +273,12 @@ public:
         g.fillRect (r);
         g.setColour (theme::border); g.drawRect (r, 1);
         if (front) { g.setColour (theme::accent); g.fillRect (r.getX(), r.getY(), r.getWidth(), 3); }
-        g.setColour (theme::text);
+        g.setColour (front && theme::manuscript() ? theme::giltBright() : theme::text);
         g.setFont (juce::Font (juce::FontOptions (14.5f, front ? juce::Font::bold : juce::Font::plain)));
         g.drawText (b.getButtonText(), r.reduced (4, 0), juce::Justification::centred, true);
     }
     int getTabButtonBestWidth (juce::TabBarButton& b, int) override { return juce::jmax (110, b.getButtonText().length() * 9 + 28); }
 private:
-    juce::Typeface::Ptr regular, semibold;
+    juce::Typeface::Ptr regular, semibold, serif, serifBold, serifItalic;
 };
 } // namespace td

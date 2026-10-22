@@ -286,6 +286,7 @@ public:
         {
             g.setColour ((i & 1) ? theme::waveAlt : theme::wave);
             g.fillRect (0, top + (int) i * rowH, getWidth(), rowH);
+            theme::paintStaff (g, { 0, top + (int) i * rowH, getWidth(), rowH });                                         // (the Manuscript UI: staves)
         }
         for (int i = (int) tracks.size(), y = top + (int) tracks.size() * rowH; y < getHeight(); ++i, y += rowH)       // empty rows carry on to the bottom of the window
         {
@@ -339,9 +340,10 @@ public:
             const bool picked = isTakeSelected (grp.id);
             if (lanesVisible)
             {
-                g.setColour (live ? juce::Colour (0xffb03030) : (picked ? theme::accent.darker (0.45f) : theme::accent));
+                const auto plate = live ? juce::Colour (0xffb03030) : (picked ? theme::accent.darker (0.45f) : theme::accent);
+                g.setColour (plate);
                 g.fillRect (lane);
-                g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+                g.setColour (theme::manuscript() ? theme::inkOn (plate) : juce::Colours::white); g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
                 g.drawText (w->displayName (grp), lane.reduced (6, 0), juce::Justification::centredLeft, true);
             }
             if (! live && lanesVisible)                     // the take's fades (25 ms unless changed): drag the top corners
@@ -456,10 +458,7 @@ public:
                 }
             // playhead
             if (shownPhX != kNoLine && playhead >= 0 && app.playInfo.kind != AppContext::PlayInfo::Kind::Edit && ! app.playInfo.windowTimeline && app.playInfo.windowId == windowId && app.playInfo.id == grp.id)
-            {
-                g.setColour (theme::playhead);
-                g.fillRect (shownPhX, kRulerH, 2, y1 - kRulerH);              // (where movePlayhead last put it)
-            }
+                theme::paintPlayhead (g, shownPhX, kRulerH, y1 - kRulerH);    // (where movePlayhead last put it)
             if (live)                                           // while recording the playhead is the end of the growing take
             {
                 g.setColour (juce::Colour (0xffd32f2f));
@@ -498,9 +497,7 @@ public:
             }
 
         if (shownPhX != kNoLine && playhead >= 0 && app.playInfo.kind == AppContext::PlayInfo::Kind::Take && app.playInfo.windowTimeline && app.playInfo.windowId == windowId)
-        {                                                                          // the whole window is playing: one moving line across every row
-            g.setColour (theme::playhead); g.fillRect (shownPhX, kRulerH, 2, getHeight() - kRulerH);
-        }
+            theme::paintPlayhead (g, shownPhX, kRulerH, getHeight() - kRulerH);    // the whole window is playing: one moving line across every row
         {   // the playhead: set by clicking the ruler; Space plays from here, IN / OUT are marked here
             const int px = xOf (w->playheadSeconds);
             g.setColour (theme::text); g.fillRect (px, kRulerH, 1, getHeight() - kRulerH);

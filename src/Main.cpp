@@ -105,6 +105,7 @@ public:
             if (ctx == nullptr) return;
             if (auto* st = ctx->props.getUserSettings()) { st->setValue ("deskDark", dark); ctx->props.saveIfNeeded(); }
         };
+        if (auto* st = ctx->props.getUserSettings()) if (const int us = st->getIntValue ("uiStyle", 0); us != 0) applyStyle (us);          // Project > UI style (the Manuscript UI)
         if (auto* st = ctx->props.getUserSettings()) if (const int dc = st->getIntValue ("deskColour", 0); dc != 0) applyDeskColour (dc);   // Project > Colour theme
         if (auto* st = ctx->props.getUserSettings()) if (st->getBoolValue ("deskDark", false)) switchTheme (true);     // the dark look (the desk a shade darker)
         if (auto* st = ctx->props.getUserSettings()) CoreReservation::get().configure (loadCoreReservationSettings (*st));      // the CPU cores kept for the audio (off unless switched on)

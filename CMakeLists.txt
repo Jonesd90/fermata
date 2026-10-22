@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-set(FERMATA_VERSION 2.81.1)        # the ONE place the version number is changed (see CHANGELOG.md)
+set(FERMATA_VERSION 2.82.0)        # the ONE place the version number is changed (see CHANGELOG.md)
 project(Fermata VERSION ${FERMATA_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -56,6 +56,7 @@ target_sources(Fermata PRIVATE
     src/ui/FixTools.cpp
     src/ui/MasteringWindow.cpp
     src/ui/FontData.cpp
+    src/ui/FontData2.cpp
     src/ui/MainWindow.cpp
     src/ui/MediaWindow.cpp
     src/ui/WinOwner.cpp

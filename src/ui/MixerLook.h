@@ -23,6 +23,13 @@ inline MixTheme makeMixTheme (bool dark)
     t.dim = juce::Colour (0xffc3ccd6);  t.field = juce::Colour (0xff05080c); t.insertOn = juce::Colour (0xff2b6a4c);
     t.insertByp = juce::Colour (0xff7a6420); t.groove = juce::Colour (0xff0c1118); t.key = k (0xff96abc0, 0.8f);
     t.ringTrack = theme::deskShade (theme::desk (0xff2f3e50), true, 0.7f);
+    if (theme::manuscript())
+    {
+        auto n = [dark] (juce::uint32 argb, float shade = 0.75f) { return theme::deskShade (juce::Colour (argb), dark, shade); };
+        t.bg = n (0xff10122a); t.strip = n (0xff181c3a); t.well = n (0xff0e1026, 0.85f);
+        t.line = juce::Colour (0xff4a3a18); t.soft = n (0xff2b2a4d, 0.85f); t.text = theme::parchment(); t.dim = juce::Colour (0xffb89a5a);
+        t.field = juce::Colour (0xff06060f); t.groove = juce::Colour (0xff06060f); t.key = n (0xff1f2246, 0.85f); t.ringTrack = n (0xff2b2a4d, 0.85f);
+    }
     return t;
 }
 
@@ -65,6 +72,7 @@ public:
         if (! b.isEnabled()) c = c.withMultipliedAlpha (0.5f);
         else if (down) c = c.darker (0.2f);
         else if (highlighted) c = c.brighter (t.ground ? 0.2f : 0.12f);
+        if (theme::manuscript()) { FermataLookAndFeel::drawManuscriptKey (g, r.toFloat().reduced (0.5f), 1.5f, bg, b.getToggleState(), highlighted, down, b.isEnabled() ? 1.0f : 0.5f); return; }
         g.setColour (c);                                       g.fillRect (r);
         g.setColour (juce::Colours::white.withAlpha (t.ground ? 0.09f : 0.5f)); g.fillRect (r.getX() + 1, r.getY() + 1, r.getWidth() - 2, 1);    // a fine bevel along the top
         g.setColour (b.getToggleState() ? c.darker (0.55f) : t.line); g.drawRect (r, 1);

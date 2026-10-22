@@ -17,7 +17,7 @@ public:
         auto b = getLocalBounds().toFloat();
         drawFermataLogo (g, b.removeFromLeft (b.getHeight() * 1.3f).reduced (1.0f, b.getHeight() * 0.12f), desk::pal().cream, desk::pal().cyan);
         g.setColour (desk::pal().cream);
-        g.setFont (juce::Font (juce::FontOptions ("Georgia", juce::jmin (24.0f, b.getHeight() * 0.72f), juce::Font::bold)));
+        g.setFont (juce::Font (juce::FontOptions (theme::wordmarkFontName(), juce::jmin (24.0f, b.getHeight() * 0.72f), juce::Font::bold)));
         g.drawText ("fermata", b.toNearestInt().withTrimmedLeft (5), juce::Justification::centredLeft, false);
     }
 };
@@ -346,6 +346,7 @@ private:
     std::vector<int> headerSeps;                       // x of the thin lines between the parts of the top row
     juce::Rectangle<int> headerLine;                   // the one line of the top row
     void pickColour (int index);
+    void pickStyle (int style);                                     // Project > UI style
     void chooseBackupFolder();                         // Project > Second recording drive                       // the colour of the desk (chosen in the Project menu)
     StageSpeakerPanel stagePanel { app };
     juce::OwnedArray<juce::TextButton> auditionButtons;

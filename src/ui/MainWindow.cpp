@@ -650,7 +650,7 @@ int MainComponent::menuBarBottomOnScreen() const { return localAreaToGlobal (juc
 void MainComponent::paint (juce::Graphics& g)
 {
     const auto& p = desk::pal();
-    g.fillAll (p.window);
+    theme::paintPanel (g, getLocalBounds(), p.window);                                   // (the Manuscript UI: a glow from the top of the page)
     g.setColour (p.menu); g.fillRect (0, 0, getWidth(), menuBarH);                       // the menu bar
     g.setColour (p.menuEdge); g.fillRect (0, menuBarH - 1, getWidth(), 1);
     // the line under the top row (the Fermata mark, project and displays, the stage speaker boxes)
@@ -952,10 +952,16 @@ void MainComponent::showProjectMenu()
     }
     m.addSeparator();
     auto picked = std::make_shared<int> (-1);
+    {
+        juce::PopupMenu style;                                                   // the look of the whole program: the desk, or the illuminated manuscript
+        for (int i = 0; i < 2; ++i) style.addItem (20 + i, theme::styleName (i), true, theme::styleIndex() == i);
+        m.addSubMenu ("UI style", style);
+    }
     m.addCustomItem (11, std::make_unique<desk::SwatchRow> (desk::themeIndex(), picked), nullptr, "Colour theme");
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&projectButton), [this, workKey, picked] (int r)
     {
         if (r == 11) { if (*picked >= 0) pickColour (*picked); return; }
+        if (r == 20 || r == 21) { pickStyle (r - 20); return; }
         if (r == 12) { chooseBackupFolder(); return; }
         if (r == 13)
         {
@@ -1007,6 +1013,20 @@ void MainComponent::chooseBackupFolder()
         if (auto* st = app.props.getUserSettings()) { st->setValue ("backupFolder", dir.getFullPathName()); app.props.saveIfNeeded(); }
         app.setNotice ("Every take is now also copied to " + dir.getFullPathName() + " while it records.");
     });
+}
+
+void MainComponent::pickStyle (int style)
+{
+    if (style == theme::styleIndex()) return;
+    applyStyle (style);                                              // every window takes the new look
+    if (auto* st = app.props.getUserSettings()) { st->setValue ("uiStyle", theme::styleIndex()); app.props.saveIfNeeded(); }
+    for (auto* r : inputRows) r->refreshFromModel();
+    for (auto* r : outputRows) r->refreshFromModel();
+    resized(); repaint();
+    if (menuStrip != nullptr) menuStrip->repaint();
+    for (auto* f : { &flagPre, &flagCr, &flagPb }) f->repaint();
+    for (auto* f : { &flagT, &flagE, &flagM }) f->repaint();
+    for (auto* b : { &projectBox, &rateBox, &depthBox, &diskBox }) b->repaint();
 }
 
 void MainComponent::pickColour (int index)

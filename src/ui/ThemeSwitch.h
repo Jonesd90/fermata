@@ -33,6 +33,25 @@ inline void recolour (juce::Component& c, const std::array<juce::uint32, 18>& ol
     }
     for (auto* ch : c.getChildren()) if (ch != nullptr) recolour (*ch, oldP, newP);
 }
+
+/** The same font again, made afresh: a Font keeps the typeface it first resolved, so after a change of UI style (another default typeface) every
+    label and text box that holds a font is given a new one, which resolves to the new face. (Without this an old font shaped with the old face
+    and a new one with the new face would share the glyph cache, and the writing came out as the wrong letters.) */
+inline juce::Font refreshed (const juce::Font& f)
+{
+    const auto name = theme::isSansName (f.getTypefaceName()) ? juce::String (theme::sansName (theme::manuscript())) : f.getTypefaceName();
+    auto o = juce::FontOptions (name, f.getTypefaceStyle(), f.getHeight()).withKerningFactor (f.getExtraKerningFactor()).withHorizontalScale (f.getHorizontalScale());
+    if (f.isUnderlined()) o = o.withUnderline (true);
+    return juce::Font (o);
+}
+inline void refont (juce::Component& c)
+{
+    // (a font that only differs in its typeface counts as the same font, so a different one goes in first, or nothing would change)
+    const juce::Font other (juce::FontOptions (1.0f));
+    if (auto* l = dynamic_cast<juce::Label*> (&c)) { const auto f = refreshed (l->getFont()); l->setFont (other); l->setFont (f); }
+    else if (auto* e = dynamic_cast<juce::TextEditor*> (&c)) { const auto f = refreshed (e->getFont()); e->applyFontToAllText (other, true); e->applyFontToAllText (f, true); }
+    for (auto* ch : c.getChildren()) if (ch != nullptr) refont (*ch);
+}
 }
 
 /** Switches the whole program between the dark and the light look: every window, the mixers, and the choice is remembered. */
@@ -74,6 +93,32 @@ inline void applyDeskColour (int index)
         {
             themeswitch::recolour (*c, oldP, newP);
             c->sendLookAndFeelChange();
+            c->repaint();
+        }
+}
+
+/** Switches the whole interface between the Fermata style UI (0) and the Manuscript UI (1): the palette, the desk, the mixers, the type. Every open
+    window takes the new look at once (a few labels keep their old typeface until their window is opened again). */
+inline void applyStyle (int style)
+{
+    style = juce::jlimit (0, 1, style);
+    const auto oldP = theme::snapshot();
+    theme::styleIndex() = style;
+    theme::applyDefaultFontName();                               // new fonts take the style's face (under its own name: see theme::sansName)
+    desk::setTheme (desk::themeIndex());
+    theme::setDark (theme::isDark());
+    setMixDark (theme::isDark());
+    juce::Typeface::clearTypefaceCache();                        // the default typeface is another one now
+    if (auto* l = FermataLookAndFeel::instance()) l->applyTheme();
+    const auto newP = theme::all();
+    auto& d = juce::Desktop::getInstance();
+    for (int i = 0; i < d.getNumComponents(); ++i)
+        if (auto* c = d.getComponent (i))
+        {
+            themeswitch::recolour (*c, oldP, newP);
+            themeswitch::refont (*c);
+            c->sendLookAndFeelChange();
+            c->resized();
             c->repaint();
         }
 }
