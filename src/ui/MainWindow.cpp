@@ -23,8 +23,8 @@ public:
         driver.setJustificationType (juce::Justification::centredLeft);
         driver.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 9.0f, juce::Font::plain));
         driver.setColour (juce::Label::textColourId, colour);
-        driver.setMinimumHorizontalScale (0.7f);
-        driver.setInterceptsMouseClicks (false, false);
+        driver.setMinimumHorizontalScale (0.6f);
+        driver.setInterceptsMouseClicks (true, false);           // (so its tooltip - the device and the full driver name - shows)
         driver.setTooltip ("The name the audio driver gives this input (it cannot be changed)");
         alias.setFont (juce::FontOptions (12.5f, juce::Font::bold));
         alias.setColour (juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
@@ -101,8 +101,13 @@ public:
         if (idx >= (int) app.project.inputs.size()) return;
         auto& in = app.project.inputs[(size_t) idx];
         updating = true;
-        const auto drv = juce::String (idx + 1).paddedLeft ('0', 2) + juce::String (juce::CharPointer_UTF8 (" \xc2\xb7 ")) + in.driverName;
-        if (driver.getText() != drv) driver.setText (drv, juce::dontSendNotification);
+        const auto drv = juce::String (idx + 1).paddedLeft ('0', 2) + juce::String (juce::CharPointer_UTF8 (" \xc2\xb7 ")) + app.project.inputShortName (idx);   // "12 · THAP-12" (the device and its channel), else the driver's name
+        if (driver.getText() != drv)
+        {
+            driver.setText (drv, juce::dontSendNotification);
+            const auto dev = app.project.inputDeviceLabel (idx);
+            driver.setTooltip ((dev.isNotEmpty() ? "Device " + dev + " (from the Preamps setup / ANEMAN's patching). " : juce::String()) + "The audio driver's own name for this input: " + in.driverName);
+        }
         if (! alias.hasKeyboardFocus (false) && alias.getText() != in.name) { alias.setText (in.name, juce::dontSendNotification); alias.moveCaretToTop (false); }
         if (std::abs (gain.getValue() - in.preamp.gainDb) > 0.01 && ! gain.isMouseButtonDown()) gain.setValue (in.preamp.gainDb, juce::dontSendNotification);
         gain.setDoubleClickReturnValue (true, juce::jlimit (0.0, 66.0, 20.0 - (double) in.preamp.shownGainOffset()));      // (20 dB as the readout shows it: the MT48's Pad moves the scale)
@@ -186,7 +191,7 @@ public:
         r.removeFromTop (z.top);
         dispArea = r.removeFromTop (z.disp);
         alias.setBounds (dispArea.reduced (6, 0).removeFromTop (juce::roundToInt (z.disp * 0.6f)).withTrimmedTop (z.disp >= 46 ? 5 : 3));
-        driver.setBounds (dispArea.reduced (5, 0).removeFromBottom (juce::jmin (18, z.disp / 3)));
+        driver.setBounds (dispArea.reduced (3, 0).removeFromBottom (juce::jmin (18, z.disp / 3)));     // (the whole width of the display: a long name shrinks before it is cut)
         gainCapArea = r.removeFromTop (z.gainCap);                                     // "GAIN" is drawn here
         gain.setBounds (r.removeFromTop (z.knob).withSizeKeepingCentre (z.knob, z.knob));
         r.removeFromTop (z.afterKnob);

@@ -380,7 +380,55 @@ String Project::inputLabel (int i) const
 {
     if (! juce::isPositiveAndBelow (i, (int) inputs.size())) return "(none)";
     const auto& in = inputs[(size_t) i];
-    return String (i + 1) + " - " + (in.driverName.isNotEmpty() ? in.driverName : "Input " + String (i + 1)) + (in.name.isNotEmpty() ? " - " + in.name : String());
+    return String (i + 1) + " - " + inputShortName (i) + (in.name.isNotEmpty() ? " - " + in.name : String());
+}
+
+String Project::inputDeviceLabel (int i) const
+{
+    if (! juce::isPositiveAndBelow (i, (int) inputs.size())) return {};
+    juce::String dev; int ch = 0;
+    if (preampDriver != nullptr && preampDriver->deviceOf (i, dev, ch) && dev.isNotEmpty()) return dev + "-" + String (ch + 1);
+    // not connected (or no driver yet): the setup's own patching
+    for (auto& d : preampDevices)
+        if (! d.map.empty()) { for (auto& pr : d.map) if (pr.second == i && d.name.isNotEmpty()) return d.name + "-" + String (pr.first + 1); }
+    const PreampDeviceCfg* best = nullptr;                               // a device by its first input covers the inputs from there to the next device's first input
+    for (auto& d : preampDevices)
+        if (d.map.empty() && d.name.isNotEmpty() && d.firstInput <= i && (best == nullptr || d.firstInput > best->firstInput)) best = &d;
+    if (best == nullptr) return {};
+    for (auto& d : preampDevices) if (&d != best && d.map.empty() && d.firstInput > best->firstInput && d.firstInput <= i) return {};
+    return best->name + "-" + String (i - best->firstInput + 1);
+}
+
+String Project::driverNamePrefix() const
+{
+    if (inputs.size() < 2) return {};
+    String p = inputs.front().driverName;
+    for (auto& in : inputs)
+    {
+        int n = 0;
+        while (n < p.length() && n < in.driverName.length() && p[n] == in.driverName[n]) ++n;
+        p = p.substring (0, n);
+    }
+    // only whole words come off, and what is left must still say something (a letter in it): "MAD Input 12" -> "Input 12", never "12"
+    for (int sp = p.lastIndexOfChar (' '); sp > 0; sp = p.substring (0, sp).lastIndexOfChar (' '))
+    {
+        const auto cand = p.substring (0, sp + 1);
+        bool ok = true;
+        for (auto& in : inputs) ok = ok && in.driverName.length() > cand.length() && in.driverName.substring (cand.length()).containsAnyOf ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ");
+        if (ok) return cand;
+    }
+    return {};
+}
+
+String Project::inputShortName (int i) const
+{
+    if (! juce::isPositiveAndBelow (i, (int) inputs.size())) return {};
+    const auto dev = inputDeviceLabel (i);
+    if (dev.isNotEmpty()) return dev;
+    const auto& in = inputs[(size_t) i];
+    if (in.driverName.isEmpty()) return "Input " + String (i + 1);
+    const auto pre = driverNamePrefix();
+    return pre.isNotEmpty() && in.driverName.startsWith (pre) ? in.driverName.substring (pre.length()) : in.driverName;
 }
 
 String Project::outputLabel (int i) const

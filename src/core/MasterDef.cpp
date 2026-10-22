@@ -55,6 +55,9 @@ var MasteringDef::toVar() const
         put (s, "mp3Kbps", vm.mp3Kbps); put (s, "mp3Vbr", vm.mp3Vbr); put (s, "oggQuality", vm.oggQuality); put (s, "flacLevel", vm.flacLevel); put (s, "extraFormats", vm.extraFormats); put (s, "normalise", vm.normalise);
         put (s, "peak", (double) vm.peakDb); put (s, "together", vm.peakTogether); put (s, "number", vm.numberFiles); put (s, "form", vm.feedbackForm); put (s, "formAudio", vm.formAudio); put (s, "folder", vm.folder);
         put (s, "formRate", vm.formRate); put (s, "formBits", vm.formBits); put (s, "formFolder", vm.formFolder); put (s, "formSingle", vm.formSingle);
+        put (s, "loudnessMode", vm.loudnessMode); put (s, "targetLufs", (double) vm.targetLufs); put (s, "ceilingDbTp", (double) vm.ceilingDbTp);
+        put (s, "formNormalise", vm.formNormalise); put (s, "formLoudnessMode", vm.formLoudnessMode); put (s, "formPeak", (double) vm.formPeakDb);
+        put (s, "formTargetLufs", (double) vm.formTargetLufs); put (s, "formCeilingDbTp", (double) vm.formCeilingDbTp); put (s, "formTogether", vm.formTogether);
         put (s, "album", tagsToVar (vm.album));
         put (root, "vm", s);
     }
@@ -103,6 +106,14 @@ void MasteringDef::fromVar (const var& root)
         vm.normalise = s["normalise"].isVoid() ? true : (bool) s["normalise"]; vm.peakDb = s["peak"].isVoid() ? -1.0f : (float) (double) s["peak"];
         vm.peakTogether = (bool) s["together"]; vm.numberFiles = s["number"].isVoid() ? true : (bool) s["number"]; vm.feedbackForm = (bool) s["form"]; vm.formAudio = juce::jlimit (0, 2, (int) s["formAudio"]); vm.folder = s["folder"].toString();
         vm.formRate = s["formRate"].isVoid() ? 0.0 : (double) s["formRate"]; vm.formBits = (int) s["formBits"] == 16 ? 16 : 24; vm.formFolder = s["formFolder"].toString(); vm.formSingle = (bool) s["formSingle"];
+        vm.loudnessMode = juce::jlimit (0, 2, (int) s["loudnessMode"]);
+        vm.targetLufs = s["targetLufs"].isVoid() ? -16.0f : juce::jlimit (-40.0f, 0.0f, (float) (double) s["targetLufs"]);
+        vm.ceilingDbTp = s["ceilingDbTp"].isVoid() ? -1.0f : juce::jlimit (-20.0f, 0.0f, (float) (double) s["ceilingDbTp"]);
+        vm.formNormalise = s["formNormalise"].isVoid() ? true : (bool) s["formNormalise"]; vm.formLoudnessMode = juce::jlimit (0, 2, (int) s["formLoudnessMode"]);
+        vm.formPeakDb = s["formPeak"].isVoid() ? -1.0f : juce::jlimit (-60.0f, 0.0f, (float) (double) s["formPeak"]);
+        vm.formTargetLufs = s["formTargetLufs"].isVoid() ? -16.0f : juce::jlimit (-40.0f, 0.0f, (float) (double) s["formTargetLufs"]);
+        vm.formCeilingDbTp = s["formCeilingDbTp"].isVoid() ? -1.0f : juce::jlimit (-20.0f, 0.0f, (float) (double) s["formCeilingDbTp"]);
+        vm.formTogether = (bool) s["formTogether"];
         vm.album = tagsFromVar (s["album"]);
     }
     if (auto* a = root["items"].getArray())

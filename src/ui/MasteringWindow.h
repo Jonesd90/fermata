@@ -10,6 +10,26 @@ namespace td
 class MasterListPanel;
 class MasterTimeline;
 class MasterPqTable;
+
+/** The LEVEL box of the Virtual Master tab and of the Listening copy tab (each has its own settings): Set the level - the peak at a figure (as
+    always), EBU R 128 (-23 LUFS, true peak no higher than -1 dBTP), or your own loudness target with a true-peak ceiling - and per album (one
+    gain, measured as one programme, the balance kept) or per track. 'forms' = the Listening copy tab's fields. */
+class LevelBox : public juce::Component
+{
+public:
+    LevelBox (std::function<MasterExportSettings&()> settings, bool forms, std::function<void()> changed);
+    void refresh();                                     // the controls show the settings
+    void resized() override;
+    static constexpr int kHeight = 4 * 26;
+    juce::String summary() const;                       // "EBU R 128 (-23 LUFS, -1 dBTP), per album"
+private:
+    void write();
+    MasterExportSettings& vm() const { return get(); }
+    std::function<MasterExportSettings&()> get; bool forms; std::function<void()> onChange;
+    juce::ToggleButton onBox { "Set the level:" }, albumBox { "Per album: one gain for all the files (measured as one programme; they keep their balance)" }, trackBox { "Per track: every file reaches the level on its own" };
+    juce::ComboBox modeBox; juce::TextEditor valueEditor, ceilingEditor; juce::Label valueUnit, ceilingCaption, ceilingUnit; juce::TextButton picks { "Presets" };
+    bool updating = false;
+};
 struct MasterField;
 
 /** The outline of an edit's audio (the loudest level in each small slice), drawn inside its box on the DDP timeline. */
@@ -109,7 +129,12 @@ private:
                        individualToggle { "Individually: every file reaches the peak level on its own" }, numberToggle { "Number the files: 01 - name" };
     juce::TextEditor peakEditor, folderEditor;
     juce::Label peakUnit;
-    juce::TextButton chooseButton { "Choose folder..." }, exportButton { "Export" }, showButton { "Show in folder" };
+    juce::TextButton chooseButton { "Choose folder..." }, exportButton { "Export" }, showButton { "Show in folder" }, reportButton { "Loudness report" }, formReportButton { "Loudness report" };
+    LevelBox levelBox, formLevelBox;
+    juce::String lastReport;                               // the loudness report of the last export (the Loudness report button)
+    void showReport();
+    /** The loudness check: a piece that cannot reach the target under the ceiling. The job waits for the answer (retain / ignore / cancel). */
+    void askLoudness (const LoudnessCheck&);
     juce::OwnedArray<MasterField> albumFields, fileFields;
     juce::Viewport vmSettings;
     struct VmHolder : juce::Component { } vmHolder;

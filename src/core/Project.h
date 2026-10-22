@@ -149,6 +149,13 @@ public:
     void syncWithDevice (const juce::StringArray& inputNames, const juce::StringArray& outputNames);
     /** The name to show for input i: your name for it, falling back to the driver's. */
     juce::String inputLabel (int i) const;
+    /** The device behind a driver input and its channel on it, "THAP-12", "Anubis-2": from the preamp driver when the device is connected, else from
+        the Preamps setup (ANEMAN's patching, or the device's first input and the ones that follow it up to the next device). "" when no device covers it. */
+    juce::String inputDeviceLabel (int i) const;
+    /** The short name of a driver input for the strips and the lists: the device label, or else the driver's own name without the part every input's
+        name begins with ("MAD Input 12" -> "Input 12" when they all start "MAD "). */
+    juce::String inputShortName (int i) const;
+    juce::String driverNamePrefix() const;
     /** Sets the optional name of an input; mono tracks on it that still have an automatic name follow it (so it shows at the top of the mixer strip). */
     void setInputName (int i, const juce::String& name);
     juce::String outputLabel (int i) const;

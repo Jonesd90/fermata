@@ -40,6 +40,17 @@ struct MasterExportSettings
     bool         normalise = true;
     float        peakDb = -1.0f;
     bool         peakTogether = false;          // false: every file reaches the peak level on its own. true: one gain for all (the loudest reaches it)
+    /** How the level is set when 'normalise' is on: 0 = the peak at peakDb (as always); 1 = EBU R 128 (-23 LUFS integrated, true peak no higher than
+        -1 dBTP); 2 = your own target (targetLufs) with a true-peak ceiling (ceilingDbTp). 'peakTogether' then means per album (one gain, measured as one
+        programme) rather than per track. A piece that cannot reach the target without its true peak going over the ceiling is put to the user before
+        anything is written (see MasterJobSpec::loudnessDecision). */
+    int          loudnessMode = 0;
+    float        targetLufs = -16.0f, ceilingDbTp = -1.0f;
+    static constexpr float kR128Lufs = -23.0f, kR128CeilingDbTp = -1.0f;
+    float        wantedLufs() const noexcept    { return loudnessMode == 1 ? kR128Lufs : targetLufs; }
+    float        wantedCeiling() const noexcept { return loudnessMode == 1 ? kR128CeilingDbTp : ceilingDbTp; }
+    // the Listening copy tab's own levels (B: a reviewer's laptop wants a loudness, the masters want their peaks): the same choices
+    bool         formNormalise = true; int formLoudnessMode = 0; float formPeakDb = -1.0f, formTargetLufs = -16.0f, formCeilingDbTp = -1.0f; bool formTogether = false;
     bool         numberFiles = true;            // "01 - name"
     bool         feedbackForm = false;          // also make a listening copy of every file: ONE .html with the recording inside, a waveform, play controls and a comment form
     int          formAudio = 0;                 // what goes inside it: 0 = WAV (full quality), 1 = FLAC (lossless, about half the size), 2 = MP3 (small; needs LAME)

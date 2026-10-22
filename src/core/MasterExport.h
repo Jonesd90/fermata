@@ -33,7 +33,37 @@ struct MasterJobSpec
     bool         formSingle = false;// the listening copies: all the pieces in ONE .html (named after formTitle) instead of one per piece
     juce::String formTitle;         // the name of that one page (the album title, or the project's name)
     juce::String discName;
+    /** The answer to the loudness check (a piece that cannot reach the target under the ceiling): 0 = ask (the job pauses and calls onLoudnessCheck),
+        1 = retain the peak (those pieces stop at the ceiling, below the target), 2 = ignore (the full gain; they clip), 3 = cancel. */
+    int          loudnessDecision = 0;
 };
+
+/** What the loudness check found: every piece as measured, and the ones that cannot reach the target without going over the ceiling. */
+struct LoudnessCheck
+{
+    struct Piece
+    {
+        juce::String name;
+        double lufs = -100.0, truePeakDb = -100.0;   // as rendered
+        double gainDb = 0.0;                         // the gain the target asks for (per album: the same for all)
+        double peakAtTargetDb = -100.0;              // the true peak with that gain
+        double excessDb = 0.0;                       // how far over the ceiling that is (> 0 = this piece is a problem: it needs this much limiting / compression)
+    };
+    std::vector<Piece> pieces;
+    double targetLufs = -23.0, ceilingDbTp = -1.0;
+    bool perAlbum = false;
+    double albumLufs = -100.0;                       // perAlbum: the album measured as one programme
+    int problems() const { int n = 0; for (auto& p : pieces) if (p.excessDb > 0.0) ++n; return n; }
+    double worstExcessDb() const { double w = 0.0; for (auto& p : pieces) w = juce::jmax (w, p.excessDb); return w; }
+    /** The lines of the report. */
+    juce::String text() const;
+};
+
+/** The gain (dB) each piece gets for a loudness target, and the problems: the heart of the check (pure, tested). */
+LoudnessCheck planLoudness (const std::vector<juce::String>& names, const std::vector<double>& lufs, const std::vector<double>& truePeakDb, double albumLufs,
+                            double targetLufs, double ceilingDbTp, bool perAlbum);
+/** The gains after a decision (1 retain the peak, 2 ignore). */
+std::vector<double> loudnessGains (const LoudnessCheck&, int decision);
 
 struct MasterExportResult
 {
@@ -41,8 +71,9 @@ struct MasterExportResult
     juce::StringArray files;         // what was written (Disc: the DDP folder, the zip and the WAV / CUE)
     float peakDb = -100.0f;          // loudest sample written
     bool clipped = false, cancelled = false;
-    juce::String report;             // Disc: what the checker found in the finished DDP
+    juce::String report;             // Disc: what the checker found in the finished DDP. Files with a loudness target: every piece's loudness, true peak and gain
     std::vector<juce::int64> frames; // the length of each item's audio at the target rate
+    LoudnessCheck loudness;          // what was measured (a loudness target only)
 };
 
 /** Builds the list of files for the Virtual Master (or says why it cannot): included edits, in list order, named and tagged. */
@@ -74,8 +105,15 @@ public:
     ~MasterExportJob() override;
     float getProgress() const;
     juce::String getStatus() const;
-    void cancel() noexcept { cancelFlag = true; }
+    /** Starts the work in the background (for a job made with startNow = false, once its callbacks are set). */
+    void start() { if (! isThreadRunning()) startThread (juce::Thread::Priority::normal); }
+    void cancel() noexcept { cancelFlag = true; decide (3); }
     bool isRunning() const { return isThreadRunning(); }
+    /** The loudness check: when a piece cannot reach the target under the ceiling and the spec says ask, the job stops here (nothing written yet) and
+        calls this on the message thread; it goes on when decide() is called (1 retain the peak, 2 ignore, 3 cancel). */
+    std::function<void (const LoudnessCheck&)> onLoudnessCheck;
+    void decide (int decision) { decision_.store (decision); decided.signal(); }
+    bool isWaitingForDecision() const noexcept { return waiting.load(); }
     /** Does the whole job on the calling thread (and removes the intermediate files). */
     MasterExportResult execute();
 
@@ -93,5 +131,6 @@ private:
     mutable juce::CriticalSection lock;
     juce::String status, earlyError;
     std::vector<double> editRates;
+    juce::WaitableEvent decided; std::atomic<int> decision_ { 0 }; std::atomic<bool> waiting { false };
 };
 } // namespace td

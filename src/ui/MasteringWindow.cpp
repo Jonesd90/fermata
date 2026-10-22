@@ -523,7 +523,9 @@ private:
 };
 
 // ============================================================================= the window
-MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (progressValue), formProgress (progressValue), ddpProgress (progressValue), renderProgress (renderProgressValue)
+MasteringComponent::MasteringComponent (AppContext& a)
+    : app (a), levelBox ([this]() -> MasterExportSettings& { return def().vm; }, false, [this] { touched(); refreshFormatControls(); }),
+      formLevelBox ([this]() -> MasterExportSettings& { return def().vm; }, true, [this] { touched(); refreshFormatControls(); }), vmProgress (progressValue), formProgress (progressValue), ddpProgress (progressValue), renderProgress (renderProgressValue)
 {
     auto cap = [this] (juce::Label& l, const juce::String& t, bool bold = false) { styleCaption (l, t, bold); addChildComponent (l); };
     for (auto* b : { &vmTab, &ddpTab, &formTab }) { b->setClickingTogglesState (false); b->setColour (juce::TextButton::buttonOnColourId, theme::accent); addAndMakeVisible (b); }
@@ -578,7 +580,7 @@ MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (pr
     vmUp.onClick   = [this] { for (int i = 0; i < (int) def().items.size(); ++i) if (def().items[(size_t) i].editId == def().selectedItem && i > 0) { moveItem (i, i - 1, false); break; } };
     vmDown.onClick = [this] { for (int i = 0; i < (int) def().items.size(); ++i) if (def().items[(size_t) i].editId == def().selectedItem && i + 1 < (int) def().items.size()) { moveItem (i, i + 1, false); break; } };
     cap (fmtCaption, "File format"); cap (rateCaption, "Sample rate"); cap (bitsCaption, "Bit depth"); cap (ditherCaption, "Dither"); cap (qualityCaption, "Quality");
-    cap (levelCaption, "Peak level", true); cap (albumCaption, "Details for every file", true); cap (fileCaption, "Details of the selected file", true);
+    cap (levelCaption, "Level", true); cap (albumCaption, "Details for every file", true); cap (fileCaption, "Details of the selected file", true);
     cap (nameCaption, "Files", true); cap (folderCaption, "Folder");
     for (auto* c : { &formatBox, &rateBox, &bitsBox, &ditherBox, &qualityBox }) vmHolder.addChildComponent (*c);
     for (auto* l : { &fmtCaption, &rateCaption, &bitsCaption, &ditherCaption, &qualityCaption, &levelCaption, &albumCaption, &fileCaption, &nameCaption, &folderCaption }) vmHolder.addChildComponent (*l);
@@ -614,7 +616,12 @@ MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (pr
         else vm.oggQuality = id - 1;
         touched();
     };
-    for (auto* t : { &normToggle, &overallToggle, &individualToggle, &numberToggle }) vmHolder.addChildComponent (*t);
+    for (auto* t : { &numberToggle }) vmHolder.addChildComponent (*t);
+    vmHolder.addChildComponent (levelBox);
+    addChildComponent (formLevelBox);
+    reportButton.setTooltip ("Every piece's loudness, true peak and the gain it was given in the last export");
+    reportButton.onClick = [this] { showReport(); }; formReportButton.onClick = [this] { showReport(); };
+    addChildComponent (reportButton); addChildComponent (formReportButton);
     cap (formCaption, "Listening copy for reviewers", true); cap (formAudioCaption, "Audio inside"); styleCaption (formInfo, "");
     formInfo.setMinimumHorizontalScale (1.0f); formInfo.setJustificationType (juce::Justification::topLeft);
     addChildComponent (formInfo);
@@ -657,15 +664,8 @@ MasteringComponent::MasteringComponent (AppContext& a) : app (a), vmProgress (pr
             t.onClick = [this, f] { if (updating) return; auto& m = def().vm.extraFormats; if (alsoToggle[f].getToggleState()) m |= (1 << f); else m &= ~(1 << f); touched(); };
         }
     }
-    vmHolder.addChildComponent (peakEditor); vmHolder.addChildComponent (peakUnit); vmHolder.addChildComponent (folderEditor); vmHolder.addChildComponent (chooseButton);
-    overallToggle.setRadioGroupId (4711); individualToggle.setRadioGroupId (4711);
-    styleCaption (peakUnit, "dBFS");
-    peakEditor.setInputRestrictions (6, "-0123456789.");
-    normToggle.onClick = [this] { def().vm.normalise = normToggle.getToggleState(); touched(); refreshFormatControls(); };
-    overallToggle.onClick = [this] { def().vm.peakTogether = true; touched(); };
-    individualToggle.onClick = [this] { def().vm.peakTogether = false; touched(); };
+    vmHolder.addChildComponent (folderEditor); vmHolder.addChildComponent (chooseButton);
     numberToggle.onClick = [this] { def().vm.numberFiles = numberToggle.getToggleState(); touched(); };
-    peakEditor.onTextChange = [this] { def().vm.peakDb = juce::jlimit (-60.0f, 0.0f, peakEditor.getText().getFloatValue()); touched(); };
     folderEditor.onTextChange = [this] { def().vm.folder = folderEditor.getText(); touched(); };
     chooseButton.onClick = [this] { chooseFolder (false); };
     auto album = [this] (const char* c, std::function<juce::String*()> r) { addField (vmHolder, albumFields, c, std::move (r)); };
@@ -1054,10 +1054,7 @@ void MasteringComponent::refreshFormatControls()
     qualityBox.setVisible (hasQuality); qualityCaption.setVisible (hasQuality);
     qualityCaption.setText (vm.format == MasterFormat::Flac ? "Compression" : "Quality", juce::dontSendNotification);
     for (int f = 0; f < 5; ++f) alsoToggle[f].setToggleState ((vm.extraFormats & (1 << f)) != 0, juce::dontSendNotification);
-    normToggle.setToggleState (vm.normalise, juce::dontSendNotification);
-    overallToggle.setToggleState (vm.peakTogether, juce::dontSendNotification); individualToggle.setToggleState (! vm.peakTogether, juce::dontSendNotification);
-    overallToggle.setEnabled (vm.normalise); individualToggle.setEnabled (vm.normalise); peakEditor.setEnabled (vm.normalise);
-    peakEditor.setText (juce::String (vm.peakDb, 1), false);
+    levelBox.refresh(); formLevelBox.refresh();
     numberToggle.setToggleState (vm.numberFiles, juce::dontSendNotification);
     feedbackToggle.setToggleState (vm.feedbackForm, juce::dontSendNotification);
     formAudioBox.setSelectedId (vm.formAudio + 1, juce::dontSendNotification);
@@ -1067,8 +1064,7 @@ void MasteringComponent::refreshFormatControls()
     formBitsBox.setSelectedId (vm.formBits == 16 ? 1 : 2, juce::dontSendNotification);
     formBitsBox.setEnabled (vm.formAudio != 2);
     formFolderEditor.setText (vm.formFolder.trim().isNotEmpty() ? vm.formFolder : app.project.masteredFolder().getChildFile ("Listening copies").getFullPathName(), false);
-    formLevelNote.setText (vm.normalise ? "Levels: as set on the Virtual Master tab (the peak at " + juce::String (vm.peakDb, 1) + " dBFS, " + (vm.peakTogether ? "one gain for all the pieces" : "each piece on its own") + ")."
-                                        : juce::String ("Levels: as set on the Virtual Master tab (no levelling: the pieces as they are)."), juce::dontSendNotification);
+    formLevelNote.setText ("Level of the listening copies (their own setting, apart from the Virtual Master's):", juce::dontSendNotification);
     {
         double rate = vm.formAudio == 2 ? 48000.0 : vm.formRate;
         const int bits = vm.formAudio == 2 ? 16 : vm.formBits;
@@ -1260,10 +1256,103 @@ void MasteringComponent::chooseFolder (bool disc, bool forms)
     });
 }
 
+// ----------------------------------------------------------------------------- the LEVEL box
+LevelBox::LevelBox (std::function<MasterExportSettings&()> settings, bool f, std::function<void()> changed) : get (std::move (settings)), forms (f), onChange (std::move (changed))
+{
+    onBox.setTooltip ("Unticked: the files are written as they are (no gain)");
+    onBox.onClick = [this] { write(); };
+    modeBox.addItem ("the peak at", 1);
+    modeBox.addItem ("EBU R 128:  -23 LUFS, true peak -1 dBTP", 2);
+    modeBox.addItem ("a loudness target of", 3);
+    modeBox.setTooltip ("The peak: the loudest sample at the figure, as always. EBU R 128: the broadcast standard, integrated loudness -23 LUFS and the true peak no higher than -1 dBTP. "
+                        "A target: any loudness, with a true-peak ceiling of your own. A piece that cannot reach the target under the ceiling is put to you before anything is written.");
+    modeBox.onChange = [this] { write(); };
+    valueEditor.setInputRestrictions (6, "-0123456789."); ceilingEditor.setInputRestrictions (6, "-0123456789.");
+    valueEditor.onTextChange = [this] { write(); }; ceilingEditor.onTextChange = [this] { write(); };
+    valueEditor.onFocusLost = [this] { refresh(); }; ceilingEditor.onFocusLost = [this] { refresh(); };
+    styleCaption (valueUnit, "dBFS"); styleCaption (ceilingCaption, "True-peak ceiling"); styleCaption (ceilingUnit, "dBTP");
+    picks.setTooltip ("The usual targets");
+    picks.onClick = [this]
+    {
+        juce::PopupMenu m;
+        m.addItem (1, "-14 LUFS  (Spotify, YouTube, Amazon)"); m.addItem (2, "-16 LUFS  (Apple Music, Deezer)"); m.addItem (3, "-18 LUFS  (a quieter stream, classical)");
+        m.addItem (4, "-23 LUFS  (EBU R 128 broadcast)"); m.addItem (5, "-24 LUFS  (ATSC A/85, US television)");
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&picks), [this] (int r)
+        {
+            if (r == 0) return;
+            const float t[] = { -14.0f, -16.0f, -18.0f, -23.0f, -24.0f };
+            auto& v = vm(); (forms ? v.formTargetLufs : v.targetLufs) = t[r - 1]; (forms ? v.formLoudnessMode : v.loudnessMode) = 2;
+            refresh(); if (onChange) onChange();
+        });
+    };
+    albumBox.setRadioGroupId (4712 + (forms ? 1 : 0)); trackBox.setRadioGroupId (4712 + (forms ? 1 : 0));
+    albumBox.setTooltip ("One gain for every file: the album measured as one programme (loudness) or its loudest file (the peak); the balance between the pieces is kept. What a classical album wants.");
+    trackBox.setTooltip ("Every file reaches the level on its own: the balance between the pieces changes.");
+    albumBox.onClick = [this] { write(); }; trackBox.onClick = [this] { write(); };
+    for (auto* c : std::initializer_list<juce::Component*> { &onBox, &modeBox, &valueEditor, &valueUnit, &ceilingCaption, &ceilingEditor, &ceilingUnit, &picks, &albumBox, &trackBox }) addAndMakeVisible (c);
+    refresh();
+}
+
+void LevelBox::refresh()
+{
+    auto& v = vm();
+    updating = true;
+    const bool on = forms ? v.formNormalise : v.normalise; const int mode = forms ? v.formLoudnessMode : v.loudnessMode; const bool together = forms ? v.formTogether : v.peakTogether;
+    const float peak = forms ? v.formPeakDb : v.peakDb, target = forms ? v.formTargetLufs : v.targetLufs, ceiling = forms ? v.formCeilingDbTp : v.ceilingDbTp;
+    onBox.setToggleState (on, juce::dontSendNotification);
+    modeBox.setSelectedId (mode + 1, juce::dontSendNotification);
+    if (! valueEditor.hasKeyboardFocus (false)) valueEditor.setText (juce::String (mode == 2 ? target : peak, 1), false);
+    if (! ceilingEditor.hasKeyboardFocus (false)) ceilingEditor.setText (juce::String (ceiling, 1), false);
+    valueUnit.setText (mode == 2 ? "LUFS" : "dBFS", juce::dontSendNotification);
+    valueEditor.setVisible (mode != 1); valueUnit.setVisible (mode != 1);
+    for (auto* c : std::initializer_list<juce::Component*> { &ceilingCaption, &ceilingEditor, &ceilingUnit, &picks }) c->setVisible (mode == 2);
+    albumBox.setToggleState (together, juce::dontSendNotification); trackBox.setToggleState (! together, juce::dontSendNotification);
+    for (auto* c : std::initializer_list<juce::Component*> { &modeBox, &valueEditor, &ceilingEditor, &picks, &albumBox, &trackBox }) c->setEnabled (on);
+    updating = false;
+}
+
+void LevelBox::write()
+{
+    if (updating) return;
+    auto& v = vm();
+    const int mode = juce::jlimit (0, 2, modeBox.getSelectedId() - 1);
+    (forms ? v.formNormalise : v.normalise) = onBox.getToggleState();
+    (forms ? v.formLoudnessMode : v.loudnessMode) = mode;
+    const float value = valueEditor.getText().getFloatValue();
+    if (mode == 2) (forms ? v.formTargetLufs : v.targetLufs) = juce::jlimit (-40.0f, 0.0f, value);
+    else if (mode == 0) (forms ? v.formPeakDb : v.peakDb) = juce::jlimit (-60.0f, 0.0f, value);
+    (forms ? v.formCeilingDbTp : v.ceilingDbTp) = juce::jlimit (-20.0f, 0.0f, ceilingEditor.getText().getFloatValue());
+    (forms ? v.formTogether : v.peakTogether) = albumBox.getToggleState();
+    refresh();                                                            // (the units and the rows follow the mode; a box being typed in is left alone)
+    if (onChange) onChange();
+}
+
+juce::String LevelBox::summary() const
+{
+    auto& v = vm();
+    const bool on = forms ? v.formNormalise : v.normalise; const int mode = forms ? v.formLoudnessMode : v.loudnessMode; const bool together = forms ? v.formTogether : v.peakTogether;
+    if (! on) return "no levelling";
+    const juce::String how = together ? "per album" : "per track";
+    if (mode == 1) return "EBU R 128 (-23 LUFS, -1 dBTP), " + how;
+    if (mode == 2) return "target " + juce::String (forms ? v.formTargetLufs : v.targetLufs, 1) + " LUFS, ceiling " + juce::String (forms ? v.formCeilingDbTp : v.ceilingDbTp, 1) + " dBTP, " + how;
+    return "the peak at " + juce::String (forms ? v.formPeakDb : v.peakDb, 1) + " dBFS, " + how;
+}
+
+void LevelBox::resized()
+{
+    auto r = getLocalBounds();
+    auto row = [&] (int h) { return r.removeFromTop (h); };
+    { auto x = row (24); onBox.setBounds (x.removeFromLeft (112)); modeBox.setBounds (x.removeFromLeft (juce::jmin (300, x.getWidth() - 130))); x.removeFromLeft (6); valueEditor.setBounds (x.removeFromLeft (62)); valueUnit.setBounds (x.removeFromLeft (48).withTrimmedLeft (6)); }
+    r.removeFromTop (2);
+    { auto x = row (24).withTrimmedLeft (112); ceilingCaption.setBounds (x.removeFromLeft (120)); ceilingEditor.setBounds (x.removeFromLeft (62)); ceilingUnit.setBounds (x.removeFromLeft (48).withTrimmedLeft (6)); x.removeFromLeft (10); picks.setBounds (x.removeFromLeft (90)); }
+    r.removeFromTop (2);
+    albumBox.setBounds (row (24).withTrimmedLeft (24)); trackBox.setBounds (row (24).withTrimmedLeft (24));
+}
+
 // ----------------------------------------------------------------------------- exporting
 void MasteringComponent::setBusy (bool busy)
 {
-    for (juce::Component* c : std::initializer_list<juce::Component*> { &formatBox, &rateBox, &bitsBox, &ditherBox, &qualityBox, &normToggle, &overallToggle, &individualToggle, &numberToggle, &formSingleBox, &formAudioBox, &formRateBox, &formBitsBox, &formFolderEditor, &formChoose, &alsoCaption, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4], &peakEditor,
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &formatBox, &rateBox, &bitsBox, &ditherBox, &qualityBox, &levelBox, &formLevelBox, &numberToggle, &formSingleBox, &formAudioBox, &formRateBox, &formBitsBox, &formFolderEditor, &formChoose, &alsoCaption, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4],
                                                                          &folderEditor, &chooseButton, &mixerBox, &sourceBox, &tailBox, &vmAll, &vmNone, &vmUp, &vmDown, &autoPq, &allGapsBox, &ddpChoose,
                                                                          &ddpFolderEditor, &zipToggle, &cueToggle, &ddpNorm, &ddpTogether, &ddpPeakEditor, &ddpUp, &ddpDown, &gapEditor, &ddpCheck })
         c->setEnabled (! busy);
@@ -1328,7 +1417,51 @@ void MasteringComponent::startJob (const MasterJobSpec& spec, int kind)
     progressValue = 0.0;
     setBusy (true);
     juce::Component::SafePointer<MasteringComponent> safe (this);
-    job = std::make_unique<MasterExportJob> (app.project, spec, [safe, kind] (MasterExportResult r) { if (safe != nullptr) safe->jobFinished (r, kind); });
+    job = std::make_unique<MasterExportJob> (app.project, spec, [safe, kind] (MasterExportResult r) { if (safe != nullptr) safe->jobFinished (r, kind); }, false);
+    job->onLoudnessCheck = [safe] (const LoudnessCheck& c) { if (safe != nullptr) safe->askLoudness (c); };
+    job->start();
+}
+
+void MasteringComponent::askLoudness (const LoudnessCheck& c)
+{
+    if (job == nullptr || ! job->isWaitingForDecision()) return;
+    // the window: which pieces cannot reach the target under the ceiling, and by how much; Retain peak / Ignore / Cancel
+    auto* aw = new juce::AlertWindow ("Loudness target", juce::String(), juce::MessageBoxIconType::WarningIcon);
+    juce::String text;
+    text << (c.problems() == 1 ? "One piece cannot" : juce::String (c.problems()) + " pieces cannot") << " reach " << juce::String (c.targetLufs, 1) << " LUFS without the true peak going over "
+         << juce::String (c.ceilingDbTp, 1) << " dBTP" << (c.perAlbum ? " (one gain for the album: it is held back by the worst of them)" : "") << ".\n"
+         << "Each needs this much limiting or compression to reach the target:\n\n";
+    for (auto& p : c.pieces)
+        if (p.excessDb > 0.0)
+            text << p.name << ":  " << juce::String (p.excessDb, 1) << " dB   (" << juce::String (p.lufs, 1) << " LUFS, true peak " << juce::String (p.truePeakDb, 1) << " dBTP; at the target it would peak at " << (p.peakAtTargetDb >= 0.0 ? "+" : "") << juce::String (p.peakAtTargetDb, 1) << " dBTP)\n";
+    text << "\nRetain peak: " << (c.perAlbum ? "the whole album" : "those pieces") << " stop" << (c.perAlbum ? "s" : "") << " at the ceiling and come" << (c.perAlbum ? "s" : "") << " out below the target by "
+         << (c.perAlbum ? juce::String (c.worstExcessDb(), 1) + " dB" : juce::String ("that amount")) << ".\nIgnore: the full gain; the peaks over the ceiling are clipped.\nCancel: nothing is written - change the mix and export again (the renders are kept).";
+    aw->addTextBlock (text);
+    aw->addButton ("Retain peak", 1);
+    aw->addButton ("Ignore", 2);
+    aw->addButton ("Cancel", 3, juce::KeyPress (juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<MasteringComponent> safe (this);
+    aw->enterModalState (true, juce::ModalCallbackFunction::create ([safe, aw] (int r)
+    {
+        if (safe != nullptr && safe->job != nullptr) safe->job->decide (r == 0 ? 3 : r);
+        delete aw;
+    }));
+}
+
+void MasteringComponent::showReport()
+{
+    if (lastReport.isEmpty()) return;
+    juce::DialogWindow::LaunchOptions o;
+    o.dialogTitle = "Loudness report";
+    auto* ed = new juce::TextEditor();
+    ed->setMultiLine (true); ed->setReadOnly (true); ed->setScrollbarsShown (true);
+    ed->setFont (juce::Font (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 12.5f, juce::Font::plain)));
+    ed->setText (lastReport, false);
+    ed->setSize (760, 320);
+    o.content.setOwned (ed);
+    o.dialogBackgroundColour = theme::window;
+    o.escapeKeyTriggersCloseButton = true; o.useNativeTitleBar = true; o.resizable = true;
+    o.launchAsync();
 }
 
 void MasteringComponent::jobFinished (const MasterExportResult& r, int kind)
@@ -1341,15 +1474,16 @@ void MasteringComponent::jobFinished (const MasterExportResult& r, int kind)
     progressValue = r.error.isEmpty() && ! r.cancelled ? 1.0 : 0.0;
     if (r.cancelled) { status.setColour (juce::Label::textColourId, theme::text); status.setText ("Cancelled.", juce::dontSendNotification); return; }
     if (r.error.isNotEmpty()) { status.setColour (juce::Label::textColourId, theme::warn); status.setText (r.error, juce::dontSendNotification); return; }
+    if (! disc) { lastReport = r.report; (kind == 2 ? formReportButton : reportButton).setVisible (r.report.isNotEmpty()); }
     status.setColour (juce::Label::textColourId, r.clipped ? theme::warn : theme::text);
     if (kind == 2)
         status.setText ("Done: " + juce::String (r.files.size()) + " listening cop" + (r.files.size() == 1 ? "y" : "ies") + ", loudest peak " + juce::String (r.peakDb, 1) + " dBFS"
-                        + (r.clipped ? "   -  THIS CLIPPED. Set the peak level on the Virtual Master tab or lower the faders." : "") + "\n" + juce::File (r.files[0]).getFileName() + (r.files.size() > 1 ? "  ..." : ""), juce::dontSendNotification);
+                        + (r.clipped ? "   -  THIS CLIPPED (the loudness target was pushed through the ceiling, or the pieces are too hot: set the level, or lower the faders)." : "") + "\n" + juce::File (r.files[0]).getFileName() + (r.files.size() > 1 ? "  ..." : ""), juce::dontSendNotification);
     else if (disc)
         status.setText ("Done. Loudest peak " + juce::String (r.peakDb, 1) + " dBFS" + (r.clipped ? " (CLIPPED: lower the level)" : "") + ".\n" + r.report, juce::dontSendNotification);
     else
         status.setText ("Done: " + juce::String (r.files.size()) + " file(s), loudest peak " + juce::String (r.peakDb, 1) + " dBFS"
-                        + (r.clipped ? "   -  THIS CLIPPED. Tick 'Set the peak level' or lower the faders." : "") + "\n" + juce::File (r.files[0]).getFileName() + (r.files.size() > 1 ? "  ..." : ""), juce::dontSendNotification);
+                        + (r.clipped ? "   -  THIS CLIPPED (the loudness target was pushed through the ceiling, or the pieces are too hot: set the level, or lower the faders)." : "") + "\n" + juce::File (r.files[0]).getFileName() + (r.files.size() > 1 ? "  ..." : ""), juce::dontSendNotification);
     if (! r.files.isEmpty()) { lastOutput = juce::File (r.files[0]); (disc ? ddpShow : kind == 2 ? formShow : showButton).setVisible (true); }
     resized();
 }
@@ -1370,13 +1504,15 @@ void MasteringComponent::setView (int v)
         c->setVisible (vm);
     showButton.setVisible (vm && showButton.isVisible());
     for (juce::Component* c : std::initializer_list<juce::Component*> { &formCaption, &formIntro, &formSingleCaption, &formSingleBox, &formAudioCaption, &formAudioBox, &formRateCaption, &formRateBox, &formBitsCaption, &formBitsBox,
-                                                                         &formLevelNote, &formInfo, &formFolderCaption, &formFolderEditor, &formChoose, &formStatus, &formProgress, &formExport })
+                                                                         &formLevelNote, &formLevelBox, &formInfo, &formFolderCaption, &formFolderEditor, &formChoose, &formStatus, &formProgress, &formExport })
         c->setVisible (fm);
     formShow.setVisible (fm && formShow.isVisible());
+    formReportButton.setVisible (fm && lastReport.isNotEmpty());
     for (juce::Component* c : std::initializer_list<juce::Component*> { &fmtCaption, &rateCaption, &bitsCaption, &ditherCaption, &levelCaption, &albumCaption, &fileCaption, &nameCaption, &folderCaption,
-                                                                         &formatBox, &rateBox, &bitsBox, &ditherBox, &normToggle, &overallToggle, &individualToggle, &numberToggle, &alsoCaption, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4], &peakEditor, &peakUnit,
+                                                                         &formatBox, &rateBox, &bitsBox, &ditherBox, &levelBox, &numberToggle, &alsoCaption, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4],
                                                                          &folderEditor, &chooseButton })
         c->setVisible (vm);
+    reportButton.setVisible (vm && lastReport.isNotEmpty());
     feedbackToggle.setVisible (false);
     for (auto* f : albumFields) { f->caption.setVisible (vm); f->editor.setVisible (vm); }
     for (auto* f : fileFields) { f->caption.setVisible (vm); f->editor.setVisible (vm); }
@@ -1447,6 +1583,7 @@ void MasteringComponent::layoutForms (juce::Rectangle<int> area)
         auto buttons = bottom.removeFromBottom (32);
         formExport.setBounds (buttons.removeFromRight (190).reduced (2));
         formShow.setBounds (buttons.removeFromRight (150).reduced (2));
+        formReportButton.setBounds (buttons.removeFromRight (140).reduced (2));
         buttons.removeFromRight (8);
         formProgress.setBounds (buttons.withSizeKeepingCentre (buttons.getWidth(), 18));
     }
@@ -1460,7 +1597,8 @@ void MasteringComponent::layoutForms (juce::Rectangle<int> area)
     labelled (formRateCaption, formRateBox);
     labelled (formBitsCaption, formBitsBox);
     formInfo.setBounds (row (34));
-    formLevelNote.setBounds (row (34));
+    formLevelNote.setBounds (row (20));
+    formLevelBox.setBounds (row (LevelBox::kHeight));
     { auto x = row (grid::btnH + 2); formFolderCaption.setBounds (x.removeFromLeft (60)); formChoose.setBounds (x.removeFromRight (136)); x.removeFromRight (4); formFolderEditor.setBounds (x); }
 }
 
@@ -1494,6 +1632,7 @@ void MasteringComponent::layoutVm (juce::Rectangle<int> area)
         auto buttons = bottom.removeFromBottom (32);
         exportButton.setBounds (buttons.removeFromRight (140).reduced (2));
         showButton.setBounds (buttons.removeFromRight (150).reduced (2));
+        reportButton.setBounds (buttons.removeFromRight (140).reduced (2));
         buttons.removeFromRight (8);
         vmProgress.setBounds (buttons.withSizeKeepingCentre (buttons.getWidth(), 18));
     }
@@ -1516,8 +1655,7 @@ void MasteringComponent::layoutVm (juce::Rectangle<int> area)
     if (qualityBox.isVisible()) labelled (qualityCaption, qualityBox); else { qualityCaption.setBounds (0, 0, 0, 0); qualityBox.setBounds (0, 0, 0, 0); }
     y += 6;
     levelCaption.setBounds (row (20));
-    { auto r = row (grid::btnH + 2); normToggle.setBounds (r.removeFromLeft (170)); peakEditor.setBounds (r.removeFromLeft (64)); peakUnit.setBounds (r.removeFromLeft (54).withTrimmedLeft (6)); }
-    overallToggle.setBounds (row (22).withTrimmedLeft (24)); individualToggle.setBounds (row (22).withTrimmedLeft (24));
+    levelBox.setBounds (row (LevelBox::kHeight));
     y += 6;
     nameCaption.setBounds (row (20));
     numberToggle.setBounds (row (22));
@@ -1534,7 +1672,7 @@ void MasteringComponent::layoutVm (juce::Rectangle<int> area)
     { int used = 0; layoutFieldGrid (fileFields, juce::Rectangle<int> (x0 + 6, y, colW - 12, 400), 1, 110, used); y += used + 6; }
     {   // Tab goes down the left column, then down the right one (the tags)
         int order = 1;
-        for (juce::Component* c : std::initializer_list<juce::Component*> { &formatBox, &rateBox, &bitsBox, &ditherBox, &qualityBox, &normToggle, &peakEditor, &overallToggle, &individualToggle,
+        for (juce::Component* c : std::initializer_list<juce::Component*> { &formatBox, &rateBox, &bitsBox, &ditherBox, &qualityBox, &levelBox,
                                                                              &numberToggle, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4], &folderEditor, &chooseButton })
             c->setExplicitFocusOrder (order++);
         for (auto* list : { &albumFields, &fileFields })

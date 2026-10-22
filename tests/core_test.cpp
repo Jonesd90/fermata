@@ -25,6 +25,7 @@
 #include "../src/core/AudioRelink.h"
 #include "../src/core/AudioOps.h"
 #include "../src/core/Mcu.h"
+#include "../src/core/Loudness.h"
 #include <cstdio>
 #include <thread>
 
@@ -105,6 +106,23 @@ static juce::File makeConstWav (const juce::File& f, double value, int seconds, 
     juce::AudioBuffer<float> b (1, 48000);
     for (int i = 0; i < 48000; ++i) b.setSample (0, i, (float) value);
     for (int s = 0; s < seconds; ++s) w->writeFromAudioSampleBuffer (b, 0, 48000);
+    w.reset();
+    return f;
+}
+
+/** A 997 Hz tone at this amplitude, with (spikes) a full-scale click every half second: loud peaks, quiet loudness. */
+static juce::File makeToneWav (const juce::File& f, double amp, int seconds, bool spikes, double sr = 48000.0)
+{
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::OutputStream> os (f.createOutputStream().release());
+    auto w = wav.createWriterFor (os, juce::AudioFormatWriterOptions().withSampleRate (sr).withNumChannels (1).withBitsPerSample (24));
+    juce::AudioBuffer<float> b (1, 48000);
+    for (int s = 0; s < seconds; ++s)
+    {
+        for (int i = 0; i < 48000; ++i) b.setSample (0, i, (float) (amp * std::sin (2.0 * juce::MathConstants<double>::pi * 997.0 * (s * 48000 + i) / sr)));
+        if (spikes) { b.setSample (0, 1000, 0.95f); b.setSample (0, 25000, -0.95f); }
+        w->writeFromAudioSampleBuffer (b, 0, 48000);
+    }
     w.reset();
     return f;
 }
@@ -3059,6 +3077,83 @@ int main()
                         if (together) CHECK (std::abs (peaks[0] - want) < 0.003f && std::abs (peaks[1] - want / 4.0f) < 0.003f);     // the quiet one stays 12 dB below
                         else CHECK (std::abs (peaks[0] - want) < 0.003f && std::abs (peaks[1] - want) < 0.003f);
                     }
+                }
+                // 2.87: a loudness target. Two more pieces: a spiky one (a quiet tone with full-scale clicks: it cannot reach -16 LUFS under a -1 dBTP ceiling) and a plain quiet tone (it can)
+                {
+                    auto& spiky = mp.addEdit ("Spiky", juce::Uuid::null()); auto& plain = mp.addEdit ("Plain", juce::Uuid::null());
+                    const auto spikySrc = makeToneWav (tmp.getChildFile ("spiky.wav"), 0.03, 6, true), plainSrc = makeToneWav (tmp.getChildFile ("plain.wav"), 0.05, 6, false);
+                    for (auto pr : { std::make_pair (&spiky, spikySrc), std::make_pair (&plain, plainSrc) })
+                    {
+                        EditRegion r3 = r; r3.srcIn = 0; r3.srcOut = 6 * 48000; r3.sourceLength = 6 * 48000; r3.files.clear(); RegionFile rf3 = rf; rf3.file = pr.second; r3.files.push_back (rf3); pr.first->insertRegion (r3);
+                    }
+                    mp.mastering.sync (mp.edits);
+                    for (auto& it : mp.mastering.items) it.include = it.editId == spiky.id || it.editId == plain.id;
+                    vm.format = MasterFormat::Wav; vm.bitDepth = 24; vm.sampleRate = 0.0; vm.normalise = true; vm.loudnessMode = 2; vm.targetLufs = -16.0f; vm.ceilingDbTp = -1.0f;
+                    auto measure = [] (const juce::File& f, double& lufs, double& tp)
+                    {
+                        juce::AudioFormatManager fm; fm.registerBasicFormats(); std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (f));
+                        if (rd == nullptr) { lufs = tp = -100.0; return; }
+                        LoudnessMeter m; m.prepare (rd->sampleRate, 2);
+                        juce::AudioBuffer<float> b (2, (int) rd->lengthInSamples); rd->read (&b, 0, (int) rd->lengthInSamples, 0, true, true); m.process (b);
+                        lufs = m.integratedLufs(); tp = m.truePeakDb();
+                    };
+                    // the planner on its own
+                    {
+                        auto c = planLoudness ({ "a", "b" }, { -30.0, -20.0 }, { -2.0, -4.0 }, -24.0, -16.0, -1.0, false);
+                        CHECK (c.pieces.size() == 2 && std::abs (c.pieces[0].gainDb - 14.0) < 1e-9 && std::abs (c.pieces[0].peakAtTargetDb - 12.0) < 1e-9 && std::abs (c.pieces[0].excessDb - 13.0) < 1e-9);
+                        CHECK (std::abs (c.pieces[1].gainDb - 4.0) < 1e-9 && std::abs (c.pieces[1].peakAtTargetDb) < 1e-9 && c.pieces[1].excessDb > 0.99 && c.pieces[1].excessDb < 1.01 && c.problems() == 2);
+                        auto g1 = loudnessGains (c, 1), g2 = loudnessGains (c, 2);
+                        CHECK (std::abs (g1[0] - 1.0) < 1e-9 && std::abs (g1[1] - 3.0) < 1e-9 && std::abs (g2[0] - 14.0) < 1e-9);          // retain: stop at the ceiling; ignore: the full gain
+                        auto a = planLoudness ({ "a", "b" }, { -30.0, -20.0 }, { -2.0, -4.0 }, -24.0, -16.0, -1.0, true);
+                        CHECK (std::abs (a.pieces[0].gainDb - 8.0) < 1e-9 && std::abs (a.pieces[1].gainDb - 8.0) < 1e-9 && std::abs (a.pieces[0].excessDb - 7.0) < 1e-9 && std::abs (a.pieces[1].excessDb - 5.0) < 1e-9);
+                        auto ga = loudnessGains (a, 1); CHECK (std::abs (ga[0] - 1.0) < 1e-9 && std::abs (ga[1] - 1.0) < 1e-9);          // per album: one gain, held back by the worst piece
+                        CHECK (c.text().contains ("13.0 dB over the ceiling") && a.text().contains ("one gain for the album"));
+                        auto ok = planLoudness ({ "a" }, { -20.0 }, { -10.0 }, -20.0, -16.0, -1.0, false); CHECK (ok.problems() == 0 && loudnessGains (ok, 1)[0] == 4.0);
+                    }
+                    // retain the peak (per track): the plain piece lands on the target, the spiky one stops at the ceiling and the report says by how much it misses
+                    for (int decision : { 1, 2 })
+                    {
+                        vm.peakTogether = false;
+                        CHECK (makeFilesSpec (mp, mp.mastering, spec).isEmpty() && spec.items.size() == 2);
+                        spec.loudnessDecision = decision;
+                        MasterExportJob job (mp, spec, nullptr, false); auto res = job.execute();
+                        CHECK (res.error.isEmpty() && res.files.size() == 2 && res.loudness.pieces.size() == 2 && res.loudness.problems() == 1 && res.loudness.pieces[0].excessDb > 3.0 && res.loudness.pieces[1].excessDb == 0.0);
+                        CHECK (res.report.contains ("over the ceiling") && res.report.contains (decision == 1 ? "Retain peak" : "Ignore"));
+                        if (res.files.size() == 2)
+                        {
+                            double l0 = 0, t0 = 0, l1 = 0, t1 = 0; measure (juce::File (res.files[0]), l0, t0); measure (juce::File (res.files[1]), l1, t1);
+                            CHECK (std::abs (l1 + 16.0) < 0.3 && t1 < -0.9);                                                  // the plain one: on the target, under the ceiling
+                            if (decision == 1) CHECK (std::abs (t0 + 1.0) < 0.3 && l0 < -16.0 - 2.0 && std::abs ((-16.0 - l0) - res.loudness.pieces[0].excessDb) < 0.5);   // retained: at the ceiling, short of the target by the excess
+                            else CHECK (res.clipped && t0 > -0.5 && std::abs (l0 + 16.0) < 1.0);                             // ignored: the clicks clipped (what they lose takes the loudness a little under the target)
+                        }
+                    }
+                    // per album: one gain, so the two pieces keep their distance; retained, the whole album comes down by the spiky one's excess
+                    {
+                        vm.peakTogether = true;
+                        CHECK (makeFilesSpec (mp, mp.mastering, spec).isEmpty());
+                        spec.loudnessDecision = 1;
+                        MasterExportJob job (mp, spec, nullptr, false); auto res = job.execute();
+                        CHECK (res.error.isEmpty() && res.files.size() == 2 && res.loudness.perAlbum && res.loudness.albumLufs > -99.0);
+                        if (res.files.size() == 2)
+                        {
+                            double l0 = 0, t0 = 0, l1 = 0, t1 = 0; measure (juce::File (res.files[0]), l0, t0); measure (juce::File (res.files[1]), l1, t1);
+                            const double before = res.loudness.pieces[1].lufs - res.loudness.pieces[0].lufs;
+                            CHECK (std::abs ((l1 - l0) - before) < 0.3 && std::abs (t0 + 1.0) < 0.3 && std::abs (res.loudness.pieces[0].gainDb - res.loudness.pieces[1].gainDb) < 1e-9);
+                        }
+                        // EBU R 128: -23 and -1 whatever the boxes say; the listening copies have their own levels
+                        vm.loudnessMode = 1; vm.targetLufs = -10.0f; vm.ceilingDbTp = 0.0f; vm.peakTogether = false;
+                        CHECK (makeFilesSpec (mp, mp.mastering, spec).isEmpty() && spec.out.wantedLufs() == -23.0f && spec.out.wantedCeiling() == -1.0f);
+                        vm.formNormalise = true; vm.formLoudnessMode = 2; vm.formTargetLufs = -18.0f; vm.formCeilingDbTp = -2.0f; vm.formTogether = true;
+                        MasterJobSpec fs; CHECK (makeFormsSpec (mp, mp.mastering, fs).isEmpty() && fs.out.loudnessMode == 2 && fs.out.wantedLufs() == -18.0f && fs.out.wantedCeiling() == -2.0f && fs.out.peakTogether);
+                        { Project back; CHECK (back.fromVar (mp.toVar())); CHECK (back.mastering.vm.loudnessMode == 1 && back.mastering.vm.targetLufs == -10.0f && back.mastering.vm.formLoudnessMode == 2 && back.mastering.vm.formTargetLufs == -18.0f && back.mastering.vm.formTogether && back.mastering.vm.formCeilingDbTp == -2.0f); }
+                        vm.loudnessMode = 0; vm.formLoudnessMode = 0; vm.peakDb = -1.0f;
+                    }
+                    for (auto& it : mp.mastering.items) it.include = it.editId == ed.id || it.editId == ed2.id;
+                    mp.mastering.items.erase (std::remove_if (mp.mastering.items.begin(), mp.mastering.items.end(), [&] (const MasterItem& it) { return it.editId == spiky.id || it.editId == plain.id; }), mp.mastering.items.end());
+                    mp.edits.erase (std::remove_if (mp.edits.begin(), mp.edits.end(), [&] (const std::unique_ptr<EditDef>& e) { return e->name == "Spiky" || e->name == "Plain"; }), mp.edits.end());
+                    mp.mastering.sync (mp.edits);
+                    for (auto& f : MasterRenders::folderFor (mp).findChildFiles (juce::File::findFiles, false, "*.wav")) f.deleteFile();     // (their renders: the render-cache test below counts the files)
+                    MasterRenders::folderFor (mp).getChildFile ("renders.json").deleteFile();
                 }
                 // reordering the list changes the order of the files and their numbers
                 std::swap (mp.mastering.items[0], mp.mastering.items[1]);
@@ -6385,6 +6480,93 @@ int main()
             auto* bs = back.mixers.front()->stripFor (ta);
             CHECK (bs->lowCut.on.get() && std::abs (bs->lowCut.hz.get() - 120.0f) < 0.01f && bs->lowCut.slope.load() == lowcut::kBrickwall);
             CHECK (m.busFor (p.buses.front().id)->lowCut.hz.get() == lowcut::kDefaultHz && ! m.busFor (p.buses.front().id)->lowCut.on.get());
+        }
+    }
+
+    SECTION ("2.87 driver inputs named by device");
+    {
+        Project p; p.setInputCount (6);
+        for (int i = 0; i < 6; ++i) p.inputs[(size_t) i].driverName = "MAD Input " + juce::String (i + 1);
+        CHECK (p.driverNamePrefix() == "MAD " && p.inputShortName (0) == "Input 1" && p.inputLabel (2) == "3 - Input 3");
+        p.inputs[1].name = "Violin"; CHECK (p.inputLabel (1) == "2 - Input 2 - Violin");
+        for (int i = 0; i < 6; ++i) p.inputs[(size_t) i].driverName = "Hapi " + juce::String (i + 1);
+        CHECK (p.inputShortName (0) == "Hapi 1");                                                     // (a bare number is no name)
+        PreampDeviceCfg thap; thap.name = "THAP"; thap.firstInput = 2;                                 // THAP from input 3 on ...
+        PreampDeviceCfg anubis; anubis.name = "Anubis"; anubis.map[0] = 0; anubis.map[1] = 1;        // ... Anubis channels 1 and 2 on inputs 1 and 2 (patched)
+        p.preampDevices = { thap, anubis };
+        CHECK (p.inputDeviceLabel (0) == "Anubis-1" && p.inputDeviceLabel (1) == "Anubis-2" && p.inputDeviceLabel (2) == "THAP-1" && p.inputDeviceLabel (5) == "THAP-4");
+        CHECK (p.inputShortName (5) == "THAP-4" && p.inputLabel (5) == "6 - THAP-4");
+        PreampDeviceCfg mt; mt.name = "MT48"; mt.firstInput = 4; p.preampDevices.push_back (mt);        // a device from input 5 on: THAP covers 3 - 4, MT48 the rest
+        CHECK (p.inputDeviceLabel (3) == "THAP-2" && p.inputDeviceLabel (4) == "MT48-1" && p.inputDeviceLabel (5) == "MT48-2");
+        p.preampDevices.clear(); CHECK (p.inputDeviceLabel (3).isEmpty() && p.inputShortName (3) == "Hapi 4");
+    }
+
+    SECTION ("2.87 loudness: BS.1770 / EBU R 128 integrated loudness and true peak");
+    {
+        // EBU Tech 3341 cases: a 997 Hz stereo tone at -23 dBFS reads -23.0 LUFS (+/- 0.1); at -33 dBFS -33.0; the same at 44.1 and 96 k
+        auto tone = [] (LoudnessMeter& m, double sr, double seconds, double dbfs, double hz, int chans = 2, double phase = 0.0)
+        {
+            const int n = (int) (sr * seconds); const float a = (float) std::pow (10.0, dbfs / 20.0);
+            juce::AudioBuffer<float> b (chans, 512);
+            for (int pos = 0; pos < n; pos += 512)
+            {
+                const int k = juce::jmin (512, n - pos);
+                for (int c = 0; c < chans; ++c) for (int i = 0; i < k; ++i) b.setSample (c, i, a * (float) std::sin (2.0 * juce::MathConstants<double>::pi * hz * (pos + i) / sr + phase));
+                juce::AudioBuffer<float> v (b.getArrayOfWritePointers(), chans, k);
+                m.process (v);
+            }
+        };
+        for (double sr : { 44100.0, 48000.0, 96000.0 })
+        {
+            LoudnessMeter m; m.prepare (sr, 2); tone (m, sr, 20.0, -23.0, 997.0);
+            CHECK (std::abs (m.integratedLufs() + 23.0) < 0.1);
+            CHECK (std::abs (m.truePeakDb() + 23.0) < 0.1);
+            LoudnessMeter q; q.prepare (sr, 2); tone (q, sr, 20.0, -33.0, 997.0);
+            CHECK (std::abs (q.integratedLufs() + 33.0) < 0.1);
+        }
+        {   // a mono tone at -23 dBFS reads 3 dB lower (one channel's power); the K-weighting lifts the top: a 10 kHz tone reads about 4 dB high, a 50 Hz tone low
+            LoudnessMeter m; m.prepare (48000.0, 1); tone (m, 48000.0, 10.0, -23.0, 997.0, 1);
+            CHECK (std::abs (m.integratedLufs() + 26.0) < 0.1);
+            LoudnessMeter hi; hi.prepare (48000.0, 2); tone (hi, 48000.0, 10.0, -23.0, 10000.0);
+            CHECK (hi.integratedLufs() > -20.0 && hi.integratedLufs() < -18.5);
+            LoudnessMeter lo; lo.prepare (48000.0, 2); tone (lo, 48000.0, 10.0, -23.0, 50.0);
+            CHECK (lo.integratedLufs() < -25.0);
+        }
+        {   // the gates (Tech 3341 cases 3 - 6): silence before and after changes nothing; a quiet stretch more than 10 LU down is left out
+            LoudnessMeter m; m.prepare (48000.0, 2);
+            tone (m, 48000.0, 10.0, -100.0, 997.0); tone (m, 48000.0, 20.0, -23.0, 997.0); tone (m, 48000.0, 10.0, -100.0, 997.0);
+            CHECK (std::abs (m.integratedLufs() + 23.0) < 0.1);
+            LoudnessMeter r; r.prepare (48000.0, 2);
+            tone (r, 48000.0, 20.0, -23.0, 997.0); tone (r, 48000.0, 10.0, -43.0, 997.0);            // -43: below the relative gate (-33): gated out
+            CHECK (std::abs (r.integratedLufs() + 23.0) < 0.1);
+            LoudnessMeter t; t.prepare (48000.0, 2);
+            tone (t, 48000.0, 20.0, -23.0, 997.0); tone (t, 48000.0, 20.0, -29.0, 997.0);            // -29: within 10 LU: counted; the mean of the two powers
+            const double want = -0.691 + 10.0 * std::log10 (0.5 * (std::pow (10.0, (-23.0 + 0.691) / 10.0) + std::pow (10.0, (-29.0 + 0.691) / 10.0)));
+            CHECK (std::abs (t.integratedLufs() - want) < 0.15);
+            LoudnessMeter z; z.prepare (48000.0, 2); tone (z, 48000.0, 5.0, -100.0, 997.0);
+            CHECK (z.integratedLufs() <= -99.0 && z.truePeakDb() < -90.0);
+            LoudnessMeter sh; sh.prepare (48000.0, 2); tone (sh, 48000.0, 0.3, -23.0, 997.0);         // less than a block: nothing to measure yet
+            CHECK (sh.blockCount() == 0 && sh.integratedLufs() <= -99.0);
+        }
+        {   // true peak: a full-scale tone at a quarter of the sample rate, phased so no sample lands on the crest (the sample peak is -3 dB), reads 0 dBTP
+            LoudnessMeter m; m.prepare (48000.0, 2); tone (m, 48000.0, 1.0, 0.0, 12000.0, 2, juce::MathConstants<double>::pi / 4.0);
+            CHECK (std::abs (m.truePeakDb()) < 0.2);
+            LoudnessMeter c; c.prepare (48000.0, 2); tone (c, 48000.0, 1.0, -6.0, 997.0);
+            CHECK (std::abs (c.truePeakDb() + 6.0) < 0.1);
+            CHECK (std::abs (LoudnessMeter::gainToTarget (-19.5, -23.0) + 3.5) < 1.0e-9);
+        }
+        {   // block size makes no difference, and a 5.1 file weighs the surrounds up and leaves the LFE out
+            LoudnessMeter a; a.prepare (48000.0, 2); tone (a, 48000.0, 8.0, -23.0, 997.0);
+            LoudnessMeter b; b.prepare (48000.0, 2);
+            { const int n = 48000 * 8; const float amp = (float) std::pow (10.0, -23.0 / 20.0); juce::AudioBuffer<float> buf (2, n);
+              for (int i = 0; i < n; ++i) { const float v = amp * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 997.0 * i / 48000.0); buf.setSample (0, i, v); buf.setSample (1, i, v); }
+              for (int pos = 0, k = 1; pos < n; pos += k, k = (k * 7) % 1000 + 1) { juce::AudioBuffer<float> v (buf.getArrayOfWritePointers(), 2, pos, juce::jmin (k, n - pos)); b.process (v); } }
+            CHECK (std::abs (a.integratedLufs() - b.integratedLufs()) < 0.05);
+            LoudnessMeter s6; s6.prepare (48000.0, 6);
+            { const int n = 48000 * 8; const float amp = (float) std::pow (10.0, -23.0 / 20.0); juce::AudioBuffer<float> buf (6, n); buf.clear();
+              for (int i = 0; i < n; ++i) { const float v = amp * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 997.0 * i / 48000.0); buf.setSample (3, i, v); buf.setSample (4, i, v); }   // LFE (ignored) and Ls (x 1.41)
+              s6.process (buf); }
+            CHECK (std::abs (s6.integratedLufs() - (-26.0 + 10.0 * std::log10 (1.41))) < 0.15);
         }
     }
 

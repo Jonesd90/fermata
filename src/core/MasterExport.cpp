@@ -4,6 +4,7 @@
 #include "Resampler.h"
 #include "Dither.h"
 #include "ReviewPage.h"
+#include "Loudness.h"
 
 namespace td
 {
@@ -173,6 +174,8 @@ juce::String makeFormsSpec (const Project& p, const MasteringDef& def, MasterJob
     d.vm.sampleRate = def.vm.formAudio == 2 && (def.vm.formRate <= 0.0 || def.vm.formRate > 48000.0) ? 48000.0 : def.vm.formRate;
     d.vm.bitDepth = def.vm.formBits == 16 ? 16 : 24;
     d.vm.folder = def.vm.formFolder.trim().isNotEmpty() ? def.vm.formFolder.trim() : p.masteredFolder().getChildFile ("Listening copies").getFullPathName();
+    d.vm.normalise = def.vm.formNormalise; d.vm.loudnessMode = def.vm.formLoudnessMode; d.vm.peakDb = def.vm.formPeakDb;      // the tab's own levels
+    d.vm.targetLufs = def.vm.formTargetLufs; d.vm.ceilingDbTp = def.vm.formCeilingDbTp; d.vm.peakTogether = def.vm.formTogether;
     auto err = makeFilesSpec (p, d, spec);
     if (err.isNotEmpty()) return err;
     if (def.vm.formAudio == 2 && findLame().isEmpty())
@@ -236,6 +239,7 @@ MasterExportJob::MasterExportJob (const Project& live, const MasterJobSpec& s, s
 MasterExportJob::~MasterExportJob()
 {
     cancelFlag = true;
+    decide (3);                                                          // (a job waiting for the loudness decision is let go)
     stopThread (15000);
 }
 
@@ -251,6 +255,48 @@ void MasterExportJob::run()
     auto result = execute();
     auto fn = onDone;
     juce::MessageManager::callAsync ([fn, result] { if (fn) fn (result); });
+}
+
+// ============================================================================ the loudness check
+LoudnessCheck planLoudness (const std::vector<juce::String>& names, const std::vector<double>& lufs, const std::vector<double>& truePeakDb, double albumLufs,
+                            double targetLufs, double ceilingDbTp, bool perAlbum)
+{
+    LoudnessCheck c; c.targetLufs = targetLufs; c.ceilingDbTp = ceilingDbTp; c.perAlbum = perAlbum; c.albumLufs = albumLufs;
+    const double albumGain = albumLufs > -99.0 ? targetLufs - albumLufs : 0.0;
+    for (size_t i = 0; i < names.size(); ++i)
+    {
+        LoudnessCheck::Piece p; p.name = names[i]; p.lufs = i < lufs.size() ? lufs[i] : -100.0; p.truePeakDb = i < truePeakDb.size() ? truePeakDb[i] : -100.0;
+        p.gainDb = perAlbum ? albumGain : (p.lufs > -99.0 ? targetLufs - p.lufs : 0.0);
+        p.peakAtTargetDb = p.truePeakDb > -99.0 ? p.truePeakDb + p.gainDb : -100.0;
+        p.excessDb = juce::jmax (0.0, p.peakAtTargetDb - ceilingDbTp);
+        c.pieces.push_back (p);
+    }
+    return c;
+}
+
+std::vector<double> loudnessGains (const LoudnessCheck& c, int decision)
+{
+    std::vector<double> g;
+    const double worst = c.worstExcessDb();
+    for (auto& p : c.pieces)
+    {
+        double v = p.gainDb;
+        if (decision == 1)                                               // retain the peak: the ceiling holds, the piece (per album: every piece, by the worst one) comes out below the target
+            v -= c.perAlbum ? worst : p.excessDb;
+        g.push_back (v);
+    }
+    return g;
+}
+
+juce::String LoudnessCheck::text() const
+{
+    juce::StringArray lines;
+    auto db = [] (double v, int places = 1) { return v <= -99.0 ? juce::String ("-inf") : (v >= 0.0 ? "+" : "") + juce::String (v, places); };
+    lines.add ("Target " + juce::String (targetLufs, 1) + " LUFS, true peak no higher than " + db (ceilingDbTp) + " dBTP, " + (perAlbum ? "one gain for the album (measured as one programme: " + juce::String (albumLufs, 1) + " LUFS)" : "each piece on its own") + ".");
+    for (auto& p : pieces)
+        lines.add (p.name + ": " + db (p.lufs) + " LUFS, true peak " + db (p.truePeakDb) + " dBTP; gain " + db (p.gainDb) + " dB -> peak " + db (p.peakAtTargetDb) + " dBTP"
+                   + (p.excessDb > 0.0 ? "  **  " + juce::String (p.excessDb, 1) + " dB over the ceiling: needs that much limiting or compression to reach the target" : juce::String()));
+    return lines.joinIntoString ("\n");
 }
 
 juce::String MasterExportJob::finalise (const juce::File& src, const juce::File& dest, double rate, float gain, const MasterJobItem& item, float& peakOut, MasterFormat fmt)
@@ -450,9 +496,62 @@ MasterExportResult MasterExportJob::executeInner()
         sub = (float) (i + 1) / (float) n;
     }
 
+    // ---- 2b. a loudness target: every piece measured (integrated loudness, true peak) and, per album, the album as one programme; then the check
+    const auto& o = spec.out;
+    const bool byLoudness = o.normalise && o.loudnessMode != 0;
+    std::vector<double> loudGains;
+    if (byLoudness)
+    {
+        std::vector<double> lufs ((size_t) n, -100.0), tps ((size_t) n, -100.0); std::vector<juce::String> names;
+        bool oneRate = true; for (int i = 1; i < n; ++i) oneRate = oneRate && std::abs (rates[(size_t) i] - rates[0]) < 0.5;
+        LoudnessMeter album; if (n > 0) album.prepare (rates[0], 2);
+        double wsum = 0.0, wpow = 0.0;                                   // (pieces at different rates: the album as the length-weighted mean of their loudness)
+        for (int i = 0; i < n; ++i)
+        {
+            if (cancelFlag.load()) { R.cancelled = true; return R; }
+            setStatus ("Measuring the loudness of " + juce::String (i + 1) + " of " + juce::String (n) + "...");
+            std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (proc[(size_t) i]));
+            if (r == nullptr) { R.error = "Cannot read " + proc[(size_t) i].getFileName(); return R; }
+            LoudnessMeter one; one.prepare (rates[(size_t) i], 2);
+            juce::AudioBuffer<float> buf (2, 65536);
+            for (juce::int64 pos = 0; pos < r->lengthInSamples; pos += 65536)
+            {
+                if (cancelFlag.load()) { R.cancelled = true; return R; }
+                const int m = (int) juce::jmin ((juce::int64) 65536, r->lengthInSamples - pos);
+                r->read (&buf, 0, m, pos, true, true);
+                juce::AudioBuffer<float> v (buf.getArrayOfWritePointers(), 2, m);
+                one.process (v); if (oneRate) album.process (v);
+                sub = (float) (((double) i + (double) (pos + m) / (double) juce::jmax ((juce::int64) 1, r->lengthInSamples)) / n);
+            }
+            lufs[(size_t) i] = one.integratedLufs(); tps[(size_t) i] = one.truePeakDb();
+            if (lufs[(size_t) i] > -99.0) { const double w = (double) r->lengthInSamples; wsum += w; wpow += w * std::pow (10.0, (lufs[(size_t) i] + 0.691) / 10.0); }
+            names.push_back (spec.items[(size_t) i].baseName);
+        }
+        const double albumLufs = oneRate ? album.integratedLufs() : (wsum > 0.0 ? -0.691 + 10.0 * std::log10 (wpow / wsum) : -100.0);
+        auto check = planLoudness (names, lufs, tps, albumLufs, (double) o.wantedLufs(), (double) o.wantedCeiling(), o.peakTogether);
+        int decision = spec.loudnessDecision;
+        if (check.problems() > 0 && decision == 0)
+        {
+            if (onLoudnessCheck)                                         // the job waits here, nothing written, while the person decides
+            {
+                setStatus ("Waiting: " + juce::String (check.problems()) + " piece(s) cannot reach the target under the ceiling - see the window.");
+                decided.reset(); waiting.store (true);
+                juce::MessageManager::callAsync ([cb = onLoudnessCheck, check] { cb (check); });
+                decided.wait();
+                waiting.store (false);
+                decision = decision_.load();
+            }
+            else decision = 1;
+            if (decision == 3 || cancelFlag.load()) { R.cancelled = true; R.loudness = check; return R; }
+        }
+        loudGains = loudnessGains (check, decision);
+        R.loudness = check;
+        R.report = check.text();
+        if (check.problems() > 0) R.report += decision == 1 ? "\nRetain peak: those pieces stop at the ceiling, below the target by the amount shown." : "\nIgnore: those pieces got the full gain; their peaks are clipped.";
+    }
+
     // ---- 3. levels, dither, encoding, tags
     stage = 2; sub = 0.0f;
-    const auto& o = spec.out;
     float loudest = 0.0f; for (auto pk : peaks) loudest = juce::jmax (loudest, pk);
     std::vector<juce::File> finals;
     std::vector<reviewpage::Spec> onePage;                   // all the pieces in one listening copy: their audio waits in the work folder until the page is written
@@ -462,7 +561,8 @@ MasterExportResult MasterExportJob::executeInner()
     {
         if (cancelFlag.load()) { R.cancelled = true; for (auto& f : finals) if (spec.kind == MasterJobSpec::Kind::Files) f.deleteFile(); return R; }
         float gain = 1.0f;
-        if (o.normalise)
+        if (byLoudness) gain = juce::Decibels::decibelsToGain ((float) loudGains[(size_t) i]);
+        else if (o.normalise)
         {
             const float ref = o.peakTogether ? loudest : peaks[(size_t) i];
             if (ref > 1.0e-9f) gain = juce::Decibels::decibelsToGain (o.peakDb) / ref;

@@ -79,6 +79,8 @@ public:
     virtual bool apply (int inputIndex, const PreampSettings&) = 0;
     /** True if the hardware behind this driver input (0-based) has preamps that this driver can control (a Merging Hapi, MT48 or Anubis); any other input has none of the preamp controls. */
     virtual bool controls (int inputIndex) const { (void) inputIndex; return false; }
+    /** The device and its channel (0-based) behind this driver input, when the driver knows (a connected device that says how many channels it has). */
+    virtual bool deviceOf (int inputIndex, juce::String& deviceName, int& channel) const { (void) inputIndex; (void) deviceName; (void) channel; return false; }
 };
 
 class NullPreampDriver : public PreampDriver
