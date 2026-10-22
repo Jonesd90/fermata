@@ -26,6 +26,7 @@
 #include "../src/core/AudioOps.h"
 #include "../src/core/Mcu.h"
 #include "../src/core/Loudness.h"
+#include "../src/core/ScreenLayout.h"
 #include <cstdio>
 #include <thread>
 
@@ -6707,6 +6708,81 @@ int main()
             CHECK (mcu::describe (juce::MidiMessage::noteOn (1, mcu::BankRight, (juce::uint8) 0x7F)) == "Bank > pressed");
             CHECK (mcu::describe (juce::MidiMessage::pitchWheel (1, 0)).contains ("-100.0 dB"));
             CHECK (mcu::hexOf (juce::MidiMessage::noteOn (1, 0x10, (juce::uint8) 0x7F)) == "90 10 7F");
+        }
+    }
+
+
+    SECTION ("2.88 the Display Organiser's screen divisions and saved layouts");
+    {
+        auto near = [] (float a, float b) { return std::abs (a - b) < 1.0e-4f; };
+        // every shape has the right number of cells, and they tile the whole screen
+        for (int s = 0; s < ScreenDivision::NumShapes; ++s)
+        {
+            auto d = ScreenDivision::shape (s);
+            const auto c = d.cells();
+            CHECK ((int) c.size() == ScreenDivision::cellsOf (s));
+            float area = 0.0f; for (auto& r : c) area += r.area();
+            CHECK (near (area, 1.0f));
+            CHECK ((int) d.lines().size() == ScreenDivision::cellsOf (s) - 1);
+            CHECK (ScreenDivision::cellName (s, 0).isNotEmpty());
+        }
+        // "one above two": the top cell is the top half, the bottom two share the bottom half
+        {
+            auto d = ScreenDivision::shape (ScreenDivision::OneAboveTwo);
+            auto c = d.cells();
+            CHECK (near (c[0].h, 0.5f) && near (c[0].w, 1.0f));
+            CHECK (near (c[1].x, 0.0f) && near (c[1].w, 0.5f) && near (c[1].y, 0.5f));
+            CHECK (near (c[2].x, 0.5f));
+            // dragging the top line to 65 %: the top cell grows, the bottom ones shrink; the inner line is limited to 12 .. 88 %
+            d.setFrac (d.root, 0.65f);
+            c = d.cells();
+            CHECK (near (c[0].h, 0.65f) && near (c[1].y, 0.65f) && near (c[1].h, 0.35f));
+            const auto ls = d.lines();
+            CHECK (ls.size() == 2 && ! ls[0].vertical && near (ls[0].at.y, 0.65f) && ls[1].vertical && near (ls[1].at.y, 0.65f) && near (ls[1].at.h, 0.35f));
+            d.setFrac (ls[1].node, 0.99f); CHECK (near (d.cells()[1].w, ScreenDivision::kMaxFrac));
+            d.setFrac (ls[1].node, 0.01f); CHECK (near (d.cells()[1].w, ScreenDivision::kMinFrac));
+            // the fractions survive a round trip
+            auto d2 = ScreenDivision::shape (ScreenDivision::OneAboveTwo); d2.setFracs (d.fracs());
+            CHECK (d2.cells() == d.cells());
+        }
+        // the four-window grid: its two inner lines move together
+        {
+            auto d = ScreenDivision::shape (ScreenDivision::Grid4);
+            auto ls = d.lines();
+            int inner = -1; for (auto& l : ls) if (l.vertical) { inner = l.node; break; }
+            d.setFrac (inner, 0.3f);
+            const auto c = d.cells();
+            CHECK (near (c[0].w, 0.3f) && near (c[2].w, 0.3f) && near (c[1].x, 0.3f) && near (c[3].x, 0.3f));
+        }
+        // "save how the windows are now": two windows side by side at 60 / 40 come back as that shape with the line at 0.6
+        {
+            auto l = layoutFromWindows ({ { "mixer:abc", { 0.6f, 0.0f, 0.4f, 1.0f } }, { "edit:xyz", { 0.0f, 0.0f, 0.6f, 1.0f } } });
+            CHECK (l.shape == ScreenDivision::SideBySide2);
+            CHECK (l.refs.size() == 2 && l.refs[0].key == "edit:xyz" && l.refs[1].key == "mixer:abc" && l.refs[0].kind == WindowRef::Kind::Edit);
+            CHECK (l.fracs.size() == 1 && near (l.fracs[0], 0.6f));
+            // one above two, with the main window on top and a bit of slop in the rectangles
+            auto m = layoutFromWindows ({ { "take:1", { 0.02f, 0.52f, 0.46f, 0.48f } }, { "main", { 0.0f, 0.0f, 1.0f, 0.5f } }, { "edit:2", { 0.5f, 0.5f, 0.5f, 0.49f } } });
+            CHECK (m.shape == ScreenDivision::OneAboveTwo);
+            CHECK (m.refs[0].key == "main" && m.refs[1].key == "take:1" && m.refs[2].key == "edit:2");
+            CHECK (m.fracs.size() == 2 && std::abs (m.fracs[0] - 0.5f) < 0.03f && std::abs (m.fracs[1] - 0.5f) < 0.03f);
+            // more than four windows: the four biggest are kept
+            auto big = layoutFromWindows ({ { "a", { 0, 0, 0.5f, 0.5f } }, { "b", { 0.5f, 0, 0.5f, 0.5f } }, { "c", { 0, 0.5f, 0.5f, 0.5f } }, { "d", { 0.5f, 0.5f, 0.5f, 0.5f } }, { "tiny", { 0.4f, 0.4f, 0.1f, 0.1f } } });
+            CHECK (big.shape == ScreenDivision::Grid4 && big.refs.size() == 4);
+            bool hasTiny = false; for (auto& r : big.refs) hasTiny = hasTiny || r.key == "tiny";
+            CHECK (! hasTiny);
+            CHECK (layoutFromWindows ({}).shape == ScreenDivision::One);
+        }
+        // a layout saves and loads; the built-in ones name kinds only
+        {
+            LayoutDef l; l.name = "Session"; l.shape = ScreenDivision::OneBesideTwo; l.fracs = { 0.4f, 0.7f };
+            l.refs = { WindowRef::of ("main"), WindowRef::of ("take:11111111-2222-3333-4444-555555555555"), WindowRef::anyOf (WindowRef::Kind::Mixer) };
+            const auto v = l.toVar();
+            const auto back = LayoutDef::fromVar (juce::JSON::parse (juce::JSON::toString (v)));
+            CHECK (back.name == "Session" && back.shape == l.shape && back.fracs.size() == 2 && near (back.fracs[1], 0.7f));
+            CHECK (back.refs.size() == 3 && back.refs[0].kind == WindowRef::Kind::Main && back.refs[1].key == l.refs[1].key && back.refs[2].any() && back.refs[2].kind == WindowRef::Kind::Mixer);
+            CHECK (back.division().cells()[0].w > 0.39f && back.division().cells()[0].w < 0.41f);
+            for (auto& b : LayoutDef::builtIns()) { CHECK (b.builtIn && b.name.isNotEmpty() && (int) b.refs.size() == ScreenDivision::cellsOf (b.shape)); for (auto& r : b.refs) CHECK (r.any()); }
+            CHECK (WindowRef::kindOf ("bridge") == WindowRef::Kind::Other && WindowRef::kindOf ("") == WindowRef::Kind::None);
         }
     }
 

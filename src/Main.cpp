@@ -208,19 +208,37 @@ public:
         ctx->showTakeDisplay = [this] { showWindow ("takedisplay", "Take Display", [this] { return new TakeDisplayControl (*ctx); }); };
         ctx->listWindows = [this]
         {
-            std::vector<std::pair<juce::String, juce::String>> out;
-            out.push_back ({ "main", "Main window" });
+            std::vector<AppContext::WindowEntry> out;
+            auto recencyOf = [this] (const juce::String& key, bool& open) { auto it = windows.find (key); open = it != windows.end() && it->second != nullptr; return open ? it->second->lastActive : -1; };
+            auto add = [&] (const juce::String& key, const juce::String& title, const char* kind) { AppContext::WindowEntry e; e.key = key; e.title = title; e.kind = kind; e.recency = recencyOf (key, e.open); out.push_back (e); };
+            { AppContext::WindowEntry e; e.key = "main"; e.title = "Main window"; e.kind = "main"; e.open = true; e.recency = 0; out.push_back (e); }
             // every take window, edit window and mixer of the project (open or not: choosing one that is closed opens it) ...
-            for (auto& t : ctx->project.takeWindows) out.push_back ({ "take:" + t->id.toString(), "Takes - " + t->name });
-            for (auto& e : ctx->project.edits)       out.push_back ({ "edit:" + e->id.toString(), "Edit - " + e->name });
-            for (auto& m : ctx->project.mixers)      out.push_back ({ "mixer:" + m->id.toString(), "Mixer - " + m->name });
-            // ... and the other windows that are open now
+            for (auto& t : ctx->project.takeWindows) add ("take:" + t->id.toString(), t->name, "take");
+            for (auto& e : ctx->project.edits)       add ("edit:" + e->id.toString(), e->name, "edit");
+            for (auto& m : ctx->project.mixers)      add ("mixer:" + m->id.toString(), m->name, "mixer");
+            // ... and the other windows that are open now (not the Organiser itself, nor a Take Display: that lives on its own screen)
             for (auto& [key, w] : windows)
             {
-                if (w == nullptr || key == "organiser" || key.startsWith ("take:") || key.startsWith ("edit:") || key.startsWith ("mixer:")) continue;
-                out.push_back ({ key, w->getName() });
+                if (w == nullptr || key == "organiser" || key == "takedisplay" || key.startsWith ("take:") || key.startsWith ("edit:") || key.startsWith ("mixer:")) continue;
+                add (key, w->getName(), "other");
             }
             return out;
+        };
+        ctx->windowPlacesNow = [this]
+        {
+            AppContext::WindowPlaces p;
+            if (mainWindow == nullptr) return p;
+            p.area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (mainWindow->getBounds())->userArea;
+            if (! mainWindow->isMinimised()) p.windows.push_back ({ "main", mainWindow->getBounds() });
+            for (auto& [key, w] : windows)
+            {
+                if (w == nullptr || key == "organiser" || key == "takedisplay" || ! w->isVisible() || w->isMinimised() || DockHub::get().contains (w.get())) continue;
+                const auto b = w->getBounds();
+                if (b.getWidth() < 160 || b.getHeight() < 100 || ! b.intersects (p.area)) continue;
+                if (b.getIntersection (p.area).getWidth() * b.getIntersection (p.area).getHeight() < b.getWidth() * b.getHeight() / 2) continue;   // mostly on another screen
+                p.windows.push_back ({ key, b });
+            }
+            return p;
         };
         ctx->placeWindows = [this] (const std::vector<std::pair<juce::String, juce::Rectangle<float>>>& items)
         {

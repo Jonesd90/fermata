@@ -70,7 +70,7 @@ In a Take Window, click the ruler to place the playhead, mark the part you want 
 
 Fermata keeps a log in `Documents\Fermata\fermata-log.txt`. Send that file with a description of what happened.
 
-**Window organiser:** you can choose any take window, edit window or mixer of the project (a closed one is opened); the main window is left as it is.
+**Display Organiser:** a picture of your screen: pick a shape, click each part to choose its window (any take window, edit or mixer of the project: a closed one is opened), drag the lines to change the split, press Arrange. Layouts can be saved with the project; the program's own (Recording, Editing ...) take the windows you used last.
 **Fades:** the start and end of an edit (and of each take) fade for 25 ms by default; drag the top corners to change it.
 **Bounce Out:** *Between marks 1 and 2* uses the 1 and 2 flags. P puts them round a selected take (take window) or the selected pieces (edit window).
 

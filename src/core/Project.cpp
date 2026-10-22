@@ -1228,6 +1228,7 @@ var Project::toVar (bool editorialOnly, bool withWindows) const
     if (! editorialOnly)                                  // (the undo history only looks at the takes, the edits and the mastering: no inputs, tracks, mixers or plug-in states)
     {
     { var wb = obj(); for (auto& kv : windowBounds) put (wb, kv.first.toRawUTF8(), kv.second); put (root, "windowBounds", wb); }
+    { juce::Array<var> la; for (auto& l : layouts) la.add (l.toVar()); put (root, "layouts", la); }
     juce::Array<var> in;
     for (auto& i : inputs)
     {
@@ -1367,6 +1368,8 @@ bool Project::fromVar (const var& root)
     windowBounds.clear();
     if (auto* wb = root["windowBounds"].getDynamicObject())
         for (auto& pr : wb->getProperties()) windowBounds[pr.name.toString()] = pr.value.toString();
+    layouts.clear();
+    if (auto* la = root["layouts"].getArray()) for (auto& v : *la) { auto l = LayoutDef::fromVar (v); if (l.name.isNotEmpty()) layouts.push_back (l); }
 
     preampDevices.clear();
     if (auto* a = root["preampDevices"].getArray())

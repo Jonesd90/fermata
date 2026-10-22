@@ -150,9 +150,15 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     bool crWanted = false, tbWanted = false, minusWasDown = false, crClickLatch = false;     // crClickLatch: the C-R square in the menu bar was clicked (it stays on until clicked again)
     std::unique_ptr<TalkbackOverlay> talkbackOverlay;
     struct TalkbackPoller : juce::Timer { std::function<void()> fn; void timerCallback() override { if (fn) fn(); } } talkbackPoller;
-    /** Display Organiser: the open windows (key, title), and putting windows into parts of the screen (key, fraction of the display). Set by Main.cpp. */
-    std::function<std::vector<std::pair<juce::String, juce::String>>()> listWindows;
+    /** Display Organiser (set by Main.cpp): the windows it can arrange - the main window, every take window, edit and mixer of the project (open or
+        not: a closed one is opened when it is arranged) and the other windows open now; 'recency' orders them by when they were last in front
+        (higher = later; -1 = not open). placeWindows puts windows into parts of the screen the main window is on (key, fraction of that screen).
+        windowPlacesNow gives the windows on that screen as they are (for "save how the windows are now"): the screen area, and each window's bounds. */
+    struct WindowEntry { juce::String key, title, kind; bool open = false; int recency = -1; };
+    std::function<std::vector<WindowEntry>()> listWindows;
     std::function<void (const std::vector<std::pair<juce::String, juce::Rectangle<float>>>&)> placeWindows;
+    struct WindowPlaces { juce::Rectangle<int> area; std::vector<std::pair<juce::String, juce::Rectangle<int>>> windows; };
+    std::function<WindowPlaces()> windowPlacesNow;
     /** Highlights this file in the Media window (if it is open; otherwise it is remembered for when it opens). */
     juce::File mediaSelection;
     std::function<void (const juce::File&)> mediaReveal;

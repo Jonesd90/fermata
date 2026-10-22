@@ -7,6 +7,7 @@
 #include "Edit.h"
 #include "MasterDef.h"
 #include "Denoise.h"
+#include "ScreenLayout.h"
 #include <array>
 
 namespace td
@@ -218,6 +219,8 @@ public:
     std::vector<const TrackDef*> editTracks (const EditDef&) const;
     /** Where each window was last (window key -> "x y w h"), saved with the project so a window opens again where and how big it was left. Not an undo step, not a change. */
     std::map<juce::String, juce::String> windowBounds;
+    /** The Display Organiser's saved layouts (the project's own; the program's built-in ones are not kept here). Saved with the project, not an undo step. */
+    std::vector<LayoutDef> layouts;
     /** Track ids the edit's audio uses that are not in the project any more (so no mixer strip exists for them): id -> (name, channels). */
     std::vector<std::pair<juce::Uuid, std::pair<juce::String, int>>> missingTracksOf (const EditDef&) const;
     /** Puts a deleted track back under its old id (the mixers get a strip for it). */
