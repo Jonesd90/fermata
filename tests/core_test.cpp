@@ -6365,7 +6365,7 @@ int main()
             auto* st = m.stripFor (ta);
             st->lowCut.prepare (48000.0, 256, 2);
             CHECK (st->lowCut.latencySamples() == 0);
-            st->lowCut.setDesign (120.0f, lowcut::kBrickwall);
+            st->lowCut.setDesign (120.0f, lowcut::kBrickwall, true);           // (2.86: the linear-phase kind is a choice; this test is about the FIR)
             st->lowCut.setOn (true);
             const int lat = st->lowCut.latencySamples();
             CHECK (lat > 0 && lat == st->lowCut.filterTaps() / 2 + lowcut::partitionFor (st->lowCut.filterTaps()));
@@ -6385,6 +6385,73 @@ int main()
             auto* bs = back.mixers.front()->stripFor (ta);
             CHECK (bs->lowCut.on.get() && std::abs (bs->lowCut.hz.get() - 120.0f) < 0.01f && bs->lowCut.slope.load() == lowcut::kBrickwall);
             CHECK (m.busFor (p.buses.front().id)->lowCut.hz.get() == lowcut::kDefaultHz && ! m.busFor (p.buses.front().id)->lowCut.on.get());
+        }
+    }
+
+    SECTION ("2.86 the zero-latency low cut (Butterworth), and the linear-phase choice");
+    {
+        // the cascade's curve: -3 dB at the cut, the slope's figure an octave below, flat above; the wall a 24th order; a 10 Hz cut at 96 k stays stable
+        for (int slope = 0; slope < lowcut::kNumSlopes; ++slope)
+        {
+            lowcut::Biquads bq; bq.design (80.0, slope, 96000.0);
+            const int order = lowcut::iirOrder (slope);
+            CHECK ((int) bq.sections.size() == (order + 1) / 2);
+            const double atFc = 20.0 * std::log10 (bq.magnitudeAt (80.0, 96000.0)), below = 20.0 * std::log10 (bq.magnitudeAt (40.0, 96000.0)), above = 20.0 * std::log10 (bq.magnitudeAt (2000.0, 96000.0));
+            const double wantBelow = 20.0 * std::log10 (std::pow (0.5, order) / std::sqrt (1.0 + std::pow (0.5, 2.0 * order)));
+            CHECK (std::abs (atFc + 3.01) < 0.1 && std::abs (below - wantBelow) < 0.3 && std::abs (above) < 0.02);
+            if (slope == lowcut::kBrickwall) CHECK (below < -140.0);
+            // the same curve by running it: a sine at the cut comes out at -3 dB, one two octaves up untouched, and nothing comes out late (zero latency)
+            std::vector<float> x (96000);
+            for (int i = 0; i < (int) x.size(); ++i) x[(size_t) i] = std::sin (2.0 * juce::MathConstants<double>::pi * 80.0 * i / 96000.0);
+            bq.process (x.data(), (int) x.size());
+            float pk = 0.0f; for (int i = 48000; i < 96000; ++i) pk = juce::jmax (pk, std::abs (x[(size_t) i]));
+            CHECK (std::abs (20.0f * std::log10 (pk) + 3.01f) < 0.15f);
+            lowcut::Biquads im; im.design (80.0, slope, 96000.0);
+            std::vector<float> d (64, 0.0f); d[0] = 1.0f; im.process (d.data(), 64);
+            CHECK (std::abs (d[0]) > 0.5f);                            // (the impulse comes out at once: a high-pass passes the step of its first sample)
+        }
+        {
+            lowcut::Biquads lo; lo.design (10.0, lowcut::kBrickwall, 96000.0);
+            juce::Random rnd (7); std::vector<float> x (192000); for (auto& v : x) v = rnd.nextFloat() * 2.0f - 1.0f;
+            lo.process (x.data(), (int) x.size());
+            float pk = 0.0f; for (auto v : x) { CHECK (std::isfinite (v)); pk = juce::jmax (pk, std::abs (v)); }
+            CHECK (pk < 4.0f && std::abs (20.0 * std::log10 (lo.magnitudeAt (10.0, 96000.0)) + 3.01) < 0.2);
+        }
+        // the LowCut: zero latency by default, the FIR when linear phase is chosen, switching both ways while it runs, saved with the mixer
+        {
+            Project p; p.inputs.resize (2); p.addTrack ("A", TrackFormat::Stereo, 0);
+            auto& m = *p.mixers.front();
+            auto* st = m.stripFor (p.tracks.front().id);
+            st->lowCut.prepare (96000.0, 256, 2);
+            st->lowCut.setOn (true);
+            CHECK (! st->lowCut.linear.get() && st->lowCut.latencySamples() == 0 && st->lowCut.filterTaps() == 0);
+            juce::AudioBuffer<float> b (2, 256);
+            auto run = [&] (float& first, float& peakLate)
+            {
+                first = 0.0f; peakLate = 0.0f;
+                for (int i = 0; i < 80; ++i)
+                {
+                    b.clear(); if (i == 0) b.setSample (0, 0, 1.0f);
+                    st->lowCut.process (b);
+                    if (i == 0) first = b.getSample (0, 0);
+                    if (i >= 40) for (int k = 0; k < 256; ++k) peakLate = juce::jmax (peakLate, std::abs (b.getSample (0, k)));
+                }
+            };
+            float first = 0.0f, late = 0.0f;
+            run (first, late); CHECK (first > 0.5f && late < 1.0e-3f);          // (zero latency: the impulse at once, and it has died away well before 10,000 samples)
+            st->lowCut.setDesign (80.0f, lowcut::kDefaultSlope, true);
+            CHECK (st->lowCut.linear.get() && st->lowCut.latencySamples() == LowCut::linearLatencyFor (80.0, lowcut::kDefaultSlope, 96000.0) && st->lowCut.latencySamples() > 10000);
+            run (first, late); CHECK (first == 0.0f && late > 0.3f);              // (linear phase: nothing at once, the impulse ~17,000 samples later)
+            st->lowCut.setDesign (120.0f, 3, false);
+            CHECK (st->lowCut.latencySamples() == 0);
+            run (first, late); CHECK (first > 0.5f && late < 1.0e-3f);
+            st->lowCut.setDesign (120.0f, 3, true);
+            Project back; CHECK (back.fromVar (p.toVar()));
+            auto* bs = back.mixers.front()->stripFor (p.tracks.front().id);
+            CHECK (bs->lowCut.linear.get() && bs->lowCut.on.get() && bs->lowCut.slope.load() == 3 && bs->lowCut.latencySamples() > 0);
+            st->lowCut.setDesign (120.0f, 3, false);
+            Project back2; CHECK (back2.fromVar (p.toVar()));
+            CHECK (! back2.mixers.front()->stripFor (p.tracks.front().id)->lowCut.linear.get());
         }
     }
 

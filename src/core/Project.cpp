@@ -200,9 +200,10 @@ void sendsFromVar (SendList& l, const var& v, const InsertFactory& factory, doub
 /** The LC key's settings, saved only once they differ from the defaults (off, 80 Hz, 48 dB / octave). */
 static void lowCutToVar (var& o, const LowCut& lc)
 {
-    if (! lc.on.get() && lc.hz.get() == lowcut::kDefaultHz && lc.slope.load() == lowcut::kDefaultSlope) return;
+    if (! lc.on.get() && lc.hz.get() == lowcut::kDefaultHz && lc.slope.load() == lowcut::kDefaultSlope && ! lc.linear.get()) return;
     var l = obj();
     put (l, "on", lc.on.get()); put (l, "hz", lc.hz.get()); put (l, "slope", lc.slope.load());
+    if (lc.linear.get()) put (l, "linear", true);
     put (o, "lowCut", l);
 }
 static void lowCutFromVar (LowCut& lc, const var& v, double sr, int block)
@@ -212,6 +213,7 @@ static void lowCutFromVar (LowCut& lc, const var& v, double sr, int block)
     const float hz = l.isObject() && l.hasProperty ("hz") ? (float) (double) l["hz"] : lowcut::kDefaultHz;
     const int slope = l.isObject() && l.hasProperty ("slope") ? (int) l["slope"] : lowcut::kDefaultSlope;
     lc.hz.set (hz); lc.slope.store (juce::jlimit (0, lowcut::kNumSlopes - 1, slope));
+    lc.linear.set (l.isObject() && (bool) l["linear"]);
     lc.prepare (sr, block, 2);
     lc.setOn (on);                                                    // (the filter is designed now, so it is in the plan at once)
 }

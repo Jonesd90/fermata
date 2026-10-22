@@ -44,6 +44,13 @@ public:
         onBox.setToggleState (lc.on.get(), juce::dontSendNotification);
         onBox.onClick = [this] { lc.setOn (onBox.getToggleState()); app.project.markDirty(); app.engine.checkLatency(); refreshText(); repaint(); };
         addAndMakeVisible (onBox);
+        linearBox.setButtonText ("Linear phase");
+        linearBox.setToggleState (lc.linear.get(), juce::dontSendNotification);
+        linearBox.setTooltip ("Unticked (the usual): a zero-latency Butterworth high-pass of this slope - the classic console low cut, no delay, the phase shift any such filter has. "
+                              "Ticked: a symmetric FIR, exactly linear phase (nothing smeared), but the channel comes out later by half the filter's length (DELAY) and the "
+                              "whole mix with it: for post, not for monitoring.");
+        linearBox.onClick = [this] { pending = true; refreshText(); repaint(); startTimer (60); };
+        addAndMakeVisible (linearBox);
 
         freq.setSliderStyle (juce::Slider::LinearHorizontal);
         freq.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
@@ -66,9 +73,10 @@ public:
         lcui::caption (freqCap, "FREQUENCY", juce::Justification::centredLeft); lcui::caption (slopeCap, "SLOPE", juce::Justification::centredLeft); lcui::caption (delayCap, "DELAY", juce::Justification::centredRight);
         addAndMakeVisible (freqCap); addAndMakeVisible (slopeCap); addAndMakeVisible (delayCap);
         lcui::field (delayValue, 10.0f, true);
-        delayValue.setTooltip ("How much the filter holds this channel back (half its length). Fermata holds every other path back by the same, so nothing goes out of time; the whole mix comes out this much later.");
+        delayValue.setTooltip ("How much the filter holds this channel back: none for the zero-latency filter; half the FIR's length (plus the convolver's block) for linear phase. "
+                               "Fermata holds every other path back by the same, so nothing goes out of time; the whole mix comes out this much later.");
         addAndMakeVisible (delayValue);
-        setSize (340, 236);
+        setSize (340, 258);
         refreshText();
     }
     ~LowCutPanel() override { if (pending) apply(); }
@@ -101,12 +109,12 @@ public:
             g.setColour (t.soft.withAlpha (db == 0.0 ? 0.9f : 0.5f)); g.fillRect ((float) plot.getX(), y, (float) plot.getWidth(), 1.0f);
             g.setColour (t.dim); g.drawText (juce::String ((int) db), plot.getRight() - 24, (int) y - 10, 22, 10, juce::Justification::centredRight, false);
         }
-        const double fc = freq.getValue(); const int slope = slopeBox.getSelectedId() - 1;
+        const double fc = freq.getValue(); const int slope = slopeBox.getSelectedId() - 1; const bool lin = linearBox.getToggleState();
         juce::Path p; bool started = false;
         for (int i = 0; i <= plot.getWidth(); ++i)
         {
             const double f = f0 * std::pow (f1 / f0, (double) i / (double) plot.getWidth());
-            const float x = (float) plot.getX() + (float) i, y = juce::jmax ((float) plot.getY(), yOf (lowcut::targetDb (f, fc, slope)));
+            const float x = (float) plot.getX() + (float) i, y = juce::jmax ((float) plot.getY(), yOf (lowcut::targetDb (f, fc, slope, lin)));
             if (! started) { p.startNewSubPath (x, y); started = true; } else p.lineTo (x, y);
         }
         const bool on = onBox.getToggleState();
@@ -121,8 +129,10 @@ public:
         r.removeFromTop (24);
         auto row = r.removeFromTop (20);
         onBox.setBounds (row.removeFromLeft (110));
-        delayValue.setBounds (row.removeFromRight (96)); delayCap.setBounds (row.removeFromRight (44));
-        r.removeFromTop (6);
+        delayValue.setBounds (row.removeFromRight (120)); delayCap.setBounds (row.removeFromRight (44));
+        r.removeFromTop (2);
+        linearBox.setBounds (r.removeFromTop (20).removeFromLeft (150));
+        r.removeFromTop (4);
         row = r.removeFromTop (16); freqCap.setBounds (row.removeFromLeft (90)); freqValue.setBounds (row.removeFromRight (80));
         freq.setBounds (r.removeFromTop (22));
         r.removeFromTop (4);
@@ -138,10 +148,15 @@ private:
         const double hz = freq.getValue();
         freqValue.setText (hz >= 1000.0 ? juce::String (hz / 1000.0, 2) + " kHz" : juce::String (hz, hz < 100.0 ? 1 : 0) + " Hz", juce::dontSendNotification);
         const double sr = app.engine.getSampleRate() > 0.0 ? app.engine.getSampleRate() : 48000.0;
-        const int taps = lowcut::tapsFor (hz, slopeBox.getSelectedId() - 1, sr);
-        const int lat = taps / 2 + lowcut::partitionFor (taps);
-        delayValue.setText (juce::String (juce::roundToInt (lat * 1000.0 / sr)) + " ms", juce::dontSendNotification);
+        if (linearBox.getToggleState())
+        {
+            const int lat = LowCut::linearLatencyFor (hz, slopeBox.getSelectedId() - 1, sr);
+            delayValue.setText (juce::String (lat) + " = " + juce::String (juce::roundToInt (lat * 1000.0 / sr)) + " ms", juce::dontSendNotification);
+        }
+        else delayValue.setText ("none", juce::dontSendNotification);
         delayValue.setColour (juce::Label::textColourId, onBox.getToggleState() ? theme::text : theme::dimText);
+        slopeBox.setTooltip (linearBox.getToggleState() ? "How steeply the sound falls away below the cut. Every slope is linear phase (nothing is smeared); the steeper, the longer the filter and the delay."
+                                                          : "How steeply the sound falls away below the cut: a Butterworth of that order (Brickwall: 24th order, 144 dB / octave). No delay at any slope.");
     }
     void askHz()
     {
@@ -157,7 +172,7 @@ private:
     void apply()
     {
         pending = false;
-        lc.setDesign ((float) freq.getValue(), slopeBox.getSelectedId() - 1);
+        lc.setDesign ((float) freq.getValue(), slopeBox.getSelectedId() - 1, linearBox.getToggleState());
         app.project.markDirty();
         app.engine.checkLatency();                                      // (a new length: the mixer's delay compensation follows)
         if (onChanged) onChanged();
@@ -166,7 +181,7 @@ public:
     std::function<void()> onChanged;                                   // the strip's key redraws its caption
 private:
     AppContext& app; LowCut& lc; juce::String name;
-    juce::ToggleButton onBox; juce::Slider freq; juce::Label freqValue, freqCap, slopeCap, delayCap, delayValue; juce::ComboBox slopeBox;
+    juce::ToggleButton onBox, linearBox; juce::Slider freq; juce::Label freqValue, freqCap, slopeCap, delayCap, delayValue; juce::ComboBox slopeBox;
     std::unique_ptr<valueentry::ReadoutClick> freqClick;
     juce::Rectangle<int> plotArea;
     bool pending = false;
@@ -181,7 +196,8 @@ public:
     {
         key.setButtonText ("LC");
         key.setClickingTogglesState (false);
-        key.setTooltip ("Low cut (linear phase, before the inserts): click to switch it on or off. Hold the key down, or right-click it, to set the frequency and the slope (80 Hz, 48 dB / octave until changed).");
+        key.setTooltip ("Low cut (before the inserts): click to switch it on or off. Hold the key down, or right-click it, to set the frequency, the slope and the kind: zero latency "
+                        "(a Butterworth high-pass, the usual) or linear phase (held back by half its length). 80 Hz, 48 dB / octave, zero latency until changed.");
         key.onClick = [this] { if (swallow) { swallow = false; return; } lc.setOn (! lc.on.get()); app.project.markDirty(); app.engine.checkLatency(); refresh(); };
         key.addMouseListener (this, false);
         addAndMakeVisible (key);
@@ -196,7 +212,8 @@ public:
         const bool on = lc.on.get();
         if (key.getToggleState() != on) key.setToggleState (on, juce::dontSendNotification);
         const float hz = lc.hz.get();
-        text.setText ((hz >= 1000.0f ? juce::String (hz / 1000.0f, 1) + "k" : juce::String (hz, hz < 100.0f ? 1 : 0)) + "  " + (lc.slope.load() >= lowcut::kBrickwall ? juce::String ("wall") : juce::String (lowcut::slopeDb (lc.slope.load())) + "dB"), juce::dontSendNotification);
+        text.setText ((hz >= 1000.0f ? juce::String (hz / 1000.0f, 1) + "k" : juce::String (hz, hz < 100.0f ? 1 : 0)) + (lc.linear.get() ? " " : "  ")
+                      + (lc.slope.load() >= lowcut::kBrickwall ? juce::String ("wall") : juce::String (lowcut::slopeDb (lc.slope.load())) + "dB") + (lc.linear.get() ? " lin" : ""), juce::dontSendNotification);   // ("lin": linear phase)
         text.setColour (juce::Label::textColourId, on ? mixTheme().text : mixTheme().dim);
     }
     void resized() override
