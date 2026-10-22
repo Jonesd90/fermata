@@ -1065,7 +1065,7 @@ void AppContext::redrawWaveforms (const std::vector<juce::File>& files)
     int n = 0;
     for (auto& f : files)
     {
-        wavestore::fileFor (dir, f, ".fwave").deleteFile();
+        wavestore::fileFor (dir, f, ".fwave").deleteFile(); wavestore::fileFor (dir, f, ".fwave2").deleteFile();
         wavestore::fileFor (dir, f, ".fwcol").deleteFile();
         waveColors.forget (f);
         redrawLog.push_back ({ ++redrawStamp, f.getFullPathName() });

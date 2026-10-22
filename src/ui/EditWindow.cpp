@@ -25,7 +25,7 @@ class EditTimeline : public juce::Component, private juce::ChangeListener, priva
 {
 public:
     EditTimeline (AppContext& a, const juce::Uuid& eid, juce::Viewport& vp)
-        : app (a), editId (eid), viewport (vp), thumbCache (64)
+        : app (a), editId (eid), viewport (vp)
     {
         formatManager.registerBasicFormats();
         setWantsKeyboardFocus (true);
@@ -1593,17 +1593,17 @@ private:
         });
     }
 
-    juce::AudioThumbnail* thumbnailFor (const juce::File& f)
+    WaveThumb* thumbnailFor (const juce::File& f)
     {
         syncRedraw();
         const auto key = f.getFullPathName();
         auto it = thumbs.find (key);
         if (it == thumbs.end())
         {
-            auto t = std::make_unique<juce::AudioThumbnail> (128, formatManager, thumbCache);
+            auto t = std::make_unique<WaveThumb> (formatManager, thumbPool);
             t->addChangeListener (this);
             if (wavestore::loadThumbnail (*t, wavesFolder(), f)) saver.markDone (key);      // saved in the Waveforms folder: no need to read the audio again
-            else { t->setSource (new juce::FileInputSource (f)); saver.markPending (key); }
+            else { t->load (f); saver.markPending (key); }
             it = thumbs.emplace (key, std::move (t)).first;
         }
         return it->second.get();
@@ -1616,7 +1616,6 @@ private:
     {
         if (app.redrawStamp == redrawSeen) return;
         for (auto& e : app.redrawLog) if (e.first > redrawSeen) { thumbs.erase (e.second); saver.forget (e.second); directWave.forget (e.second); }
-        thumbCache.clear();
         redrawSeen = app.redrawStamp;
     }
 
@@ -1684,9 +1683,9 @@ private:
     juce::Uuid editId;
     juce::Viewport& viewport;
     juce::AudioFormatManager formatManager;
-    juce::AudioThumbnailCache thumbCache;
+    WaveThumb::Pool thumbPool;
     DirectWaveCache directWave { formatManager };
-    std::map<juce::String, std::unique_ptr<juce::AudioThumbnail>> thumbs;
+    std::map<juce::String, std::unique_ptr<WaveThumb>> thumbs;
     bool dragging = false; int dragIndex = -1; std::vector<EditRegion> baseRegions;
     bool markDrag = false, markActive = false, markAlt = false; double markAnchor = 0.0; int markStartX = 0, markRow0 = 0;     // dragging over audio that is not selected sets marks 1 and 2
     bool dragOverdub = false; juce::int64 overdubBase = 0;

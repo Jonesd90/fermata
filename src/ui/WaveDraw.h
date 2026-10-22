@@ -3,6 +3,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "WaveColor.h"
+#include "WaveThumb.h"
 #include <map>
 #include <vector>
 
@@ -18,15 +19,18 @@ inline void setWaveColour (juce::Graphics& g, juce::Colour c) { currentWaveColou
     the whole picture, and it is two thirds of the drawing work of a window full of small rows). */
 inline void fillEnvelope (juce::Graphics& g, float xFirst, const std::vector<float>& tops, const std::vector<float>& bottoms, const std::vector<juce::Colour>* cols = nullptr, float bandHeight = 0.0f)
 {
+    // Drawn the way Pyramix draws it: every pixel column is a bar from its lowest to its highest sample, the columns joined into one shape with
+    // vertical steps between them (no slanting between neighbours), the body filled, and a crisp one-pixel line along the top and the bottom edge,
+    // the steps included. Everything sits on whole pixels, so the picture stays sharp at every zoom.
     const size_t n = tops.size();
     if (n == 0 || bottoms.size() != n) return;
+    const float x0 = std::floor (xFirst);
+    std::vector<float> T (n), B (n);
+    for (size_t i = 0; i < n; ++i) { T[i] = std::floor (tops[i] + 0.5f); B[i] = juce::jmax (T[i] + 1.0f, std::floor (bottoms[i] + 0.5f)); }
     juce::Path p;
-    p.startNewSubPath (xFirst, tops[0]);
-    for (size_t i = 0; i < n; ++i) p.lineTo (xFirst + (float) i + 0.5f, tops[i]);
-    p.lineTo (xFirst + (float) n, tops[n - 1]);
-    p.lineTo (xFirst + (float) n, juce::jmax (tops[n - 1] + 1.0f, bottoms[n - 1]));
-    for (size_t i = n; i-- > 0;) p.lineTo (xFirst + (float) i + 0.5f, juce::jmax (tops[i] + 1.0f, bottoms[i]));
-    p.lineTo (xFirst, juce::jmax (tops[0] + 1.0f, bottoms[0]));
+    p.startNewSubPath (x0, T[0]);
+    for (size_t i = 0; i < n; ++i) { p.lineTo (x0 + (float) i, T[i]); p.lineTo (x0 + (float) i + 1.0f, T[i]); }
+    for (size_t i = n; i-- > 0;) { p.lineTo (x0 + (float) i + 1.0f, B[i]); p.lineTo (x0 + (float) i, B[i]); }
     p.closeSubPath();
     const auto base = currentWaveColour();
     const bool coloured = cols != nullptr && cols->size() == n;
@@ -43,7 +47,7 @@ inline void fillEnvelope (juce::Graphics& g, float xFirst, const std::vector<flo
             return outline ? (c.getBrightness() < 0.1f ? juce::Colour (0xff6a6a6a) : c.brighter (0.7f)) : c.darker (0.15f);
         };
         const float w = juce::jmax (1.0f, (float) n);
-        juce::ColourGradient gr (tint ((*cols)[0]), xFirst, 0.0f, tint ((*cols)[n - 1]), xFirst + w, 0.0f, false);
+        juce::ColourGradient gr (tint ((*cols)[0]), x0, 0.0f, tint ((*cols)[n - 1]), x0 + w, 0.0f, false);
         const size_t step = juce::jmax ((size_t) 1, n / 400);
         for (size_t i = step; i + 1 < n; i += step) gr.addColour ((double) i / (double) w, tint ((*cols)[i]));
         return gr;
@@ -51,13 +55,24 @@ inline void fillEnvelope (juce::Graphics& g, float xFirst, const std::vector<flo
     const bool solid = chan::solidLook();
     if (coloured) g.setGradientFill (gradient (false)); else g.setColour (solid ? base.interpolatedWith (juce::Colours::white, 0.74f) : base.darker (0.25f));
     g.fillPath (p);                          // a calm body ...
-    // ... and a thin bright line round the outer limit of the waveform (as in SADiE and Pyramix) so the peaks stand out
+    // ... and the line round the outer limit of the waveform (as in SADiE and Pyramix) so the peaks stand out
     if (bandHeight > 0.0f && bandHeight < 10.0f) { g.setColour (base); return; }
-    juce::Path top, bottom;
-    top.startNewSubPath (xFirst, tops[0]); bottom.startNewSubPath (xFirst, juce::jmax (tops[0] + 1.0f, bottoms[0]));
-    for (size_t i = 0; i < n; ++i) { top.lineTo (xFirst + (float) i + 0.5f, tops[i]); bottom.lineTo (xFirst + (float) i + 0.5f, juce::jmax (tops[i] + 1.0f, bottoms[i])); }
-    if (coloured) g.setGradientFill (gradient (true)); else g.setColour (solid ? base.withBrightness (base.getBrightness() * 0.2f) : base.brighter (0.7f));
-    g.strokePath (top, juce::PathStrokeType (1.0f)); g.strokePath (bottom, juce::PathStrokeType (1.0f));
+    juce::RectangleList<int> line;                                                   // whole pixels: the top and bottom pixel of every column, and the step up or down to the next
+    const int ix0 = (int) x0;
+    for (size_t i = 0; i < n; ++i)
+    {
+        const int t = (int) T[i], b = (int) B[i] - 1;
+        line.addWithoutMerging ({ ix0 + (int) i, t, 1, 1 });
+        if (b > t) line.addWithoutMerging ({ ix0 + (int) i, b, 1, 1 });
+        if (i + 1 < n)                                                               // the step to the next column, drawn in whichever of the two reaches further out (so a spike is one column)
+        {
+            const int nt = (int) T[i + 1], nb = (int) B[i + 1] - 1;
+            if (std::abs (nt - t) > 1) line.addWithoutMerging ({ ix0 + (int) (nt < t ? i + 1 : i), juce::jmin (t, nt), 1, std::abs (nt - t) });
+            if (std::abs (nb - b) > 1) line.addWithoutMerging ({ ix0 + (int) (nb > b ? i + 1 : i), juce::jmin (b, nb), 1, std::abs (nb - b) });
+        }
+    }
+    if (coloured) g.setGradientFill (gradient (true)); else g.setColour (solid ? base.withBrightness (base.getBrightness() * 0.12f) : base.brighter (0.7f));
+    g.fillRectList (line);
     g.setColour (base);
 }
 
@@ -76,7 +91,7 @@ inline void drawWaitingBlock (juce::Graphics& g, juce::Rectangle<int> area, cons
 }
 
 /** The waveform of a (zoomed-out) thumbnail between t0 and t1 seconds, drawn with fillEnvelope for every channel. */
-inline void drawThumbnailEnvelope (juce::Graphics& g, juce::Rectangle<int> area, juce::AudioThumbnail& th, double t0, double t1, float vzoom, const WaveColorData* wc = nullptr)
+inline void drawThumbnailEnvelope (juce::Graphics& g, juce::Rectangle<int> area, const WaveThumb& th, double t0, double t1, float vzoom, const WaveColorData* wc = nullptr)
 {
     if (area.isEmpty() || t1 <= t0) return;
     const int nCh = juce::jmax (1, th.getNumChannels());
@@ -104,13 +119,13 @@ inline void drawThumbnailEnvelope (juce::Graphics& g, juce::Rectangle<int> area,
     }
 }
 
-/** Sharp waveforms when zoomed in. The ordinary thumbnails (one value per 128 samples) are fine when zoomed out; once fewer than 128 samples
+/** Sharp waveforms when zoomed in. The ordinary thumbnails (one value per 256 samples) are fine when zoomed out; once fewer than 256 samples
     share a pixel this reads the audio itself, so every pixel shows the true peaks, and when there is more than a pixel per sample it draws
     the actual sample curve. Pieces read from disk are kept for a while, so scrolling and the moving playhead stay quick. */
 class DirectWaveCache
 {
 public:
-    static constexpr double kThumbSamplesPerPixelLimit = 128.0;     // thumbnails hold one value per 128 samples
+    static constexpr double kThumbSamplesPerPixelLimit = (double) WaveThumb::kSamplesPerPoint;     // thumbnails hold one value per 256 samples
     explicit DirectWaveCache (juce::AudioFormatManager& fm) : formats (fm) {}
     void forget (const juce::String& path) { cache.erase (path); }
 
@@ -191,7 +206,7 @@ public:
     }
 
 private:
-    static constexpr juce::int64 kMaxSamples = 400000;          // never read more than this for one file in one go
+    static constexpr juce::int64 kMaxSamples = 1500000;         // never read more than this for one file in one go (a wide window at 255 samples a pixel, and a third more each side)
     struct Entry
     {
         double rate = 0.0; juce::int64 length = 0;

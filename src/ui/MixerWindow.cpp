@@ -158,8 +158,10 @@ public:
         slider.setBounds (sliderRect);
         travelTop = r.getY() + MixerLookAndFeel::kCapHalf; travelBottom = r.getBottom() - MixerLookAndFeel::kCapHalf;
         const int mx = x0 + scaleW + sliderW + between;
-        meterL.setBounds (mx, travelTop, meterW, travelBottom - travelTop);
-        meterR.setBounds (mx + meterW + gap, travelTop, meterW, travelBottom - travelTop);
+        // the meters' bars run exactly over the fader's travel; the well's edge and the clip light sit above it, the edge below
+        const int above = 1 + LevelMeter::kClipH + 1;
+        meterL.setBounds (mx, travelTop - above, meterW, travelBottom - travelTop + above + 1);
+        meterR.setBounds (mx + meterW + gap, travelTop - above, meterW, travelBottom - travelTop + above + 1);
         ghostX = juce::jmax (1, between / 2);
         syncDrag();
     }
@@ -1915,8 +1917,8 @@ public:
         const auto& ms = meterSettings();
         setup (modeBox, modeCap, "METER SHOWS", { "Peak", "RMS", "Peak + RMS" }, ms.mode,
                "Peak: the highest sample. RMS: the average energy (about 300 ms), closer to how loud it sounds. Peak + RMS: a bright RMS bar inside a dim peak bar.");
-        setup (riseBox, riseCap, "RISE", { "Instant", "Fast", "Medium", "Slow" }, ms.rise, "How quickly the bar climbs when the level goes up");
-        setup (fallBox, fallCap, "FALL", { "Fast", "Medium", "Slow", "Very slow" }, ms.fall, "How quickly the bar drops when the level goes down");
+        setup (riseBox, riseCap, "RISE", { "Instant", "Fast", "Medium", "Slow" }, ms.rise, "How quickly the bar climbs when the level goes up: at once, or over 10, 50 or 300 ms. The lighter cap on the bar is always the sample peak, at once.");
+        setup (fallBox, fallCap, "FALL", { "Fast", "Medium", "Slow", "Very slow" }, ms.fall, "How quickly the bar drops when the level goes down: 90, 25, 12 or 6 dB a second. The cap drops at 60 dB a second.");
         setup (holdBox, holdCap, "PEAK HOLD", { "Off", "1 second", "3 seconds", "10 seconds", "30 seconds", "Until reset" }, ms.hold,
                "How long the white peak marker stays before it drops. Peaks above -2 dBFS always stay until 'Reset peaks'.");
         auto change = [this]

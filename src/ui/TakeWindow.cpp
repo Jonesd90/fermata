@@ -65,7 +65,7 @@ class TakeTimeline : public juce::Component, private juce::ChangeListener, priva
 {
 public:
     TakeTimeline (AppContext& a, const juce::Uuid& wid, juce::Viewport& vp)
-        : app (a), windowId (wid), viewport (vp), thumbCache (64)
+        : app (a), windowId (wid), viewport (vp)
     {
         formatManager.registerBasicFormats();
         setWantsKeyboardFocus (true);
@@ -1185,17 +1185,17 @@ private:
         }));
     }
 
-    juce::AudioThumbnail* thumbnailFor (const juce::File& f)
+    WaveThumb* thumbnailFor (const juce::File& f)
     {
         syncRedraw();
         const auto key = f.getFullPathName();
         auto it = thumbs.find (key);
         if (it == thumbs.end())
         {
-            auto t = std::make_unique<juce::AudioThumbnail> (128, formatManager, thumbCache);
+            auto t = std::make_unique<WaveThumb> (formatManager, thumbPool);
             t->addChangeListener (this);
             if (wavestore::loadThumbnail (*t, wavesFolder(), f)) saver.markDone (key);      // saved in the Waveforms folder: no need to read the audio again
-            else { t->setSource (new juce::FileInputSource (f)); saver.markPending (key); }
+            else { t->load (f); saver.markPending (key); }
             it = thumbs.emplace (key, std::move (t)).first;
         }
         return it->second.get();
@@ -1208,7 +1208,6 @@ private:
     {
         if (app.redrawStamp == redrawSeen) return;
         for (auto& e : app.redrawLog) if (e.first > redrawSeen) { thumbs.erase (e.second); saver.forget (e.second); directWave.forget (e.second); }
-        thumbCache.clear();
         redrawSeen = app.redrawStamp;
     }
 
@@ -1333,9 +1332,9 @@ private:
     juce::Uuid windowId;
     juce::Viewport& viewport;
     juce::AudioFormatManager formatManager;
-    juce::AudioThumbnailCache thumbCache;
+    WaveThumb::Pool thumbPool;
     DirectWaveCache directWave { formatManager };
-    std::map<juce::String, std::unique_ptr<juce::AudioThumbnail>> thumbs;
+    std::map<juce::String, std::unique_ptr<WaveThumb>> thumbs;
     juce::Uuid dragId; bool dragging = false; double dragOriginSeconds = 0.0;
     int flagDrag = 0;                                      // 1 = dragging the Edit IN flag, 2 = the Edit OUT flag
     /** Which Edit flag (1 = IN, 2 = OUT) is under this point: the little label at the top of the take or the line itself. */

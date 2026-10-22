@@ -324,20 +324,27 @@ inline juce::Image makeFermataFileIcon (int size)
 struct MeterSettings
 {
     int mode = 0;      // 0 peak, 1 RMS, 2 both (RMS bar inside the peak bar)
-    int rise = 0;      // 0 instant .. 3 slow
-    int fall = 1;      // 0 fast .. 3 very slow
-    int hold = 3;      // index into holdMs
-    static float riseCoef (int i) noexcept { static const float v[] { 1.0f, 0.7f, 0.4f, 0.15f }; return v[juce::jlimit (0, 3, i)]; }
+    int rise = 1;      // 0 instant, 1 fast (10 ms), 2 medium (50 ms), 3 slow (300 ms): how long the bar takes to climb to a new level
+    int fall = 1;      // 0 fast (90 dB/s), 1 medium (25 dB/s), 2 slow (12 dB/s), 3 very slow (6 dB/s)
+    int hold = 2;      // index into holdFor
+    static float riseCoef (int i) noexcept { static const float v[] { 1.0f, 0.7f, 0.4f, 0.15f }; return v[juce::jlimit (0, 3, i)]; }          // (the older per-tick form: the main window's meters)
     static float fallCoef (int i) noexcept { static const float v[] { 0.70f, 0.82f, 0.92f, 0.97f }; return v[juce::jlimit (0, 3, i)]; }
+    static float riseMs (int i) noexcept { static const float v[] { 0.0f, 10.0f, 50.0f, 300.0f }; return v[juce::jlimit (0, 3, i)]; }
+    static float fallDbPerSec (int i) noexcept { static const float v[] { 90.0f, 25.0f, 12.0f, 6.0f }; return v[juce::jlimit (0, 3, i)]; }
     static juce::uint32 holdFor (int i) noexcept { static const juce::uint32 v[] { 0, 1000, 3000, 10000, 30000, 0xffffffffu }; return v[juce::jlimit (0, 5, i)]; }
 };
 inline MeterSettings& meterSettings() { static MeterSettings s; return s; }
 
+/** A level meter. The main window's input / output meters: -60 .. 0 dB, green, orange from -9 dB, red from -2 dB, the peak marker held 10 s
+    (latched above -2 dBFS until resetPeak). The mixer's meters (useFaderScale) are drawn like Pyramix's: a dark well, a green bar that climbs at the
+    meter's rise time and falls at its fall rate, a lighter cap on it for the sample peak (instant, falling 60 dB/s), red above 0 dBFS, a peak-hold
+    line held for the hold time, and a clip light at the top. The scale is the fader's (+12 .. -80 dB, -20 dB at the middle). */
 class LevelMeter : public juce::Component
 {
 public:
     static constexpr float kRedDb = -2.0f, kOrangeDb = -9.0f, kFloorDb = -60.0f;
     static constexpr juce::uint32 kHoldMs = 10000;
+    static constexpr float kCapFallDbPerSec = 60.0f;                  // the sample-peak cap of the mixer's meters
 
     explicit LevelMeter (bool vertical = true) : isVertical (vertical) {}
 
@@ -350,35 +357,65 @@ public:
         static const double skew = std::log (0.5) / std::log (60.0 / 92.0);
         return (float) std::pow (juce::jlimit (0.0, 1.0, ((double) db + 80.0) / 92.0), skew);
     }
-    /** Makes this meter use the fader's scale (it then reaches up to +12 dB). */
+    /** Makes this meter use the fader's scale (it then reaches up to +12 dB) and the Pyramix look. */
     void useFaderScale() noexcept { faderScale = true; }
     float pos (float db) const noexcept { return faderScale ? faderFrac (db) : frac (db); }
+
+    // the Pyramix colours
+    static juce::Colour wellColour()  { return juce::Colour (0xff101010); }
+    static juce::Colour wellEdge()    { return juce::Colour (0xff232323); }
+    static juce::Colour barGreen()    { return juce::Colour (0xff83a84e); }
+    static juce::Colour capGreen()    { return juce::Colour (0xffa2d25e); }
+    static juce::Colour overRed()     { return juce::Colour (0xffdc5467); }
+    static juce::Colour clipOff()     { return juce::Colour (0xff3a1a20); }
 
     void setLevel (float linearPeak, float linearRms = 0.0f)
     {
         const auto now = juce::Time::getMillisecondCounter();
         const auto& ms = meterSettings();
-        const float rc = faderScale ? MeterSettings::riseCoef (ms.rise) : 1.0f, fc = faderScale ? MeterSettings::fallCoef (ms.fall) : 0.82f;
         const juce::uint32 holdMs = faderScale ? MeterSettings::holdFor (ms.hold) : kHoldMs;
-        auto follow = [&] (float& v, float target)
+        if (faderScale)
         {
-            if (target > v) v += (target - v) * rc;
-            else            v = v * fc + target * (1.0f - fc);
-        };
-        follow (level, linearPeak);
-        follow (rmsLevel, linearRms);
+            // in dB, by the clock: the bar climbs with the rise time and falls at the fall rate, the cap is the sample peak falling at its own rate
+            const float dt = lastTick == 0 ? 0.033f : juce::jlimit (0.001f, 0.5f, (float) (now - lastTick) * 0.001f);
+            lastTick = now;
+            const float peakDb = juce::Decibels::gainToDecibels (linearPeak, -100.0f), rmsDb = juce::Decibels::gainToDecibels (linearRms, -100.0f);
+            const float riseMs = MeterSettings::riseMs (ms.rise), fallRate = MeterSettings::fallDbPerSec (ms.fall);
+            auto follow = [&] (float& v, float target)
+            {
+                if (target > v) v = riseMs <= 0.0f ? target : v + (target - v) * juce::jmin (1.0f, dt * 1000.0f / riseMs);
+                else            v = juce::jmax (target, v - fallRate * dt);
+            };
+            follow (barDb, peakDb);
+            follow (rmsBarDb, rmsDb);
+            capDb = peakDb > capDb ? peakDb : juce::jmax (peakDb, capDb - kCapFallDbPerSec * dt);
+            level = juce::Decibels::decibelsToGain (barDb, -100.0f); rmsLevel = juce::Decibels::decibelsToGain (rmsBarDb, -100.0f);
+        }
+        else
+        {
+            const float rc = 1.0f, fc = 0.82f;
+            auto follow = [&] (float& v, float target)
+            {
+                if (target > v) v += (target - v) * rc;
+                else            v = v * fc + target * (1.0f - fc);
+            };
+            follow (level, linearPeak);
+            follow (rmsLevel, linearRms);
+        }
         if (linearPeak > juce::Decibels::decibelsToGain (kRedDb)) latched = true;
+        if (linearPeak >= 0.999f) clipped = true;                                   // the clip light: a sample at full scale
         if (linearPeak >= hold) { hold = linearPeak; holdTime = now; }
         else if (! latched && holdMs != 0xffffffffu && now - holdTime > holdMs) { hold = linearPeak; holdTime = now; }
         // a meter that shows the same picture is not repainted (an idle input used to cost a repaint 30 times a second, forty of them on a big rig)
-        const bool same = std::abs (level - shownLevel) < 1.0e-4f && std::abs (rmsLevel - shownRms) < 1.0e-4f && hold == shownHold && latched == shownLatched;
-        shownLevel = level; shownRms = rmsLevel; shownHold = hold; shownLatched = latched;
+        const bool same = std::abs (level - shownLevel) < 1.0e-4f && std::abs (rmsLevel - shownRms) < 1.0e-4f && hold == shownHold && latched == shownLatched
+                          && std::abs (capDb - shownCap) < 0.05f && clipped == shownClipped;
+        shownLevel = level; shownRms = rmsLevel; shownHold = hold; shownLatched = latched; shownCap = capDb; shownClipped = clipped;
         if (! same) repaint();
     }
-    float shownLevel = -1.0f, shownRms = -1.0f, shownHold = -1.0f; bool shownLatched = false;
+    float shownLevel = -1.0f, shownRms = -1.0f, shownHold = -1.0f, shownCap = -200.0f; bool shownLatched = false, shownClipped = false;
 
     /** The 'Reset peaks' button. */
-    void resetPeak() { hold = 0.0f; latched = false; holdTime = juce::Time::getMillisecondCounter(); level = 0.0f; rmsLevel = 0.0f; repaint(); }
+    void resetPeak() { hold = 0.0f; latched = false; clipped = false; holdTime = juce::Time::getMillisecondCounter(); level = 0.0f; rmsLevel = 0.0f; barDb = rmsBarDb = capDb = -100.0f; repaint(); }
     float getHoldDb() const noexcept { return juce::Decibels::gainToDecibels (hold, -100.0f); }
     bool isLatched() const noexcept { return latched; }
 
@@ -387,16 +424,16 @@ public:
 
     void paint (juce::Graphics& g) override
     {
+        if (faderScale) { paintPyramix (g); return; }
         auto b = getLocalBounds().toFloat();
         g.setColour (theme::wellDark);
         g.fillRect (b);
         g.setColour (theme::border); g.drawRect (getLocalBounds(), 1);
-        const int mode = faderScale ? meterSettings().mode : 0;
         const float h = pos (getHoldDb());
         const float fo = pos (kOrangeDb), fr = pos (kRedDb);
         auto bar = [&] (float lin, juce::Rectangle<float> area, float alpha)
         {
-            const float f = pos (juce::Decibels::gainToDecibels (lin, faderScale ? -80.0f : kFloorDb));
+            const float f = pos (juce::Decibels::gainToDecibels (lin, kFloorDb));
             auto zone = [&] (float from, float to, juce::Colour c)
             {
                 to = juce::jmin (to, f);
@@ -409,21 +446,14 @@ public:
             zone (fo, fr, juce::Colour (0xffff9a1f));
             zone (fr, 1.0f, juce::Colour (0xffe8281e));
         };
-        if (mode == 0)      bar (level, b, 1.0f);
-        else if (mode == 1) bar (rmsLevel, b, 1.0f);
-        else
-        {
-            bar (level, b, 0.42f);                                                   // the peak, dim; the RMS in the middle of it, bright
-            bar (rmsLevel, isVertical ? b.reduced (b.getWidth() * 0.27f, 0.0f) : b.reduced (0.0f, b.getHeight() * 0.27f), 1.0f);
-        }
-
+        bar (level, b, 1.0f);
         if (isVertical && b.getHeight() > 40.0f)                                    // fine segment lines: the bar reads like an LED ladder
         {
             g.setColour (theme::wellDark.withAlpha (0.85f));
             for (float y = b.getBottom() - 2.0f; y > b.getY(); y -= 3.0f) g.fillRect (b.getX(), y, b.getWidth(), 1.0f);
         }
         g.setColour (juce::Colours::black.withAlpha (0.35f));                      // scale ticks across the bar
-        for (int db : (faderScale ? faderScaleDbs() : scaleDbs()))
+        for (int db : scaleDbs())
         {
             const float t = pos ((float) db);
             if (isVertical) g.fillRect (b.getX(), b.getBottom() - b.getHeight() * t - 0.5f, b.getWidth(), 1.0f);
@@ -437,12 +467,62 @@ public:
         }
     }
 
+    /** The clip light's height at the top of a Pyramix-style meter (the bar's travel starts under it). */
+    static constexpr int kClipH = 5;
+
 private:
+    /** The Pyramix look (vertical only): the well, the clip light, the bar in green with the part above 0 dB in red, the sample-peak cap in a
+        lighter green, the peak-hold line. 'mode' 1 shows the RMS as the bar; 2 shows the peak bar dimmed with the RMS bar full over it. */
+    void paintPyramix (juce::Graphics& g)
+    {
+        const auto b = getLocalBounds();
+        g.setColour (wellColour()); g.fillRect (b);
+        g.setColour (wellEdge());   g.drawRect (b, 1);
+        auto well = b.reduced (1);
+        auto clip = well.removeFromTop (kClipH);
+        g.setColour (clipped ? overRed() : clipOff()); g.fillRect (clip.reduced (1, 1));
+        well.removeFromTop (1);
+        const float top = (float) well.getY(), bottom = (float) well.getBottom(), span = bottom - top;
+        auto yOf = [&] (float db) { return bottom - span * faderFrac (db); };
+        const float y0 = yOf (0.0f);
+        auto bar = [&] (float db, int inset, float alpha)                        // from the floor up to db: green below 0 dB, red above
+        {
+            if (db <= -79.9f) return;
+            const float y = yOf (db);
+            const auto r = well.toFloat().reduced ((float) inset, 0.0f);
+            g.setColour (barGreen().withAlpha (alpha)); g.fillRect (r.getX(), juce::jmax (y, y0), r.getWidth(), bottom - juce::jmax (y, y0));
+            if (y < y0) { g.setColour (overRed().withAlpha (alpha)); g.fillRect (r.getX(), y, r.getWidth(), y0 - y); }
+        };
+        const int mode = meterSettings().mode;
+        const float peakBar = barDb, rmsBar = rmsBarDb;
+        if (mode == 0) bar (peakBar, 0, 1.0f);
+        else if (mode == 1) bar (rmsBar, 0, 1.0f);
+        else { bar (peakBar, 0, 0.45f); bar (rmsBar, 0, 1.0f); }
+        const float shownBar = mode == 1 ? rmsBar : peakBar;
+        if (capDb > shownBar + 0.1f && capDb > -79.9f)                             // the sample peak above the bar: the lighter cap
+        {
+            const float yc = yOf (capDb), yb = yOf (juce::jmax (shownBar, -80.0f));
+            const auto r = well.toFloat();
+            g.setColour (capDb > 0.0f ? overRed().brighter (0.15f) : capGreen());
+            g.fillRect (r.getX(), yc, r.getWidth(), juce::jmax (1.0f, yb - yc));
+        }
+        if (hold > 0.0f)                                                            // the peak-hold line
+        {
+            const float hdb = getHoldDb();
+            if (hdb > -79.9f)
+            {
+                g.setColour (hdb > 0.0f || latched ? overRed() : capGreen());
+                g.fillRect ((float) well.getX(), yOf (hdb) - 1.0f, (float) well.getWidth(), 2.0f);
+            }
+        }
+    }
+
     bool isVertical;
     bool faderScale = false;
     float level = 0.0f, rmsLevel = 0.0f, hold = 0.0f;
-    bool latched = false;
-    juce::uint32 holdTime = 0;
+    float barDb = -100.0f, rmsBarDb = -100.0f, capDb = -100.0f;                  // the Pyramix-style meter's state, in dB
+    bool latched = false, clipped = false;
+    juce::uint32 holdTime = 0, lastTick = 0;
 };
 
 /** The dB numbers next to a vertical meter. Give it the same top and bottom as the meter. */

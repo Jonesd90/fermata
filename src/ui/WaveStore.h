@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_core/juce_core.h>
 #include <juce_audio_formats/juce_audio_formats.h>
+#include "WaveThumb.h"
 #include <set>
 
 namespace td
@@ -10,7 +11,7 @@ namespace td
     size and modified date, so editing or replacing audio just makes a new one. The folder can be deleted at any time: it is rebuilt as needed. */
 namespace wavestore
 {
-constexpr juce::int32 kMagicThumb = 0x46575448, kMagicColour = 0x46574331;       // 'FWTH', 'FWC1'
+constexpr juce::int32 kMagicThumb = 0x46575432, kMagicColour = 0x46574331;       // 'FWT2' (the 16-bit outlines of 2.83; the 8-bit .fwave files before them are simply not read again), 'FWC1'
 
 inline juce::File fileFor (const juce::File& folder, const juce::File& audio, const char* ext)
 {
@@ -27,19 +28,19 @@ inline bool readHeader (juce::InputStream& i, juce::int32 magic, const juce::Fil
 }
 
 /** Fills a thumbnail from the Waveforms folder. False if there is no (valid) saved one: the caller then reads the audio as usual. */
-inline bool loadThumbnail (juce::AudioThumbnail& t, const juce::File& folder, const juce::File& audio)
+inline bool loadThumbnail (WaveThumb& t, const juce::File& folder, const juce::File& audio)
 {
-    const auto f = fileFor (folder, audio, ".fwave");
+    const auto f = fileFor (folder, audio, ".fwave2");
     if (! f.existsAsFile()) return false;
     juce::FileInputStream in (f);
     if (! in.openedOk() || ! readHeader (in, kMagicThumb, audio)) return false;
     return t.loadFrom (in);
 }
-inline void saveThumbnail (juce::AudioThumbnail& t, const juce::File& folder, const juce::File& audio)
+inline void saveThumbnail (WaveThumb& t, const juce::File& folder, const juce::File& audio)
 {
     if (! t.isFullyLoaded() || t.getTotalLength() <= 0.0 || ! audio.existsAsFile()) return;
     if (! folder.createDirectory().wasOk()) return;
-    const auto f = fileFor (folder, audio, ".fwave");
+    const auto f = fileFor (folder, audio, ".fwave2");
     juce::TemporaryFile tmp (f);
     {
         juce::FileOutputStream out (tmp.getFile());
