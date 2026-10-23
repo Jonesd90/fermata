@@ -285,6 +285,7 @@ private:
         // the tail: after playback stops, the mixer that was playing goes on running (with silence going in) until its reverbs have died away,
         // like outboard gear after the tape stops (audio thread only)
         bool ranLive = false;                   // it ran as a live mixer in the last block
+        bool rmsIdle = false;                   // it is not running and its RMS meters have been set back to nothing (they are only worked out while it runs)
         bool tailNow = false;                   // this block it runs only for its tail: no disk audio, no live inputs
         int tailLeft = 0;                       // samples of tail still allowed (at most 30 s)
         int quietFor = 0;                       // how long its outputs have been below -90 dB

@@ -757,6 +757,24 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
                 if (nJobs >= (int) pl->jobs.size()) break;
                 pl->jobs[(size_t) nJobs++] = { mp.get(), audActive && mp->mixer == eng, audited ? monitorOut : -1, strict, capMain };
             }
+            // A mixer that is not running in this block (playback has stopped and its tail has died away, or it rests) keeps no RMS: the RMS of a strip is only worked
+            // out while its mixer runs, so what it was when the mixer stopped would stay on the meters for ever. It is set back to nothing once (the meters then fall at their own rate).
+            for (auto& mp : pl->mixers)
+            {
+                bool runs = false;
+                for (int j = 0; j < nJobs && ! runs; ++j) runs = pl->jobs[(size_t) j].mp == mp.get();
+                if (runs) { mp->rmsIdle = false; continue; }
+                if (mp->rmsIdle) continue;
+                mp->rmsIdle = true;
+                for (auto& nd : mp->order)
+                {
+                    float* msL = nullptr; float* msR = nullptr; Param* rl = nullptr; Param* rr = nullptr;
+                    if (nd->kind == NodeKind::Track && nd->strip != nullptr) { msL = &nd->strip->msL; msR = &nd->strip->msR; rl = &nd->strip->rmsL; rr = &nd->strip->rmsR; }
+                    else if (nd->kind != NodeKind::Track && nd->bus != nullptr) { msL = &nd->bus->msL; msR = &nd->bus->msR; rl = &nd->bus->rmsL; rr = &nd->bus->rmsR; }
+                    if (msL == nullptr) continue;
+                    *msL = 0.0f; *msR = 0.0f; rl->set (0.0f); rr->set (0.0f);
+                }
+            }
             const bool playingNow = ps != nullptr && ! direct;
             for (int j = 0; j < nJobs; ++j) pl->jobs[(size_t) j].mp->outPeak = 0.0f;
             // Two or more mixers: they run side by side on the helper threads, each into its own outputs, which are then added up here in the usual

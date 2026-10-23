@@ -1820,6 +1820,45 @@ int main()
         mixA.stripFor (violaId)->solo.set (true);
     }
 
+    SECTION ("meters: the RMS of a mixer that stops running falls to nothing (2.90.1)");
+    {
+        // The RMS of a strip is worked out only while its mixer runs. A mixer that stopped (playback ended and its tail died away) used to leave the last RMS on the meters for ever.
+        Project q;
+        q.projectFile = tmp.getChildFile ("RmsIdle.fermata");
+        q.setInputCount (2); q.setOutputCount (2);
+        q.tracks.clear();
+        const auto ta = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        q.retireAllMixers();
+        const auto ob = q.addBus ("Out", true).id;
+        auto& mq = q.addMixer ("M");
+        AudioEngine e (q);
+        e.setMixerThreads (0);
+        e.prepare (48000.0, 256);
+        q.setSendLevel (mq, ta, ob, 0.0f);
+        mq.busFor (ob)->outFirst.store (0);
+        e.rebuildPlan();
+        auto run = [&] (int blocks, int& blk)
+        {
+            for (int b = 0; b < blocks; ++b, ++blk)
+            {
+                std::vector<float> i0 (256), i1 (256, 0.0f), o0 (256, 0.0f), o1 (256, 0.0f);
+                for (int i = 0; i < 256; ++i) i0[(size_t) i] = 0.4f * (float) std::sin ((blk * 256 + i) * 0.041);
+                const float* in[2] = { i0.data(), i1.data() }; float* out[2] = { o0.data(), o1.data() };
+                e.process (in, 2, out, 2, 256);
+            }
+        };
+        int blk = 0;
+        run (40, blk);
+        auto* sa = mq.stripFor (ta); auto* sb = mq.busFor (ob);
+        CHECK (sa->rmsL.get() > 0.05f && sb->rmsL.get() > 0.05f);                        // running: there is an RMS
+        mq.busFor (ob)->outFirst.store (-1);                                              // its outputs go nowhere: the mixer is not run any more
+        run (4, blk);
+        CHECK (sa->rmsL.get() == 0.0f && sa->rmsR.get() == 0.0f && sb->rmsL.get() == 0.0f && sb->rmsR.get() == 0.0f);
+        mq.busFor (ob)->outFirst.store (0);                                               // running again: the RMS is worked out again from nothing
+        run (40, blk);
+        CHECK (sa->rmsL.get() > 0.05f && sb->rmsL.get() > 0.05f);
+    }
+
     SECTION ("edge fades: 1 ms on every piece, files untouched");
     {
         auto* gx = &p.takeWindows.front()->groups.back();

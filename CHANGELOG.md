@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.90.1
+- **The mixer's RMS meters fall to nothing when playback stops.** With the meters showing RMS (alone or with the peak), a strip's RMS bar stayed at the level it had when you paused, for ever. The RMS of a strip is only worked out while its mixer runs, and a mixer stops running once playback has ended and its tail (reverbs) has died away - the last value was left behind. When a mixer stops, the RMS of all its strips, buses and Ext Buses is now set back to nothing, and the meters fall to the bottom at their usual fall rate (the same goes for the RMS the control surface's meters read). A core test covers it.
+
 ## 2.90.0
 - **The pitch pipe never bends a note when you let go.** In 2.89 a chord tuned pure major / minor jumped to the plain tuning's pitch for its fade-out (a pure third is 14 - 16 cents from the piano's), so the notes bent at the end. A note now keeps the pitch it started on from the first instant of its swell to the last of its fade-out, whatever is done with the keys (measured: the fade-out of a pure third stays within 0.1 cent).
 - **A held note that is retuned glides** (changing the tuning, the key, the reference A, or lighting / unlighting a key while Play is held): in 50 ms, ending exactly on the new pitch, so you can listen from one tuning to another.
