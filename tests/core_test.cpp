@@ -5,6 +5,7 @@
 #include "../src/core/SessionClock.h"
 #include "../src/core/TalkbackKey.h"
 #include "../src/core/RemoteProtocol.h"
+#include "../src/core/RemoteDesk.h"
 #include "../src/core/PreampMemory.h"
 #include "../src/core/ImportPlan.h"
 #include "../src/core/MasterExport.h"
@@ -1611,6 +1612,7 @@ int main()
         CHECK (! json.containsAnyOf ("\n\r"));
         auto v = juce::JSON::parse (json);
         CHECK ((bool) v["recording"] && (int) v["takeNumber"] == 7 && v["sessionText"].toString() == "01:00:00" && v["colours"]["cr"].toString() == "#a83cff");
+        CHECK ((int) v["deskProtocol"] == 1);                      // (the Stream Deck + XL plug-in tells "open a project" from "needs a newer Fermata" by this)
     }
 
     SECTION ("talkback: the TB pair can only carry the CR mic and recorded audio");
@@ -7739,6 +7741,157 @@ int main()
         CHECK (s.find ("(Page 2 of " + std::to_string (bigDoc.pageCount()) + ")") != std::string::npos && s.find ("\\(continued\\)") != std::string::npos && s.find ("LOST 0.1 s") != std::string::npos);
         CHECK (takesheet::clockText (65.2) == "1:05" && takesheet::clockText (3725.0) == "1:02:05" && takesheet::durationText (3840.0) == "1 h 04 min");
         tw.markers.clear(); if (first != nullptr) { first->barIn = first->barOut = 0; first->dud = false; }
+    }
+
+    SECTION ("2.94 notes on a take: saved with the project, in the undo hash, in the take sheet (PDF and CSV)");
+    {
+        TakeGroup* nt = nullptr;
+        for (auto& gg : tw.groups) if (nt == nullptr || gg.number < nt->number) nt = &gg;
+        CHECK (nt != nullptr);
+        if (nt != nullptr)
+        {
+            CHECK (nt->notes.isEmpty());
+            const auto before = Project::undoHash (tw);
+            nt->notes = "Good ending, \"chair\" creak at bar 14\nsecond line";
+            CHECK (Project::undoHash (tw) != before);
+            Project back; CHECK (back.fromVar (p.toVar()));
+            auto* bw = back.findTakeWindow (tw.id);
+            auto* bg = bw != nullptr ? bw->findGroup (nt->id) : nullptr;
+            CHECK (bg != nullptr && bg->notes == nt->notes);
+            const auto secs = takesheet::collect (p, tw.id);
+            CHECK (! secs.empty() && ! secs[0].rows.empty() && secs[0].rows[0].notes == nt->notes);
+            const auto csv = takesheet::csv (secs);
+            CHECK (csv.contains (",Notes,Markers,") && csv.contains ("\"Good ending, \"\"chair\"\" creak at bar 14\nsecond line\""));
+            const auto doc = takesheet::makePdf (secs, "Brahms Requiem", "2.94.0", juce::Time::getCurrentTime());
+            const auto mb = doc.toPdf(); const std::string s ((const char*) mb.getData(), mb.getSize());
+            CHECK (s.find ("Note: Good ending") != std::string::npos || s.find ("Note:") != std::string::npos);
+            nt->notes.clear();
+            Project back2; CHECK (back2.fromVar (p.toVar()));
+            auto* bw2 = back2.findTakeWindow (tw.id);
+            CHECK (bw2 != nullptr && bw2->findGroup (nt->id) != nullptr && bw2->findGroup (nt->id)->notes.isEmpty());
+        }
+    }
+
+    SECTION ("2.94 the Stream Deck + XL: the commands, the preamp keys, gain, pan, monitor, the mixers' main outputs, the stage levels");
+    {
+        namespace desk = remote::desk;
+        // the new commands are understood, anything else is not
+        { auto c = remote::parseCommand ("{\"cmd\":\"gain\",\"input\":3,\"delta\":-0.5}"); CHECK (c.name == "gain" && c.input == 3 && std::abs (c.delta + 0.5) < 1e-9); }
+        { auto c = remote::parseCommand ("{\"cmd\":\"preamp\",\"input\":7,\"what\":\"V48\"}"); CHECK (c.name == "preamp" && c.input == 7 && c.what == "v48"); }
+        { auto c = remote::parseCommand ("{\"cmd\":\"pan\",\"input\":1,\"side\":2,\"delta\":0.02,\"centre\":true}"); CHECK (c.name == "pan" && c.side == 2 && c.centre && std::abs (c.delta - 0.02) < 1e-9); }
+        { auto c = remote::parseCommand ("{\"cmd\":\"desk\",\"on\":false}"); CHECK (c.name == "desk" && ! c.on); }
+        CHECK (remote::parseCommand ("{\"cmd\":\"desk\"}").on && remote::parseCommand ("{\"cmd\":\"monitor\"}").input == -1);
+        CHECK (remote::parseCommand ("{\"cmd\":\"gain\",\"input\":0,\"delta\":1e9}").delta <= 100.0);
+        for (auto* n : { "bridge", "pitchpipe", "click", "takewindow", "minimiseall", "armtoggle", "wavecolour", "loop", "monitor", "talkin", "mixout", "mixmute", "stage", "stagereset" })
+            CHECK (remote::parseCommand (juce::String ("{\"cmd\":\"") + n + "\"}").name == n);
+        CHECK (remote::parseCommand ("{\"cmd\":\"rm -rf\"}").name.isEmpty());
+
+        // a project with 6 inputs, a mono track on input 0, a stereo one on inputs 2 + 3, a main output, and 6 mixers (processing + 5 cue)
+        struct FakeDriver : PreampDriver
+        {
+            juce::String getName() const override { return "fake"; }
+            bool isConnected() const override { return true; }
+            bool apply (int i, const PreampSettings& s) override { last[i] = s; ++applied; return true; }
+            bool controls (int i) const override { return i != 5; }
+            std::map<int, PreampSettings> last; int applied = 0;
+        };
+        Project p; p.setInputCount (6); p.setOutputCount (4); p.tracks.clear(); p.buses.clear();
+        auto fake = std::make_shared<FakeDriver>(); p.preampDriver = fake;
+        const auto monoId = p.addTrack ("Vln", TrackFormat::Mono, 0).id;
+        const auto stId = p.addTrack ("Pair", TrackFormat::Stereo, 2).id;
+        p.addBus ("Out", true);
+        for (int i = 1; i <= 5; ++i) p.addMixer ("Cue " + juce::String (i));
+        p.addMixer ("Cue 6");                                                   // (a sixth cue mixer has no dial)
+        CHECK (p.cueEnd() == 7 && desk::mixerIndexForSlot (p, 0) == 0 && desk::mixerIndexForSlot (p, 5) == 5 && desk::mixerIndexForSlot (p, 6) == -1 && desk::mixerIndexForSlot (p, -1) == -1);
+
+        // gain: half dB steps, kept in 0 .. 66, an input without preamp controls does nothing
+        p.inputs[0].preamp.gainDb = 20.0f;
+        CHECK (desk::gainStep (p, 0, 0.5f) && p.inputs[0].preamp.gainDb == 20.5f && fake->last[0].gainDb == 20.5f);
+        CHECK (desk::gainStep (p, 0, -100.0f) && p.inputs[0].preamp.gainDb == 0.0f && desk::gainStep (p, 0, 100.0f) && p.inputs[0].preamp.gainDb == 66.0f);
+        const int before = fake->applied;
+        CHECK (desk::gainStep (p, 0, 1.0f) && fake->applied == before);              // already at the top: nothing is sent
+        CHECK (! desk::gainStep (p, 5, 1.0f) && ! desk::gainStep (p, 99, 1.0f) && ! desk::gainStep (p, -1, 1.0f));
+
+        // the preamp keys, as the keys in the main window step them
+        p.inputs[1].preamp = PreampSettings();
+        CHECK (desk::preampKey (p, 1, "v48") && p.inputs[1].preamp.phantom && desk::preampKey (p, 1, "v48") && ! p.inputs[1].preamp.phantom);
+        CHECK (desk::preampKey (p, 1, "mic") && p.inputs[1].preamp.line && desk::preampKey (p, 1, "mic") && ! p.inputs[1].preamp.line);
+        CHECK (desk::preampKey (p, 1, "pol") && p.inputs[1].preamp.polarity);
+        CHECK (desk::preampKey (p, 1, "lc") && p.inputs[1].preamp.lowCut && desk::preampKey (p, 1, "lc") && ! p.inputs[1].preamp.lowCut);
+        CHECK (desk::preampKey (p, 1, "pad") && p.inputs[1].preamp.pad && desk::preampKey (p, 1, "pad") && ! p.inputs[1].preamp.pad);
+        CHECK (! desk::preampKey (p, 1, "nonsense") && ! desk::preampKey (p, 5, "v48"));
+        // four-way low cut (MT48): OFF -> 40 -> 60 -> 80 -> OFF
+        p.inputs[2].preamp = PreampSettings(); p.inputs[2].preamp.lowCutChoice = true;
+        int hz[5]; for (int k = 0; k < 4; ++k) { desk::preampKey (p, 2, "lc"); hz[k] = p.inputs[2].preamp.lowCut ? p.inputs[2].preamp.lowCutHz : 0; }
+        CHECK (hz[0] == 40 && hz[1] == 60 && hz[2] == 80 && hz[3] == 0);
+        // the MT48's three-step pad: OFF -> -12 -> -24 -> OFF (it moves the gain scale, not the gain)
+        p.inputs[2].preamp.steppedPad = true; p.inputs[2].preamp.gainDb = 30.0f;
+        p.inputs[2].preamp.setPadStep (0); int steps[4]; for (int k = 0; k < 4; ++k) { desk::preampKey (p, 2, "pad"); steps[k] = p.inputs[2].preamp.padStep(); }
+        CHECK (steps[0] == 1 && steps[1] == 2 && steps[2] == 0 && steps[3] == 1 && p.inputs[2].preamp.gainDb == 30.0f);
+        p.inputs[2].preamp.line = true; CHECK (! desk::preampKey (p, 2, "pad"));        // (no Pad in Line mode on the MT48)
+        // a fixed line input: no 48V or Pad; its first key is Line / Instrument
+        p.inputs[3].preamp = PreampSettings(); p.inputs[3].preamp.lineOnly = true; p.inputs[3].preamp.hasInstrument = true;
+        CHECK (! desk::preampKey (p, 3, "v48") && ! desk::preampKey (p, 3, "pad") && desk::preampKey (p, 3, "mic") && p.inputs[3].preamp.zHigh && ! p.inputs[3].preamp.line);
+        p.inputs[3].preamp.hasInstrument = false; CHECK (! desk::preampKey (p, 3, "mic"));
+
+        // monitor: E -> S -> S-L -> T -> E for the tracks on the input; none without a track
+        for (auto& t : p.tracks) t.setMonitor (Monitor::Edit);
+        CHECK (desk::monitorCycle (p, 0) == 1 && desk::monitorCycle (p, 0) == 2 && desk::monitorCycle (p, 0) == 3 && desk::monitorCycle (p, 0) == 0);
+        CHECK (desk::monitorCycle (p, 3) == 1 && p.findTrack (stId)->monitor() == Monitor::Session);      // (input 3 is the right channel of the stereo track)
+        CHECK (desk::monitorCycle (p, 4) == -1 && desk::monitorCycle (p, 99) == -1);
+
+        // pan: a mono track has one pan, a stereo track a left and a right; centre puts them back
+        auto& mx = *p.mixers.front();
+        CHECK (desk::panStep (p, mx, 0, 0, 0.02f, false) && desk::panStep (p, mx, 0, 0, 0.02f, false) && std::abs (mx.stripFor (monoId)->pan.get() - 0.04f) < 1e-5f);
+        CHECK (desk::panStep (p, mx, 0, 0, 5.0f, false) && mx.stripFor (monoId)->pan.get() == 1.0f);
+        CHECK (desk::panStep (p, mx, 0, 0, 0.0f, true) && mx.stripFor (monoId)->pan.get() == 0.0f);
+        CHECK (desk::panStep (p, mx, 2, 1, 0.1f, false) && std::abs (mx.stripFor (stId)->panL.get() + 0.9f) < 1e-5f && mx.stripFor (stId)->panR.get() == 1.0f);       // side 1: only the left channel
+        CHECK (desk::panStep (p, mx, 3, 2, -0.25f, false) && std::abs (mx.stripFor (stId)->panR.get() - 0.75f) < 1e-5f && std::abs (mx.stripFor (stId)->panL.get() + 0.9f) < 1e-5f);
+        CHECK (desk::panStep (p, mx, 2, 1, 0.0f, true) && mx.stripFor (stId)->panL.get() == -1.0f && mx.stripFor (stId)->panR.get() == 1.0f);
+        CHECK (! desk::panStep (p, mx, 4, 0, 0.1f, false));                              // no track on input 4
+
+        // the mixers' main outputs: the first Ext Bus ticked as MAIN, else the first
+        const auto busId = p.buses.front().id;
+        for (auto& m : p.mixers) CHECK (desk::mainBusOf (p, *m) != nullptr);
+        auto* b0 = desk::mainBusOf (p, *p.mixers[0]); b0->gainDb.set (-6.0f);
+        CHECK (desk::mixOutStep (p, 0, 0.5f) && b0->gainDb.get() == -5.5f && desk::mixOutStep (p, 0, 100.0f) && b0->gainDb.get() == 12.0f);
+        CHECK (desk::mixOutStep (p, 0, -1000.0f) && b0->gainDb.get() <= -100.0f);          // all the way down is off
+        CHECK (desk::mixOutStep (p, 0, 0.5f) && b0->gainDb.get() == -79.5f);
+        CHECK (desk::faderStep (-100.0f, 0.5f) == -79.5f && desk::faderStep (-79.5f, -0.5f) == -100.0f && desk::faderStep (-20.0f, 0.5f) == -19.5f);
+        CHECK (! b0->mute.get() && desk::mixOutMute (p, 0) && b0->mute.get() && desk::mixOutMute (p, 0) && ! b0->mute.get());
+        CHECK (desk::mixOutStep (p, 5, -3.0f) && desk::mainBusOf (p, *p.mixers[5])->gainDb.get() == -3.0f && desk::mainBusOf (p, *p.mixers[1])->gainDb.get() == 0.0f);   // each mixer has its own
+        CHECK (! desk::mixOutStep (p, 6, 1.0f) && ! desk::mixOutMute (p, 9));
+        desk::findBus (*p.mixers[2], busId)->isMain.set (true); CHECK (desk::mainBusOf (p, *p.mixers[2]) == desk::findBus (*p.mixers[2], busId));
+
+        // the stage levels: playback, the first and second talkback mic (in the order of the stage panel), the output
+        p.crMicInputs = { 4, 1 };
+        CHECK (desk::stageStep (p, "playback", -1.5f, false) && p.stagePlaybackDb == -1.5f);
+        CHECK (desk::stageStep (p, "mic1", 2.0f, false) && p.stageGainOf (4) == 2.0f && p.stageGainOf (1) == 0.0f);
+        CHECK (desk::stageStep (p, "mic2", -3.0f, false) && p.stageGainOf (1) == -3.0f && p.stageGainOf (4) == 2.0f);
+        CHECK (desk::stageStep (p, "mic2", -1000.0f, false) && p.stageGainOf (1) == -60.0f && desk::stageStep (p, "mic1", 1000.0f, false) && p.stageGainOf (4) == 10.0f);
+        CHECK (desk::stageStep (p, "mic1", 0.0f, true) && p.stageGainOf (4) == 0.0f && desk::stageStep (p, "out", 0.5f, false) && p.stageOutputDb == 0.5f);
+        p.crMicInputs = { 4 }; CHECK (! desk::stageStep (p, "mic2", 1.0f, false) && ! desk::stageStep (p, "bogus", 1.0f, false));
+
+        // what is drawn: JSON with short numbers
+        p.inputs[0].name = "Violin 1"; p.inputs[0].preamp.gainDb = 23.5f; p.inputs[0].preamp.phantom = true;
+        mx.stripFor (monoId)->pan.set (0.12f);
+        const auto inputs = desk::inputsToVar (p, &mx);
+        CHECK (inputs.getArray() != nullptr && inputs.getArray()->size() == 6);
+        { auto i0 = (*inputs.getArray())[0];
+          CHECK (i0["n"].toString() == "Violin 1" && (bool) i0["pre"] && std::abs ((double) i0["g"] - 23.5) < 1e-9 && (bool) i0["v48"] && (bool) i0["h48"] && (int) i0["mon"] == 0 && ! (bool) i0["tk"]);
+          CHECK (i0["pan"].getArray() != nullptr && i0["pan"].getArray()->size() == 1); }
+        { auto i2 = (*inputs.getArray())[2]; CHECK (i2["pan"].getArray() != nullptr && i2["pan"].getArray()->size() == 2 && (bool) i2["stp"]); }
+        { auto i5 = (*inputs.getArray())[5]; CHECK (! (bool) i5["pre"] && ! i5.hasProperty ("g") && ! i5.hasProperty ("pan")); }
+        { auto i3 = (*inputs.getArray())[3]; CHECK ((bool) i3["lo"] && ! (bool) i3["h48"] && ! (bool) i3["hpad"]); }
+        p.crMicInputs = { 0 }; CHECK ((bool) (*desk::inputsToVar (p, nullptr).getArray())[0]["tk"]);
+        const auto text = juce::JSON::toString (inputs, true);
+        CHECK (! text.contains ("0.119999") && text.contains ("0.12"));
+        const auto mixes = desk::mixersToVar (p);
+        CHECK (mixes.getArray() != nullptr && mixes.getArray()->size() == 6 && (bool) (*mixes.getArray())[0]["has"] && (*mixes.getArray())[0]["n"].toString() == p.mixers[0]->name);
+        { const auto stage = desk::stageToVar (p); CHECK (stage["mics"].getArray() != nullptr && stage["mics"].getArray()->size() == 1 && (int) (*stage["mics"].getArray())[0]["i"] == 0 && ! (bool) stage["ready"]); }
+        CHECK (desk::peakDb (0.0f) == -100 && desk::peakDb (1.0f) == 0 && desk::peakDb (0.5f) == -6 && desk::peakDb (100.0f) == 6);
+        Project none;                                                                   // (no mixers, no inputs: nothing to draw, nothing to move)
+        CHECK (desk::mixersToVar (none).getArray()->size() == 6); CHECK (! (bool) (*desk::mixersToVar (none).getArray())[0]["has"]); CHECK (! desk::mixOutStep (none, 0, 1.0f)); CHECK (desk::inputsToVar (none, nullptr).getArray()->size() == (int) none.inputs.size());
     }
 
     SECTION ("2.90 the selection box in the spectrogram windows: a side changes only its own axis, only a real corner changes both");

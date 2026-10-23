@@ -2422,6 +2422,12 @@ bool EditWindowComponent::loopRange (double& from, double& to) const
     return true;
 }
 
+void EditWindowComponent::toggleLoop()
+{
+    loopToggle.setToggleState (! loopToggle.getToggleState(), juce::dontSendNotification);
+    loopChanged();
+}
+
 void EditWindowComponent::loopChanged()
 {
     const bool on = loopToggle.getToggleState();

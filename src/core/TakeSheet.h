@@ -17,6 +17,7 @@ struct Row
     juce::String bars;                 // "Bar 12 - 40" (empty: not entered)
     int barIn = 0, barOut = 0;
     bool dud = false, roomTone = false;
+    juce::String notes;                // the take's own notes (right-click the take); empty = none
     juce::StringArray markers;         // "Clarinet in (0:42)"
     juce::StringArray problems;        // "LOST 0.3 s", "CUT SHORT"
 };
@@ -78,7 +79,7 @@ inline std::vector<Section> collect (const Project& p, const juce::Uuid& onlyWin
             r.lengthSeconds = g->lengthSeconds();
             r.bars = barsLabel (g->barIn, g->barOut).replace ("Bar ", "");
             r.barIn = g->barIn; r.barOut = g->barOut;
-            r.dud = g->dud; r.roomTone = g->roomTone;
+            r.dud = g->dud; r.roomTone = g->roomTone; r.notes = g->notes.trim();
             std::vector<const Marker*> ms;
             for (auto& m : w.markers) if (m.seconds >= g->startSeconds && m.seconds < g->startSeconds + juce::jmax (0.001, r.lengthSeconds)) ms.push_back (&m);
             std::sort (ms.begin(), ms.end(), [] (const Marker* a, const Marker* b) { return a->seconds < b->seconds; });
@@ -101,7 +102,7 @@ inline juce::String csv (const std::vector<Section>& sections)
         if (s.containsAnyOf (",\"\r\n")) return "\"" + s.replace ("\"", "\"\"") + "\"";
         return s;
     };
-    juce::String out = "Piece,Take,Name,Date,Time,Length,Bar in,Bar out,Dud,Room tone,Markers,Problems,Tracks\r\n";
+    juce::String out = "Piece,Take,Name,Date,Time,Length,Bar in,Bar out,Dud,Room tone,Notes,Markers,Problems,Tracks\r\n";
     for (auto& sec : sections)
         for (auto& r : sec.rows)
         {
@@ -112,6 +113,7 @@ inline juce::String csv (const std::vector<Section>& sections)
             f.add (clockText (r.lengthSeconds));
             f.add (r.barIn > 0 ? juce::String (r.barIn) : juce::String()); f.add (r.barIn > 0 ? juce::String (r.barOut > r.barIn ? r.barOut : r.barIn) : juce::String());
             f.add (r.dud ? "yes" : ""); f.add (r.roomTone ? "yes" : "");
+            f.add (q (r.notes));
             f.add (q (r.markers.joinIntoString ("; "))); f.add (q (r.problems.joinIntoString ("; ")));
             f.add (q (sec.tracks.joinIntoString ("; ")));
             out << f.joinIntoString (",") << "\r\n";
@@ -179,6 +181,7 @@ inline pdf::Document makePdf (const std::vector<Section>& sections, const juce::
             juce::StringArray notes;
             if (r.dud) notes.add ("DUD");
             if (r.roomTone) notes.add ("Room tone");
+            if (r.notes.isNotEmpty()) notes.add ("Note: " + r.notes.replace ("\r\n", " / ").replace ("\n", " / ").replace ("\r", " / "));
             notes.addArray (r.problems);
             notes.addArray (r.markers);
             const auto lines = wrap (notes.joinIntoString ("  /  "), Regular, 8.0f, notesW);

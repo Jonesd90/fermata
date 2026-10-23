@@ -74,6 +74,7 @@ static const juce::Identifier k_verified ("verified");
 static const juce::Identifier k_barIn ("barIn");
 static const juce::Identifier k_barOut ("barOut");
 static const juce::Identifier k_roomTone ("roomTone"), k_roomToneIn ("roomToneIn"), k_roomToneOut ("roomToneOut");
+static const juce::Identifier k_takeNotes ("notes");
 static const juce::Identifier k_overruns ("overruns");
 static const juce::Identifier k_lost ("lost");
 static const juce::Identifier k_writeFailed ("writeFailed");
@@ -1205,6 +1206,7 @@ var Project::takeWindowToVar (const TakeWindowDef& w) const
         put (go, key::k_rate, g.sampleRate); put (go, key::k_time, g.recordedAt.toMilliseconds());
         put (go, key::k_fadeIn, g.fadeInSeconds); put (go, key::k_fadeOut, g.fadeOutSeconds); put (go, key::k_dud, g.dud); put (go, key::k_barIn, g.barIn); put (go, key::k_barOut, g.barOut);
         if (g.verified) put (go, key::k_verified, true);
+        if (g.notes.isNotEmpty()) put (go, key::k_takeNotes, g.notes);
         if (g.roomTone) { put (go, key::k_roomTone, true); put (go, key::k_roomToneIn, g.roomToneIn); put (go, key::k_roomToneOut, g.roomToneOut); }
         if (g.overruns > 0) { put (go, key::k_overruns, g.overruns); put (go, key::k_lost, (juce::int64) g.lostSamples); }
         if (g.writeFailed) put (go, key::k_writeFailed, true);
@@ -1590,6 +1592,7 @@ bool Project::fromVar (const var& root)
                     if (gv.hasProperty (key::k_fadeOut)) g.fadeOutSeconds = juce::jmax (0.0, (double) gv[key::k_fadeOut]);
                     if (g.fadeOutSeconds <= 0.0011 && g.fadeOutSeconds > 0.0) g.fadeOutSeconds = kDefaultEdgeFade;
                     g.dud = (bool) gv[key::k_dud]; g.verified = (bool) gv[key::k_verified]; g.barIn = juce::jmax (0, (int) gv[key::k_barIn]); g.barOut = juce::jmax (0, (int) gv[key::k_barOut]);
+                    g.notes = gv[key::k_takeNotes].toString();
                     g.roomTone = (bool) gv[key::k_roomTone]; g.roomToneIn = gv.hasProperty (key::k_roomToneIn) ? (double) gv[key::k_roomToneIn] : -1.0; g.roomToneOut = gv.hasProperty (key::k_roomToneOut) ? (double) gv[key::k_roomToneOut] : -1.0;
                     g.overruns = juce::jmax (0, (int) gv[key::k_overruns]); g.lostSamples = juce::jmax<juce::int64> (0, (juce::int64) gv[key::k_lost]); g.writeFailed = (bool) gv[key::k_writeFailed];
                     if (auto* fs = gv[key::k_files].getArray())
@@ -1741,7 +1744,7 @@ juce::uint64 Project::undoHash (const TakeWindowDef& w)
     for (auto& g : w.groups)
     {
         h.add (g.id); h.add (g.number); h.add (g.label); h.add (g.startSeconds); h.add (g.lengthSamples); h.add (g.sampleRate); h.add (g.recordedAt);
-        h.add (g.fadeInSeconds); h.add (g.fadeOutSeconds); h.add (g.dud); h.add (g.barIn); h.add (g.barOut);
+        h.add (g.fadeInSeconds); h.add (g.fadeOutSeconds); h.add (g.dud); h.add (g.barIn); h.add (g.barOut); h.add (g.notes);
         h.add (g.overruns); h.add (g.lostSamples); h.add (g.writeFailed); h.add (g.verified);
         h.count (g.files.size());
         for (auto& f : g.files) { h.add (f.trackId); h.add (f.trackName); h.add (f.file); h.add (f.numChannels); h.add (f.sourceName); h.add (f.sourceName2); }
@@ -1957,7 +1960,7 @@ bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid
         if (auto* lg = live->findGroup (tg.id))
         {
             lg->label = tg.label; lg->startSeconds = tg.startSeconds; lg->fadeInSeconds = tg.fadeInSeconds; lg->fadeOutSeconds = tg.fadeOutSeconds;
-            lg->dud = tg.dud; lg->barIn = tg.barIn; lg->barOut = tg.barOut; lg->number = tg.number;
+            lg->dud = tg.dud; lg->barIn = tg.barIn; lg->barOut = tg.barOut; lg->number = tg.number; lg->notes = tg.notes;
         }
         else live->groups.push_back (tg);                    // a take that was removed from the window comes back
     }

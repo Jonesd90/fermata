@@ -14,23 +14,31 @@ static constexpr int kRulerH = 34 + markerui::kStripH, kLaneH = 50;
 static int kNameW = 150;                          // width of the track-name column (drag its right edge to change it; shared by all take windows)      // (the top 14 pixels of the ruler band are the marker strip)
 
 /** The scrolling content: ruler, one lane of take names, then one row per track. */
-/** The little non-modal box for a take's IN Bar / OUT Bar (so it can be filled in while recording, with the keyboard already in the IN box). */
+/** The little non-modal box for a take (right-click it): IN Bar / OUT Bar side by side, and a Notes box under them (so it can be filled in while recording, with the
+    keyboard already in the IN box). Enter in IN goes to OUT, Enter in OUT saves; Tab goes on to Notes (Enter there is a new line, Ctrl + Enter saves). */
 class BarsPopup : public juce::Component
 {
 public:
-    BarsPopup (const juce::String& title, int bin, int bout, std::function<void (int, int)> ok, std::function<void()> more, std::function<void()> close)
+    BarsPopup (const juce::String& title, int bin, int bout, const juce::String& notes, std::function<void (int, int, const juce::String&)> ok, std::function<void()> more, std::function<void()> close)
         : onOk (std::move (ok)), onMore (std::move (more)), onClose (std::move (close))
     {
-        setSize (270, 136);
+        setSize (400, 196);
         titleLabel.setText (title, juce::dontSendNotification); titleLabel.setFont (juce::FontOptions (12.5f, juce::Font::bold)); titleLabel.setColour (juce::Label::textColourId, theme::text);
-        inLabel.setText ("IN Bar", juce::dontSendNotification); outLabel.setText ("OUT Bar", juce::dontSendNotification);
-        for (auto* l : { &inLabel, &outLabel }) { l->setColour (juce::Label::textColourId, theme::text); addAndMakeVisible (l); }
+        inLabel.setText ("IN Bar", juce::dontSendNotification); outLabel.setText ("OUT Bar", juce::dontSendNotification); notesLabel.setText ("Notes", juce::dontSendNotification);
+        for (auto* l : { &inLabel, &outLabel, &notesLabel }) { l->setColour (juce::Label::textColourId, theme::text); addAndMakeVisible (l); }
         for (auto* e : { &inEd, &outEd })
         {
             e->setInputRestrictions (5, "0123456789"); e->setSelectAllWhenFocused (true); e->setJustification (juce::Justification::centredLeft);
             e->onEscapeKey = [this] { if (onClose) onClose(); };
             addAndMakeVisible (e);
         }
+        notesEd.setMultiLine (true, true); notesEd.setReturnKeyStartsNewLine (true); notesEd.setTabKeyUsedAsCharacter (false);
+        notesEd.setInputRestrictions (2000); notesEd.setScrollbarsShown (true);
+        notesEd.setTextToShowWhenEmpty ("a note about this take (shown when you point at it, and on the take sheet)", theme::text.withAlpha (0.4f));
+        notesEd.setText (notes, false);
+        notesEd.onEscapeKey = [this] { if (onClose) onClose(); };
+        notesEd.onCtrlReturn = [this] { commit(); };
+        addAndMakeVisible (notesEd);
         inEd.setText (bin > 0 ? juce::String (bin) : juce::String(), false); outEd.setText (bout > 0 ? juce::String (bout) : juce::String(), false);
         inEd.onReturnKey = [this] { outEd.grabKeyboardFocus(); outEd.selectAll(); };
         outEd.onReturnKey = [this] { commit(); };
@@ -38,6 +46,7 @@ public:
         moreBtn.onClick = [this] { if (onMore) onMore(); };
         for (auto* b : { &okBtn, &moreBtn }) addAndMakeVisible (b);
         addAndMakeVisible (titleLabel);
+        setFocusContainerType (FocusContainerType::keyboardFocusContainer);       // (Tab goes IN -> OUT -> Notes -> the buttons, and round)
     }
     void focusFirst() { inEd.grabKeyboardFocus(); inEd.selectAll(); }
     void paint (juce::Graphics& g) override
@@ -49,22 +58,44 @@ public:
     {
         auto r = getLocalBounds().reduced (10, 8);
         titleLabel.setBounds (r.removeFromTop (20)); r.removeFromTop (4);
-        auto a = r.removeFromTop (26); inLabel.setBounds (a.removeFromLeft (70)); inEd.setBounds (a.removeFromLeft (90)); r.removeFromTop (4);
-        auto b = r.removeFromTop (26); outLabel.setBounds (b.removeFromLeft (70)); outEd.setBounds (b.removeFromLeft (90)); r.removeFromTop (6);
+        auto a = r.removeFromTop (26);                                                                  // IN and OUT side by side
+        inLabel.setBounds (a.removeFromLeft (52)); inEd.setBounds (a.removeFromLeft (70)); a.removeFromLeft (22);
+        outLabel.setBounds (a.removeFromLeft (62)); outEd.setBounds (a.removeFromLeft (70)); r.removeFromTop (6);
+        notesLabel.setBounds (r.removeFromTop (18));
+        notesEd.setBounds (r.removeFromTop (70)); r.removeFromTop (8);
         auto c = r.removeFromTop (grid::btnH); okBtn.setBounds (c.removeFromLeft (70)); c.removeFromLeft (6); moreBtn.setBounds (c.removeFromLeft (90));
     }
     bool keyPressed (const juce::KeyPress& k) override { if (k == juce::KeyPress::escapeKey) { if (onClose) onClose(); return true; } return false; }
 private:
-    void commit() { if (onOk) onOk (inEd.getText().getIntValue(), outEd.getText().getIntValue()); }
-    juce::Label titleLabel, inLabel, outLabel;
+    /** A multi-line box where Enter is a new line and Ctrl + Enter saves the whole popup. */
+    struct NotesEditor : public juce::TextEditor
+    {
+        bool keyPressed (const juce::KeyPress& k) override
+        {
+            if ((k.getKeyCode() == juce::KeyPress::returnKey) && (k.getModifiers().isCtrlDown() || k.getModifiers().isCommandDown())) { if (onCtrlReturn) onCtrlReturn(); return true; }
+            return juce::TextEditor::keyPressed (k);
+        }
+        std::function<void()> onCtrlReturn;
+    };
+    void commit() { if (onOk) onOk (inEd.getText().getIntValue(), outEd.getText().getIntValue(), notesEd.getText().trim()); }
+    juce::Label titleLabel, inLabel, outLabel, notesLabel;
     juce::TextEditor inEd, outEd;
+    NotesEditor notesEd;
     juce::TextButton okBtn { "OK" }, moreBtn { "More..." };
-    std::function<void (int, int)> onOk; std::function<void()> onMore, onClose;
+    std::function<void (int, int, const juce::String&)> onOk; std::function<void()> onMore, onClose;
 };
 
-class TakeTimeline : public juce::Component, private juce::ChangeListener, private juce::Timer
+class TakeTimeline : public juce::Component, public juce::TooltipClient, private juce::ChangeListener, private juce::Timer
 {
 public:
+    /** Pointing at a take that has notes shows them. */
+    juce::String getTooltip() override
+    {
+        if (auto* g = groupAt (getMouseXYRelative(), true))
+            if (g->notes.isNotEmpty()) return "Take " + pad3 (g->number) + " notes (right-click the take to change them):\n" + g->notes;
+        return {};
+    }
+
     TakeTimeline (AppContext& a, const juce::Uuid& wid, juce::Viewport& vp)
         : app (a), windowId (wid), viewport (vp)
     {
@@ -345,7 +376,17 @@ public:
                 g.setColour (plate);
                 g.fillRect (lane);
                 g.setColour (theme::manuscript() ? theme::inkOn (plate) : juce::Colours::white); g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
-                g.drawText (w->displayName (grp), lane.reduced (6, 0), juce::Justification::centredLeft, true);
+                const bool hasNote = grp.notes.isNotEmpty() && lane.getWidth() >= 44;
+                g.drawText (w->displayName (grp), lane.reduced (6, 0).withTrimmedRight (hasNote ? 16 : 0), juce::Justification::centredLeft, true);
+                if (hasNote)                                    // a little page with a turned corner: this take has notes (point at it to read them)
+                {
+                    const auto pg = juce::Rectangle<float> ((float) lane.getRight() - 16.0f, (float) lane.getY() + 4.0f, 11.0f, 13.0f);
+                    juce::Path page; page.startNewSubPath (pg.getX(), pg.getY()); page.lineTo (pg.getRight() - 3.5f, pg.getY()); page.lineTo (pg.getRight(), pg.getY() + 3.5f);
+                    page.lineTo (pg.getRight(), pg.getBottom()); page.lineTo (pg.getX(), pg.getBottom()); page.closeSubPath();
+                    g.setColour (juce::Colour (0xfffff3b0)); g.fillPath (page);
+                    g.setColour (juce::Colour (0xff6b5a10));
+                    for (int ln = 0; ln < 3; ++ln) g.fillRect (pg.getX() + 2.0f, pg.getY() + 4.5f + (float) ln * 2.8f, ln == 2 ? 4.0f : 7.0f, 1.0f);
+                }
             }
             if (! live && lanesVisible)                     // the take's fades (25 ms unless changed): drag the top corners
             {
@@ -627,7 +668,7 @@ public:
                 if (files.empty()) for (auto& f : bg->files) files.push_back (f.file);
                 juce::PopupMenu pm;
                 pm.addItem (1, "Re-draw waveform");
-                pm.addItem (2, "Bars it starts and ends in...");
+                pm.addItem (2, "Bars it starts and ends in, and notes...");
                 pm.addSeparator();
                 // the room tone: the take (or the part of it between marks 1 and 2) that holds nothing but the room, for the denoiser (one take per take window)
                 const bool marksHere = w->editTake == bg->id && w->editIn >= 0.0 && w->editOut > w->editIn;
@@ -1083,13 +1124,14 @@ private:
         if (g == nullptr || host == nullptr) return;
         closeBarsPopup();
         juce::Component::SafePointer<TakeTimeline> safe (this);
-        barsPopup.reset (new BarsPopup ("Take " + pad3 (g->number) + " - bars it starts and ends in", g->barIn, g->barOut,
-            [safe, gid] (int bin, int bout)
+        barsPopup.reset (new BarsPopup ("Take " + pad3 (g->number) + " - bars it starts and ends in, and notes", g->barIn, g->barOut, g->notes,
+            [safe, gid] (int bin, int bout, const juce::String& notes)
             {
                 if (safe == nullptr) return;
                 if (bin <= 0) bin = bout = 0; else if (bout <= 0) bout = bin;
                 if (bout < bin) { showError ("Bars", "The OUT Bar must not be before the IN Bar."); return; }
                 safe->applyBars (gid, bin, bout);
+                safe->applyNotes (gid, notes);
                 safe->closeBarsPopup();
             },
             [safe, gid] { if (safe == nullptr) return; safe->closeBarsPopup(); safe->showSettings (gid, true, true); },
@@ -1119,6 +1161,14 @@ private:
             for (auto& reg : e->regions)  if (reg.takeId == gid) { reg.barIn = bin; reg.barOut = bout; }
             for (auto& reg : e->overdubs) if (reg.takeId == gid) { reg.barIn = bin; reg.barOut = bout; }
         }
+        app.project.changed(); repaint();
+    }
+    /** The take's notes (empty clears them). */
+    void applyNotes (const juce::Uuid& gid, const juce::String& notes)
+    {
+        auto* w2 = def(); if (w2 == nullptr) return;
+        auto* g2 = w2->findGroup (gid); if (g2 == nullptr || g2->notes == notes) return;
+        g2->notes = notes;
         app.project.changed(); repaint();
     }
     std::unique_ptr<BarsPopup> barsPopup;
@@ -1758,6 +1808,12 @@ bool TakeWindowComponent::markedRange (juce::Uuid& take, double& in, double& out
     const bool useEdit = w->findGroup (w->editTake) != nullptr && w->editIn >= 0;
     take = w->editTake; in = w->editIn; out = w->editOut; (void) useEdit;
     return w->findGroup (take) != nullptr && in >= 0 && out > in;
+}
+
+void TakeWindowComponent::toggleLoop()
+{
+    loopToggle.setToggleState (! loopToggle.getToggleState(), juce::dontSendNotification);
+    loopChanged();
 }
 
 void TakeWindowComponent::loopChanged()

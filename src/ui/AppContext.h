@@ -133,6 +133,21 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     void remoteMixer (int index) { if (toggleMixerAt) toggleMixerAt (index); }
     std::function<void (int)> toggleMixerAt;             // set by the application: opens / closes the mixer with this index (0 = the processing mixer)
     std::function<bool (int)> mixerOpenAt;
+    // ---- the Stream Deck + XL (see core/RemoteDesk.h) ----
+    /** Windows by name: "bridge", "pitchpipe", "click", "take". State: 0 not open, 1 open and shown, 3 open but minimised. Toggle: opens it, or closes it ("bridge", "pitchpipe", "click"),
+        or minimises / brings back the take window used last ("take"). "minimiseall" minimises every window but the main one; pressed again it brings those back. Set by the application. */
+    std::function<int (const juce::String&)> deskWindowState;
+    std::function<void (const juce::String&)> deskWindowToggle;
+    std::function<bool()> deskMinimisedSome;             // "minimiseall" has windows to bring back
+    /** The Loop button of the take or edit window used last: -1 there is none, 0 off, 1 on; and the same as pressing it (key L). Set by the application. */
+    std::function<int()> deskLoopState;
+    std::function<void()> deskLoopToggle;
+    /** Arm All / Arm None in one key: 0 no track is armed, 1 some are, 2 all are; the toggle arms all, or disarms all when they all are armed (not while recording). */
+    int armState() const;
+    void remoteArmToggle();
+    void remoteWaveColour() { setWaveColour (! waveColour); }
+    /** The levels of the stage speaker panel were changed from outside (the Stream Deck): the engine takes them. */
+    void applyStageMix() { engine.setStageMix (project.stageGainDb, project.stagePan, project.stagePlaybackDb, project.stageOutputDb); }
     // ---- the control surface (an Avid S1 or any other Mackie Control surface, over MIDI): see Surface.h. Owned by the application. ----
     SurfaceController* surface = nullptr;
     /** The mixer whose window is in front, or was in front most recently (the first mixer when none has been opened yet); null without a project. Set by the application. */

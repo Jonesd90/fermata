@@ -17,6 +17,9 @@ public:
     ~EditWindowComponent() override;
     void resized() override;
     bool keyPressed (const juce::KeyPress&) override;
+    /** The Loop button, for the Stream Deck: is it lit, and the same as pressing it (key L). */
+    bool loopIsOn() const { return loopToggle.getToggleState(); }
+    void toggleLoop();
     void mouseDown (const juce::MouseEvent&) override;
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void goToSeconds (double seconds) { goTo (seconds); }       // (the timeline's feedback flags use it)

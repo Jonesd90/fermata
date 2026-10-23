@@ -286,6 +286,7 @@ struct BusState
     InsertSlot slots[kNumSlots];
     Param meterL, meterR;
     Param rmsL, rmsR;
+    Param remotePkL, remotePkR;       // Ext Bus: peak since the control port (Stream Deck dials) last looked - its own meter, independent of the mixer window's
     std::atomic<juce::uint32> vcaMask { 0 };   // Int Bus: bit n set = controlled by VCA number n+1 (an Ext Bus is never controlled)
     float lastGain = 0.0f, lastPre = 0.0f, msL = 0.0f, msR = 0.0f;
     std::atomic<int> autoLatIn { 0 }, autoLatOut { 0 };    // see StripState

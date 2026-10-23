@@ -205,6 +205,28 @@ public:
         ctx->showSurfacePanel = [this] { showWindow ("surface", "Mixer controller", [this] { return new SurfacePanel (*ctx); }); };
         ctx->showPitchPipe = [this] { showWindow ("pitchpipe", "Pitch pipe", [this] { return new PitchPipeComponent (*ctx); }); };
         ctx->showClick = [this] { showWindow ("click", "Click", [this] { return new ClickComponent (*ctx); }); };
+        // ---- the Stream Deck + XL: windows by name, the Loop button, "minimise all but the main window"
+        ctx->deskWindowState = [this] (const juce::String& what) { return deskWindowState (what); };
+        ctx->deskWindowToggle = [this] (const juce::String& what) { deskWindowToggle (what); };
+        ctx->deskMinimisedSome = [this] { return deskMinimisedSome(); };
+        ctx->deskLoopState = [this]
+        {
+            const auto key = lastWorkWindowKey();
+            auto it = windows.find (key);
+            if (key.isEmpty() || it == windows.end() || it->second == nullptr) return -1;
+            auto* c = it->second->getContentComponent();
+            if (auto* t = dynamic_cast<TakeWindowComponent*> (c)) return t->loopIsOn() ? 1 : 0;
+            if (auto* e = dynamic_cast<EditWindowComponent*> (c)) return e->loopIsOn() ? 1 : 0;
+            return -1;
+        };
+        ctx->deskLoopToggle = [this]
+        {
+            auto it = windows.find (lastWorkWindowKey());
+            if (it == windows.end() || it->second == nullptr) return;
+            auto* c = it->second->getContentComponent();
+            if (auto* t = dynamic_cast<TakeWindowComponent*> (c)) t->toggleLoop();
+            else if (auto* e = dynamic_cast<EditWindowComponent*> (c)) e->toggleLoop();
+        };
         ctx->showAlign = [this] (bool isEdit, const juce::Uuid& id)
         {
             if (auto it = windows.find ("align"); it != windows.end() && it->second != nullptr)       // open already: it measures on the window it was asked from now
@@ -663,6 +685,96 @@ private:
             if (ctx->project.windowBounds.find (key) == ctx->project.windowBounds.end()) { it->second->setSize (1100, 420); it->second->setTopLeftPosition (20, 20); }
         }
     }
+    // ---- the Stream Deck + XL's window keys
+    /** Minimising: the window is hidden and shows as a title bar along the bottom of the main window (what its own minimise button does). */
+    static void minimiseToDock (juce::DocumentWindow* w)
+    {
+        if (w == nullptr) return;
+        if (w->isMinimised()) w->setMinimised (false);
+        w->setVisible (false);
+        DockHub::get().add (w);
+    }
+    /** The take window the "take" key means: the one used last (else the one opened last, else the first). */
+    juce::Uuid deskTakeWindowId() const
+    {
+        juce::Uuid id = ctx->lastTakeWindowId ? ctx->lastTakeWindowId() : recentTake;
+        if (ctx->project.findTakeWindow (id) == nullptr) id = ctx->project.takeWindows.empty() ? juce::Uuid::null() : ctx->project.takeWindows.front()->id;
+        return id;
+    }
+    juce::String deskKeyFor (const juce::String& what) const
+    {
+        if (what != "take") return what;                                   // "bridge", "pitchpipe", "click" are their own keys
+        const auto id = deskTakeWindowId();
+        return id.isNull() ? juce::String() : "take:" + id.toString();
+    }
+    /** 0 not open, 1 open and shown, 3 open but minimised. */
+    int deskWindowState (const juce::String& what) const
+    {
+        if (what == "minimiseall") return deskMinimisedSome() ? 3 : 0;
+        const auto key = deskKeyFor (what);
+        auto it = key.isEmpty() ? windows.end() : windows.find (key);
+        if (it == windows.end() || it->second == nullptr) return 0;
+        return it->second->isVisible() && ! DockHub::get().contains (it->second.get()) ? 1 : 3;
+    }
+    void deskWindowToggle (const juce::String& what)
+    {
+        if (! ctx->hasProject()) return;
+        if (what == "bridge") { toggleBridge(); return; }                   // opens it, or closes it
+        if (what == "pitchpipe" || what == "click")
+        {
+            if (auto it = windows.find (what); it != windows.end() && it->second != nullptr)
+            {
+                if (DockHub::get().contains (it->second.get())) DockHub::get().show (it->second.get());       // minimised: back
+                else closeWindowLater (what);
+            }
+            else if (what == "pitchpipe") ctx->showPitchPipe(); else ctx->showClick();
+            return;
+        }
+        if (what == "take")
+        {
+            const auto id = deskTakeWindowId();
+            if (id.isNull()) return;
+            auto it = windows.find ("take:" + id.toString());
+            if (it == windows.end() || it->second == nullptr) { openTakeWindow (id); return; }                // not open: open it
+            auto* w = it->second.get();
+            if (w->isVisible() && ! DockHub::get().contains (w)) minimiseToDock (w);                           // shown: minimise it (never close it)
+            else { DockHub::get().show (w); w->grabContentFocus(); }                                           // minimised or hidden: bring it back
+            return;
+        }
+        if (what == "minimiseall") minimiseAllButMain();
+    }
+    /** Every window but the main one goes to the bar along the bottom of the main window. Pressed again, the ones it hid come back (the most recently used on top). */
+    void minimiseAllButMain()
+    {
+        if (deskMinimisedSome())
+        {
+            std::vector<ToolWindow*> back;
+            for (auto& p : deskMinimised) if (auto* w = p.getComponent()) if (DockHub::get().contains (w)) back.push_back (dynamic_cast<ToolWindow*> (w));
+            std::stable_sort (back.begin(), back.end(), [] (ToolWindow* a, ToolWindow* b) { return (a != nullptr ? a->lastActive : 0) < (b != nullptr ? b->lastActive : 0); });
+            for (auto& p : deskMinimised) if (auto* w = p.getComponent()) if (DockHub::get().contains (w) && dynamic_cast<ToolWindow*> (w) == nullptr) DockHub::get().show (w);     // (plug-in windows)
+            for (auto* w : back) if (w != nullptr) DockHub::get().show (w);
+            deskMinimised.clear();
+            return;
+        }
+        deskMinimised.clear();
+        auto hide = [this] (juce::DocumentWindow* w)
+        {
+            if (w == nullptr || ! w->isVisible() || DockHub::get().contains (w)) return;
+            deskMinimised.push_back (juce::Component::SafePointer<juce::DocumentWindow> (w));
+            minimiseToDock (w);
+        };
+        for (auto& kv : windows) hide (kv.second.get());
+        hide (audioSettings.get());
+        ctx->plugins.forEachEditor ([&hide] (juce::Component& c) { hide (dynamic_cast<juce::DocumentWindow*> (&c)); });
+        if (mainWindow != nullptr) { if (mainWindow->isMinimised()) mainWindow->setMinimised (false); mainWindow->toFront (true); }
+    }
+    bool deskMinimisedSome() const
+    {
+        for (auto& p : deskMinimised) if (auto* w = p.getComponent()) if (DockHub::get().contains (w)) return true;
+        return false;
+    }
+    std::vector<juce::Component::SafePointer<juce::DocumentWindow>> deskMinimised;      // the windows the "minimise all" key hid
+
     /** Bounce Out: one window per edit / take window. */
     void openBounce (const BounceContext& c)
     {

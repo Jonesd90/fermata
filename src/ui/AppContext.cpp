@@ -847,6 +847,21 @@ void AppContext::remoteRecord()
     toggleRecord (id);
 }
 
+int AppContext::armState() const
+{
+    int armed = 0;
+    for (auto& t : project.tracks) if (t.isArmed()) ++armed;
+    return armed == 0 ? 0 : armed == (int) project.tracks.size() ? 2 : 1;
+}
+
+void AppContext::remoteArmToggle()
+{
+    if (engine.isRecording() || project.tracks.empty()) return;
+    const bool on = armState() != 2;                                         // all armed: none; otherwise all (the Arm all / Arm none buttons of the take window)
+    for (auto& t : project.tracks) t.setArmed (on);
+    project.changed();
+}
+
 void AppContext::remotePlayPause()
 {
     if (isPlaying()) { stopPlayback(); return; }

@@ -1183,6 +1183,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
             auto* meter = c == 0 ? meterL : meterR;
             if (pk > meter->get()) meter->set (pk);
             if (nd.kind == NodeKind::Track) { auto& lp = c == 0 ? nd.strip->livePkL : nd.strip->livePkR; if (pk > lp.get()) lp.set (pk); }
+            if (nd.kind == NodeKind::ExtBus) { auto& rp = c == 0 ? nd.bus->remotePkL : nd.bus->remotePkR; if (pk > rp.get()) rp.set (pk); }
             if (nd.kind == NodeKind::ExtBus && pk > mp.outPeak) mp.outPeak = pk;
         }
         {   // RMS (about 300 ms), for the meter settings

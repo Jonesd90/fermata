@@ -16,6 +16,9 @@ public:
     ~TakeWindowComponent() override;
     void resized() override;
     bool keyPressed (const juce::KeyPress&) override;
+    /** The Loop button, for the Stream Deck: is it lit, and the same as pressing it (key L). */
+    bool loopIsOn() const { return loopToggle.getToggleState(); }
+    void toggleLoop();
     // drag audio files (or a folder) from another program's session onto this window to import them as takes
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void filesDropped (const juce::StringArray& files, int x, int y) override;

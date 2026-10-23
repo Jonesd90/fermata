@@ -43,19 +43,21 @@ public:
         for (int i : p.crMicInputs)
         {
             auto* s = new Strip (label (i), "mic " + juce::String (i + 1), true);
+            s->kind = 0; s->input = i;
             s->fader.setValue (p.stageGainOf (i), juce::dontSendNotification);
             s->pan.setValue (p.stagePanOf (i), juce::dontSendNotification);
             s->onChange = [this, i] (float db, float pan) { setInput (i, db, pan); };
             strips.add (s); holder.addAndMakeVisible (s);
         }
         auto* pb = new Strip ("Playback", "processing mixer", false);
+        pb->kind = 1;
         pb->fader.setValue (p.stagePlaybackDb, juce::dontSendNotification);
         pb->onChange = [this] (float db, float) { app.project.stagePlaybackDb = db; push(); };
         strips.add (pb); holder.addAndMakeVisible (pb);
         auto* out = new Strip ("Output", outputName(), false);
         out->fader.setTooltip ("Final level into the talkback speakers (" + outputName() + "). The small light at the top right of this box goes red when they reach full scale (peak).");
         out->fader.setValue (p.stageOutputDb, juce::dontSendNotification);
-        out->isOutput = true;
+        out->isOutput = true; out->kind = 2;
         out->onChange = [this] (float db, float) { app.project.stageOutputDb = db; push(); };
         strips.add (out); holder.addAndMakeVisible (out);
         resized(); repaint();
@@ -81,12 +83,25 @@ private:
     /** The little red light on the Output strip: lit for about a second whenever the stage speakers were driven to (nearly) full scale. */
     void timerCallback() override
     {
+        syncFromProject();
         const float pk = app.engine.takeStagePeak();
         if (pk >= 0.98f) holdUntil = juce::Time::getMillisecondCounter() + 1000;
         const bool on = juce::Time::getMillisecondCounter() < holdUntil;
         for (auto* s : strips) if (s->isOutput && s->peakOn != on) { s->peakOn = on; s->repaint(); }
     }
     juce::uint32 holdUntil = 0;
+
+    /** The levels can also be moved from outside (the Stream Deck's dials): the knobs follow the project, unless one is being dragged. */
+    void syncFromProject()
+    {
+        auto& p = app.project;
+        for (auto* s : strips)
+        {
+            if (s->fader.isMouseButtonDown()) continue;
+            const float want = s->kind == 0 ? p.stageGainOf (s->input) : s->kind == 1 ? p.stagePlaybackDb : p.stageOutputDb;
+            if (std::abs ((float) s->fader.getValue() - want) > 0.04f) { s->fader.setValue (want, juce::dontSendNotification); s->repaint(); }
+        }
+    }
 
     struct Strip : public juce::Component
     {
@@ -148,6 +163,7 @@ private:
             }
         }
         juce::String title, subtitle; bool withPan = true, isOutput = false, peakOn = false;
+        int kind = 0, input = -1;                                    // what it shows: 0 a talkback mic (input), 1 the Playback, 2 the Output
         desk::RingPot fader, pan; juce::Rectangle<int> dbArea, panText;
         std::function<void (float, float)> onChange;
     };
