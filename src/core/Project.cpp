@@ -1167,6 +1167,18 @@ var Project::editToVar (const EditDef& eref) const
         }
         put (o, "autoLanes", ls);
     }
+    {
+        juce::Array<var> lr;                                                           // the rows of the lane view (a view: only what differs from one row showing the fader)
+        for (auto& kv : e->laneRows)
+        {
+            if (EditDef::isDefaultRows (kv.second)) continue;
+            var lo = obj(); put (lo, "node", kv.first);
+            juce::Array<var> rows;
+            for (auto& sh : kv.second) { var so = obj(); put (so, "param", sh.param); put (so, "mixer", sh.mixer.toString()); rows.add (so); }
+            put (lo, "rows", rows); lr.add (lo);
+        }
+        if (lr.size() > 0) put (o, "laneRows", lr);
+    }
     put (o, "regions", rs);
     return o;
 }
@@ -1288,11 +1300,12 @@ var Project::toVar (bool editorialOnly, bool withWindows) const
         auto outs = [] (const std::vector<int>& v) { juce::Array<var> a; for (int o : v) a.add (o); return var (a); };
         var pp = obj();
         put (pp, "refA", pitchPipe.refA); put (pp, "temperament", pitchPipe.temperament); put (pp, "key", pitchPipe.key); put (pp, "chordMode", pitchPipe.chordMode);
-        put (pp, "chordTuning", pitchPipe.chordTuning); put (pp, "levelDb", (double) pitchPipe.levelDb); put (pp, "outputs", outs (pitchPipe.outputs)); put (pp, "lowestC", pitchPipe.lowestC);
+        put (pp, "chordTuning", pitchPipe.chordTuning); put (pp, "levelDb", (double) pitchPipe.levelDb); put (pp, "outputs", outs (pitchPipe.outputs)); put (pp, "lowestC", pitchPipe.lowestC); put (pp, "tone", (double) pitchPipe.tone);
         put (root, "pitchPipe", pp);
         var ck = obj();
         put (ck, "bpm", click.bpm); put (ck, "beatsPerBar", click.beatsPerBar); put (ck, "beatUnit", click.beatUnit); put (ck, "accent", click.accent);
         put (ck, "sound", click.sound); put (ck, "levelDb", (double) click.levelDb); put (ck, "outputs", outs (click.outputs));
+        put (ck, "quaverTicks", click.quaverTicks); put (ck, "tickDb", (double) click.tickDb);
         put (root, "click", ck);
         put (root, "alignEnabled", alignEnabled);
         put (root, "alignActive", alignActive);
@@ -1479,7 +1492,8 @@ bool Project::fromVar (const var& root)
             pitchPipe.temperament = juce::jlimit (0, 6, (int) pp.getProperty ("temperament", 0)); pitchPipe.key = juce::jlimit (0, 11, (int) pp.getProperty ("key", 0));
             pitchPipe.chordMode = (bool) pp.getProperty ("chordMode", false); pitchPipe.chordTuning = juce::jlimit (0, 2, (int) pp.getProperty ("chordTuning", 0));
             pitchPipe.levelDb = (float) juce::jlimit (-60.0, 0.0, (double) pp.getProperty ("levelDb", -14.0)); pitchPipe.outputs = outs (pp["outputs"]);
-            pitchPipe.lowestC = juce::jlimit (24, 72, (int) pp.getProperty ("lowestC", 48));
+            pitchPipe.lowestC = juce::jlimit (24, 84, (int) pp.getProperty ("lowestC", 48));
+            pitchPipe.tone = (float) juce::jlimit (0.0, 1.0, (double) pp.getProperty ("tone", 0.35));
         }
         alignEnabled = (bool) root.getProperty ("alignEnabled", true);
         alignActive = root.getProperty ("alignActive", "").toString();
@@ -1512,8 +1526,9 @@ bool Project::fromVar (const var& root)
         {
             click.bpm = juce::jlimit (20.0, 400.0, (double) ck.getProperty ("bpm", 100.0));
             click.beatsPerBar = juce::jlimit (1, 32, (int) ck.getProperty ("beatsPerBar", 4)); click.beatUnit = juce::jlimit (1, 32, (int) ck.getProperty ("beatUnit", 4));
-            click.accent = (bool) ck.getProperty ("accent", true); click.sound = juce::jlimit (0, 3, (int) ck.getProperty ("sound", 2));
+            click.accent = (bool) ck.getProperty ("accent", true); click.sound = juce::jlimit (0, 4, (int) ck.getProperty ("sound", 2));       // (0 .. 4: Click, Woodblock, Soft, Low pulse, Drum kit)
             click.levelDb = (float) juce::jlimit (-60.0, 0.0, (double) ck.getProperty ("levelDb", -14.0)); click.outputs = outs (ck["outputs"]);
+            click.quaverTicks = (bool) ck.getProperty ("quaverTicks", false); click.tickDb = (float) juce::jlimit (-60.0, 0.0, (double) ck.getProperty ("tickDb", -20.0));
         }
     }
     altMixer = root["altMixer"].toString().isEmpty() ? juce::Uuid::null() : juce::Uuid (root["altMixer"].toString());
@@ -1654,6 +1669,20 @@ bool Project::fromVar (const var& root)
                     l.sortPoints();
                     e->lanes.push_back (std::move (l));
                 }
+            if (auto* lr = v["laneRows"].getArray())
+                for (auto& lv : *lr)
+                {
+                    const auto node = lv["node"].toString();
+                    auto* rows = lv["rows"].getArray();
+                    if (node.isEmpty() || rows == nullptr || rows->isEmpty()) continue;
+                    auto& dst = e->laneRows[node];
+                    for (auto& rv : *rows)
+                    {
+                        EditDef::LaneShown sh; sh.param = rv["param"].toString(); sh.mixer = juce::Uuid (rv["mixer"].toString());
+                        if (sh.param.isEmpty()) sh.param = autoparam::fader;
+                        if ((int) dst.size() < EditDef::kMaxLaneRows) dst.push_back (sh);
+                    }
+                }
             e->hardenEnds();                                    // older projects: the ends of the edit get their short fades too
             e->clampAll();
             e->commitAllJoins();                                // older projects: the edit points that were moved in the trim window get their pieces' edges moved with them (the sound does not change)
@@ -1773,6 +1802,8 @@ juce::uint64 Project::saveHash (const EditDef& e)
     h.add (e.fixIn); h.add (e.fixOut); h.count (e.fixTracks.size()); for (auto& t : e.fixTracks) h.add (t);
     h.add (e.playheadSeconds); h.add (e.insertIndex); h.add (e.showFeedback); h.add (e.showMarkers);
     h.count (e.markers.size()); for (auto& m : e.markers) { h.add (m.id); h.add (m.name); h.add (m.seconds); }
+    for (auto& kv : e.laneRows)                                                      // (an entry that only says "one fader row" is the same as none)
+        if (! EditDef::isDefaultRows (kv.second)) { h.add (kv.first); h.count (kv.second.size()); for (auto& sh : kv.second) { h.add (sh.param); h.add (sh.mixer); } }
     h.count (e.feedback.size());
     for (auto& n : e.feedback) { h.add (n.key); h.add (n.who); h.add (n.bar); h.add (n.text); h.add (n.colour); h.add (n.source); h.add (n.seconds); h.add (n.done); }
     return h.h;
@@ -1785,7 +1816,7 @@ void strip (const var& o, std::initializer_list<const char*> keys)
     if (auto* d = o.getDynamicObject()) for (auto* k : keys) d->removeProperty (juce::Identifier (k));
 }
 const std::initializer_list<const char*> kTakeViewKeys = { "editTake", "editIn", "editOut", "editTracks", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub", "markers", "showMarkers" };
-const std::initializer_list<const char*> kEditViewKeys = { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex", "markers", "feedback", "showFeedback", "showMarkers" };
+const std::initializer_list<const char*> kEditViewKeys = { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex", "markers", "feedback", "showFeedback", "showMarkers", "laneRows" };
 }
 
 juce::String Project::undoText (const TakeWindowDef& w) const

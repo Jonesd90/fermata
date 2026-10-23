@@ -105,9 +105,12 @@ public:
         const auto fill = b.findColour (b.getToggleState() ? juce::TextButton::buttonOnColourId : juce::TextButton::buttonColourId);
         if (theme::manuscript())
         {
-            // gilt writing on the dark keys, dark ink on a lit (gilt) key, and dark ink on any key given a light colour of its own (a green Record, say)
-            const bool light = fill.getPerceivedBrightness() > 0.6f;
-            const bool own = ! b.getToggleState() && ! theme::isNavyKey (fill);
+            // gilt writing on the dark keys, dark ink on a lit (gilt) key, and dark ink on any key given a light colour of its own (a green Record, say).
+            // A lit key is drawn gilt whatever on-colour it was given (drawManuscriptKey), so its writing is always the dark ink - the same as the desk's lit LC and 48V
+            // keys. (It used to follow the on-colour's brightness: the mixer's green OUT key is dark, so it got gilt writing on a gilt key.)
+            const bool lit = b.getToggleState();
+            const bool light = lit || fill.getPerceivedBrightness() > 0.6f;
+            const bool own = ! lit && ! theme::isNavyKey (fill);
             g.setColour ((light ? theme::giltInk() : own ? juce::Colours::white : theme::gilt()).withMultipliedAlpha (b.isEnabled() ? 1.0f : 0.5f));
         }
         else

@@ -59,14 +59,27 @@ struct AutoLane
         return juce::jlimit (kFaderOff, kFaderMax, v);                    // fader and sends: dB
     }
 
-    /** The value at timeline sample t: flat before the first point and after the last, a straight line between points. */
-    float valueAt (juce::int64 t, float whenEmpty) const noexcept
+    /** A value of a parameter that has 'steps' positions (a switch or a selector; < 2 = a smooth control, the value is kept): the nearest of 0, 1 / (steps - 1) ... 1. */
+    static float snapToSteps (float v, int steps) noexcept
+    {
+        if (steps < 2) return v;                                            // (any lane that is not a switch: untouched, whatever its range - dB, pan, 0..1)
+        const float n = (float) (steps - 1);
+        return juce::jlimit (0.0f, 1.0f, std::floor (juce::jlimit (0.0f, 1.0f, v) * n + 0.5f) / n);
+    }
+
+    /** The value at timeline sample t: flat before the first point and after the last, a straight line between points.
+        steps >= 2 (a plug-in switch or selector, such as a bypass): only its own positions exist, so there is no line between two points - the value of the earlier
+        point holds until the next point is reached, and every value is one of the positions. */
+    float valueAt (juce::int64 t, float whenEmpty, int steps = 0) const noexcept
     {
         if (pts.empty()) return whenEmpty;
-        if (t <= pts.front().time) return pts.front().value;
-        if (t >= pts.back().time)  return pts.back().value;
+        const bool stepped = steps >= 2;
+        auto out = [&] (float v) { return stepped ? snapToSteps (v, steps) : v; };
+        if (t <= pts.front().time) return out (pts.front().value);
+        if (t >= pts.back().time)  return out (pts.back().value);
         size_t i = 1; while (i < pts.size() && pts[i].time <= t) ++i;
         const auto& a = pts[i - 1]; const auto& b = pts[i];
+        if (stepped) return out (a.value);
         if (b.time <= a.time) return b.value;
         return a.value + (b.value - a.value) * (float) (t - a.time) / (float) (b.time - a.time);
     }

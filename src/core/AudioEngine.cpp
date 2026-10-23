@@ -1292,6 +1292,18 @@ juce::String AudioEngine::startPlayback (std::unique_ptr<PlaybackSession> s)
     auto err = s->open();
     if (err.isNotEmpty()) return err;
     if (s->automation != nullptr && s->automation->begin()) rebuildPlan();      // sends the automation moves are put in the plan (see SendState::autoHeld)
+    if (s->automation != nullptr)
+    {
+        // Every automated control takes the value its lane has at the place the play starts, before the first sound (not when the first point is reached): a plug-in
+        // left bypassed by an earlier play is switched back in at once. (The audio thread does the same in each of the first blocks, see AutomationPlan::apply.)
+        s->automation->apply (s->getTimelinePosition(), s.get());
+        for (auto& it : s->automation->items)
+            if (it.slot != nullptr && ! it.lane.pts.empty())
+                if (auto* pr = it.slot->getProcessorUnsafe(); pr != nullptr && it.paramIndex < pr->numParams())
+                    juce::Logger::writeToLog ("Automation: play starts at " + juce::String ((double) s->getTimelinePosition() / juce::jmax (1.0, s->getSampleRate()), 2) + " s, "
+                                              + pr->getName() + " / " + pr->paramName (it.paramIndex) + " set to " + juce::String (it.lastSent, 3)
+                                              + (it.steps >= 2 ? " (" + juce::String (it.steps) + " positions)" : juce::String()));
+    }
     s->start();
     playSession = std::move (s);
     playback.store (playSession.get(), std::memory_order_release);

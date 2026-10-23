@@ -144,6 +144,10 @@ inline void paintStaff (juce::Graphics& g, juce::Rectangle<int> lane)
     for (int i = 1; i <= 5; ++i) g.fillRect ((float) lane.getX(), (float) lane.getY() + gap * (float) i - 0.5f, (float) lane.getWidth(), 1.0f);
 }
 /** The playhead line: red in the Fermata style; in the Manuscript UI a line of gold with a soft glow either side. */
+/** How far to either side of x paintPlayhead can touch (the line and, in the Manuscript look, its glow). A window that moves the line by redrawing only a thin strip
+    must redraw THIS much around the old and the new x: a narrower strip leaves a trail of glow behind the line. Use playheadStrip (x) for the area. */
+inline constexpr int playheadReach = 6;
+inline juce::Rectangle<int> playheadStrip (int x, int top, int height, int width = 2) { return { x - playheadReach, top, width + 2 * playheadReach, height }; }
 inline void paintPlayhead (juce::Graphics& g, int x, int y, int height, int width = 2)
 {
     if (manuscript())
@@ -1277,7 +1281,7 @@ public:
 /** The little pictures on the buttons of the edit and take windows. Each is drawn from a 24 x 24 grid so it stays sharp at any size. */
 enum class Icon { Start, Rewind, Play, Stop, Forward, End, Record, Trim, Bounce, Pitch, Repair, Reharm, Tracks, Feedback, Mixer, Earlier, Later, Delete, Undo, Automation, Buses,
                   ExportProc, ImportMulti, Markers, FeedbackMarkers, SlipLeft, SlipRight, Shuffle, InsertFlag, NextAtEnd,
-                  Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search, Denoise, Align, TakeSheet };
+                  Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search, Denoise, Align, TakeSheet, RoomTone, NoiseMode };
 
 inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area, juce::Colour ink = theme::text)
 {
@@ -1454,6 +1458,31 @@ inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area, j
             P fold; fold.startNewSubPath (15, 2.5f); fold.lineTo (15, 7); fold.lineTo (19.5f, 7); g.setColour (Colour (0xff9aa3ad)); g.strokePath (fold, juce::PathStrokeType (1.0f));
             g.setColour (Rd); g.fillEllipse (7, 5, 4, 4);
             for (float y : { 11.0f, 14.0f, 17.0f, 20.0f }) { seg (7.5f, y - 1.0f, 9.5f, y - 1.0f, 1.2f, Dk); seg (11, y - 1.0f, 17.5f, y - 1.0f, 1.0f, Colour (0xff6b7480)); }
+            break;
+        }
+        case Icon::RoomTone:
+        {
+            // a house: the room whose own sound is learned. A red roof with a chimney, light walls, a dark door and a little blue window.
+            rect (15.6f, 4.2f, 2.8f, 5.6f, 0.4f, Rd.darker (0.25f));
+            P walls; walls.addRectangle (5.0f, 11.0f, 14.0f, 10.5f); fill (walls, Colour (0xfff4f1ea)); g.setColour (W); g.strokePath (walls, juce::PathStrokeType (1.1f));
+            P roof; roof.startNewSubPath (2.2f, 12.4f); roof.lineTo (12.0f, 3.2f); roof.lineTo (21.8f, 12.4f); roof.closeSubPath (); fill (roof, Rd);
+            g.setColour (W); g.strokePath (roof, juce::PathStrokeType (1.1f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            rect (10.0f, 14.6f, 4.0f, 6.9f, 0.6f, Dk);
+            rect (6.4f, 14.0f, 2.6f, 2.8f, 0.3f, Bl); rect (15.0f, 14.0f, 2.6f, 2.8f, 0.3f, Bl);
+            break;
+        }
+        case Icon::NoiseMode:
+        {
+            // a point with its sound spreading out (round lines), inside a circle with a line through it: the noise taken out
+            const float cx = 8.2f, cy = 13.0f;
+            g.setColour (W); g.fillEllipse (cx - 2.0f, cy - 2.0f, 4.0f, 4.0f);
+            for (float r : { 4.6f, 7.6f })
+            {
+                P arc; arc.addCentredArc (cx, cy, r, r, 0.0f, 0.30f * juce::MathConstants<float>::pi, 0.70f * juce::MathConstants<float>::pi, true);
+                stroke (arc, 1.7f, W);
+            }
+            g.setColour (Rd); g.drawEllipse (2.6f, 2.6f, 18.8f, 18.8f, 2.0f);
+            seg (5.4f, 5.4f, 18.6f, 18.6f, 2.0f, Rd);
             break;
         }
         case Icon::Search:

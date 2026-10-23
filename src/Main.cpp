@@ -137,6 +137,7 @@ public:
         ctx->showDesign = [this] { openDesign(); };
         ctx->showBridge = [this] { toggleBridge(); };
         ctx->showBounce = [this] (const BounceContext& c) { openBounce (c); };
+        ctx->windowIsOpen = [this] (const juce::String& key) { return windows.find (key) != windows.end(); };
         focusKeeper = std::make_unique<ToolWindow::FocusKeeper>();              // the keys never go dead after a text box lets go of the keyboard
         globalKeyHook() = [this] (const juce::KeyPress& k)
         {

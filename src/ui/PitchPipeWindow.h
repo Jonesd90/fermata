@@ -7,7 +7,7 @@
 
 namespace td
 {
-/** A piano keyboard of three octaves. In normal mode a key sounds while it is held (a quick click still gives a short note); in chord mode a click
+/** A piano keyboard of two octaves (C to C). In normal mode a key sounds while it is held (a quick click still gives a short note); in chord mode a click
     lights a key or puts it out, and the lit keys sound together while Play is held. */
 class PianoKeys : public juce::Component
 {
@@ -16,7 +16,7 @@ public:
     std::function<void (int midi)> onToggle;                 // chord mode
     bool chordMode = false;
     int lowest = 48;                                         // a C
-    static constexpr int kOctaves = 3;
+    static constexpr int kOctaves = 2;
     int highest() const noexcept { return lowest + 12 * kOctaves; }
     void setSounding (const std::set<int>& s) { if (s != sounding) { sounding = s; repaint(); } }
     void setSelected (const std::set<int>& s) { if (s != selected) { selected = s; repaint(); } }
@@ -78,14 +78,14 @@ private:
     void timerCallback() override;
 
     AppContext& app;
-    juce::Label refCap, tuningCap, keyCap, hzCap, tuningInfo, readout, offsets, outCap, levelCap;
+    juce::Label refCap, tuningCap, keyCap, hzCap, tuningInfo, readout, offsets, outCap, levelCap, toneCap, softCap, brightCap;
     juce::ComboBox refBox, tuningBox, keyBox, chordTuningBox;
     juce::ToggleButton chordToggle { "Chord: choose the notes, then hold Play" };
     HoldButton playButton { "Play" };
     juce::TextButton clearButton { "Clear" }, octDown { "< Octave" }, octUp { "Octave >" };
     PianoKeys keys;
     OutputPicker outputs;
-    juce::Slider level;
+    juce::Slider level, tone;
     InfoNote info;
     std::set<int> held;                          // normal mode: the keys sounding
     std::set<int> selected;                      // chord mode: the lit keys

@@ -34,8 +34,8 @@ void PianoKeys::paint (juce::Graphics& g)
         g.setColour (juce::Colour (0xff6b7480)); g.drawRoundedRectangle (r.withTrimmedTop (-4.0f), 4.0f, 1.0f);
         const int pc = ((m % 12) + 12) % 12;
         g.setColour (snd || sel ? juce::Colours::black : juce::Colour (pc == 0 ? 0xff30343b : 0xff8a919b));
-        g.setFont (juce::FontOptions (pc == 0 ? 11.5f : 10.0f, pc == 0 ? juce::Font::bold : juce::Font::plain));
-        g.drawText (pc == 0 ? tuning::noteName (m) : juce::String (tuning::pitchClassName (pc)), r.removeFromBottom (20.0f).toNearestInt(), juce::Justification::centred, false);
+        g.setFont (juce::FontOptions (pc == 0 ? 14.0f : 12.0f, pc == 0 ? juce::Font::bold : juce::Font::plain));
+        g.drawText (pc == 0 ? tuning::noteName (m) : juce::String (tuning::pitchClassName (pc)), r.removeFromBottom (28.0f).toNearestInt(), juce::Justification::centred, false);
     }
     for (int m = lowest; m <= highest(); ++m)
     {
@@ -83,7 +83,9 @@ PitchPipeComponent::PitchPipeComponent (AppContext& a)
         l.setText (t, juce::dontSendNotification); l.setFont (juce::FontOptions (12.5f, juce::Font::bold)); l.setColour (juce::Label::textColourId, theme::text);
         l.setJustificationType (juce::Justification::centredLeft); addAndMakeVisible (l);
     };
-    caption (refCap, "A ="); caption (hzCap, "Hz"); caption (tuningCap, "Tuning"); caption (keyCap, "Key"); caption (outCap, "Plays to"); caption (levelCap, "Level");
+    caption (refCap, "A ="); caption (hzCap, "Hz"); caption (tuningCap, "Tuning"); caption (keyCap, "Key"); caption (outCap, "Plays to"); caption (levelCap, "Level"); caption (toneCap, "Tone"); caption (softCap, "Soft"); caption (brightCap, "Bright");
+    for (auto* l : { &softCap, &brightCap }) { l->setFont (juce::FontOptions (11.5f)); l->setColour (juce::Label::textColourId, theme::dimText); }
+    softCap.setJustificationType (juce::Justification::centredRight);
     for (auto* l : { &tuningInfo, &readout, &offsets })
     {
         l->setFont (juce::FontOptions (12.0f)); l->setColour (juce::Label::textColourId, theme::dimText);
@@ -143,8 +145,8 @@ PitchPipeComponent::PitchPipeComponent (AppContext& a)
     clearButton.onClick = [this] { stopChord(); selected.clear(); keys.setSelected (selected); updateText(); };
     addAndMakeVisible (clearButton);
     octDown.onClick = [this] { if (def().lowestC > 24) { def().lowestC -= 12; keys.lowest = def().lowestC; keys.repaint(); app.project.markDirty(); } };
-    octUp.onClick   = [this] { if (def().lowestC < 72) { def().lowestC += 12; keys.lowest = def().lowestC; keys.repaint(); app.project.markDirty(); } };
-    octDown.setTooltip ("The keyboard an octave lower"); octUp.setTooltip ("The keyboard an octave higher");
+    octUp.onClick   = [this] { if (def().lowestC < 84) { def().lowestC += 12; keys.lowest = def().lowestC; keys.repaint(); app.project.markDirty(); } };
+    octDown.setTooltip ("The two octaves an octave lower"); octUp.setTooltip ("The two octaves an octave higher");
     for (auto* b : { &octDown, &octUp, &clearButton }) { b->setWantsKeyboardFocus (false); addAndMakeVisible (b); }
 
     keys.lowest = def().lowestC;
@@ -155,7 +157,7 @@ PitchPipeComponent::PitchPipeComponent (AppContext& a)
     {
         if (selected.count (m)) selected.erase (m); else selected.insert (m);
         keys.setSelected (selected);
-        if (chordPlaying) playChord();                           // (changing the chord while it sounds: it changes at once)
+        if (chordPlaying) playChord();                           // (changing the chord while it sounds: the notes glide to their new pitches)
         updateText();
     };
     addAndMakeVisible (keys);
@@ -168,21 +170,34 @@ PitchPipeComponent::PitchPipeComponent (AppContext& a)
     level.setValue (def().levelDb, juce::dontSendNotification);
     level.onValueChange = [this] { def().levelDb = (float) level.getValue(); settingsChanged(); };
     addAndMakeVisible (level);
+    tone.setSliderStyle (juce::Slider::LinearHorizontal);
+    tone.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    tone.setRange (0.0, 1.0, 0.01);
+    tone.setValue (def().tone, juce::dontSendNotification);
+    tone.setDoubleClickReturnValue (true, 0.35);
+    tone.setTooltip ("How soft or bright the reed sounds. Soft: mostly the note and its first few overtones. Bright: the reed as it comes. It is the same softness at every pitch, "
+                     "and the note is just as loud. You hear it change at once. Double-click for the usual setting.");
+    tone.onValueChange = [this] { def().tone = (float) tone.getValue(); settingsChanged(); };
+    addAndMakeVisible (tone);
 
     info.setText ("The pitch pipe plays a soft reed note - like a real pitch pipe - on the outputs ticked under Plays to: the stage speakers for the performers, "
                   "or your control-room speakers to check a note yourself while they record, without them hearing it. Nothing it plays is recorded.\n\n"
-                  "Click a key and hold it: it sounds while you hold it (a quick click still gives a short note); slide along the keys for one note after another.\n\n"
+                  "Click a key and hold it: it sounds while you hold it (a quick click still gives a short note); slide along the keys for one note after another. "
+                  "The keyboard shows two octaves; the Octave buttons move it.\n\n"
                   "Chord: tick it, click the keys of the chord (they light up), then hold Play. Pure major / pure minor chord tunes the chord pure on its root: "
                   "the major third 13.7 cents lower than a piano's, the minor third 15.6 cents higher, the fifth 2 cents wide - the way a choir or a string "
                   "quartet tunes a chord. The root stays where the tuning puts it, and Fermata finds the root even in an inversion.\n\n"
                   "Tuning: equal temperament, just intonation (pure in the key, poor in distant keys), Pythagorean, quarter-comma meantone, and the "
                   "well temperaments of Werckmeister (III, 1691), Vallotti and Kirnberger (III). Every tuning but equal temperament is built on the Key, "
-                  "and A is always exactly the reference (A = 440, 415 for Baroque pitch ...). The line under the keyboard gives each note's offset in cents.");
+                  "and A is always exactly the reference (A = 440, 415 for Baroque pitch ...). The line under the keyboard gives each note's offset in cents.\n\n"
+                  "A note keeps its pitch from the moment it starts to the end of its fade-out: letting go never bends it. If you change the tuning, the key or the "
+                  "lit keys while a note is held, it glides to its new pitch in a twentieth of a second, so you can hear one tuning against another.\n\n"
+                  "Tone: Soft is mostly the note and its first few overtones; Bright is the reed as it comes. Same loudness either way.");
     addAndMakeVisible (info);
 
     settingsChanged (false);
     startTimer (250);
-    setSize (980, 480);
+    setSize (980, 620);
 }
 
 PitchPipeComponent::~PitchPipeComponent()
@@ -332,39 +347,47 @@ void PitchPipeComponent::paint (juce::Graphics& g)
 
 void PitchPipeComponent::resized()
 {
-    auto r = getLocalBounds().reduced (16, 10);
-    info.placeTopRight (*this, 8);
-    r.removeFromTop (30);
+    auto r = getLocalBounds().reduced (28, 16);
+    info.placeTopRight (*this, 10);
+    r.removeFromTop (38);                                                    // the title
     {
-        auto row = r.removeFromTop (26);
-        refCap.setBounds (row.removeFromLeft (30)); refBox.setBounds (row.removeFromLeft (90)); hzCap.setBounds (row.removeFromLeft (30)); row.removeFromLeft (20);
-        tuningCap.setBounds (row.removeFromLeft (52)); tuningBox.setBounds (row.removeFromLeft (220)); row.removeFromLeft (20);
-        keyCap.setBounds (row.removeFromLeft (34)); keyBox.setBounds (row.removeFromLeft (76));
+        auto row = r.removeFromTop (32);
+        refCap.setBounds (row.removeFromLeft (36)); refBox.setBounds (row.removeFromLeft (96)); hzCap.setBounds (row.removeFromLeft (38)); row.removeFromLeft (30);
+        tuningCap.setBounds (row.removeFromLeft (60)); tuningBox.setBounds (row.removeFromLeft (240)); row.removeFromLeft (30);
+        keyCap.setBounds (row.removeFromLeft (40)); keyBox.setBounds (row.removeFromLeft (84));
     }
-    r.removeFromTop (2);
-    tuningInfo.setBounds (r.removeFromTop (20));
     r.removeFromTop (6);
+    tuningInfo.setBounds (r.removeFromTop (22));
+    r.removeFromTop (16);
     {
-        auto row = r.removeFromTop (30);
-        chordToggle.setBounds (row.removeFromLeft (290)); row.removeFromLeft (8);
-        chordTuningBox.setBounds (row.removeFromLeft (190).reduced (0, 2)); row.removeFromLeft (12);
-        playButton.setBounds (row.removeFromLeft (110)); row.removeFromLeft (8);
-        clearButton.setBounds (row.removeFromLeft (70));
-        octUp.setBounds (row.removeFromRight (80)); row.removeFromRight (6); octDown.setBounds (row.removeFromRight (80));
+        auto row = r.removeFromTop (34);
+        chordToggle.setBounds (row.removeFromLeft (300)); row.removeFromLeft (14);
+        chordTuningBox.setBounds (row.removeFromLeft (210).reduced (0, 2)); row.removeFromLeft (18);
+        playButton.setBounds (row.removeFromLeft (120)); row.removeFromLeft (10);
+        clearButton.setBounds (row.removeFromLeft (80));
+        octUp.setBounds (row.removeFromRight (96)); row.removeFromRight (8); octDown.setBounds (row.removeFromRight (96));
     }
-    r.removeFromTop (8);
-    const int outH = outputs.heightFor (r.getWidth() - 80);
-    auto bottom = r.removeFromBottom (outH + 34);
-    rule2 = bottom.getY() - 4;
+    r.removeFromTop (16);
+    // the bottom: Plays to, and the Level and Tone sliders on one line, under a rule
     {
-        auto lv = bottom.removeFromBottom (26);
-        levelCap.setBounds (lv.removeFromLeft (80)); level.setBounds (lv.removeFromLeft (300));
+        auto lv = r.removeFromBottom (30);
+        levelCap.setBounds (lv.removeFromLeft (64)); level.setBounds (lv.removeFromLeft (290)); lv.removeFromLeft (36);
+        toneCap.setBounds (lv.removeFromLeft (46)); softCap.setBounds (lv.removeFromLeft (36)); lv.removeFromLeft (4);
+        tone.setBounds (lv.removeFromLeft (200)); lv.removeFromLeft (4); brightCap.setBounds (lv.removeFromLeft (50));
     }
-    bottom.removeFromBottom (6);
-    outCap.setBounds (bottom.removeFromLeft (80).withHeight (24)); outputs.setBounds (bottom);
-    offsets.setBounds (r.removeFromBottom (20));
-    readout.setBounds (r.removeFromBottom (24));
-    r.removeFromBottom (6);
+    r.removeFromBottom (14);
+    {
+        const int outH = outputs.heightFor (r.getWidth() - 80);
+        auto row = r.removeFromBottom (outH);
+        outCap.setBounds (row.removeFromLeft (80).withHeight (24)); outputs.setBounds (row);
+    }
+    r.removeFromBottom (14);
+    rule2 = r.getBottom() - 1;
+    r.removeFromBottom (14);
+    offsets.setBounds (r.removeFromBottom (22));
+    r.removeFromBottom (4);
+    readout.setBounds (r.removeFromBottom (28));
+    r.removeFromBottom (12);
     keys.setBounds (r);
     rule1 = 0;
 }

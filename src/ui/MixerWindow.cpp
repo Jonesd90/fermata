@@ -42,8 +42,37 @@ void styleCaption (juce::Label& l, const juce::String& text, juce::Justification
     l.setInterceptsMouseClicks (false, false);
 }
 
+/** A small arrow button beside the fader reading: the down arrow on its left and the up arrow on its right move the fader 1 dB in the direction they
+    point. Held down, it repeats. */
+class NudgeButton : public juce::Button
+{
+public:
+    explicit NudgeButton (bool pointsUp) : juce::Button (pointsUp ? "Fader up 1 dB" : "Fader down 1 dB"), up (pointsUp)
+    {
+        setWantsKeyboardFocus (false);
+        setTriggeredOnMouseDown (true);                    // steps at once on the press (and then repeats while held), so nothing extra happens on release
+        setRepeatSpeed (450, 90);
+        setTooltip (pointsUp ? "Fader up 1 dB (hold to keep going)" : "Fader down 1 dB (hold to keep going)");
+    }
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        const auto& t = mixTheme();
+        const auto r = getLocalBounds().toFloat();
+        g.setColour (down ? t.line : over ? t.soft : t.field);  g.fillRoundedRectangle (r, 2.0f);
+        g.setColour (t.line);                                   g.drawRoundedRectangle (r.reduced (0.5f), 2.0f, 1.0f);
+        const auto c = r.getCentre();
+        const float w = juce::jmin (r.getWidth() * 0.55f, 7.0f), h = w * 0.75f;
+        juce::Path p;
+        if (up) p.addTriangle (c.x - w * 0.5f, c.y + h * 0.5f, c.x + w * 0.5f, c.y + h * 0.5f, c.x, c.y - h * 0.5f);
+        else    p.addTriangle (c.x - w * 0.5f, c.y - h * 0.5f, c.x + w * 0.5f, c.y - h * 0.5f, c.x, c.y + h * 0.5f);
+        g.setColour (t.text);  g.fillPath (p);
+    }
+private:
+    bool up;
+};
+
 /** Vertical fader with a finely divided dB scale on its left, a stereo peak meter on its right (on the SAME scale, so the
-    markings line up), the held peak above and the fader value below. */
+    markings line up), the held peak above and the fader value below (with a small down arrow on its left and up arrow on its right: 1 dB a press). */
 class FaderBlock : public juce::Component
 {
 public:
@@ -61,6 +90,9 @@ public:
         meterL.useFaderScale(); meterR.useFaderScale();
         addAndMakeVisible (slider); addAndMakeVisible (meterL); addAndMakeVisible (meterR);
         addAndMakeVisible (label); addAndMakeVisible (peakLabel);
+        addAndMakeVisible (downBtn); addAndMakeVisible (upBtn);
+        downBtn.onClick = [this] { nudge (-1.0); };
+        upBtn.onClick   = [this] { nudge (+1.0); };
         styleField (label, 10.5f);
         styleField (peakLabel, 9.5f);
         peakLabel.setTooltip ("Highest peak so far. Held for 10 seconds, or until 'Reset peaks' if it went above -2 dBFS.");
@@ -143,7 +175,14 @@ public:
     void resized() override
     {
         auto r = getLocalBounds();
-        label.setBounds (r.removeFromBottom (15).withSizeKeepingCentre (62, 15));
+        {   // the reading with its two arrow buttons (the same height as the reading), the whole row centred
+            auto row = r.removeFromBottom (15);
+            const int bw = row.getWidth() < 72 ? 12 : 14, gp = 2;
+            row = row.withSizeKeepingCentre (juce::jmin (row.getWidth(), 62 + 2 * (bw + gp)), 15);
+            downBtn.setBounds (row.removeFromLeft (bw));   row.removeFromLeft (gp);
+            upBtn.setBounds (row.removeFromRight (bw));    row.removeFromRight (gp);
+            label.setBounds (row);
+        }
         peakLabel.setBounds (r.removeFromTop (14).withSizeKeepingCentre (62, 14));
         r.removeFromTop (3); r.removeFromBottom (3);
         int scaleW = 20, sliderW = 28, between = 5;
@@ -177,6 +216,14 @@ private:
         const int travel = slider.getLookAndFeel().getSliderLayout (slider).sliderBounds.getHeight();
         slider.setMouseDragSensitivity (juce::jmax (40, travel));
     }
+    /** The arrow buttons: the fader moves by 'deltaDb' from where it is, through the same path as the mouse (so linked strips, the project and the
+        mixer's sound all follow). All the way down is -inf (off) and stays there; one step up from it is -79 dB. */
+    void nudge (double deltaDb)
+    {
+        const double v = slider.getValue();
+        if (deltaDb < 0.0 && v <= -79.95) return;
+        slider.setValue (juce::jlimit (-80.0, 12.0, v + deltaDb), juce::sendNotificationSync);
+    }
     void askValue()
     {
         const double v = slider.getValue();
@@ -193,6 +240,7 @@ private:
         label.setText (v <= -79.5 ? juce::String ("-inf") : juce::String (v, 1), juce::dontSendNotification);
     }
     valueentry::TypedSlider slider; LevelMeter meterL, meterR; juce::Label label, peakLabel;
+    NudgeButton downBtn { false }, upBtn { true };
     std::unique_ptr<valueentry::ReadoutClick> labelClick;
     std::function<void (float)> changed;
     juce::Colour accent { 0 };

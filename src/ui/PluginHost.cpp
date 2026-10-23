@@ -116,6 +116,20 @@ public:
         auto& ps = plugin->getParameters();
         if (juce::isPositiveAndBelow (i, ps.size())) { ps[i]->setValue (juce::jlimit (0.0f, 1.0f, v)); stateChanged.store (true); }     // (automation: setValue tells no listener)
     }
+    int paramSteps (int i) const override
+    {
+        auto& ps = plugin->getParameters();
+        if (! juce::isPositiveAndBelow (i, ps.size())) return 0;
+        auto* p = ps[i];
+        if (p->isBoolean()) return 2;
+        const int n = p->getNumSteps();                                  // (a smooth control reports juce::AudioProcessor::getDefaultNumParameterSteps(), a huge number)
+        return n >= 2 && n <= 100 ? n : 0;
+    }
+    juce::String paramText (int i, float v) const override
+    {
+        auto& ps = plugin->getParameters();
+        return juce::isPositiveAndBelow (i, ps.size()) ? ps[i]->getText (juce::jlimit (0.0f, 1.0f, v), 24) : juce::String();
+    }
 
     juce::AudioPluginInstance& getPlugin() { return *plugin; }
     /** The state was set from outside (a project load, a copy): what is cached is no longer it. */

@@ -17,10 +17,11 @@ class PlaybackSession;
     drawn under a note lands on that note. Without it, a fader behind a 50 ms look-ahead moved 50 ms early. */
 struct AutomationPlan
 {
-    /** Either 'target' (fader, pan, send level) or 'slot' + 'paramIndex' (a plug-in parameter, sent only when it changes). */
+    /** Either 'target' (fader, pan, send level) or 'slot' + 'paramIndex' (a plug-in parameter, sent when it changes, and again in each of the first 'refresh' blocks of
+        a play, so a plug-in that missed or ignored the first one (it was busy, or still settling as the transport started) is still told where the lane stands). */
     /** A channel a VCA lane controls: it gets the VCA's value read at its OWN lateness (channels under one VCA can be late by different amounts). */
     struct VcaMember { Param* db = nullptr; std::atomic<juce::uint32>* mask = nullptr; const std::atomic<int>* lat = nullptr; };
-    struct Item { Param* target = nullptr; InsertSlot* slot = nullptr; int paramIndex = 0; mutable float lastSent = -1.0f; AutoLane lane;
+    struct Item { Param* target = nullptr; InsertSlot* slot = nullptr; int paramIndex = 0; int steps = 0; mutable float lastSent = -1.0f; mutable int refresh = 24; AutoLane lane;    // steps: the plug-in parameter is a switch / selector with this many positions (0 = smooth)
                   const std::atomic<int>* lat = nullptr;
                   SendState* send = nullptr;                    // a send-level lane: its send (held in the plan while this plays: begin / end)
                   juce::uint32 vcaBit = 0; std::vector<VcaMember> members; };     // a VCA lane: its bit, and the channels it controls

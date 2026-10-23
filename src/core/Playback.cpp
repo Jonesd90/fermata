@@ -402,8 +402,13 @@ void AutomationPlan::apply (juce::int64 t, const PlaybackSession* ps) const noex
         if (it.target != nullptr) it.target->set (it.lane.valueAt (at, it.target->get()));
         else if (it.slot != nullptr)
         {
-            const float v = it.lane.valueAt (at, 0.5f);
-            if (std::abs (v - it.lastSent) > 1.0e-5f) { it.slot->setParamNorm (it.paramIndex, v); it.lastSent = v; }
+            const float v = it.lane.valueAt (at, 0.5f, it.steps);                  // (a switch such as a bypass: only its own positions, never the ones between)
+            const bool changed = std::abs (v - it.lastSent) > 1.0e-5f;
+            if ((changed || it.refresh > 0) && it.slot->setParamNorm (it.paramIndex, v))        // (counted as sent only once the plug-in really got it: a busy slot is tried again)
+            {
+                it.lastSent = v;
+                if (! changed) --it.refresh;
+            }
         }
     }
 }
@@ -428,7 +433,7 @@ bool AutomationPlan::end() const noexcept
 
 std::shared_ptr<AutomationPlan> automationPlanFor (Project& p, const EditDef& e, bool onProcessingMixer, const juce::Uuid& unassignedMixer)
 {
-    if (! e.automationOn) return nullptr;
+    if (! e.hasAutomation()) return nullptr;                   // (the lane view being shown or not does not matter: what is written plays)
     auto plan = std::make_shared<AutomationPlan>();
     for (auto& lane : e.lanes)
     {
@@ -453,18 +458,19 @@ std::shared_ptr<AutomationPlan> automationPlanFor (Project& p, const EditDef& e,
             plan->items.push_back (std::move (vi));
             continue;
         }
-        if (const auto* bd = p.findBus (lane.trackId); bd != nullptr && ! bd->external && m != nullptr)        // an Int Bus has the same lanes as a track: gain, fader, pan, sends, plug-ins
+        if (const auto* bd = p.findBus (lane.trackId); bd != nullptr && m != nullptr)        // a bus: an Int Bus has the same lanes as a track (gain, fader, pan, sends, plug-ins); an Ext Bus has its fader and its plug-ins
         {
             auto* bs = m->busFor (lane.trackId);
+            if (bs == nullptr) continue;
             AutomationPlan::Item bi; bi.lane = lane;
             if (lane.param == autoparam::fader) { bi.target = &bs->gainDb; bi.lat = &bs->autoLatOut; }
-            else if (lane.param == autoparam::gain) { bi.target = &bs->inGainDb; bi.lat = &bs->autoLatIn; }
-            else if (lane.param == autoparam::pan) { bi.target = &bs->pan; bi.lat = &bs->autoLatOut; }
-            else if (autoparam::isSend (lane.param)) { if (auto* sd = bs->sends.find (autoparam::sendDest (lane.param))) { bi.target = &sd->gainDb; bi.lat = &sd->autoLat; bi.send = sd; } }
+            else if (! bd->external && lane.param == autoparam::gain) { bi.target = &bs->inGainDb; bi.lat = &bs->autoLatIn; }       // (an Ext Bus has no gain, pan or sends: its fader and its plug-ins only)
+            else if (! bd->external && lane.param == autoparam::pan) { bi.target = &bs->pan; bi.lat = &bs->autoLatOut; }
+            else if (! bd->external && autoparam::isSend (lane.param)) { if (auto* sd = bs->sends.find (autoparam::sendDest (lane.param))) { bi.target = &sd->gainDb; bi.lat = &sd->autoLat; bi.send = sd; } }
             else if (int slot = 0, idx = 0; autoparam::parsePlugin (lane.param, slot, idx) && slot < kNumSlots)
             {
                 auto& sl = bs->slots[slot];
-                if (auto* proc = sl.getProcessorUnsafe(); proc != nullptr && idx < proc->numParams() && proc->paramAutomatable (idx)) { bi.slot = &sl; bi.paramIndex = idx; bi.lat = &sl.autoLat; }
+                if (auto* proc = sl.getProcessorUnsafe(); proc != nullptr && idx < proc->numParams() && proc->paramAutomatable (idx)) { bi.slot = &sl; bi.paramIndex = idx; bi.steps = proc->paramSteps (idx); bi.lat = &sl.autoLat; }
             }
             if (bi.target != nullptr || bi.slot != nullptr) plan->items.push_back (std::move (bi));
             continue;
@@ -484,7 +490,7 @@ std::shared_ptr<AutomationPlan> automationPlanFor (Project& p, const EditDef& e,
         {
             auto& sl = strip->slots[slot];
             if (auto* proc = sl.getProcessorUnsafe(); proc != nullptr && idx < proc->numParams() && proc->paramAutomatable (idx))
-            { it.slot = &sl; it.paramIndex = idx; it.lat = &sl.autoLat; }
+            { it.slot = &sl; it.paramIndex = idx; it.steps = proc->paramSteps (idx); it.lat = &sl.autoLat; }
         }
         if (it.target != nullptr || it.slot != nullptr) plan->items.push_back (std::move (it));
     }

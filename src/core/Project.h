@@ -94,7 +94,8 @@ struct PitchPipeDef
     int    chordTuning = 0;               // tuning::ChordTuning (chord mode only)
     float  levelDb = -14.0f;
     std::vector<int> outputs;             // the driver outputs it plays to (0-based)
-    int    lowestC = 48;                  // the keyboard's lowest key (MIDI: 48 = C3)
+    int    lowestC = 48;                  // the keyboard's lowest key (MIDI: 48 = C3); it shows two octaves from there
+    float  tone = 0.35f;                  // 0 = soft ... 1 = bright (a low-pass that follows each note's pitch)
 };
 
 /** The click (its window, from the menu bar): the tempo, the bar, the sound and where it goes. Switched on and off by hand (never saved as on). */
@@ -105,6 +106,8 @@ struct ClickDef
     bool   accent = true;
     int    sound = 2;                     // ClickTrack::Sound (2 = Soft)
     float  levelDb = -14.0f;
+    bool   quaverTicks = false;           // a very quiet hi-hat on every quaver, whatever the sound
+    float  tickDb = -20.0f;               // how far below the beat those ticks sit
     std::vector<int> outputs;
 };
 

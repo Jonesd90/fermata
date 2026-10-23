@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.h"
+#include <map>
 #include "Automation.h"
 #include "Markers.h"
 #include "Feedback.h"
@@ -245,8 +246,63 @@ struct EditDef
     std::vector<FeedbackNote> feedback;         // listeners' comments (Include Feedback Form / imported marker lists), drawn as flags on this edit window (not part of undo)
     bool                 showFeedback = true;
     bool                 showMarkers = true;          // the Markers tick box in the edit window
-    bool                 automationOn = false;
+    bool                 automationOn = false;       // the lane view: the automation rows are shown (the buses and VCAs are listed under the tracks). The automation itself plays whether they are shown or not.
     std::vector<AutoLane> lanes;
+
+    /** What one row of automation in the edit window shows. A view only: the lanes above keep playing, and are written, whatever the rows show; a row taken away loses nothing. */
+    struct LaneShown { juce::String param { autoparam::fader }; juce::Uuid mixer = juce::Uuid::null(); };
+    /** The rows of every track / bus / VCA, by its id (text). The first is the node's own row (for a track the one with its audio), the rest are extra rows under it. No entry = one
+        row showing the fader. Saved with the project; not part of undo (it is a view). */
+    std::map<juce::String, std::vector<LaneShown>> laneRows;
+    std::vector<LaneShown>& laneRowsOf (const juce::Uuid& node) { auto& v = laneRows[node.toString()]; if (v.empty()) v.push_back (LaneShown()); return v; }
+    int laneRowCount (const juce::Uuid& node) const { auto it = laneRows.find (node.toString()); return it == laneRows.end() || it->second.empty() ? 1 : (int) it->second.size(); }
+    /** True for the rows every node has when nothing was chosen: one row showing the fader (such an entry is not kept or saved). */
+    static bool isDefaultRows (const std::vector<LaneShown>& v) { return v.empty() || (v.size() == 1 && v[0].param == autoparam::fader && v[0].mixer.isNull()); }
+    /** What row 'k' of a node shows (the default - the fader - when nothing was chosen). Read only: looking never adds an entry. */
+    LaneShown laneShown (const juce::Uuid& node, int k) const
+    {
+        auto it = laneRows.find (node.toString());
+        return it == laneRows.end() || k < 0 || k >= (int) it->second.size() ? LaneShown() : it->second[(size_t) k];
+    }
+    /** Chooses what row 'k' of a node shows. */
+    void setLaneShown (const juce::Uuid& node, int k, const LaneShown& s)
+    {
+        if (k < 0 || k >= kMaxLaneRows) return;
+        auto& v = laneRowsOf (node);
+        if ((int) v.size() <= k) v.resize ((size_t) k + 1);
+        v[(size_t) k] = s;
+        if (isDefaultRows (v)) laneRows.erase (node.toString());
+    }
+    static constexpr int kMaxLaneRows = 12;                                       // (per track: a row each is plenty, and the window stays usable)
+    /** The parameter a new row should show: the first of Fader, Pan, Gain that no row of the node shows yet; the fader again when all of them are shown. */
+    static juce::String freeLaneParam (const std::vector<LaneShown>& shown, bool hasPan, bool hasGain)
+    {
+        auto used = [&] (const juce::String& p) { for (auto& s : shown) if (s.param == p && s.mixer.isNull()) return true; return false; };
+        if (! used (autoparam::fader)) return autoparam::fader;
+        if (hasPan && ! used (autoparam::pan)) return autoparam::pan;
+        if (hasGain && ! used (autoparam::gain)) return autoparam::gain;
+        return autoparam::fader;
+    }
+    /** Adds an extra row under a node's rows (true if there was room). 'hasPan' / 'hasGain': what the node offers. */
+    bool addLaneRow (const juce::Uuid& node, bool hasPan, bool hasGain)
+    {
+        auto& v = laneRowsOf (node);
+        if ((int) v.size() >= kMaxLaneRows) return false;
+        LaneShown s; s.param = freeLaneParam (v, hasPan, hasGain);
+        v.push_back (s);
+        return true;
+    }
+    /** Takes row 'row' (1 = the first extra row) away. The node's own row (0) cannot go; the lane behind a row that goes keeps its points and keeps playing. */
+    bool removeLaneRow (const juce::Uuid& node, int row)
+    {
+        auto it = laneRows.find (node.toString());
+        if (it == laneRows.end() || row < 1 || row >= (int) it->second.size()) return false;
+        it->second.erase (it->second.begin() + row);
+        if (isDefaultRows (it->second)) laneRows.erase (it);
+        return true;
+    }
+    /** True when any lane has points: the edit has automation to play and to bounce, whether the rows are shown or not. */
+    bool hasAutomation() const { for (auto& l : lanes) if (! l.pts.empty()) return true; return false; }
 
     AutoLane* findLane (const juce::Uuid& laneId) { for (auto& l : lanes) if (l.id == laneId) return &l; return nullptr; }
     AutoLane* findLane (const juce::Uuid& trackId, const juce::String& param, const juce::Uuid& mixerId)

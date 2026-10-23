@@ -172,9 +172,10 @@ void AppContext::applyAux()
     auto& aux = engine.auxSounds();
     const auto& pp = project.pitchPipe;
     const auto& ck = project.click;
-    aux.setPipeOutputs (pp.outputs); aux.pipe.setLevelDb (pp.levelDb);
+    aux.setPipeOutputs (pp.outputs); aux.pipe.setLevelDb (pp.levelDb); aux.pipe.setTone (pp.tone);
     aux.setClickOutputs (ck.outputs); aux.click.setLevelDb (ck.levelDb);
     aux.click.setTempo (ck.bpm); aux.click.setBeatsPerBar (ck.beatsPerBar); aux.click.setAccent (ck.accent); aux.click.setSound (ck.sound);
+    aux.click.setBeatUnit (ck.beatUnit); aux.click.setQuaverTicks (ck.quaverTicks); aux.click.setTickDb (ck.tickDb);
     if (! hasProject()) { aux.click.setRunning (false); aux.pipe.allOff(); }
 }
 

@@ -28,6 +28,11 @@ public:
     virtual bool         paramAutomatable (int) const       { return false; }
     virtual float        getParamNorm (int) const           { return 0.0f; }
     virtual void         setParamNorm (int, float)          {}
+    /** How many positions the parameter has when it is a switch or a selector (2 = on / off, as a bypass; 3, 4 ... = a list): its normalised values are then
+        0, 1 / (n - 1) ... 1 and nothing between. 0 = a smooth control (also one with more than 100 steps, which no one can tell from smooth). */
+    virtual int          paramSteps (int) const             { return 0; }
+    /** The plug-in's own words for a normalised value ("Off", "Bypassed", "Peak"), for the automation lanes; empty if it has none. */
+    virtual juce::String paramText (int, float) const       { return {}; }
 };
 
 /** A fixed delay for a block of channels: used to line up the paths of the mixer when plug-ins delay some of them (delay compensation).
@@ -142,11 +147,14 @@ public:
         proc->process (view);
     }
 
-    /** Audio thread: moves one plug-in parameter (0..1). Skipped if the slot is busy being changed. */
-    void setParamNorm (int index, float v) noexcept
+    /** Audio thread: moves one plug-in parameter (0..1). Skipped if the slot is busy being changed: false then (the caller tries again), true when the
+        plug-in was given the value. */
+    bool setParamNorm (int index, float v) noexcept
     {
         const juce::SpinLock::ScopedTryLockType sl (lock);
-        if (sl.isLocked() && proc != nullptr && index < proc->numParams()) proc->setParamNorm (index, v);
+        if (! sl.isLocked() || proc == nullptr || index >= proc->numParams()) return false;
+        proc->setParamNorm (index, v);
+        return true;
     }
 
     /** Message thread only (like getProcessorUnsafe): it is the only thread that ever changes 'proc', so no lock is taken. (These used to take the

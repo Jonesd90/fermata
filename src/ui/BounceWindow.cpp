@@ -289,7 +289,7 @@ bool BounceComponent::buildSettings (BounceSettings& bs, juce::String& error) co
         if (e == nullptr || e->isEmpty()) { error = "The edit is empty."; return false; }
         bs.sampleRate = e->sampleRate;
         bs.segments = segmentsForEdit (p, *e);
-        if (e->automationOn) bs.automationEdit = e->id;                  // the edit's automation is part of what is bounced
+        if (e->hasAutomation()) bs.automationEdit = e->id;                  // the edit's automation is part of what is bounced
         bs.alignOwner = p.alignOwnerFor (true, e->id);                   // and its piece's spot-mic alignment
         if (fullButton.getToggleState())
         {

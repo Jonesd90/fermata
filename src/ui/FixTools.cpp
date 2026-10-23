@@ -8,6 +8,8 @@
 #include "../core/SpectralPicture.h"
 #include "../core/EditFix.h"
 #include "../core/SpectralPyramid.h"
+#include "../core/BoxEdges.h"
+#include "TimeReadout.h"
 #include <array>
 #include <atomic>
 #include <thread>
@@ -1047,6 +1049,17 @@ public:
     void setPlayhead (double t) { if (std::abs (t - playT) > 1.0e-6) { playT = t; repaint(); } }
     /** The playhead you place by clicking the time ruler: where Play starts, and the point the zoom keys keep still. */
     double playFrom() const { return cueT >= vt0 && cueT < vt1 ? cueT : vt0; }
+    /** The transport: put the placed playhead at t (seconds; < 0 takes it away), read it back, and the width of the page shown. */
+    void placeCue (double t) { cueT = t < 0.0 ? -1.0 : juce::jlimit (0.0, duration, t); repaint(); }
+    double cueTime() const { return cueT; }
+    double pageSpan() const { return vt1 - vt0; }
+    /** Where Play starts: the placed playhead if it is on this page (the very end counts), else the left edge of the page. */
+    double startPoint() const { return cueT >= vt0 && cueT <= vt1 ? cueT : vt0; }
+    /** Makes sure time t is on the page: if it is not, the page is turned so that t is a tenth of the way in (the zoom stays). */
+    void showTime (double t) { if (t >= vt0 && t < vt1) return; setWindow (t - 0.1 * (vt1 - vt0), vt1 - vt0); }
+    /** Turns to the page that starts at t0 (clamped so the last page ends with the audio; the zoom stays). */
+    void showFrom (double t0) { setWindow (t0, vt1 - vt0); }
+    double totalSeconds() const { return duration; }
 
     // ---- the view: which part of the time is shown (this is what Play plays), which pitches, and how the pitches are spread up the picture
     double visT0() const { return vt0; }
@@ -1255,6 +1268,9 @@ public:
         if (const int ed = edgesAt (e.getPosition()))                    // on an edge or corner of the box: drag it to resize the box
         {
             a = { selT0(), selF0() }; b = { selT1(), selF1() };        // a = lower-left corner, b = upper-right
+            const auto r = selRect();                                  // where the pointer is on the edge, so the edge does not jump to the pointer
+            grabDx = (ed & 3) ? e.x - ((ed & 1) ? r.getX() : r.getRight()) : 0;
+            grabDy = (ed & 12) ? e.y - ((ed & 4) ? r.getY() : r.getBottom()) : 0;
             mode = Mode::resize; edgeMask = ed; return;
         }
         if (! pl.contains (e.getPosition())) return;
@@ -1283,19 +1299,40 @@ public:
         if (mode == Mode::select) { b = toTF (e.getPosition()); repaint(); }
         else if (mode == Mode::resize)
         {
-            const auto q = toTF (e.getPosition());
-            auto na = a, nb = b;
-            if (edgeMask & 1) na.x = q.x;
-            if (edgeMask & 2) nb.x = q.x;
-            if (edgeMask & 4) nb.y = q.y;                                // the top edge is the highest pitch
-            if (edgeMask & 8) na.y = q.y;
-            // never let the box collapse to a line while it is being resized: a move that would do that is ignored
+            // Each side belongs to one axis: a left / right edge changes the width and nothing else, a top / bottom edge changes the height and nothing else;
+            // only a corner changes both. The edge being dragged follows the pointer (where it was grabbed), the opposite edge stays where it is, and the
+            // box is kept at least a few pixels across so it cannot collapse to a line while it is being resized.
             const auto pl2 = plotArea();
-            const double pxT = (vt1 - vt0) / (double) juce::jmax (1, pl2.getWidth());
-            const bool thinT = std::abs (nb.x - na.x) < juce::jmax (0.002, 3.0 * pxT);
-            const bool thinF = std::abs (hzToY (nb.y, pl2) - hzToY (na.y, pl2)) < 3;
-            if (! thinT || (edgeMask & 3) == 0) { a.x = na.x; b.x = nb.x; }
-            if (! thinF || (edgeMask & 12) == 0) { a.y = na.y; b.y = nb.y; }
+            const auto q = toTF ({ e.x - grabDx, e.y - grabDy });
+            if (edgeMask & 3)                                              // width: a = left, b = right (they may swap places if the edge is dragged across)
+            {
+                const double minT = juce::jmax (0.002, 3.0 * (vt1 - vt0) / (double) juce::jmax (1, pl2.getWidth()));
+                double& mv = (edgeMask & 1) ? a.x : b.x;
+                const double fixedT = (edgeMask & 1) ? b.x : a.x;
+                double v = q.x;
+                if (std::abs (v - fixedT) < minT)
+                {
+                    const double side = v >= fixedT ? 1.0 : -1.0;
+                    v = fixedT + side * minT;
+                    if (v < 0.0 || v > duration) v = fixedT - side * minT;
+                }
+                if (v >= 0.0 && v <= duration) mv = v;
+            }
+            if (edgeMask & 12)                                             // height: b.y = top (highest pitch), a.y = bottom
+            {
+                double& mv = (edgeMask & 4) ? b.y : a.y;
+                const double fixedF = (edgeMask & 4) ? a.y : b.y;
+                const int yFixed = hzToY (fixedF, pl2);
+                const int yTop = pl2.getY(), yBottom = pl2.getBottom() - 1;
+                int yy = juce::jlimit (yTop, yBottom, e.y - grabDy);
+                if (std::abs (yy - yFixed) < 3)
+                {
+                    const int side = yy >= yFixed ? 1 : -1;
+                    yy = yFixed + side * 3;
+                    if (yy < yTop || yy > yBottom) yy = yFixed - side * 3;
+                }
+                if (yy >= yTop && yy <= yBottom) mv = toTF ({ pl2.getX(), yy }).y;
+            }
             repaint();
         }
         else if (mode == Mode::pan) setWindow (panT0 - (double) e.getDistanceFromDragStartX() / (double) juce::jmax (1, pl.getWidth()) * (vt1 - vt0), vt1 - vt0);
@@ -1336,6 +1373,7 @@ private:
     static constexpr int kPresets = 8;
     enum class Mode { none, select, pan, pitchPan, knob, resize };
     int edgeMask = 0;                                           // while resizing the box: 1 left, 2 right, 4 top, 8 bottom
+    int grabDx = 0, grabDy = 0;                                 // while resizing: how far the pointer was from the edge it took hold of (pixels)
     struct Stop { float t, r, g, b; };
     struct Preset { const char* name; int palette; float lo, hi, gamma; };
     static const Preset& presetAt (int i)
@@ -1412,7 +1450,7 @@ private:
     juce::Rectangle<int> plotArea() const { return getLocalBounds().withTrimmedLeft (46).withTrimmedTop (22).withTrimmedBottom (30); }
     juce::Rectangle<int> rulerArea() const { auto pl = plotArea(); return { pl.getX(), 0, pl.getWidth(), pl.getY() }; }
     juce::Rectangle<int> knobArea() const { return { 8, getHeight() - 28, 24, 24 }; }
-    void note() { if (onNote) onNote ("Showing " + juce::String (vt0, 2) + " - " + juce::String (vt1, 2) + " s (Play plays this part).  Right / left arrows zoom in / out in time, down / up in pitch; click the ruler to place the playhead, drag it to move; double-click the ruler to see it all."); }
+    void note() { if (onNote) onNote ("Showing " + juce::String (vt0, 2) + " - " + juce::String (vt1, 2) + " s.  Right / left arrows zoom in / out in time, down / up in pitch; click the ruler to place the playhead, drag it to move; double-click the ruler to see it all."); }
     void setWindow (double t0, double span)
     {
         span = juce::jlimit (juce::jmin (0.05, duration), duration, span);
@@ -1442,12 +1480,8 @@ private:
     int edgesAt (juce::Point<int> p) const
     {
         if (! hasSel) return 0;
-        const auto r = selRect(); const int m = 6;
-        if (! r.expanded (m).contains (p)) return 0;
-        int e = 0;
-        if (std::abs (p.x - r.getX()) <= m) e |= 1; else if (std::abs (p.x - r.getRight()) <= m) e |= 2;
-        if (std::abs (p.y - r.getY()) <= m) e |= 4; else if (std::abs (p.y - r.getBottom()) <= m) e |= 8;
-        return e;
+        const auto r = selRect();                                             // (the rules - sides belong to one axis, only a real corner takes both - are in core/BoxEdges.h, with a test)
+        return boxedit::edgesAt ({ r.getX(), r.getY(), r.getWidth(), r.getHeight() }, p.x, p.y);
     }
     juce::Rectangle<int> selRect() const
     {
@@ -3645,7 +3679,7 @@ public:
         specBtn.setTooltip ("How the picture is drawn: sharpness, colours, and the levels shown.");
         specBtn.onClick = [this] { openSpectroSettings(); };
         for (auto* x : std::initializer_list<juce::Component*> { &methodBox, &dirBox, &bandsBox, &multiBtn, &linkBtn, &specBtn, &scaleBox, &gainBtn, &retouchBtn, &declickBtn, &learnBtn, &denoiseBtn,
-                                                                 &revertBtn, &finishBtn, &doneBtn, &playBtn, &stopBtn, &loopBtn }) addAndMakeVisible (x);
+                                                                 &revertBtn, &finishBtn, &doneBtn, &startBtn, &rewBtn, &playBtn, &fwdBtn, &endBtn, &loopBtn, &clock }) addAndMakeVisible (x);
         scaleBox.addItem ("Pitch scale: Mel (as iZotope RX)", 6); scaleBox.addItem ("Pitch scale: linear (even Hz)", 1); scaleBox.addItem ("Pitch scale: mostly linear", 2); scaleBox.addItem ("Pitch scale: halfway", 3);
         scaleBox.addItem ("Pitch scale: mostly musical", 4); scaleBox.addItem ("Pitch scale: musical (every octave the same height)", 5);
         scaleBox.setSelectedId (6, juce::dontSendNotification); view.setMel();
@@ -3655,12 +3689,34 @@ public:
         view.onView = [this] { sliceForView(); };
         view.onSelection = [this] { refreshControls(); };
         dirBox.onChange = [this] { refreshControls(); }; methodBox.onChange = [this] { refreshControls(); };
+        // the transport, as in the edit window: start, back 5 s, play / stop, forward 5 s, end - and a clock that can be typed into
+        startBtn.setIcon (Icon::Start, "Back to the start of the edit [Home]"); rewBtn.setIcon (Icon::Rewind, "Back 5 seconds");
+        playBtn.setIcon (Icon::Play, "Play / Stop [Space]"); fwdBtn.setIcon (Icon::Forward, "Forward 5 seconds"); endBtn.setIcon (Icon::End, "To the end of the edit [End]");
         playBtn.setColour (juce::TextButton::buttonColourId, theme::accent);
-        playBtn.setTooltip ("Plays the part of the picture you can see (from the red playhead if you placed one on the ruler) through the mixers, with a playhead on the picture. Every fix is heard the moment it is made. Key: Space");
-        loopBtn.setTooltip ("Repeat what is playing until you press Stop"); stopBtn.setTooltip ("Stops playing");
-        playBtn.onClick = [this] { playPressed(); };
-        stopBtn.onClick = [this] { app.stopPlayback(); };
-        loopBtn.onClick = [this] { if (! isPlayingNow()) return; if (loopBtn.getToggleState()) playPressed(); else app.engine.setPlaybackLooping (false); };
+        playBtn.setTooltip ("Plays from the red playhead (click the time ruler to place it; without one, from the left of the page) through the mixers, all the way to the END of the edit: the page turns by itself as the playhead reaches its edge. "
+                            "Every fix is heard the moment it is made. Press again to stop. Key: Space");
+        startBtn.setTooltip ("The playhead goes back to the beginning of the edit (and keeps playing from there if it was playing).");
+        rewBtn.setTooltip ("Back 5 seconds"); fwdBtn.setTooltip ("Forward 5 seconds");
+        endBtn.setTooltip ("The playhead goes to the end of the edit.");
+        loopBtn.setTooltip ("Repeat the PAGE you can see until you press Stop. Without Loop, playing carries on to the end of the whole edit and the page turns by itself.");
+        playBtn.onClick = [this] { if (! built || running) return; if (isPlayingNow()) app.stopPlayback(); else playPressed(); };
+        startBtn.onClick = [this] { goTo (0.0); };
+        rewBtn.onClick = [this] { jumpBy (-5.0); };
+        fwdBtn.onClick = [this] { jumpBy (5.0); };
+        endBtn.onClick = [this] { goTo (seconds()); };
+        loopBtn.onClick = [this]
+        {
+            if (! built || running || ! isPlayingNow()) return;
+            const double pos = juce::jmax (0.0, app.playheadSeconds());
+            app.stopPlayback(); playRange (pos);                         // (carries on from where it is: now looping the page, or on to the end)
+        };
+        clock.setSampleRate (rate);
+        clock.setCaption ("Edit");
+        clock.setTooltip ("Where the playhead is. Double-click to type a time and jump there; click the small label to change how the time is written.");
+        clock.onJump = [this] (double t) { goTo (t); };
+        clock.follow ([this] { return transportPos(); }, [this] { return isPlayingNow() ? TimeReadout::State::playing : TimeReadout::State::stopped; }, 30);
+        for (auto* l : { &info, &roomCap }) { l->setFont (juce::FontOptions (12.5f)); l->setMinimumHorizontalScale (0.7f); }
+        status.setFont (juce::FontOptions (12.5f)); status.setMinimumHorizontalScale (0.75f);
         gainBtn.onClick = [this] { openGain(); }; retouchBtn.onClick = [this] { retouch (false); }; declickBtn.onClick = [this] { retouch (true); };
         learnBtn.onClick = [this] { roomFromBox(); }; denoiseBtn.onClick = [this] { denoise(); };
         revertBtn.onClick = [this] { revert(); }; finishBtn.onClick = [this] { writeBack(); }; doneBtn.onClick = [this] { if (running) job.requestCancel(); else closeDialogOf (this); };
@@ -3692,40 +3748,87 @@ public:
         discardUncommitted();
         app.undoHold -= 1;
     }
+    /** Everything under the picture is packed into as few rows as the width allows - the buttons, the settings and the writing side by side along the
+        whole bottom - so the picture gets the height. Each piece has a least width; what is left over in a row goes to the sliders and the text. */
+    struct Chunk { std::function<void (juce::Rectangle<int>)> put; int minW = 0; float grow = 0.0f; };
+    static std::vector<std::vector<size_t>> packRows (const std::vector<Chunk>& cs, int width, int gap)
+    {
+        std::vector<std::vector<size_t>> rows; int used = 0;
+        for (size_t i = 0; i < cs.size(); ++i)
+        {
+            if (! rows.empty() && used + gap + cs[i].minW <= width) { used += gap + cs[i].minW; rows.back().push_back (i); }
+            else { rows.push_back ({ i }); used = cs[i].minW; }
+        }
+        return rows;
+    }
+    std::vector<Chunk> bottomChunks()
+    {
+        std::vector<Chunk> cs;
+        auto add = [&cs] (int minW, float grow, std::function<void (juce::Rectangle<int>)> put) { cs.push_back ({ std::move (put), minW, grow }); };
+        auto sliderChunk = [&add] (juce::Label& cap, juce::Slider& sl, int capW, int sliderMin, float grow) { add (capW + sliderMin, grow, [&cap, &sl, capW] (juce::Rectangle<int> q) { cap.setBounds (q.removeFromLeft (capW)); sl.setBounds (q); }); };
+        const int clockW = clock.getIdealWidth (28) + 4;
+        // 1. the transport and the fixes
+        add (5 * 34 + 4 * 2 + 8 + 64 + 8 + clockW, 0.0f, [this, clockW] (juce::Rectangle<int> q)
+        {
+            for (auto* b : { &startBtn, &rewBtn, &playBtn, &fwdBtn, &endBtn }) { b->setBounds (q.removeFromLeft (34).withSizeKeepingCentre (34, 26)); q.removeFromLeft (2); }
+            q.removeFromLeft (6); loopBtn.setBounds (q.removeFromLeft (64)); q.removeFromLeft (8); clock.setBounds (q.removeFromLeft (clockW));
+        });
+        add (90 + 110 + 110 + 190 + 110 + 4 * 6, 0.0f, [this] (juce::Rectangle<int> q)
+        {
+            gainBtn.setBounds (q.removeFromLeft (90)); q.removeFromLeft (6); retouchBtn.setBounds (q.removeFromLeft (110)); q.removeFromLeft (6);
+            declickBtn.setBounds (q.removeFromLeft (110)); q.removeFromLeft (14); learnBtn.setBounds (q.removeFromLeft (190)); q.removeFromLeft (6); denoiseBtn.setBounds (q.removeFromLeft (110));
+        });
+        add (90, 1.0f, [this] (juce::Rectangle<int> q) { bar.setBounds (q.reduced (0, 6)); });                        // (the progress bar, while something is being made)
+        add (90 + 150 + 150 + 2 * 8, 0.0f, [this] (juce::Rectangle<int> q)
+        {
+            doneBtn.setBounds (q.removeFromRight (150)); q.removeFromRight (8); finishBtn.setBounds (q.removeFromRight (150)); q.removeFromRight (8); revertBtn.setBounds (q.removeFromRight (90));
+        });
+        // 2. the settings: ReTouch, De-click, Denoise
+        add (330, 0.0f, [this] (juce::Rectangle<int> q) { methodBox.setBounds (q); });
+        add (62 + 150, 0.5f, [this] (juce::Rectangle<int> q) { dirCap.setBounds (q.removeFromLeft (62)); dirBox.setBounds (q); });
+        sliderChunk (strengthCap, strength, 60, 150, 1.0f);
+        sliderChunk (surroundCap, surround, 80, 150, 1.4f);
+        add (104, 0.0f, [this] (juce::Rectangle<int> q) { bandsBox.setBounds (q); });
+        add (124, 0.0f, [this] (juce::Rectangle<int> q) { multiBtn.setBounds (q); });
+        add (100, 0.0f, [this] (juce::Rectangle<int> q) { linkBtn.setBounds (q); });
+        sliderChunk (weightCap, weight, 110, 150, 1.0f);
+        sliderChunk (sensCap, sens, 100, 130, 0.6f);
+        sliderChunk (amountCap, amount, 120, 150, 1.0f);
+        sliderChunk (residualCap, residual, 62, 140, 1.0f);
+        // 3. the writing, and the picture's own settings
+        add (330, 2.0f, [this] (juce::Rectangle<int> q) { roomCap.setBounds (q); });
+        add (330, 2.0f, [this] (juce::Rectangle<int> q) { status.setBounds (q.reduced (2, 0)); });
+        add (300, 1.2f, [this] (juce::Rectangle<int> q) { info.setBounds (q.reduced (2, 0)); });
+        add (270, 0.0f, [this] (juce::Rectangle<int> q) { scaleBox.setBounds (q); });
+        add (150, 0.0f, [this] (juce::Rectangle<int> q) { specBtn.setBounds (q); });
+        return cs;
+    }
     void resized() override
     {
         auto r = getLocalBounds().reduced (10);
         intro.placeTopRight (*this, 6);
-        auto rowC = r.removeFromBottom (32); r.removeFromBottom (4);
-        auto rowT = r.removeFromBottom (30); r.removeFromBottom (4);
-        auto rowD = r.removeFromBottom (28);
-        auto rowB = r.removeFromBottom (28);
-        auto rowA = r.removeFromBottom (28); r.removeFromBottom (4);
-        doneBtn.setBounds (rowC.removeFromRight (150)); rowC.removeFromRight (8);
-        finishBtn.setBounds (rowC.removeFromRight (150)); rowC.removeFromRight (8);
-        revertBtn.setBounds (rowC.removeFromRight (90)); rowC.removeFromRight (14);
-        gainBtn.setBounds (rowC.removeFromLeft (90)); rowC.removeFromLeft (6);
-        retouchBtn.setBounds (rowC.removeFromLeft (110)); rowC.removeFromLeft (6);
-        declickBtn.setBounds (rowC.removeFromLeft (110)); rowC.removeFromLeft (14);
-        learnBtn.setBounds (rowC.removeFromLeft (190)); rowC.removeFromLeft (6);
-        denoiseBtn.setBounds (rowC.removeFromLeft (110));
-        playBtn.setBounds (rowT.removeFromLeft (90)); rowT.removeFromLeft (6);
-        stopBtn.setBounds (rowT.removeFromLeft (70)); rowT.removeFromLeft (8);
-        loopBtn.setBounds (rowT.removeFromLeft (70)); rowT.removeFromLeft (14);
-        bar.setBounds (rowT.reduced (0, 4));
-        // row A: ReTouch;  row B: ReTouch's second row and De-click;  row D: Denoise
-        methodBox.setBounds (rowA.removeFromLeft (340)); rowA.removeFromLeft (8);
-        dirCap.setBounds (rowA.removeFromLeft (62)); dirBox.setBounds (rowA.removeFromLeft (190)); rowA.removeFromLeft (8);
-        strengthCap.setBounds (rowA.removeFromLeft (60)); strength.setBounds (rowA.removeFromLeft (190)); rowA.removeFromLeft (8);
-        surroundCap.setBounds (rowA.removeFromLeft (80)); surround.setBounds (rowA);
-        bandsBox.setBounds (rowB.removeFromLeft (110)); rowB.removeFromLeft (6); multiBtn.setBounds (rowB.removeFromLeft (130)); linkBtn.setBounds (rowB.removeFromLeft (100)); rowB.removeFromLeft (8);
-        weightCap.setBounds (rowB.removeFromLeft (110)); weight.setBounds (rowB.removeFromLeft (190)); rowB.removeFromLeft (14);
-        sensCap.setBounds (rowB.removeFromLeft (100)); sens.setBounds (rowB.removeFromLeft (160));
-        amountCap.setBounds (rowD.removeFromLeft (120)); amount.setBounds (rowD.removeFromLeft (220)); rowD.removeFromLeft (10);
-        residualCap.setBounds (rowD.removeFromLeft (62)); residual.setBounds (rowD.removeFromLeft (220)); rowD.removeFromLeft (14);
-        roomCap.setBounds (rowD);
-        status.setBounds (r.removeFromBottom (22).reduced (2, 0));
-        { auto ir = r.removeFromBottom (22); specBtn.setBounds (ir.removeFromRight (150)); ir.removeFromRight (6); scaleBox.setBounds (ir.removeFromRight (300)); ir.removeFromRight (6); info.setBounds (ir.reduced (2, 0)); }
+        constexpr int rowH = 28, rowGap = 4, gap = 8;
+        const auto cs = bottomChunks();
+        const auto rows = packRows (cs, r.getWidth(), gap);
+        const int n = (int) rows.size();
+        auto bottom = r.removeFromBottom (n * rowH + juce::jmax (0, n - 1) * rowGap);
+        r.removeFromBottom (4);
+        for (int ri = 0; ri < n; ++ri)
+        {
+            auto row = bottom.removeFromTop (rowH); bottom.removeFromTop (rowGap);
+            int used = (int) rows[(size_t) ri].size() * 0, totalGrow = 0; float g = 0.0f;
+            for (size_t i : rows[(size_t) ri]) { used += cs[i].minW; g += cs[i].grow; }
+            used += gap * ((int) rows[(size_t) ri].size() - 1); (void) totalGrow;
+            const int spare = juce::jmax (0, row.getWidth() - used);
+            int x = row.getX();
+            for (size_t i : rows[(size_t) ri])
+            {
+                int w = cs[i].minW + (g > 0.0f ? (int) std::floor ((float) spare * cs[i].grow / g) : 0);
+                w = juce::jmin (w, row.getRight() - x);
+                cs[i].put ({ x, row.getY(), juce::jmax (0, w), rowH });
+                x += w + gap;
+            }
+        }
         view.setBounds (r);
     }
 protected:
@@ -3746,6 +3849,8 @@ protected:
             if (ch == 'l' || ch == 'L') { if (learnBtn.isEnabled()) roomFromBox(); return true; }
             if (ch == 'n' || ch == 'N') { if (denoiseBtn.isEnabled()) denoise(); return true; }
         }
+        if (k == juce::KeyPress::homeKey) { if (built && ! running) goTo (0.0); return true; }
+        if (k == juce::KeyPress::endKey)  { if (built && ! running) goTo (seconds()); return true; }
         if (built && view.zoomKey (k)) return true;
         return false;
     }
@@ -3779,8 +3884,15 @@ private:
     bool isPlayingNow() const { return app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == eid; }
     void tick()
     {
-        view.setPlayhead (isPlayingNow() ? juce::jmax (0.0, app.playheadSeconds()) : -1.0);
-        playBtn.setButtonText (isPlayingNow() ? "Restart" : "Play");
+        const bool playing = isPlayingNow();
+        const double pos = playing ? juce::jmax (0.0, app.playheadSeconds()) : -1.0;
+        view.setPlayhead (pos);
+        playBtn.setButtonText (playing ? "Stop" : "Play");                     // (the picture on the button turns into a stop square)
+        // the page turns with the playhead: when it reaches the right edge of the page it was on, the next page comes (until the end of the edit)
+        if (playing && ! loopBtn.getToggleState() && lastTickPos >= view.visT0() && lastTickPos < view.visT1()
+            && pos >= view.visT1() - 0.01 * view.pageSpan() && view.visT1() < seconds() - 1.0e-6)
+            view.showFrom (view.visT1());
+        lastTickPos = pos;
     }
     struct Ticker : juce::Timer { NoiseModeDialog* owner = nullptr; void timerCallback() override { if (owner != nullptr) owner->tick(); } } ticker;
     bool consonantMethod() const { return methodBox.getSelectedId() == 3; }
@@ -3791,7 +3903,8 @@ private:
         const bool ready = built && ! running;
         const bool cons = consonantMethod();
         for (auto* c : std::initializer_list<juce::Component*> { &dirBox, &dirCap, &surround, &surroundCap }) c->setVisible (! cons);
-        playBtn.setEnabled (ready); stopBtn.setEnabled (ready); loopBtn.setEnabled (ready);
+        for (auto* b : std::initializer_list<juce::Button*> { &startBtn, &rewBtn, &playBtn, &fwdBtn, &endBtn, &loopBtn }) b->setEnabled (ready);
+        clock.setEnabled (ready);
         gainBtn.setEnabled (ready && view.hasSelection()); retouchBtn.setEnabled (ready && view.hasSelection()); declickBtn.setEnabled (ready);
         learnBtn.setEnabled (ready && view.hasSelection()); denoiseBtn.setEnabled (ready && view.hasSelection() && haveRoomTone());
         revertBtn.setEnabled (ready && ! steps.empty()); finishBtn.setEnabled (ready && ! steps.empty());
@@ -3832,7 +3945,7 @@ private:
                     if (err.isNotEmpty()) { self->status.setText (err, juce::dontSendNotification); return; }
                     self->built = true;
                     self->sliceForView();
-                    self->status.setText ("Ready. Space plays what is in view (arrows zoom: right / left in time, down / up in pitch; click the ruler to place the playhead, drag it to move, double-click it for the whole edit). "
+                    self->status.setText ("Ready. Space plays from the red playhead (or the left of the page) to the end of the edit, and the page turns by itself (arrows zoom: right / left in time, down / up in pitch; click the ruler to place the playhead, drag it to move, double-click it for the whole edit). "
                                           "Draw a box and press G (gain), R (ReTouch), D (de-click) or N (denoise, with the project's room tone - or draw a box over room only and press L first). Each fix goes into the edit at once; Undo takes it off; Write back keeps them.", juce::dontSendNotification);
                     self->refreshControls();
                 });
@@ -3907,21 +4020,43 @@ private:
             if (gSpecPrefs != nullptr) gSpecPrefs->saveIfNeeded();
         }), "Spectrogram settings", this);
     }
-    // ---- playing
+    // ---- playing: from the playhead to the end of the whole edit (the page turns with it); Loop repeats the page in view
+    /** Where the playhead is: the running one, else where Play would start. */
+    double transportPos() const { return isPlayingNow() ? juce::jmax (0.0, app.playheadSeconds()) : view.startPoint(); }
     void playRange (double from)
     {
-        lastPlayTo = juce::jmin (seconds(), view.visT1());
-        const auto err = app.playEdit (eid, from, lastPlayTo, loopBtn.getToggleState());
+        const bool loop = loopBtn.getToggleState();
+        from = juce::jlimit (0.0, seconds(), from);
+        if (loop) { if (from < view.visT0() || from >= view.visT1()) from = view.visT0(); }
+        else if (from >= seconds() - 0.01) { from = 0.0; view.placeCue (0.0); view.showTime (0.0); }        // (nothing left to play from the very end: start again)
+        lastPlayTo = loop ? juce::jmin (seconds(), view.visT1()) : seconds();
+        lastTickPos = from;
+        const auto err = app.playEdit (eid, from, lastPlayTo, loop);
         if (err.isNotEmpty()) status.setText (err, juce::dontSendNotification);
     }
-    void playPressed() { if (! built || running) return; app.stopPlayback(); playRange (view.playFrom()); }
+    void playPressed() { if (! built || running) return; app.stopPlayback(); playRange (view.startPoint()); }
+    /** The playhead goes to t (the page turns to show it); if it was playing it carries on from there. */
+    void goTo (double t)
+    {
+        if (! built || running) return;
+        t = juce::jlimit (0.0, seconds(), t);
+        const bool wasPlaying = isPlayingNow();
+        view.placeCue (t); view.showTime (t);
+        if (wasPlaying)
+        {
+            app.stopPlayback();
+            if (t < seconds() - 0.01) playRange (t);
+        }
+        clock.setPosition (t);
+    }
+    void jumpBy (double seconds_) { goTo (transportPos() + seconds_); }
     /** The edit changed under a running playback (a fix went in or came out): it starts again from where it was. */
     void restartIfPlaying()
     {
         if (! isPlayingNow()) return;
         const double pos = app.playheadSeconds();
         app.stopPlayback();
-        if (loopBtn.getToggleState()) { const auto err = app.playEdit (eid, view.playFrom(), lastPlayTo, true); if (err.isNotEmpty()) status.setText (err, juce::dontSendNotification); }
+        if (loopBtn.getToggleState()) { const auto err = app.playEdit (eid, view.startPoint(), lastPlayTo, true); if (err.isNotEmpty()) status.setText (err, juce::dontSendNotification); }
         else if (pos < lastPlayTo) { const auto err = app.playEdit (eid, pos, lastPlayTo, false); if (err.isNotEmpty()) status.setText (err, juce::dontSendNotification); }
     }
     // ---- the fixes: each is made on the job thread from the pieces as they are now, then put into the edit (the next one works on the result)
@@ -4101,7 +4236,10 @@ private:
     SpectrogramView view; juce::ComboBox methodBox, dirBox, bandsBox, scaleBox; juce::ToggleButton multiBtn { "Multi-resolution" }, linkBtn { "Link stereo" };
     juce::TextButton specBtn { "Spectrogram settings..." };
     juce::Slider sens, strength, surround, weight, amount, residual;
-    juce::TextButton playBtn { "Play" }, stopBtn { "Stop" }; juce::ToggleButton loopBtn { "Loop" };
+    IconButton startBtn { "Start" }, rewBtn { "Rewind" }, playBtn { "Play" }, fwdBtn { "Forward" }, endBtn { "End" };
+    juce::ToggleButton loopBtn { "Loop" };
+    TimeReadout clock;
+    double lastTickPos = -1.0;                                          // where the playhead was at the last tick (for the page turn)
     juce::TextButton gainBtn { "Gain [G]" }, retouchBtn { "ReTouch [R]" }, declickBtn { "De-click [D]" }, learnBtn { "Room tone [L]" }, denoiseBtn { "Denoise [N]" };
     juce::TextButton revertBtn { "Undo" }, finishBtn { "Write back to clip" }, doneBtn { "Finished de-noising" };
     std::shared_ptr<std::atomic<bool>> detailCancel;
@@ -4127,6 +4265,7 @@ void noiseModeEdit (AppContext& app, const juce::Uuid& eid, juce::Component* par
     const juce::String what = juce::String (only.empty() ? "All " : "The ") + juce::String ((int) tp.ids.size()) + " tracks of the whole edit (" + juce::String ((double) end / rate / 60.0, 1) + " min, " + juce::String (tp.pieces) + " pieces) in one picture, built once at several zoom levels. "
         "Gain, ReTouch, De-click and Denoise work on the box you draw (as in the ReTouch window); Denoise uses the project's room tone (the edit window's Room tone button), or a box of this picture marked with L. "
         "Every fix goes into the edit the moment it is made, as new piece files (the originals are never touched), and the next fix works on the result; Play hears them at once. "
+        "Play carries on from the red playhead to the end of the edit and the page turns by itself (Loop repeats the page you can see); the transport buttons, the clock (double-click to type a time) and the Home / End keys work as in the edit window. "
         "Undo takes the last one off. Write back to clip keeps what has been done (one Undo fix step in the edit window) and the window stays open; Finished closes it and throws away anything not written back.";
     gSpecPrefs = app.props.getUserSettings();
     launchDialog (std::make_unique<NoiseModeDialog> (app, eid, rate, end, only, what), nm, parent, true);

@@ -1305,8 +1305,8 @@ private:
         const int x = live >= 0.0 ? xOf (live) : kNoLine;
         if (x == shownPhX) return;
         const int h = juce::jmax (1, getHeight() - kRulerH);
-        if (shownPhX != kNoLine) repaint (shownPhX - 1, kRulerH, 4, h);
-        if (x != kNoLine) repaint (x - 1, kRulerH, 4, h);
+        if (shownPhX != kNoLine) repaint (theme::playheadStrip (shownPhX, kRulerH, h));      // (the whole reach of the line and its glow, or a trail of glow is left behind it)
+        if (x != kNoLine) repaint (theme::playheadStrip (x, kRulerH, h));
         shownPhX = x;
     }
     int shownPhX = kNoLine;

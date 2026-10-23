@@ -101,13 +101,13 @@ juce::String masterRenderFingerprint (const Project& cp, const EditDef& e, const
     if (chosen == nullptr) for (auto& m : p.mixers) if (m->id == rp.mixerId) chosen = m.get();
     if (chosen == nullptr && ! p.mixers.empty()) chosen = p.mixers.front().get();
     add (chosen);
-    if (e.automationOn) for (auto& l : e.lanes) if (! l.pts.empty() && ! l.mixerId.isNull()) for (auto& m : p.mixers) if (m->id == l.mixerId) add (m.get());
+    if (e.hasAutomation()) for (auto& l : e.lanes) if (! l.pts.empty() && ! l.mixerId.isNull()) for (auto& m : p.mixers) if (m->id == l.mixerId) add (m.get());
     for (auto* m : ms)
     {
         juce::var mv = p.mixerToVar (*m);
         removeKeys (mv, { "name", "ditherBits" });                                 // (the render is 32-bit float: no dither)
         // what the automation moves is not part of the mixer's own settings: playing the Edit leaves the controls wherever the automation got to
-        if (e.automationOn)
+        if (e.hasAutomation())
             for (auto& l : e.lanes)
             {
                 if (l.pts.empty()) continue;
@@ -328,7 +328,7 @@ MasterRenderBatch::MasterRenderBatch (const Project& live, const std::vector<juc
             bi.name = "mrtmp-" + e->id.toString();
             bi.start = e->audibleStart(); bi.end = e->audibleEnd();           // (what playing the edit plays: the fades included, even where they reach outside the first and last piece)
             bi.segments = segmentsForEdit (live, *e);
-            bi.automationEdit = e->automationOn ? e->id : juce::Uuid::null();
+            bi.automationEdit = e->hasAutomation() ? e->id : juce::Uuid::null();
             bi.alignOwner = live.alignOwnerFor (true, e->id);                 // the piece's own spot-mic alignment
             if (rp.ownMixers) if (auto* em = live.mixerOfEdit (e->id)) bi.mixerId = em->id;
             bs.items.push_back (std::move (bi));

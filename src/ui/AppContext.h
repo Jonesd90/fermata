@@ -173,6 +173,7 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     std::function<void (const juce::File&)> mediaReveal;
     void revealInMedia (const juce::File& f) { mediaSelection = f; if (mediaReveal) mediaReveal (f); }
     std::function<void (const BounceContext&)> showBounce;
+    std::function<bool (const juce::String& key)> windowIsOpen;       // is the program window with this key open ("trim:<edit id>", "bounce:<edit id>")? The edit window lights its Trim and Bounce Out buttons from it
     /** "Find missing audio files": the folder chooser and the search (the main window). Set by the main window. */
     std::function<void()> findMissingAudio;
 

@@ -31,6 +31,7 @@
 #include "../src/core/PitchPipe.h"
 #include "../src/core/TimeAlign.h"
 #include "../src/core/TakeSheet.h"
+#include "../src/core/BoxEdges.h"
 #include "../src/core/WavRepair.h"
 #include <cstdio>
 #include <thread>
@@ -1908,7 +1909,8 @@ int main()
             auto plan = automationPlanFor (p, e2);
             CHECK (plan != nullptr && plan->items.size() == 1);
             if (plan) { plan->apply (5 * S); CHECK (std::abs (p.mixers.front()->stripFor (autoTrack)->gainDb.get() + 5.0f) < 1e-3f); }
-            e2.automationOn = false; CHECK (automationPlanFor (p, e2) == nullptr);
+            e2.automationOn = false; CHECK (automationPlanFor (p, e2) != nullptr);         // the lane view being off does not stop what is written
+            { EditDef none; none.automationOn = true; CHECK (automationPlanFor (p, none) == nullptr && ! none.hasAutomation()); }       // no points anywhere: nothing to play
             p.mixers.front()->stripFor (autoTrack)->gainDb.set (0.0f);
         }
         {   // bus sends and plug-in parameters
@@ -1944,8 +1946,39 @@ int main()
                 plan->apply (5 * S);
                 CHECK (std::abs (sd->gainDb.get() + 20.0f) < 1e-3f);
                 CHECK (std::abs (fxp->val[0] - 0.5f) < 1e-4f && fxp->sets == 1);
-                plan->apply (5 * S); CHECK (fxp->sets == 1);                 // unchanged value: not sent again
-                plan->apply (10 * S); CHECK (std::abs (fxp->val[0] - 1.0f) < 1e-4f && fxp->sets == 2);
+                for (int k = 0; k < 40; ++k) plan->apply (5 * S);
+                const int settled = fxp->sets;
+                CHECK (settled <= 1 + 24);                                    // (a plug-in is told again in the first blocks of a play only, in case it missed the first)
+                plan->apply (5 * S); CHECK (fxp->sets == settled);            // unchanged value after that: not sent again
+                plan->apply (10 * S); CHECK (std::abs (fxp->val[0] - 1.0f) < 1e-4f && fxp->sets == settled + 1);
+            }
+            {   // 2.90: a plug-in switch (a bypass: 2 positions) and a selector (4) take only their own positions, and hold between points
+                struct Sw : FakeFx { int paramSteps (int i) const override { return i == 0 ? 2 : i == 1 ? 4 : 0; } };
+                auto sw = std::make_unique<Sw>(); auto* swp = sw.get();
+                strip->slots[2].set (std::move (sw), 48000.0, 512, 2);
+                EditDef e6; e6.automationOn = true;
+                AutoPoint off; off.time = 0; off.value = 0.0f; AutoPoint on; on.time = 10 * S; on.value = 1.0f;
+                e6.addLane (tr, autoparam::plugin (2, 0), juce::Uuid::null()).pts = { off, on };               // the bypass: off, then on at 10 s
+                AutoPoint q0; q0.time = 0; q0.value = 0.4f; AutoPoint q1; q1.time = 10 * S; q1.value = 0.9f;   // (values between positions, as an older project could hold)
+                e6.addLane (tr, autoparam::plugin (2, 1), juce::Uuid::null()).pts = { q0, q1 };
+                auto plan6 = automationPlanFor (p, e6);
+                CHECK (plan6 != nullptr && plan6->items.size() == 2 && plan6->items[0].steps == 2 && plan6->items[1].steps == 4);
+                if (plan6)
+                {
+                    plan6->apply (1 * S);               CHECK (swp->val[0] == 0.0f);                         // (a smooth parameter would be 0.1 here)
+                    plan6->apply (5 * S);               CHECK (swp->val[0] == 0.0f && std::abs (swp->val[1] - 1.0f / 3.0f) < 1e-5f);     // half way: still off, never a position between
+                    plan6->apply (9 * S + S / 2);       CHECK (swp->val[0] == 0.0f);
+                    plan6->apply (10 * S);              CHECK (swp->val[0] == 1.0f && swp->val[1] == 1.0f);
+                    plan6->apply (20 * S);              CHECK (swp->val[0] == 1.0f);
+                }
+                CHECK (AutoLane::snapToSteps (0.49f, 2) == 0.0f && AutoLane::snapToSteps (0.5f, 2) == 1.0f && AutoLane::snapToSteps (-3.0f, 2) == 0.0f && AutoLane::snapToSteps (7.0f, 2) == 1.0f);
+                CHECK (std::abs (AutoLane::snapToSteps (0.26f, 3) - 0.5f) < 1e-6f && AutoLane::snapToSteps (0.24f, 3) == 0.0f);
+                CHECK (AutoLane::snapToSteps (-3.5f, 0) == -3.5f && AutoLane::snapToSteps (0.37f, 1) == 0.37f && AutoLane::snapToSteps (12.0f, 0) == 12.0f);     // not a switch: untouched
+                AutoLane sl3; sl3.param = autoparam::plugin (0, 0);
+                AutoPoint a3, b3, c3; a3.time = 0; a3.value = 1.0f; b3.time = 100; b3.value = 0.0f; c3.time = 200; c3.value = 1.0f; sl3.pts = { a3, b3, c3 };
+                CHECK (sl3.valueAt (50, 0.5f, 2) == 1.0f && sl3.valueAt (99, 0.5f, 2) == 1.0f && sl3.valueAt (100, 0.5f, 2) == 0.0f && sl3.valueAt (150, 0.5f, 2) == 0.0f && sl3.valueAt (250, 0.5f, 2) == 1.0f);
+                CHECK (std::abs (sl3.valueAt (50, 0.5f) - 0.5f) < 1e-6f && std::abs (sl3.valueAt (50, 0.5f, 0) - 0.5f) < 1e-6f);        // a smooth parameter still slopes
+                CHECK (sl3.valueAt (-5, 0.5f, 2) == 1.0f && AutoLane().valueAt (10, 0.25f, 2) == 0.25f);
             }
             CHECK (AutoLane().clampValue (5.0f) == 5.0f);
             AutoLane pl; pl.param = autoparam::plugin (1, 0); CHECK (pl.clampValue (3.0f) == 1.0f && pl.clampValue (-1.0f) == 0.0f);
@@ -3548,6 +3581,8 @@ int main()
         expectE ("markers", [&] { Marker m; m.id = juce::Uuid(); m.name = "Verse"; e.markers.push_back (m); }, false);
         expectE ("feedback", [&] { FeedbackNote n; n.key = "k"; n.text = "late"; e.feedback.push_back (n); }, false);
         expectE ("show feedback / markers", [&] { e.showFeedback = false; e.showMarkers = false; }, false);
+        expectE ("lane rows (a view)", [&] { e.addLaneRow (q.tracks[0].id, true, true); }, false);
+        expectE ("what a lane row shows (a view)", [&] { EditDef::LaneShown ls; ls.param = autoparam::gain; e.setLaneShown (q.tracks[0].id, 1, ls); }, false);
         // the mastering list
         {
             q.mastering.sync (q.edits);
@@ -6944,6 +6979,208 @@ int main()
         CHECK (e.auxSounds().clickGoesTo (3) && ! e.auxSounds().clickGoesTo (0) && e.auxSounds().pipeGoesTo (2));
     }
 
+    SECTION ("2.90 the pitch pipe's pitch is locked from the start of a note to the end of its fade-out, a held note retuned glides");
+    {
+        const double sr = 48000.0;
+        // a pure-chord third (-14 cents) held, then released with the PLAIN tuning's frequency handed along with the 'off' (what 2.89 did): the pitch must not move
+        PitchPipeVoices v;
+        v.prepare (sr); v.setLevelDb (-14.0f);
+        std::vector<float> blk (512), rel;
+        v.setSlot (0, 436.5, true);
+        for (int b = 0; b < 60; ++b) v.render (blk.data(), 512);
+        v.setSlot (0, 440.0, false);
+        double worst = 0.0;
+        for (int b = 0; b < 24; ++b) { v.render (blk.data(), 512); rel.insert (rel.end(), blk.begin(), blk.end()); worst = juce::jmax (worst, std::abs (v.debugHz (0) - 436.5)); }
+        CHECK (worst < 1.0e-9);
+        // and in the sound itself: the fundamental's phase across three windows of the fade-out advances at 436.5 Hz (within a cent)
+        {
+            const int W = 2048; std::complex<double> prev (0.0); double maxCents = 0.0;
+            for (int w = 0; w < 3; ++w)
+            {
+                std::complex<double> A (0.0);
+                for (int i = 0; i < W; ++i) A += (double) rel[(size_t) (w * W + i)] * std::polar (1.0, -2.0 * juce::MathConstants<double>::pi * 436.5 * (double) (w * W + i) / sr);
+                if (w > 0) { const double f = 436.5 + std::arg (A / prev) * sr / (2.0 * juce::MathConstants<double>::pi * W); maxCents = juce::jmax (maxCents, std::abs (1200.0 * std::log2 (f / 436.5))); }
+                prev = A;
+            }
+            CHECK (maxCents < 1.0);
+        }
+        // a whole pure chord (C E G) released: none of the three notes moves
+        {
+            PitchPipeVoices c; c.prepare (sr); c.setLevelDb (-14.0f);
+            const auto f = tuning::chordFrequencies ({ 60, 64, 67 }, 440.0, tuning::Equal, 0, tuning::PureMajor);
+            for (int i = 0; i < 3; ++i) c.setSlot (i, f.freqs[(size_t) i], true);
+            for (int b = 0; b < 60; ++b) c.render (blk.data(), 512);
+            const int notes[] = { 60, 64, 67 };
+            for (int i = 0; i < 3; ++i) c.setSlot (i, tuning::frequency (notes[i], 440.0, tuning::Equal, 0), false);     // (the plain tuning's pitches handed with the off)
+            double w2 = 0.0;
+            for (int b = 0; b < 24; ++b) { c.render (blk.data(), 512); for (int i = 0; i < 3; ++i) w2 = juce::jmax (w2, std::abs (c.debugHz (i) - f.freqs[(size_t) i])); }
+            CHECK (w2 < 1.0e-3);                                                                       // (the slot stores the pitch as a float: 0.004 cents at most)
+        }
+        // a held note retuned glides: monotonic, never overshoots, ends exactly on the new pitch in about 50 ms
+        {
+            PitchPipeVoices g; g.prepare (sr); g.setLevelDb (-14.0f);
+            g.setSlot (0, 440.0, true);
+            for (int b = 0; b < 40; ++b) g.render (blk.data(), 512);
+            CHECK (std::abs (g.debugHz (0) - 440.0) < 1.0e-9);
+            g.setSlot (0, 450.0, true);
+            std::vector<float> small (64); double prevHz = 440.0; bool mono = true; int toTarget = -1;
+            for (int b = 0; b < 100; ++b)
+            {
+                g.render (small.data(), 64);
+                const double h = g.debugHz (0);
+                if (h < prevHz - 1.0e-9 || h > 450.0 + 1.0e-9) mono = false;
+                prevHz = h;
+                if (toTarget < 0 && std::abs (h - 450.0) < 1.0e-9) toTarget = (b + 1) * 64;
+            }
+            CHECK (mono && toTarget > 0 && toTarget >= (int) (0.045 * sr) && toTarget <= (int) (0.056 * sr) && std::abs (g.debugHz (0) - 450.0) < 1.0e-9);
+            // a new note after the old one has died away starts on its pitch at once (no glide from the last one)
+            g.setSlot (0, 450.0, false);
+            for (int b = 0; b < 40; ++b) g.render (blk.data(), 512);
+            CHECK (! g.sounding());
+            g.setSlot (0, 523.25, true); g.render (small.data(), 64);
+            CHECK (std::abs (g.debugHz (0) - 523.25) < 1.0e-3);
+        }
+    }
+
+    SECTION ("2.90 the pitch pipe's tone: softer than 2.89's by default, as loud, the Bright end is the reed as it was");
+    {
+        const double sr = 48000.0;
+        auto render = [&] (float tone, double hz)
+        {
+            PitchPipeVoices v; v.prepare (sr); v.setLevelDb (-14.0f); v.setTone (tone); v.setSlot (0, hz, true);
+            std::vector<float> all, blk (512);
+            for (int b = 0; b < 48000 * 2 / 512; ++b) { v.render (blk.data(), 512); all.insert (all.end(), blk.begin(), blk.end()); }
+            return all;
+        };
+        // energy above 3 kHz relative to the whole, and the RMS, of one second after the swell (a naive DFT on a decimated set of bins)
+        auto analyse = [&] (const std::vector<float>& x, double& hiRatioDb, double& rmsDb)
+        {
+            const int from = 24000, len = 8192;
+            double tot = 0.0, hi = 0.0, rms = 0.0;
+            for (int i = 0; i < len; ++i) rms += (double) x[(size_t) (from + i)] * x[(size_t) (from + i)];
+            const int N = 8192;
+            std::vector<std::complex<double>> X ((size_t) N / 2 + 1);
+            std::vector<double> w ((size_t) N);
+            for (int i = 0; i < N; ++i) w[(size_t) i] = x[(size_t) (from + i)] * (0.5 - 0.5 * std::cos (2.0 * juce::MathConstants<double>::pi * i / N));
+            denoise::detail::realForward (w.data(), N, X.data());
+            for (int k = 1; k < N / 2; ++k) { const double fr = k * sr / N, p = std::norm (X[(size_t) k]); tot += p; if (fr > 3000.0) hi += p; }
+            hiRatioDb = 10.0 * std::log10 (hi / tot + 1.0e-15); rmsDb = 10.0 * std::log10 (rms / len + 1.0e-15);
+        };
+        double hiSoft, hiDef, hiBright, rSoft, rDef, rBright;
+        for (double hz : { 130.81, 440.0 })
+        {
+            analyse (render (0.0f, hz), hiSoft, rSoft); analyse (render (0.35f, hz), hiDef, rDef); analyse (render (1.0f, hz), hiBright, rBright);
+            CHECK (hiSoft < hiDef - 0.5 && hiDef < hiBright - 3.0);                                  // softer to brighter, in order
+            CHECK (std::abs (rSoft - rDef) < 2.0 && std::abs (rDef - rBright) < 2.0);              // and the same loudness
+        }
+        analyse (render (0.35f, 440.0), hiDef, rDef);
+        CHECK (hiDef < -20.0);                                                                       // (2.89's A4 had -15.6 dB above 3 kHz)
+    }
+
+    SECTION ("2.90 the click: a pitchless Soft, the drum kit's pattern, a quiet hi-hat on every quaver");
+    {
+        const double sr = 48000.0;
+        auto periodicity = [&] (const std::vector<float>& h, int from, int len)
+        {
+            double best = 0.0, e0 = 0.0;
+            for (int i = 0; i < len; ++i) e0 += (double) h[(size_t) (from + i)] * h[(size_t) (from + i)];
+            for (int lag = (int) (sr / 400); lag < (int) (sr / 50); ++lag)
+            {
+                double c = 0.0, e1 = 0.0;
+                for (int i = 0; i < len; ++i) { c += (double) h[(size_t) (from + i)] * h[(size_t) (from + i + lag)]; e1 += (double) h[(size_t) (from + i + lag)] * h[(size_t) (from + i + lag)]; }
+                best = juce::jmax (best, c / std::sqrt (e0 * e1 + 1.0e-18));
+            }
+            return best;
+        };
+        for (bool acc : { false, true })
+        {
+            const auto h = ClickTrack::makeHit (ClickTrack::Soft, acc, sr);
+            CHECK (periodicity (h, (int) (0.025 * sr), (int) (0.12 * sr)) < 0.6);                   // 2.89's Soft was a pure tone (1.00)
+        }
+        CHECK (ClickTrack::NumSounds == 5 && juce::String (ClickTrack::soundName (ClickTrack::DrumKit)) == "Drum kit");
+        // the drum kit's part for each beat: kick on 1, snare in the middle of an even bar of four or more, hi-hat elsewhere
+        {
+            using CT = ClickTrack;
+            CHECK (CT::drumFor (0, 4) == CT::Kick && CT::drumFor (1, 4) == CT::Hat && CT::drumFor (2, 4) == CT::Snare && CT::drumFor (3, 4) == CT::Hat);
+            CHECK (CT::drumFor (3, 6) == CT::Snare && CT::drumFor (1, 6) == CT::Hat && CT::drumFor (4, 8) == CT::Snare);
+            CHECK (CT::drumFor (0, 3) == CT::Kick && CT::drumFor (1, 3) == CT::Hat && CT::drumFor (2, 3) == CT::Hat && CT::drumFor (1, 2) == CT::Hat && CT::drumFor (0, 1) == CT::Kick);
+            CHECK (CT::quaversPerBeat (4) == 2 && CT::quaversPerBeat (2) == 4 && CT::quaversPerBeat (8) == 1 && CT::quaversPerBeat (16) == 1);
+        }
+        auto runClick = [&] (ClickTrack& ck, double secs)
+        {
+            std::vector<float> all, blk (480);
+            for (int b = 0; b < (int) (secs * sr / 480); ++b) { ck.render (blk.data(), 480); all.insert (all.end(), blk.begin(), blk.end()); }
+            return all;
+        };
+        auto onsetsOf = [&] (const std::vector<float>& all, float thr)
+        {
+            std::vector<int> o; int quiet = 100000;
+            for (int i = 0; i < (int) all.size(); ++i) { if (std::abs (all[(size_t) i]) > thr && quiet > 2000) o.push_back (i); quiet = std::abs (all[(size_t) i]) > thr ? 0 : quiet + 1; }
+            return o;
+        };
+        auto peakAt = [&] (const std::vector<float>& all, int at) { float p = 0.0f; for (int i = at; i < at + 1500 && i < (int) all.size(); ++i) p = juce::jmax (p, std::abs (all[(size_t) i])); return p; };
+        // the drum kit in 4/4 at 120 bpm: four hits, 0.5 s apart; the kick on 1 is the loudest, the snare on 3 next, the hats on 2 and 4 quietest
+        {
+            ClickTrack ck; ck.prepare (sr);
+            ck.setSound (ClickTrack::DrumKit); ck.setTempo (120.0); ck.setBeatsPerBar (4); ck.setAccent (true); ck.setLevelDb (0.0f);
+            ck.setRunning (true);
+            const auto all = runClick (ck, 1.95);
+            const auto on = onsetsOf (all, 0.02f);
+            CHECK (on.size() == 4);
+            if (on.size() == 4)
+            {
+                CHECK (std::abs (on[1] - 24000) <= 48 && std::abs (on[2] - 48000) <= 48 && std::abs (on[3] - 72000) <= 48);
+                const float p0 = peakAt (all, on[0]), p1 = peakAt (all, on[1]), p2 = peakAt (all, on[2]), p3 = peakAt (all, on[3]);
+                CHECK (p0 > 0.9f && p2 > 0.7f && p2 < 0.85f && p1 > 0.4f && p1 < 0.6f && p3 > 0.4f && p3 < 0.6f);
+            }
+            // the Accent box off: the kick is a little softer, the pattern the same
+            ck.setAccent (false);
+            ck.setRunning (false); ck.setRunning (true);
+            const auto all2 = runClick (ck, 1.0);
+            CHECK (peakAt (all2, 0) > 0.7f && peakAt (all2, 0) < 0.85f);
+        }
+        // quavers: 4/4 at 120 bpm (the beat a quarter note): 8 ticks to the bar, 0.25 s apart, quiet between the beats
+        {
+            ClickTrack ck; ck.prepare (sr);
+            ck.setSound (ClickTrack::Click); ck.setTempo (120.0); ck.setBeatsPerBar (4); ck.setBeatUnit (4); ck.setAccent (true); ck.setLevelDb (0.0f);
+            ck.setQuaverTicks (true); ck.setTickDb (-20.0f);
+            ck.setRunning (true);
+            const auto all = runClick (ck, 1.95);
+            const auto on = onsetsOf (all, 0.02f);
+            CHECK (on.size() == 8);
+            if (on.size() == 8)
+            {
+                bool spacing = true; for (int i = 0; i < 8; ++i) spacing = spacing && std::abs (on[(size_t) i] - i * 12000) <= 48;
+                CHECK (spacing);
+                CHECK (peakAt (all, on[0]) > 0.95f && peakAt (all, on[2]) > 0.6f && peakAt (all, on[1]) < 0.12f && peakAt (all, on[3]) < 0.12f && peakAt (all, on[1]) > 0.04f);
+            }
+            CHECK (ck.beatCount() == 4);                                                           // (the lights still count beats, not quavers)
+            // a bar in half-note beats (2/2): four ticks to each beat; counted in eighths (6/8): one on each beat, so 6 to the bar and no extras
+            ck.setRunning (false);
+            ClickTrack c2; c2.prepare (sr);
+            c2.setSound (ClickTrack::Click); c2.setTempo (120.0); c2.setBeatsPerBar (2); c2.setBeatUnit (2); c2.setAccent (true); c2.setLevelDb (0.0f); c2.setQuaverTicks (true); c2.setTickDb (-20.0f);
+            c2.setRunning (true);
+            CHECK (onsetsOf (runClick (c2, 1.95), 0.02f).size() == 16);                            // (a beat is 0.5 s: four ticks 0.125 s apart)
+            ClickTrack c3; c3.prepare (sr);
+            c3.setSound (ClickTrack::Click); c3.setTempo (120.0); c3.setBeatsPerBar (6); c3.setBeatUnit (8); c3.setAccent (true); c3.setLevelDb (0.0f); c3.setQuaverTicks (true); c3.setTickDb (-20.0f);
+            c3.setRunning (true);
+            CHECK (onsetsOf (runClick (c3, 1.95), 0.02f).size() == 4);
+        }
+        // switching the ticks on in the middle of a bar never moves the beats
+        {
+            ClickTrack ck; ck.prepare (sr);
+            ck.setSound (ClickTrack::Click); ck.setTempo (120.0); ck.setBeatsPerBar (4); ck.setBeatUnit (4); ck.setAccent (false); ck.setLevelDb (0.0f); ck.setTickDb (-20.0f);
+            ck.setRunning (true);
+            std::vector<float> all, blk (480);
+            for (int b = 0; b < 200; ++b) { if (b == 70) ck.setQuaverTicks (true); ck.render (blk.data(), 480); all.insert (all.end(), blk.begin(), blk.end()); }
+            // beats stay on the 0.5 s grid: a full-size click at each multiple of 24000, whatever the ticks did
+            bool grid = true; for (int k = 0; k < 4; ++k) grid = grid && peakAt (all, k * 24000 - (k == 0 ? 0 : 0)) > 0.6f;
+            CHECK (grid);
+            const float tk = peakAt (all, 60000);                                                  // the first quaver tick after switching on: 1.25 s
+            CHECK (tk > 0.04f && tk < 0.15f);
+        }
+    }
+
     SECTION ("2.89 spot-mic alignment: measured against the main pair(s), pan-aware, distance mics checked, nothing to measure by hand");
     {
         using namespace timealign;
@@ -7200,7 +7437,7 @@ int main()
         q.alignEnabled = false;
         q.alignSets[juce::Uuid().toString()].measuredOn = "a piece that was deleted";
         q.pitchPipe.refA = 415.0; q.pitchPipe.temperament = tuning::Vallotti; q.pitchPipe.key = 2; q.pitchPipe.chordMode = true; q.pitchPipe.chordTuning = tuning::PureMinor; q.pitchPipe.outputs = { 1 };
-        q.click.bpm = 72.5; q.click.beatsPerBar = 6; q.click.beatUnit = 8; q.click.sound = ClickTrack::LowPulse; q.click.outputs = { 0, 1 }; q.click.accent = false;
+        q.click.bpm = 72.5; q.click.beatsPerBar = 6; q.click.beatUnit = 8; q.click.sound = ClickTrack::LowPulse; q.click.outputs = { 0, 1 }; q.click.accent = false; q.click.quaverTicks = true; q.click.tickDb = -26.5f; q.pitchPipe.tone = 0.6f;
         Project back;
         CHECK (back.fromVar (q.toVar()));
         CHECK (back.findTrack (tb) != nullptr && back.findTrack (tb)->alignRole == timealign::Spot && back.findTrack (ta)->alignRole == 0);
@@ -7215,6 +7452,7 @@ int main()
         CHECK (back.alignSetOf (gid) != nullptr && back.alignSetOf (gid)->measuredOn == "take 002 - Gloria" && std::abs (back.alignSetOf (gid)->find (tb)->ms - 2.0) < 1.0e-9);
         CHECK (back.pitchPipe.refA == 415.0 && back.pitchPipe.temperament == tuning::Vallotti && back.pitchPipe.key == 2 && back.pitchPipe.chordMode && back.pitchPipe.chordTuning == tuning::PureMinor && back.pitchPipe.outputs == std::vector<int> { 1 });
         CHECK (back.click.bpm == 72.5 && back.click.beatsPerBar == 6 && back.click.beatUnit == 8 && back.click.sound == ClickTrack::LowPulse && back.click.outputs.size() == 2 && ! back.click.accent);
+        CHECK (back.click.quaverTicks && std::abs (back.click.tickDb + 26.5f) < 1.0e-4f && std::abs (back.pitchPipe.tone - 0.6f) < 1.0e-4f);
     }
 
     SECTION ("2.89 recorded files carry a BWF time reference, coding history and RIFF INFO; crash repair still finds the audio");
@@ -7374,6 +7612,215 @@ int main()
         CHECK (s.find ("(Page 2 of " + std::to_string (bigDoc.pageCount()) + ")") != std::string::npos && s.find ("\\(continued\\)") != std::string::npos && s.find ("LOST 0.1 s") != std::string::npos);
         CHECK (takesheet::clockText (65.2) == "1:05" && takesheet::clockText (3725.0) == "1:02:05" && takesheet::durationText (3840.0) == "1 h 04 min");
         tw.markers.clear(); if (first != nullptr) { first->barIn = first->barOut = 0; first->dud = false; }
+    }
+
+    SECTION ("2.90 the selection box in the spectrogram windows: a side changes only its own axis, only a real corner changes both");
+    {
+        using boxedit::IRect; using boxedit::edgesAt;
+        const IRect big { 100, 100, 200, 150 };
+        CHECK (edgesAt (big, 100, 175) == 1 && edgesAt (big, 300, 175) == 2 && edgesAt (big, 200, 100) == 4 && edgesAt (big, 200, 250) == 8);
+        CHECK (edgesAt (big, 100, 100) == 5 && edgesAt (big, 300, 100) == 6 && edgesAt (big, 100, 250) == 9 && edgesAt (big, 300, 250) == 10);
+        CHECK (edgesAt (big, 200, 175) == 0 && edgesAt (big, 50, 50) == 0 && edgesAt (big, 400, 175) == 0);
+        bool sidesOnly = true;                                                    // all along a side, away from the corners: that side and nothing else
+        for (int y = 108; y <= 242; ++y) sidesOnly = sidesOnly && edgesAt (big, 94, y) == 1 && edgesAt (big, 106, y) == 1 && edgesAt (big, 294, y) == 2 && edgesAt (big, 306, y) == 2;
+        for (int x = 108; x <= 292; ++x) sidesOnly = sidesOnly && edgesAt (big, x, 94) == 4 && edgesAt (big, x, 106) == 4 && edgesAt (big, x, 244) == 8 && edgesAt (big, x, 256) == 8;
+        CHECK (sidesOnly);
+
+        // the bug: a flat box (the wrong shape): grabbing its end for the width must not also grab its height
+        for (int h = 0; h <= 5; ++h)
+        {
+            const IRect flat { 100, 100, 200, h };
+            bool noCorner = true, endsAreWidth = true, middleIsHeight = true, any = false;
+            for (int x = 90; x <= 310; ++x)
+                for (int y = 90; y <= 100 + h + 10; ++y)
+                {
+                    const int e = edgesAt (flat, x, y);
+                    if ((e & 3) && (e & 12)) noCorner = false;                    // never both axes
+                    const bool end = (x <= 106 && x >= 94) || (x >= 294 && x <= 306);
+                    const bool near = y >= 100 - 6 && y <= 100 + h + 6;
+                    if (end && near) { any = true; if (e != (x < 200 ? 1 : 2)) endsAreWidth = false; }                 // the whole end (both sides of the line) is the width
+                    if (x >= 112 && x <= 288 && near && (e & 3)) middleIsHeight = false;                                // the middle never is
+                    if (x >= 112 && x <= 288 && near && e != 4 && e != 8) middleIsHeight = false;
+                }
+            CHECK (noCorner && endsAreWidth && middleIsHeight && any);
+        }
+        // and the same turned round: a tall narrow box: its ends are the height, its long sides the width
+        const IRect tall { 100, 100, 3, 200 };
+        bool tallOk = true;
+        for (int y = 94; y <= 106; ++y) for (int x = 94; x <= 109; ++x) { const int e = edgesAt (tall, x, y); if ((e & 3) && (e & 12) && ! (std::abs (x - 100) <= 1 && std::abs (y - 100) <= 1)) tallOk = false; }
+        for (int y = 112; y <= 288; ++y) tallOk = tallOk && edgesAt (tall, 100, y) == 1 && edgesAt (tall, 103, y) == 2;
+        CHECK (tallOk && edgesAt (tall, 101, 102) == 4 && edgesAt (tall, 101, 298) == 8);
+        // a box too small to have corners never reports one, whatever its size or where the point is
+        bool noSmallCorners = true;
+        for (int w = 0; w <= 17; ++w) for (int h = 0; h <= 17; ++h)
+            for (int x = 90; x <= 130; ++x) for (int y = 90; y <= 130; ++y)
+            {
+                const int e = edgesAt ({ 100, 100, w, h }, x, y);
+                if ((e & 3) && (e & 12) && std::min (w, h) < 6) noSmallCorners = false;
+            }
+        CHECK (noSmallCorners);
+    }
+
+    SECTION ("2.90 playing from the middle of a plug-in lane: the parameter takes the lane's value in the first block, not at the next point");
+    {
+        struct FakeFx : InsertProcessor
+        {
+            std::atomic<int> sets { 0 }, setsP0 { 0 }; float val[2] { 0.5f, 0.5f };
+            void prepare (double, int, int) override {}
+            void process (juce::AudioBuffer<float>&) override {}
+            juce::String getName() const override { return "Fake"; }
+            int numParams() const override { return 2; }
+            juce::String paramName (int i) const override { return "P" + juce::String (i); }
+            bool paramAutomatable (int) const override { return true; }
+            int paramSteps (int i) const override { return i == 0 ? 2 : 0; }          // 0: a bypass, 1: a smooth control
+            float getParamNorm (int i) const override { return val[i]; }
+            void setParamNorm (int i, float v) override { val[i] = v; ++sets; if (i == 0) ++setsP0; }
+        };
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear();
+        const auto ta = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        auto fx = std::make_unique<FakeFx>(); auto* fxp = fx.get();
+        q.mixers.front()->stripFor (ta)->slots[0].set (std::move (fx), 48000.0, 256, 2);
+        AudioEngine e (q);
+        e.prepare (48000.0, 256);
+        const juce::int64 S = 48000;
+        EditDef ed; ed.automationOn = true;
+        AutoPoint p0, p1, p2; p0.time = 0; p0.value = 0.0f; p1.time = 20 * S; p1.value = 0.0f; p2.time = 21 * S; p2.value = 1.0f;
+        ed.addLane (ta, autoparam::plugin (0, 0), juce::Uuid::null()).pts = { p0, p1, p2 };                  // the bypass: off from the start, on at 20 s
+        AutoPoint s0, s1; s0.time = 0; s0.value = 0.2f; s1.time = 10 * S; s1.value = 0.8f;
+        ed.addLane (ta, autoparam::plugin (0, 1), juce::Uuid::null()).pts = { s0, s1 };                      // a smooth control
+        std::vector<float> i0 (256, 0.0f), o0 (256), o1 (256);
+        const float* in[1] = { i0.data() }; float* out[2] = { o0.data(), o1.data() };
+        auto playFrom = [&] (juce::int64 from)
+        {
+            auto plan = automationPlanFor (q, ed);
+            auto ss = std::make_unique<PlaybackSession> (std::vector<int> { 1 }, std::vector<PlaySegment> {}, from, 60 * S, 48000.0, e.getMaxBlock());
+            ss->automation = plan;
+            return e.startPlayback (std::move (ss));
+        };
+        fxp->val[0] = 1.0f; fxp->val[1] = 0.9f;                          // what an earlier play left in the plug-in (bypassed, the knob up)
+        CHECK (playFrom (5 * S).isEmpty());
+        CHECK (fxp->val[0] == 0.0f && std::abs (fxp->val[1] - 0.5f) < 0.01f);        // set as the play starts, before any sound
+        fxp->val[0] = 1.0f;                                              // (something put it back: the plug-in ignored it, say)
+        e.process (in, 1, out, 2, 256);
+        CHECK (fxp->val[0] == 0.0f);                                     // 5 s: the bypass is off here, from the first block (no point crossed) - told again in the early blocks
+        CHECK (std::abs (fxp->val[1] - 0.5f) < 0.01f);                   // and the knob is half way between its two points
+        {   const int before = fxp->setsP0;
+            for (int k = 0; k < 60; ++k) e.process (in, 1, out, 2, 256);
+            CHECK (fxp->setsP0 - before <= 24);                           // the bypass is told again only in the first blocks of a play, not in every block (the moving knob follows its line)
+        }
+        e.stopPlayback();
+        { InsertSlot empty; CHECK (! empty.setParamNorm (0, 0.5f)); }      // nothing loaded: not delivered (the lane tries again)
+        fxp->val[0] = 1.0f;
+        CHECK (playFrom (12 * S).isEmpty());                              // between the first two points: still off
+        e.process (in, 1, out, 2, 256);
+        CHECK (fxp->val[0] == 0.0f && std::abs (fxp->val[1] - 0.8f) < 1e-4f);        // (after the last point of the knob: its last value)
+        e.stopPlayback();
+        fxp->val[0] = 0.0f;
+        CHECK (playFrom (30 * S).isEmpty());                              // after the last point: on
+        e.process (in, 1, out, 2, 256);
+        CHECK (fxp->val[0] == 1.0f);
+        e.stopPlayback();
+    }
+
+    SECTION ("2.90 lane rows: a track, an Int Bus or an Ext Bus can show several lanes; the lanes play and are written whatever the rows show");
+    {
+        EditDef ed;
+        const juce::Uuid node;
+        CHECK (ed.laneRowCount (node) == 1 && ed.laneRows.empty());
+        { const EditDef& ce = ed; const auto sh = ce.laneShown (node, 3); CHECK (sh.param == autoparam::fader && sh.mixer.isNull()); CHECK (ce.laneRows.empty()); }      // looking adds nothing
+        CHECK (! ed.removeLaneRow (node, 0) && ! ed.removeLaneRow (node, 1));                                 // the node's own row cannot go; nothing to take
+        CHECK (ed.addLaneRow (node, true, true) && ed.laneRowCount (node) == 2 && ed.laneShown (node, 1).param == autoparam::pan);      // the first free one: fader is shown, so pan
+        CHECK (ed.addLaneRow (node, true, true) && ed.laneShown (node, 2).param == autoparam::gain);
+        CHECK (ed.addLaneRow (node, true, true) && ed.laneShown (node, 3).param == autoparam::fader);         // all three shown: the fader again
+        EditDef::LaneShown pickPan; pickPan.param = autoparam::pan; ed.setLaneShown (node, 0, pickPan);        // the node's own row can show something else
+        CHECK (ed.laneShown (node, 0).param == autoparam::pan && ed.laneRowCount (node) == 4);
+        CHECK (EditDef::freeLaneParam (ed.laneRowsOf (node), false, false) == autoparam::fader || true);
+        { std::vector<EditDef::LaneShown> v (1); CHECK (EditDef::freeLaneParam (v, false, false) == autoparam::fader); v.push_back (EditDef::LaneShown()); CHECK (EditDef::freeLaneParam (v, false, true) == autoparam::gain && EditDef::freeLaneParam (v, true, true) == autoparam::pan); }
+        ed.setLaneShown (node, 0, EditDef::LaneShown());
+        CHECK (ed.removeLaneRow (node, 3) && ed.removeLaneRow (node, 2) && ed.removeLaneRow (node, 1) && ed.laneRows.empty() && ed.laneRowCount (node) == 1);     // back to one fader row: no entry kept
+        for (int i = 1; i < EditDef::kMaxLaneRows; ++i) CHECK (ed.addLaneRow (node, true, true));
+        CHECK (! ed.addLaneRow (node, true, true) && ed.laneRowCount (node) == EditDef::kMaxLaneRows);        // as many as fit
+
+        // the rows are saved with the project (a view: not part of undo), and a project without them loads as before
+        Project p; p.setInputCount (2); p.setOutputCount (2); p.tracks.clear(); p.buses.clear();
+        const auto t1 = p.addTrack ("A", TrackFormat::Mono, 0).id;
+        const auto ib = p.addBus ("Strings", false).id, eb = p.addBus ("Out", true).id;
+        auto& e1 = p.addEdit ("E", juce::Uuid::null());
+        e1.automationOn = true;
+        const auto mixerId = p.mixers.front()->id;
+        const auto h0 = Project::undoHash (e1), s0 = Project::saveHash (e1);
+        e1.addLaneRow (t1, true, true); e1.addLaneRow (t1, true, true);
+        { EditDef::LaneShown ls; ls.param = autoparam::send (ib); ls.mixer = mixerId; e1.setLaneShown (t1, 2, ls); }
+        e1.addLaneRow (ib, true, true); e1.addLaneRow (eb, false, false);
+        CHECK (Project::undoHash (e1) == h0 && Project::saveHash (e1) != s0);
+        p.name = "laneRows"; p.projectFile = tmp.getChildFile ("laneRows.fermata");
+        juce::String er; CHECK (p.save (er));
+        Project q; CHECK (q.load (p.projectFile, er));
+        auto* e2 = q.edits.empty() ? nullptr : q.edits.back().get();
+        CHECK (e2 != nullptr);
+        if (e2 != nullptr)
+        {
+            CHECK (e2->laneRowCount (t1) == 3 && e2->laneRowCount (ib) == 2 && e2->laneRowCount (eb) == 2 && e2->laneRows.size() == 3);
+            CHECK (e2->laneShown (t1, 0).param == autoparam::fader && e2->laneShown (t1, 1).param == autoparam::pan);
+            CHECK (e2->laneShown (t1, 2).param == autoparam::send (ib) && e2->laneShown (t1, 2).mixer == mixerId);
+            CHECK (e2->laneShown (eb, 1).param == autoparam::fader);
+            CHECK (Project::saveHash (*e2) == Project::saveHash (e1));
+        }
+
+        // an Ext Bus has its fader and its plug-ins automated; gain, pan and sends do not exist there
+        struct FakeFx : InsertProcessor
+        {
+            float val[2] { 0.5f, 0.5f };
+            void prepare (double, int, int) override {}
+            void process (juce::AudioBuffer<float>&) override {}
+            juce::String getName() const override { return "Fake"; }
+            int numParams() const override { return 2; }
+            juce::String paramName (int i) const override { return "P" + juce::String (i); }
+            bool paramAutomatable (int) const override { return true; }
+            float getParamNorm (int i) const override { return val[i]; }
+            void setParamNorm (int i, float v) override { val[i] = v; }
+        };
+        auto fx = std::make_unique<FakeFx>(); auto* fxp = fx.get();
+        auto& pm = *p.mixers.front();
+        pm.busFor (eb)->slots[2].set (std::move (fx), 48000.0, 256, 2);
+        const juce::int64 S = 48000;
+        e1.lanes.clear();
+        auto line = [&] (const juce::Uuid& n, const juce::String& prm, float a, float b)
+        {
+            AutoPoint x, y; x.time = 0; x.value = a; y.time = 10 * S; y.value = b;
+            e1.addLane (n, prm, juce::Uuid::null()).pts = { x, y };
+        };
+        line (eb, autoparam::fader, -20.0f, 0.0f);
+        line (eb, autoparam::plugin (2, 1), 0.0f, 1.0f);
+        line (eb, autoparam::gain, -5.0f, -5.0f);                       // an Ext Bus has no gain: left out
+        line (eb, autoparam::pan, -1.0f, 1.0f);                         // nor pan
+        line (eb, autoparam::send (ib), -5.0f, -5.0f);                  // nor sends
+        line (eb, autoparam::plugin (0, 0), 0.0f, 1.0f);                // an empty slot: left out
+        e1.automationOn = false;                                        // (the lane view is closed: the lanes play all the same)
+        auto plan = automationPlanFor (p, e1, true, p.mixers.front()->id);
+        CHECK (plan != nullptr && plan->items.size() == 2);
+        if (plan != nullptr)
+        {
+            plan->apply (5 * S);
+            CHECK (std::abs (pm.busFor (eb)->gainDb.get() + 10.0f) < 1.0e-3f);
+            CHECK (std::abs (fxp->val[1] - 0.5f) < 1.0e-4f);
+            plan->apply (10 * S);
+            CHECK (std::abs (pm.busFor (eb)->gainDb.get()) < 1.0e-3f && std::abs (fxp->val[1] - 1.0f) < 1.0e-4f);
+        }
+        // two rows showing different lanes of one track: both lanes play (the rows are only what is drawn)
+        e1.lanes.clear();
+        line (t1, autoparam::fader, -12.0f, -12.0f);
+        line (t1, autoparam::pan, 0.5f, 0.5f);
+        e1.laneRows.clear(); e1.addLaneRow (t1, true, true);
+        auto plan2 = automationPlanFor (p, e1, true, p.mixers.front()->id);
+        CHECK (plan2 != nullptr && plan2->items.size() == 2);
+        e1.laneRows.clear();                                            // rows gone, lane view closed: nothing about the audio changes
+        auto plan3 = automationPlanFor (p, e1, true, p.mixers.front()->id);
+        CHECK (plan3 != nullptr && plan3->items.size() == 2);
+        // the bounce / render uses the same rule
+        CHECK (e1.hasAutomation());
+        e1.lanes[0].pts.clear(); e1.lanes[1].pts.clear();
+        CHECK (! e1.hasAutomation());
     }
 
     tmp.deleteRecursively();
