@@ -6666,9 +6666,11 @@ int main()
         p.preampDevices = { thap, anubis };
         CHECK (p.inputDeviceLabel (0) == "Anubis-1" && p.inputDeviceLabel (1) == "Anubis-2" && p.inputDeviceLabel (2) == "THAP-1" && p.inputDeviceLabel (5) == "THAP-4");
         CHECK (p.inputShortName (5) == "THAP-4" && p.inputLabel (5) == "6 - THAP-4");
+        CHECK (p.inputTag (0) == "01-Anubis-01" && p.inputTag (5) == "06-THAP-04");                  // 2.95: ASIO number - device - channel in the device
         PreampDeviceCfg mt; mt.name = "MT48"; mt.firstInput = 4; p.preampDevices.push_back (mt);        // a device from input 5 on: THAP covers 3 - 4, MT48 the rest
         CHECK (p.inputDeviceLabel (3) == "THAP-2" && p.inputDeviceLabel (4) == "MT48-1" && p.inputDeviceLabel (5) == "MT48-2");
         p.preampDevices.clear(); CHECK (p.inputDeviceLabel (3).isEmpty() && p.inputShortName (3) == "Hapi 4");
+        CHECK (p.inputTag (3) == "04-Hapi 4");                                                        // no device known: the number and the driver's name
     }
 
     SECTION ("2.87 loudness: BS.1770 / EBU R 128 integrated loudness and true peak");

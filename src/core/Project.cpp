@@ -400,6 +400,16 @@ String Project::inputDeviceLabel (int i) const
     return best->name + "-" + String (i - best->firstInput + 1);
 }
 
+String Project::inputTag (int i) const
+{
+    if (! juce::isPositiveAndBelow (i, (int) inputs.size())) return {};
+    const auto num = String (i + 1).paddedLeft ('0', 2);
+    const auto dev = inputDeviceLabel (i);                               // "BHAP-12"
+    const int dash = dev.lastIndexOfChar ('-');
+    if (dash > 0 && dev.substring (dash + 1).containsOnly ("0123456789")) return num + "-" + dev.substring (0, dash) + "-" + dev.substring (dash + 1).paddedLeft ('0', 2);
+    return num + "-" + inputShortName (i);
+}
+
 String Project::driverNamePrefix() const
 {
     if (inputs.size() < 2) return {};

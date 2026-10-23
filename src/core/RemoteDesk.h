@@ -194,7 +194,7 @@ inline juce::var inputsToVar (Project& p, MixerState* panMixer)
         auto* o = new juce::DynamicObject();
         o->setProperty ("i", i);
         o->setProperty ("n", in.name.trim().isNotEmpty() ? in.name.trim() : p.inputShortName (i));
-        o->setProperty ("d", p.inputShortName (i));
+        o->setProperty ("d", p.inputTag (i));
         o->setProperty ("tk", p.isCrMic (i));
         auto fed = tracksOnInput (p, i);
         o->setProperty ("mon", fed.empty() ? -1 : (int) fed.front()->monitor());

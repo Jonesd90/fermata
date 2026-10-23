@@ -102,7 +102,7 @@ public:
         if (idx >= (int) app.project.inputs.size()) return;
         auto& in = app.project.inputs[(size_t) idx];
         updating = true;
-        const auto drv = juce::String (idx + 1).paddedLeft ('0', 2) + juce::String (juce::CharPointer_UTF8 (" \xc2\xb7 ")) + app.project.inputShortName (idx);   // "12 · THAP-12" (the device and its channel), else the driver's name
+        const auto drv = app.project.inputTag (idx);   // "36-BHAP-12": ASIO number, device, channel in the device; else the driver's name
         if (driver.getText() != drv)
         {
             driver.setText (drv, juce::dontSendNotification);

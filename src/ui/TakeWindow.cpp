@@ -756,6 +756,7 @@ public:
         if (auto* grp = groupAt (e.getPosition(), e.mods.isPopupMenu()))
         {
             if (inLane && e.getNumberOfClicks() > 1) { showSettings (grp->id, false); return; }
+            if (! inLane && e.getNumberOfClicks() > 1 && e.x >= sx + kNameW) { showBars (grp->id, e.getPosition()); return; }     // double-click on a take: straight into its bars and notes
             if (ctrlDown && ! e.mods.isAltDown())                          // Ctrl + click: add this take to the selection, or take it out again
             {
                 auto it = std::find (selectedTakes.begin(), selectedTakes.end(), grp->id);

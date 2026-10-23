@@ -242,6 +242,7 @@ public:
     /** The device behind a driver input and its channel on it, "THAP-12", "Anubis-2": from the preamp driver when the device is connected, else from
         the Preamps setup (ANEMAN's patching, or the device's first input and the ones that follow it up to the next device). "" when no device covers it. */
     juce::String inputDeviceLabel (int i) const;
+    juce::String inputTag (int i) const;                       // "36-BHAP-12": the ASIO number, the device, the channel in the device (two digits each); else "36-" and the driver's name
     /** The short name of a driver input for the strips and the lists: the device label, or else the driver's own name without the part every input's
         name begins with ("MAD Input 12" -> "Input 12" when they all start "MAD "). */
     juce::String inputShortName (int i) const;

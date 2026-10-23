@@ -6,6 +6,11 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.95.0
+- **Double-click a take in the Take window** and the box for the bars it starts and ends in, and its notes, opens straight away (on the waveforms; double-clicking the banner at the top still opens the take's settings as before).
+- **Shorter input names: `36-BHAP-12`.** The channel names on the main window (and on the Stream Deck) are now the ASIO number, the device and the channel in that device, two digits each: `01-MT48-01`, `36-BHAP-12`. The devices can be in any order; the ASIO number is the input's place in the driver's list. An input with no device known shows its number and the driver's name.
+- **Stream Deck: a strip layout** (plug-in 1.5.0): columns of Name, 48V, Low cut and Phase tiles per input, previous / next / Gain / Pan keys, and dials for the gain or pan of four columns and the processing mixer's main output. Needs no other change in Fermata than the new names.
+
 ## 2.94.0
 - **Notes on a take.** Right-click a take in the Take window, choose **Bars it starts and ends in, and notes...**, and the box now has a **Notes** field under the two bar numbers (Ctrl + Enter closes it with OK). A take with a note shows a small note mark in its banner, and the note appears as a tooltip when you rest the pointer on the take. The notes are saved with the project, come back with Undo / Redo like the bar numbers do, and are in the take sheet: a **Notes** column in the CSV and a "Note: ..." line under the take in the PDF.
 - **Fermata can be driven by a Stream Deck + XL (36 keys, 6 dials).** The control port on `127.0.0.1:7788` (the one the Stream Deck Neo plug-in already uses) has new commands and two new messages; the Stream Deck plug-in 1.4.0 uses them (see its README). The Neo keeps working as before. What the plug-in can now do:
