@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.93.2
+- **The playhead no longer stutters when the waveforms are zoomed in.** Zoomed in far enough to see the real peaks (and the more so the further in), the window opened and read the audio file of every track again on almost every refresh of the playhead, up to 60 times a second for each track. Where that is slow (on Windows every open can wait for the virus scan) a refresh took 12 to over 100 ms instead of 3, and the playhead missed a beat. Now each file's audio is held in memory for about 5 seconds around the playhead and the next 5 seconds are read ahead by a thread of its own, so the playhead only ever draws from memory. Measured here: 2000 file reads over 300 refreshes zoomed in, now 20 (the first ones, when the play starts or the view jumps). The Take window gets the same.
+- **The playhead line in `fermata-log.txt` also says how many times a waveform file was read** during the play ("waveform file reads: N"). It should be a handful per play now. If you still see a stutter, send me the line again.
+
 ## 2.93.1
 - **The tab keys no longer stay lit.** In the spectral window (and the Pitch window's two tabs) the **ReTouch** tab stayed lit whichever tab you chose, so two tabs looked chosen at once. Only the tab that is showing is lit now, whatever order you click them in.
 - **The button that does the work is in the same place on every tab.** **ReTouch [R]**, **Gain [G]**, **De-click [D]** and **Denoise [N]** are all in the bottom right corner of the tool panel (Gain and De-click used to sit up beside the tabs, ReTouch and Denoise at the right). Gain's one-line explanation and De-click's Click sensitivity stay at the top. Same in Noise mode.

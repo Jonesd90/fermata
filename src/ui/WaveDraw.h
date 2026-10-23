@@ -4,6 +4,8 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "WaveColor.h"
 #include "WaveThumb.h"
+#include <atomic>
+#include <deque>
 #include <map>
 #include <vector>
 
@@ -121,13 +123,22 @@ inline void drawThumbnailEnvelope (juce::Graphics& g, juce::Rectangle<int> area,
 
 /** Sharp waveforms when zoomed in. The ordinary thumbnails (one value per 256 samples) are fine when zoomed out; once fewer than 256 samples
     share a pixel this reads the audio itself, so every pixel shows the true peaks, and when there is more than a pixel per sample it draws
-    the actual sample curve. Pieces read from disk are kept for a while, so scrolling and the moving playhead stay quick. */
+    the actual sample curve.
+
+    The audio of each file is held in a piece of a few seconds (about 5.5 s at 96 kHz, 11 s at 48 kHz), so scrolling and the moving playhead - which
+    redraws a thin strip 60 times a second - draw from memory and never wait for the disk. Before the playhead reaches the end of the piece the
+    next one is read by a thread of its own (a read-ahead); only a jump to somewhere not held (a new zoom, a click far away, the first draw) is
+    read at once, as it always was. (Until 2.93.2 the piece was only a little wider than the strip being drawn, so zoomed in the files were opened
+    and read again on nearly every redraw of the playhead: slow on Windows, where each open can wait on the virus scan.) */
 class DirectWaveCache
 {
 public:
     static constexpr double kThumbSamplesPerPixelLimit = (double) WaveThumb::kSamplesPerPoint;     // thumbnails hold one value per 256 samples
     explicit DirectWaveCache (juce::AudioFormatManager& fm) : formats (fm) {}
+    ~DirectWaveCache() { reader.stop(); }
     void forget (const juce::String& path) { cache.erase (path); }
+    /** How many times a file has been opened and read for a waveform, since the program started (a measure, for the development tests). */
+    static std::atomic<int>& readCounter() { static std::atomic<int> n { 0 }; return n; }
 
     /** True if it drew the audio itself (the caller then does not draw the thumbnail). */
     /** rateHint: the file's sample rate when the caller knows it (> 0). Then nothing is opened unless the view is zoomed in far enough to need it:
@@ -152,21 +163,22 @@ public:
         const juce::int64 need1 = juce::jmin (e->length, (juce::int64) std::ceil (lastPos) + 3);
         if (need1 <= need0) return true;
         if (need1 - need0 > kMaxSamples) return false;
-        if (! ensure (*e, file, need0, need1)) return false;
+        if (! prepare (*e, file, need0, need1)) return false;
 
-        const int nCh = e->data.getNumChannels();
+        const Chunk& ch = *e->cur;
+        const int nCh = ch.data.getNumChannels();
         const int bandH = juce::jmax (1, area.getHeight() / juce::jmax (1, nCh));
         for (int c = 0; c < nCh; ++c)
         {
-            const float* d = e->data.getReadPointer (c);
+            const float* d = ch.data.getReadPointer (c);
             const float centre = (float) area.getY() + (float) bandH * ((float) c + 0.5f);
             const float half = (float) bandH * 0.5f * vzoom;
             const float lo = (float) area.getY() + (float) bandH * (float) c, hi = lo + (float) bandH;
             auto yOf = [&] (float v) { return juce::jlimit (lo, hi, centre - v * half); };
             auto at = [&] (juce::int64 s) -> float
             {
-                const auto i = s - e->start;
-                return juce::isPositiveAndBelow (i, (juce::int64) e->data.getNumSamples()) ? d[i] : 0.0f;
+                const auto i = s - ch.start;
+                return juce::isPositiveAndBelow (i, (juce::int64) ch.data.getNumSamples()) ? d[i] : 0.0f;
             };
 
             if (spp >= 1.0)                                                  // peaks: a min / max bar for every pixel column
@@ -207,13 +219,44 @@ public:
 
 private:
     static constexpr juce::int64 kMaxSamples = 1500000;         // never read more than this for one file in one go (a wide window at 255 samples a pixel, and a third more each side)
+    static constexpr juce::int64 kBehind = 65536, kAhead = 524288;   // a held piece reaches this far before and after what is being drawn (about 5.5 s ahead at 96 kHz)
+    static constexpr juce::int64 kBudgetBytes = 256ll * 1024 * 1024; // all the held pieces together: the ones used longest ago are let go beyond this
+
+    struct Chunk
+    {
+        juce::int64 start = 0, count = 0, fileLength = 0;
+        juce::Time modified;
+        juce::AudioBuffer<float> data;
+        juce::int64 bytes() const { return (juce::int64) data.getNumChannels() * (juce::int64) data.getNumSamples() * 4; }
+    };
+    /** A piece being read ahead by the reader thread: 'done' is set (after 'chunk') when it has finished. */
+    struct Ahead { std::atomic<bool> done { false }; std::shared_ptr<Chunk> chunk; };
     struct Entry
     {
         double rate = 0.0; juce::int64 length = 0;
-        juce::int64 start = 0, count = 0;                         // the part of the file held in 'data'
-        juce::AudioBuffer<float> data;
+        std::shared_ptr<Chunk> cur;                               // the part of the file held in memory
+        std::shared_ptr<Ahead> next;                              // the part after it, being read
         juce::int64 used = 0;
+        juce::uint32 checkedAt = 0;                               // when the file's date was last looked at
     };
+
+    /** Reads [a, b) of the file (cut to what the file holds and to kMaxSamples). Null if it cannot be read. Safe on any thread. */
+    static std::shared_ptr<Chunk> readChunk (juce::AudioFormatManager& fm, const juce::File& f, juce::int64 need0, juce::int64 need1, juce::int64 a, juce::int64 b)
+    {
+        std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (f));              // opened only while reading: no file stays locked
+        if (r == nullptr) return nullptr;
+        ++readCounter();
+        a = juce::jmax ((juce::int64) 0, a); b = juce::jmin (r->lengthInSamples, b);
+        if (b - a > kMaxSamples) { b = a + kMaxSamples; if (b < need1) { a = juce::jmax ((juce::int64) 0, need0); b = juce::jmin (r->lengthInSamples, a + kMaxSamples); } }
+        const int n = (int) (b - a);
+        if (n <= 0) return nullptr;
+        auto c = std::make_shared<Chunk>();
+        c->data.setSize ((int) r->numChannels, n, false, false, true);
+        c->data.clear();
+        if (! r->read (&c->data, 0, n, a, true, true)) return nullptr;
+        c->start = a; c->count = n; c->fileLength = r->lengthInSamples; c->modified = f.getLastModificationTime();
+        return c;
+    }
 
     Entry* find (const juce::File& f)
     {
@@ -224,32 +267,93 @@ private:
             std::unique_ptr<juce::AudioFormatReader> r (formats.createReaderFor (f));
             if (r == nullptr || r->numChannels < 1) return nullptr;
             if (cache.size() > 80) cache.clear();                  // a simple cap on memory
-            Entry e; e.rate = r->sampleRate; e.length = r->lengthInSamples;
+            Entry e; e.rate = r->sampleRate; e.length = r->lengthInSamples; e.checkedAt = juce::Time::getMillisecondCounter();
             it = cache.emplace (key, std::move (e)).first;
         }
         it->second.used = ++tick;
         return &it->second;
     }
 
-    bool ensure (Entry& e, const juce::File& f, juce::int64 need0, juce::int64 need1)
+    /** Makes sure e.cur holds [need0, need1): from memory when it can, else (a jump) read now. And, when the playhead is getting near the end of
+        what is held, starts reading the next part on the reader thread. */
+    bool prepare (Entry& e, const juce::File& f, juce::int64 need0, juce::int64 need1)
     {
-        if (e.count > 0 && need0 >= e.start && need1 <= e.start + e.count) return true;
-        std::unique_ptr<juce::AudioFormatReader> r (formats.createReaderFor (f));      // opened only while reading: no file stays locked
-        if (r == nullptr) return false;
-        const juce::int64 span = need1 - need0, extra = span / 3;                       // a little more each side, for scrolling
-        const juce::int64 a = juce::jmax ((juce::int64) 0, need0 - extra);
-        const juce::int64 b = juce::jmin (r->lengthInSamples, need1 + extra);
-        const int n = (int) juce::jmin ((juce::int64) kMaxSamples, b - a);
-        if (n <= 0) return false;
-        e.data.setSize ((int) r->numChannels, n, false, false, true);
-        e.data.clear();
-        if (! r->read (&e.data, 0, n, a, true, true)) return false;
-        e.start = a; e.count = n; e.length = r->lengthInSamples;
-        return need0 >= e.start && need1 <= e.start + e.count;
+        auto covers = [&] (const Chunk* c) { return c != nullptr && need0 >= c->start && need1 <= c->start + c->count; };
+        const auto now = juce::Time::getMillisecondCounter();
+        if (e.cur != nullptr && now - e.checkedAt > 1000)             // the file was rewritten (a fix, a bounce): what is held is old
+        {
+            e.checkedAt = now;
+            if (e.cur->modified != f.getLastModificationTime()) { e.cur.reset(); e.next.reset(); }
+        }
+        if (e.next != nullptr && e.next->done.load (std::memory_order_acquire))      // the part read ahead is ready
+        {
+            if (covers (e.next->chunk.get())) { e.cur = e.next->chunk; e.length = e.cur->fileLength; }
+            e.next.reset();
+        }
+        if (! covers (e.cur.get()))
+        {
+            e.next.reset();                                            // (whatever was on its way is for somewhere else)
+            e.cur = readChunk (formats, f, need0, need1, need0 - kBehind, need1 + kAhead);
+            if (! covers (e.cur.get())) { e.cur.reset(); return false; }
+            e.length = e.cur->fileLength; e.checkedAt = now;
+            trim (&e);
+        }
+        else if (e.next == nullptr && e.cur->start + e.cur->count < e.length && e.cur->start + e.cur->count - need1 < kAhead / 2)
+        {
+            e.next = std::make_shared<Ahead>();
+            reader.request (formats, f, need0, need1, juce::jmax ((juce::int64) 0, need0 - kBehind), need1 + kAhead, e.next);
+        }
+        return true;
     }
+
+    /** Lets go of the pieces used longest ago when all of them together hold more than kBudgetBytes (never the one being drawn). */
+    void trim (const Entry* keep)
+    {
+        for (;;)
+        {
+            juce::int64 total = 0; Entry* oldest = nullptr;
+            for (auto& kv : cache)
+            {
+                auto& en = kv.second;
+                if (en.cur == nullptr) continue;
+                total += en.cur->bytes();
+                if (&en != keep && (oldest == nullptr || en.used < oldest->used)) oldest = &en;
+            }
+            if (total <= kBudgetBytes || oldest == nullptr) return;
+            oldest->cur.reset(); oldest->next.reset();
+        }
+    }
+
+    /** The thread that reads the pieces ahead of the playhead, one at a time, at low priority. */
+    struct Reader : public juce::Thread
+    {
+        Reader() : juce::Thread ("Waveform read-ahead") {}
+        struct Job { juce::AudioFormatManager* fm = nullptr; juce::File file; juce::int64 need0 = 0, need1 = 0, a = 0, b = 0; std::shared_ptr<Ahead> out; };
+        void request (juce::AudioFormatManager& fm, const juce::File& f, juce::int64 need0, juce::int64 need1, juce::int64 a, juce::int64 b, std::shared_ptr<Ahead> out)
+        {
+            { const juce::ScopedLock sl (lock); jobs.push_back (Job { &fm, f, need0, need1, a, b, std::move (out) }); }
+            if (! isThreadRunning()) startThread (juce::Thread::Priority::low);
+            notify();
+        }
+        void stop() { signalThreadShouldExit(); notify(); stopThread (5000); }
+        void run() override
+        {
+            while (! threadShouldExit())
+            {
+                Job j; bool have = false;
+                { const juce::ScopedLock sl (lock); if (! jobs.empty()) { j = std::move (jobs.front()); jobs.pop_front(); have = true; } }
+                if (! have) { wait (-1); continue; }
+                if (j.out.use_count() > 1)                            // (nobody waits for it any more if the cache let it go)
+                    j.out->chunk = readChunk (*j.fm, j.file, j.need0, j.need1, j.a, j.b);
+                j.out->done.store (true, std::memory_order_release);
+            }
+        }
+        juce::CriticalSection lock; std::deque<Job> jobs;
+    };
 
     juce::AudioFormatManager& formats;
     std::map<juce::String, Entry> cache;
     juce::int64 tick = 0;
+    Reader reader;                                                    // (last: stopped first)
 };
 } // namespace td

@@ -1807,7 +1807,7 @@ private:
     struct HitchLog
     {
         static constexpr int kKeep = 8;
-        bool active = false; double t0 = 0.0, lastT = 0.0, firstPh = 0.0, lastPh = 0.0; int baseUnderruns = 0;
+        bool active = false; double t0 = 0.0, lastT = 0.0, firstPh = 0.0, lastPh = 0.0; int baseUnderruns = 0, baseReads = 0;
         int frames = 0, late = 0, stalls = 0, jumps = 0, stallRun = 0, slowPaints = 0, fullRedraws = 0;
         double worstGap = 0.0, worstGapAt = 0.0, worstPaint = 0.0, worstPaintAt = 0.0;
         std::vector<double> lateAt, stallAt, jumpAt, paintAt;
@@ -1832,7 +1832,7 @@ private:
         if (! h.active)
         {
             h = HitchLog(); h.active = true; h.t0 = h.lastT = now; h.firstPh = h.lastPh = ph;
-            h.baseUnderruns = app.engine.playbackUnderruns();
+            h.baseUnderruns = app.engine.playbackUnderruns(); h.baseReads = DirectWaveCache::readCounter().load();
             return;
         }
         const double dt = now - h.lastT, dph = (ph - h.lastPh) * 1000.0;                       // both in milliseconds
@@ -1857,6 +1857,7 @@ private:
                  << "playhead jumped: " << h.jumps << HitchLog::list (h.jumpAt) << "; "
                  << "redraws over 12 ms: " << h.slowPaints << (h.slowPaints > 0 ? ", worst " + juce::String (h.worstPaint, 0) + " ms at " + juce::String (h.worstPaintAt, 1) + " s" : juce::String()) << HitchLog::list (h.paintAt) << "; "
                  << "whole-window redraws: " << h.fullRedraws << "; "
+                 << "waveform file reads: " << juce::jmax (0, DirectWaveCache::readCounter().load() - h.baseReads) << "; "
                  << "playback underruns: " << juce::jmax (0, app.engine.playbackUnderruns() - h.baseUnderruns);
             juce::Logger::writeToLog (line);
         }
