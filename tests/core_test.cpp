@@ -7779,6 +7779,7 @@ int main()
         namespace desk = remote::desk;
         // the new commands are understood, anything else is not
         { auto c = remote::parseCommand ("{\"cmd\":\"wact\",\"what\":\"Mark1\"}"); CHECK (c.name == "wact" && c.what == "mark1" && remote::isWindowAct (c.what)); }
+        { auto c = remote::parseCommand ("{\"cmd\":\"openwin\",\"what\":\"Media\"}"); CHECK (c.name == "openwin" && remote::isOpenWin (c.what) && ! remote::isOpenWin ("bridge")); }
         CHECK (! remote::isWindowAct ("format") && remote::isWindowAct ("slipr") && remote::isWindowAct ("feedback"));
         { auto c = remote::parseCommand ("{\"cmd\":\"gain\",\"input\":3,\"delta\":-0.5}"); CHECK (c.name == "gain" && c.input == 3 && std::abs (c.delta + 0.5) < 1e-9); }
         { auto c = remote::parseCommand ("{\"cmd\":\"preamp\",\"input\":7,\"what\":\"V48\"}"); CHECK (c.name == "preamp" && c.input == 7 && c.what == "v48"); }

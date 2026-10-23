@@ -110,6 +110,7 @@ void RemoteControlServer::execute (const remote::Command& c)
     else if (app.hasProject())                                             // the Stream Deck + XL
     {
         if (c.name == "bridge" || c.name == "pitchpipe" || c.name == "click" || c.name == "minimiseall") { if (app.deskWindowToggle) app.deskWindowToggle (c.name); }
+        else if (c.name == "openwin") { if (app.deskWindowToggle && remote::isOpenWin (c.what)) app.deskWindowToggle (c.what); }
         else if (c.name == "takewindow") { if (app.deskWindowToggle) app.deskWindowToggle ("take"); }
         else if (c.name == "armtoggle") app.remoteArmToggle();
         else if (c.name == "wavecolour") app.remoteWaveColour();
@@ -167,7 +168,7 @@ juce::String RemoteControlServer::collectDesk()
     o->setProperty ("mixers", desk::mixersToVar (P));
     o->setProperty ("stage", desk::stageToVar (P));
     auto* w = new juce::DynamicObject();                                   // 0 not open, 1 shown, 3 minimised (minimiseall: 3 = there are windows to bring back)
-    for (auto* what : { "bridge", "pitchpipe", "click", "take", "minimiseall" })
+    for (auto* what : { "bridge", "pitchpipe", "click", "take", "minimiseall", "editwin", "takedisplay", "organiser", "media", "mastering" })
         w->setProperty (what, app.deskWindowState ? app.deskWindowState (what) : 0);
     o->setProperty ("win", juce::var (w));
     o->setProperty ("arm", app.armState());                                // 0 none, 1 some, 2 all

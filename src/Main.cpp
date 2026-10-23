@@ -725,7 +725,13 @@ private:
     }
     juce::String deskKeyFor (const juce::String& what) const
     {
-        if (what != "take") return what;                                   // "bridge", "pitchpipe", "click" are their own keys
+        if (what == "editwin")
+        {
+            juce::Uuid id = recentEdit;
+            if (ctx->project.findEdit (id) == nullptr) id = ctx->project.edits.empty() ? juce::Uuid::null() : ctx->project.edits.front()->id;
+            return id.isNull() ? juce::String() : "edit:" + id.toString();
+        }
+        if (what != "take") return what;              // "bridge", "pitchpipe", "click", "media" ... are their own keys
         const auto id = deskTakeWindowId();
         return id.isNull() ? juce::String() : "take:" + id.toString();
     }
@@ -761,6 +767,23 @@ private:
             auto* w = it->second.get();
             if (w->isVisible() && ! DockHub::get().contains (w)) minimiseToDock (w);                           // shown: minimise it (never close it)
             else { DockHub::get().show (w); w->grabContentFocus(); }                                           // minimised or hidden: bring it back
+            return;
+        }
+        if (what == "editwin" || what == "takedisplay" || what == "organiser" || what == "media" || what == "mastering")   // open / close
+        {
+            const auto key = deskKeyFor (what);
+            auto it = key.isEmpty() ? windows.end() : windows.find (key);
+            if (it != windows.end() && it->second != nullptr)
+            {
+                if (DockHub::get().contains (it->second.get()) || ! it->second->isVisible()) { DockHub::get().show (it->second.get()); it->second->grabContentFocus(); }   // minimised: back
+                else closeWindowLater (key);                                                                                                                         // shown: close
+                return;
+            }
+            if (what == "editwin") { if (key.isNotEmpty()) openEdit (juce::Uuid (key.fromFirstOccurrenceOf (":", false, false))); }
+            else if (what == "takedisplay") ctx->showTakeDisplay();
+            else if (what == "organiser") ctx->showOrganiser();
+            else if (what == "media") openMedia();
+            else if (what == "mastering") ctx->showMastering();
             return;
         }
         if (what == "minimiseall") minimiseAllButMain();

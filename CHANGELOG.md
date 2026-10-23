@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.97.0
+- **Stream Deck: open / close keys** for the Edit window, Take Display, Display Organiser, Media and Mastering (new `openwin` command; the desk message tells which are open or minimised). Needs plug-in 1.7.0.
+
 ## 2.96.0
 - **Tab now goes on to the next input name after you type.** Naming the ASIO inputs one after another on the main window: typing a name and pressing Tab used to lose the focus (the rows were rebuilt when the name changed); now the next name box is selected, ready to type.
 - **Stream Deck: Mark 1, Mark 2, Align Spots, Search for bar, Trim Window, Markers, Feedback Markers, Slip Left, Slip Right** work on the take or edit window used last (new `wact` command; the desk message tells which are lit). Needs plug-in 1.6.0.

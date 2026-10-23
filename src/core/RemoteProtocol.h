@@ -12,7 +12,7 @@ namespace td::remote
         {"cmd":"bridge"} {"cmd":"pitchpipe"} {"cmd":"click"}   open / close that window
         {"cmd":"takewindow"}                                   minimise / bring back the take window used last
         {"cmd":"minimiseall"}                                  minimise every window but the main one (again: bring them back)
-        {"cmd":"armtoggle"}  {"cmd":"wavecolour"}  {"cmd":"loop"}  {"cmd":"wact","what":"mark1|mark2|align|search|trim|markers|feedback|slipl|slipr"}
+        {"cmd":"armtoggle"}  {"cmd":"wavecolour"}  {"cmd":"loop"}  {"cmd":"openwin","what":"editwin|takedisplay|organiser|media|mastering"}  {"cmd":"wact","what":"mark1|mark2|align|search|trim|markers|feedback|slipl|slipr"}
         {"cmd":"monitor","input":3}                            this input's tracks step E -> S -> S-L -> T
         {"cmd":"talkin","input":3}                             this input in / out of the talkback (control-room) mic
         {"cmd":"preamp","input":3,"what":"mic|v48|pol|lc|pad"} a preamp key of that input
@@ -70,6 +70,9 @@ struct State
 inline const char* const kWindowActs[] = { "mark1", "mark2", "align", "search", "trim", "markers", "feedback", "slipl", "slipr" };
 inline bool isWindowAct (const juce::String& w) { for (auto* k : kWindowActs) if (w == k) return true; return false; }
 
+/** The windows the Stream Deck opens and closes by name (state in desk.win, 0 not open, 1 shown, 3 minimised). */
+inline bool isOpenWin (const juce::String& w) { for (auto* k : { "editwin", "takedisplay", "organiser", "media", "mastering" }) if (w == k) return true; return false; }
+
 struct Command
 {
     juce::String name;                 // "record", "playpause", ... (see the list in parseCommand); empty = not understood
@@ -91,7 +94,7 @@ inline Command parseCommand (const juce::String& line)
     if (! v.isObject()) return c;
     const auto name = v["cmd"].toString().toLowerCase();
     static const char* known[] = { "record", "playpause", "talk", "playback", "mixer", "prerec", "hello",
-                                   "desk", "bridge", "pitchpipe", "click", "takewindow", "minimiseall", "armtoggle", "wavecolour", "loop", "wact",
+                                   "desk", "bridge", "pitchpipe", "click", "takewindow", "minimiseall", "armtoggle", "wavecolour", "loop", "wact", "openwin",
                                    "monitor", "talkin", "preamp", "gain", "pan", "mixout", "mixmute", "stage", "stagereset" };
     for (auto* k : known) if (name == k) c.name = name;
     c.down = (bool) v["down"];
