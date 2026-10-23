@@ -61,7 +61,7 @@ public:
         for (int i = 0; i < 2; ++i)
         {
             addChildComponent (*pages[(size_t) i]);
-            auto& t = tabs[i]; t.setButtonText (names[i]); t.setClickingTogglesState (true); t.setRadioGroupId (7311); t.setWantsKeyboardFocus (false);
+            auto& t = tabs[i]; t.setButtonText (names[i]); t.setClickingTogglesState (false); t.setWantsKeyboardFocus (false);
             t.setColour (juce::TextButton::buttonOnColourId, theme::accent);
             t.onClick = [this, i] { show (i); };
             addAndMakeVisible (t);
@@ -83,7 +83,7 @@ private:
     static constexpr int kHead = 34;
     void show (int i)
     {
-        cur = i; tabs[i].setToggleState (true, juce::dontSendNotification);
+        cur = i; for (int k = 0; k < 2; ++k) tabs[k].setToggleState (k == i, juce::dontSendNotification);          // (by hand: a radio group would run the click action of the tab it turns off, which switches back)
         for (int k = 0; k < 2; ++k) pages[(size_t) k]->setVisible (k == i);
         if (i == 0) pages[0]->grabKeyboardFocus();
     }
@@ -1713,7 +1713,7 @@ public:
         if (p.containsKey (prefKey ("multi"))) multiBtn.setToggleState (p.getBoolValue (prefKey ("multi")), juce::dontSendNotification);
         if (p.containsKey (prefKey ("link"))) linkBtn.setToggleState (p.getBoolValue (prefKey ("link")), juce::dontSendNotification);
         if (p.containsKey (prefKey ("roll"))) view.setRoll (p.getDoubleValue (prefKey ("roll")));
-        tab = juce::jlimit (0, (int) kTabCount - 1, p.getIntValue (prefKey ("tab"), kTabTouch)); tabBtn[tab].setToggleState (true, juce::dontSendNotification);
+        tab = juce::jlimit (0, (int) kTabCount - 1, p.getIntValue (prefKey ("tab"), kTabTouch)); lightTab();
         const int sc = scaleBox.getSelectedId();
         if (sc == 6) view.setMel(); else { static const double w[] = { 0.0, 0.25, 0.5, 0.75, 1.0 }; view.setScale (w[juce::jlimit (0, 4, sc - 1)]); }
     }
@@ -1741,11 +1741,10 @@ public:
     }
     // ---- the tools at the bottom: one tab for each tool (only one set of controls shows at a time, so the picture keeps the room), then the transport and the fixes ----
     enum { kTabTouch, kTabGain, kTabClick, kTabDenoise, kTabCount };
-    static constexpr int kRowH = 24, kRowGap = 4, kPanelPad = 6, kTabW = 84, kTabGap = 12, kCapGap = 12, kTransportH = 26;
+    static constexpr int kRowH = 24, kRowGap = 4, kPanelPad = 6, kTabW = 104, kTabGap = 12, kCapGap = 12, kTransportH = 26, kActionW = 116;      // (kActionW: the button that does the work, the same size and in the same place on every tab)
     static constexpr int sliderW = 140;                                           // a slider with its number: short on purpose
     static constexpr int kChoicesW = 184 + 8 + 180 + 8 + 96 + 8 + 132 + 8 + 112;                       // the five choices of ReTouch in a row
-    static constexpr int kAmountsW = (58 + sliderW) + kCapGap + (116 + sliderW) + kCapGap + (100 + sliderW) + 16 + 110;   // its three sliders and the button in a row
-    static constexpr int kClickW = 112 + 8 + sliderW + 16 + 110;                                      // De-click: the slider and the button in a row
+    static constexpr int kAmountsW = (58 + sliderW) + kCapGap + (116 + sliderW) + kCapGap + (100 + sliderW) + 16 + kActionW;   // its three sliders and the button in a row
     static constexpr int kListenW = 70 + 6 + 60 + 6 + 64 + 12 + 62 + 170, kBarMinW = 90, kFixesW = 120 + 8 + 70 + 8 + 176 + 8 + 96;
     int tab = kTabTouch;
     juce::TextButton tabBtn[kTabCount];
@@ -1753,7 +1752,6 @@ public:
     juce::Rectangle<int> panelR, contentR;                                       // the tool panel and the part of it that holds the controls (set by layoutBottom)
     /** ReTouch has two rows (the choices; the sliders and the button) and, where the window is narrow, one more for each that does not fit in a row. */
     static int reTouchRows (int w) { return (w >= kChoicesW ? 1 : 2) + (w >= kAmountsW ? 1 : 2); }
-    static int clickRows (int w) { return w >= kClickW ? 1 : 2; }
     static int transportRows (int w) { return w >= kListenW + 8 + kBarMinW + 16 + kFixesW ? 1 : 2; }
     static juce::Rectangle<int> rowOf (juce::Rectangle<int> inner, int row) { return { inner.getX(), inner.getY() + row * (kRowH + kRowGap), inner.getWidth(), kRowH }; }
     /** Puts a control at the left of the row (nothing if it is hidden: the ones after it move up to fill the space). */
@@ -1778,32 +1776,36 @@ public:
             default:          return { &amountCap, &amount, &residualCap, &residual, &roomBtn, &roomCap, &denoiseBtn };
         }
     }
+    /** Lights the tab that is showing and no other. (By hand, not with a radio group: JUCE's radio group runs the click action of the key it turns off, and that put ReTouch back on.) */
+    void lightTab() { for (int i = 0; i < kTabCount; ++i) tabBtn[i].setToggleState (i == tab, juce::dontSendNotification); }
     void selectTab (int t)
     {
-        t = juce::jlimit (0, (int) kTabCount - 1, t);
-        tab = t; tabBtn[t].setToggleState (true, juce::dontSendNotification);
+        tab = juce::jlimit (0, (int) kTabCount - 1, t);
+        lightTab();
         refreshControls();                                                       // (which also lays the controls out again)
     }
     void setupTabs()
     {
-        const char* names[] = { "ReTouch", "Gain", "De-click", "Denoise" };
+        const char* names[] = { "ReTouch [R]", "Gain [G]", "De-click [D]", "Denoise [N]" };
         const char* tips[] = { "ReTouch: rebuilds or turns down the box you drew from its surroundings (key R).", "Gain: makes the sound in the box louder or quieter (key G).",
                                "De-click: finds and mends clicks (key D).", "Denoise: takes the room noise out of the box (keys L and N)." };
         for (int i = 0; i < kTabCount; ++i)
         {
-            auto& t = tabBtn[i]; t.setButtonText (names[i]); t.setTooltip (tips[i]); t.setClickingTogglesState (true); t.setRadioGroupId (7312);
+            auto& t = tabBtn[i]; t.setButtonText (names[i]); t.setTooltip (tips[i]); t.setClickingTogglesState (false);
             t.setColour (juce::TextButton::buttonOnColourId, theme::accent);
             t.onClick = [this, i] { selectTab (i); };
             addAndMakeVisible (t);
         }
-        tabBtn[tab].setToggleState (true, juce::dontSendNotification);
-        gainHint.setText ("Makes the sound inside the box louder or quieter, from silence up to +18 dB, and nothing else. Draw a box and press Gain [G].", juce::dontSendNotification);
+        lightTab();
+        gainHint.setText ("Louder or quieter inside the box, from silence up to +18 dB, and nothing else. Draw a box, then press Gain [G].", juce::dontSendNotification);
         gainHint.setColour (juce::Label::textColourId, theme::dimText); gainHint.setMinimumHorizontalScale (0.8f);
         addAndMakeVisible (gainHint);
     }
     /** The controls of the tab that is showing, in the panel's content area. */
-    void placeTab (juce::Rectangle<int> in)
+    void placeTab (juce::Rectangle<int> in, int rows)
     {
+        auto lastRow = rowOf (in, rows - 1);                                     // the button that does the work is in the same place whichever tab shows: the bottom right corner of the panel
+        const auto action = lastRow.removeFromRight (kActionW);
         switch (tab)
         {
             case kTabTouch:
@@ -1816,7 +1818,7 @@ public:
                 r = rowOf (in, row++);
                 if (in.getWidth() >= kAmountsW)
                 {
-                    previewBtn.setBounds (r.removeFromRight (110)); r.removeFromRight (16);
+                    previewBtn.setBounds (action); r.removeFromRight (kActionW + 16);
                     putSlider (r, strengthCap, strength, 58); putSlider (r, surroundCap, surround, 116); putSlider (r, weightCap, weight, 100);
                 }
                 else                                                                                           // narrow: Before <-> After and the button go on a second row
@@ -1824,22 +1826,20 @@ public:
                     putSlider (r, strengthCap, strength, 58); putSlider (r, surroundCap, surround, 116);
                     r = rowOf (in, row++);
                     putSlider (r, weightCap, weight, 100);
-                    previewBtn.setBounds (r.removeFromRight (110));
+                    previewBtn.setBounds (action);
                 }
                 break;
             }
             case kTabGain:
             {
-                auto r = rowOf (in, 0);
-                gainBtn.setBounds (r.removeFromLeft (96)); r.removeFromLeft (12); gainHint.setBounds (r);
+                gainBtn.setBounds (action); gainHint.setBounds (rowOf (in, 0));
                 break;
             }
             case kTabClick:
             {
                 auto r = rowOf (in, 0);
                 sensCap.setBounds (r.removeFromLeft (112)); r.removeFromLeft (8); sens.setBounds (r.removeFromLeft (sliderW));
-                if (in.getWidth() >= kClickW) { r.removeFromLeft (16); declickBtn.setBounds (r.removeFromLeft (110)); }
-                else declickBtn.setBounds (rowOf (in, 1).removeFromLeft (110));
+                declickBtn.setBounds (action);
                 break;
             }
             default:
@@ -1847,7 +1847,7 @@ public:
                 auto r1 = rowOf (in, 0), r2 = rowOf (in, 1);
                 amountCap.setBounds (r1.removeFromLeft (62)); amount.setBounds (r1.removeFromLeft (sliderW)); r1.removeFromLeft (kCapGap);
                 residualCap.setBounds (r1.removeFromLeft (66)); residual.setBounds (r1.removeFromLeft (sliderW));
-                denoiseBtn.setBounds (r2.removeFromRight (110)); r2.removeFromRight (8);
+                denoiseBtn.setBounds (action); r2.removeFromRight (kActionW + 8);
                 roomBtn.setBounds (r2.removeFromLeft (190)); r2.removeFromLeft (8); roomCap.setBounds (r2);
                 break;
             }
@@ -1859,7 +1859,7 @@ public:
     {
         const int tabsW = 2 * kTabW + kRowGap;
         const int contentW = juce::jmax (100, area.getWidth() - 2 * kPanelPad - tabsW - kTabGap);
-        const int rows = juce::jmax (2, reTouchRows (contentW), clickRows (contentW));                  // (the same height whichever tab shows, so the picture does not jump)
+        const int rows = juce::jmax (2, reTouchRows (contentW));                  // (the same height whichever tab shows, so the picture does not jump)
         const int panelH = 2 * kPanelPad + rows * kRowH + (rows - 1) * kRowGap;
         const int trRows = transportRows (area.getWidth());
         const int total = panelH + trRows * (kRowGap + kTransportH);
@@ -1869,7 +1869,7 @@ public:
         auto tabsArea = inner.removeFromLeft (tabsW); inner.removeFromLeft (kTabGap);
         for (int i = 0; i < kTabCount; ++i) tabBtn[i].setBounds (tabsArea.getX() + (i % 2) * (kTabW + kRowGap), tabsArea.getY() + (i / 2) * (kRowH + kRowGap), kTabW, kRowH);
         contentR = inner;
-        placeTab (contentR);
+        placeTab (contentR, rows);
         auto placeFixes = [this] (juce::Rectangle<int> r)
         {
             close.setBounds (r.removeFromRight (96)); r.removeFromRight (8);
@@ -3900,11 +3900,10 @@ public:
     }
     // ---- the tools at the bottom: one tab for each tool (only one set of controls shows at a time, so the picture keeps the room), then the transport and the fixes ----
     enum { kTabTouch, kTabGain, kTabClick, kTabDenoise, kTabCount };
-    static constexpr int kRowH = 24, kRowGap = 4, kPanelPad = 6, kTabW = 84, kTabGap = 12, kCapGap = 12, kTransportH = 26;
+    static constexpr int kRowH = 24, kRowGap = 4, kPanelPad = 6, kTabW = 104, kTabGap = 12, kCapGap = 12, kTransportH = 26, kActionW = 116;      // (kActionW: the button that does the work, the same size and in the same place on every tab)
     static constexpr int sliderW = 140;                                           // a slider with its number: short on purpose
     static constexpr int kChoicesW = 184 + 8 + 180 + 8 + 96 + 8 + 132 + 8 + 112;                       // the five choices of ReTouch in a row
-    static constexpr int kAmountsW = (58 + sliderW) + kCapGap + (116 + sliderW) + kCapGap + (100 + sliderW) + 16 + 110;   // its three sliders and the button in a row
-    static constexpr int kClickW = 112 + 8 + sliderW + 16 + 110;                                      // De-click: the slider and the button in a row
+    static constexpr int kAmountsW = (58 + sliderW) + kCapGap + (116 + sliderW) + kCapGap + (100 + sliderW) + 16 + kActionW;   // its three sliders and the button in a row
     static constexpr int kBarMinW = 90, kFixesW = 90 + 8 + 150 + 8 + 150;
     int tab = kTabTouch;
     juce::TextButton tabBtn[kTabCount];
@@ -3912,7 +3911,6 @@ public:
     juce::Rectangle<int> panelR, contentR;                                       // the tool panel and the part of it that holds the controls (set by layoutBottom)
     /** ReTouch has two rows (the choices; the sliders and the button) and, where the window is narrow, one more for each that does not fit in a row. */
     static int reTouchRows (int w) { return (w >= kChoicesW ? 1 : 2) + (w >= kAmountsW ? 1 : 2); }
-    static int clickRows (int w) { return w >= kClickW ? 1 : 2; }
     int listenW() const { return 5 * 34 + 4 * 2 + 6 + 64 + 8 + clock.getIdealWidth (28) + 4; }                // the transport: five buttons, Loop and the clock
     int transportRows (int w) const { return w >= listenW() + 8 + kBarMinW + 16 + kFixesW ? 1 : 2; }
     static juce::Rectangle<int> rowOf (juce::Rectangle<int> inner, int row) { return { inner.getX(), inner.getY() + row * (kRowH + kRowGap), inner.getWidth(), kRowH }; }
@@ -3938,32 +3936,36 @@ public:
             default:          return { &amountCap, &amount, &residualCap, &residual, &learnBtn, &roomCap, &denoiseBtn };
         }
     }
+    /** Lights the tab that is showing and no other. (By hand, not with a radio group: JUCE's radio group runs the click action of the key it turns off, and that put ReTouch back on.) */
+    void lightTab() { for (int i = 0; i < kTabCount; ++i) tabBtn[i].setToggleState (i == tab, juce::dontSendNotification); }
     void selectTab (int t)
     {
-        t = juce::jlimit (0, (int) kTabCount - 1, t);
-        tab = t; tabBtn[t].setToggleState (true, juce::dontSendNotification);
+        tab = juce::jlimit (0, (int) kTabCount - 1, t);
+        lightTab();
         refreshControls();                                                       // (which also lays the controls out again)
     }
     void setupTabs()
     {
-        const char* names[] = { "ReTouch", "Gain", "De-click", "Denoise" };
+        const char* names[] = { "ReTouch [R]", "Gain [G]", "De-click [D]", "Denoise [N]" };
         const char* tips[] = { "ReTouch: rebuilds or turns down the box you drew from its surroundings (key R).", "Gain: makes the sound in the box louder or quieter (key G).",
                                "De-click: finds and mends clicks (key D).", "Denoise: takes the room noise out of the box (keys L and N)." };
         for (int i = 0; i < kTabCount; ++i)
         {
-            auto& t = tabBtn[i]; t.setButtonText (names[i]); t.setTooltip (tips[i]); t.setClickingTogglesState (true); t.setRadioGroupId (7313);
+            auto& t = tabBtn[i]; t.setButtonText (names[i]); t.setTooltip (tips[i]); t.setClickingTogglesState (false);
             t.setColour (juce::TextButton::buttonOnColourId, theme::accent);
             t.onClick = [this, i] { selectTab (i); };
             addAndMakeVisible (t);
         }
-        tabBtn[tab].setToggleState (true, juce::dontSendNotification);
-        gainHint.setText ("Makes the sound inside the box louder or quieter, from silence up to +18 dB, and nothing else. Draw a box and press Gain [G].", juce::dontSendNotification);
+        lightTab();
+        gainHint.setText ("Louder or quieter inside the box, from silence up to +18 dB, and nothing else. Draw a box, then press Gain [G].", juce::dontSendNotification);
         gainHint.setColour (juce::Label::textColourId, theme::dimText); gainHint.setMinimumHorizontalScale (0.8f);
         addAndMakeVisible (gainHint);
     }
     /** The controls of the tab that is showing, in the panel's content area. */
-    void placeTab (juce::Rectangle<int> in)
+    void placeTab (juce::Rectangle<int> in, int rows)
     {
+        auto lastRow = rowOf (in, rows - 1);                                     // the button that does the work is in the same place whichever tab shows: the bottom right corner of the panel
+        const auto action = lastRow.removeFromRight (kActionW);
         switch (tab)
         {
             case kTabTouch:
@@ -3976,7 +3978,7 @@ public:
                 r = rowOf (in, row++);
                 if (in.getWidth() >= kAmountsW)
                 {
-                    retouchBtn.setBounds (r.removeFromRight (110)); r.removeFromRight (16);
+                    retouchBtn.setBounds (action); r.removeFromRight (kActionW + 16);
                     putSlider (r, strengthCap, strength, 58); putSlider (r, surroundCap, surround, 116); putSlider (r, weightCap, weight, 100);
                 }
                 else                                                                                           // narrow: Before <-> After and the button go on a second row
@@ -3984,22 +3986,20 @@ public:
                     putSlider (r, strengthCap, strength, 58); putSlider (r, surroundCap, surround, 116);
                     r = rowOf (in, row++);
                     putSlider (r, weightCap, weight, 100);
-                    retouchBtn.setBounds (r.removeFromRight (110));
+                    retouchBtn.setBounds (action);
                 }
                 break;
             }
             case kTabGain:
             {
-                auto r = rowOf (in, 0);
-                gainBtn.setBounds (r.removeFromLeft (96)); r.removeFromLeft (12); gainHint.setBounds (r);
+                gainBtn.setBounds (action); gainHint.setBounds (rowOf (in, 0));
                 break;
             }
             case kTabClick:
             {
                 auto r = rowOf (in, 0);
                 sensCap.setBounds (r.removeFromLeft (112)); r.removeFromLeft (8); sens.setBounds (r.removeFromLeft (sliderW));
-                if (in.getWidth() >= kClickW) { r.removeFromLeft (16); declickBtn.setBounds (r.removeFromLeft (110)); }
-                else declickBtn.setBounds (rowOf (in, 1).removeFromLeft (110));
+                declickBtn.setBounds (action);
                 break;
             }
             default:
@@ -4007,7 +4007,7 @@ public:
                 auto r1 = rowOf (in, 0), r2 = rowOf (in, 1);
                 amountCap.setBounds (r1.removeFromLeft (62)); amount.setBounds (r1.removeFromLeft (sliderW)); r1.removeFromLeft (kCapGap);
                 residualCap.setBounds (r1.removeFromLeft (66)); residual.setBounds (r1.removeFromLeft (sliderW));
-                denoiseBtn.setBounds (r2.removeFromRight (110)); r2.removeFromRight (8);
+                denoiseBtn.setBounds (action); r2.removeFromRight (kActionW + 8);
                 learnBtn.setBounds (r2.removeFromLeft (190)); r2.removeFromLeft (8); roomCap.setBounds (r2);
                 break;
             }
@@ -4019,7 +4019,7 @@ public:
     {
         const int tabsW = 2 * kTabW + kRowGap;
         const int contentW = juce::jmax (100, area.getWidth() - 2 * kPanelPad - tabsW - kTabGap);
-        const int rows = juce::jmax (2, reTouchRows (contentW), clickRows (contentW));                  // (the same height whichever tab shows, so the picture does not jump)
+        const int rows = juce::jmax (2, reTouchRows (contentW));                  // (the same height whichever tab shows, so the picture does not jump)
         const int panelH = 2 * kPanelPad + rows * kRowH + (rows - 1) * kRowGap;
         const int trRows = transportRows (area.getWidth());
         const int total = panelH + trRows * (kRowGap + kTransportH);
@@ -4029,7 +4029,7 @@ public:
         auto tabsArea = inner.removeFromLeft (tabsW); inner.removeFromLeft (kTabGap);
         for (int i = 0; i < kTabCount; ++i) tabBtn[i].setBounds (tabsArea.getX() + (i % 2) * (kTabW + kRowGap), tabsArea.getY() + (i / 2) * (kRowH + kRowGap), kTabW, kRowH);
         contentR = inner;
-        placeTab (contentR);
+        placeTab (contentR, rows);
         auto placeFixes = [this] (juce::Rectangle<int> r)
         {
             doneBtn.setBounds (r.removeFromRight (150)); r.removeFromRight (8);
@@ -4106,7 +4106,7 @@ private:
         auto id = [&] (const char* k, juce::ComboBox& b) { const auto key = prefKey (k); if (p.containsKey (key) && b.indexOfItemId (p.getIntValue (key)) >= 0) b.setSelectedId (p.getIntValue (key), juce::dontSendNotification); };
         num ("sens", sens); num ("strength", strength); num ("surround", surround); num ("weight", weight); num ("amount", amount); num ("residual", residual);
         id ("method", methodBox); id ("bands", bandsBox); id ("dir", dirBox); id ("scale", scaleBox);
-        tab = juce::jlimit (0, (int) kTabCount - 1, p.getIntValue (prefKey ("tab"), kTabTouch)); tabBtn[tab].setToggleState (true, juce::dontSendNotification);
+        tab = juce::jlimit (0, (int) kTabCount - 1, p.getIntValue (prefKey ("tab"), kTabTouch)); lightTab();
         if (p.containsKey (prefKey ("multi"))) multiBtn.setToggleState (p.getBoolValue (prefKey ("multi")), juce::dontSendNotification);
         if (p.containsKey (prefKey ("link"))) linkBtn.setToggleState (p.getBoolValue (prefKey ("link")), juce::dontSendNotification);
         if (p.containsKey (prefKey ("roll"))) view.setRoll (p.getDoubleValue (prefKey ("roll")));
