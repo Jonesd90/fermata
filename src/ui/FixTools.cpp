@@ -1566,16 +1566,16 @@ public:
         info.setColour (juce::Label::textColourId, theme::text);
         modeBox.addItem ("Spectral repair of the selected box", 1); modeBox.addItem ("Declick: find and mend clicks in the selected time span", 2);
         modeBox.setSelectedId (declickOnly ? 2 : 1, juce::dontSendNotification);          // this window does one thing only; the box stays hidden
-        dirBox.addItem ("Horizontal (the sound before / after)", 1); dirBox.addItem ("Vertical (the pitches above / below)", 2); dirBox.addItem ("2D (both)", 3);
+        dirBox.addItem ("Direction: Horizontal", 1); dirBox.addItem ("Direction: Vertical", 2); dirBox.addItem ("Direction: 2D (both)", 3);
         dirBox.setSelectedId (1, juce::dontSendNotification); dirBox.onChange = [this] { refreshControls(); invalidate(); };
         dirBox.setTooltip ("Where the repair finds its material. Left and right suits steady sounds (hum, a held note). Up and down suits short bursts (a click, a cough) with music above and below. Both blends the two.");
         auto cap = [this] (juce::Label& l, const juce::String& t) { l.setText (t, juce::dontSendNotification); l.setColour (juce::Label::textColourId, theme::text); addAndMakeVisible (l); };
-        cap (sensCap, "Click sensitivity"); cap (strengthCap, "Strength"); cap (dirCap, "Direction"); cap (surroundCap, "Surrounding length"); cap (weightCap, "Before  <->  After");
-        cap (amountCap, "Denoise:  Amount"); cap (residualCap, "Residual"); cap (roomCap, "");
+        cap (sensCap, "Click sensitivity"); cap (strengthCap, "Strength"); cap (surroundCap, "Surrounding length"); cap (weightCap, "Before <-> After");
+        cap (amountCap, "Amount"); cap (residualCap, "Residual"); cap (roomCap, "");
         auto slider = [this] (juce::Slider& sl, double lo, double hi, double step, double v, const juce::String& suffix)
         {
             sl.setSliderStyle (juce::Slider::LinearHorizontal); sl.setRange (lo, hi, step); sl.setValue (v, juce::dontSendNotification); sl.setScrollWheelEnabled (false);
-            sl.setTextBoxStyle (juce::Slider::TextBoxRight, false, 62, 22); sl.setTextValueSuffix (suffix);
+            sl.setTextBoxStyle (juce::Slider::TextBoxRight, false, 54, 22); sl.setTextValueSuffix (suffix);
             sl.onValueChange = [this] { updateSurround(); invalidate(); };
             addAndMakeVisible (sl);
         };
@@ -1595,8 +1595,8 @@ public:
         surround.setTooltip ("How much of the sound around the box is used, as a percentage of the box: its length in time (left and right) and its height in pitch (up and down).");
         weight.setTooltip ("0 uses only the sound before the box, 100 only the sound after it, 50 uses both equally (a cross-fade). Applies to left and right.\n"
                            "Attenuate a stray consonant: leave it at 50 and Fermata finds, for every track, the side away from the main consonant; move it to choose a side yourself.");
-        methodBox.addItem ("Attenuate (turns the noise down to match its surroundings)", 1); methodBox.addItem ("Replace (rebuilds the box from the surroundings)", 2);
-        methodBox.addItem ("Attenuate a stray consonant (an early / late s, sh, t, d)", 3);
+        methodBox.addItem ("Method: Attenuate", 1); methodBox.addItem ("Method: Replace", 2);
+        methodBox.addItem ("Method: Stray consonant", 3);
         methodBox.setSelectedId (1, juce::dontSendNotification);
         methodBox.setTooltip ("Attenuate keeps the music that is under the noise and only turns down what sticks out above the surrounding sound: the best for a click, a pencil drop or a cough over a held note. Replace throws the box away and builds new sound from the surroundings: for gaps and loud, wide damage.\n\n"
                                "Attenuate a stray consonant: for tidying a doubled or messy consonant to one. Draw the box round the EARLY or LATE copy only (from where the stray one starts up to where the main one starts, "
@@ -1661,6 +1661,7 @@ public:
         revertBtn.setTooltip ("Takes the last fix off again. Press it again to take off the one before.");
         compareBtn.setTooltip ("Switches the picture between the original and the repaired sound.");
         view.onSelection = [this] { refreshControls(); invalidate(); };
+        setupTabs();
         loadControls();
         refreshControls();
         close.setButtonText ("Cancel");
@@ -1712,6 +1713,7 @@ public:
         if (p.containsKey (prefKey ("multi"))) multiBtn.setToggleState (p.getBoolValue (prefKey ("multi")), juce::dontSendNotification);
         if (p.containsKey (prefKey ("link"))) linkBtn.setToggleState (p.getBoolValue (prefKey ("link")), juce::dontSendNotification);
         if (p.containsKey (prefKey ("roll"))) view.setRoll (p.getDoubleValue (prefKey ("roll")));
+        tab = juce::jlimit (0, (int) kTabCount - 1, p.getIntValue (prefKey ("tab"), kTabTouch)); tabBtn[tab].setToggleState (true, juce::dontSendNotification);
         const int sc = scaleBox.getSelectedId();
         if (sc == 6) view.setMel(); else { static const double w[] = { 0.0, 0.25, 0.5, 0.75, 1.0 }; view.setScale (w[juce::jlimit (0, 4, sc - 1)]); }
     }
@@ -1722,7 +1724,7 @@ public:
         p.setValue (prefKey ("amount"), amount.getValue()); p.setValue (prefKey ("residual"), residual.getValue());
         p.setValue (prefKey ("method"), methodBox.getSelectedId()); p.setValue (prefKey ("bands"), bandsBox.getSelectedId()); p.setValue (prefKey ("dir"), dirBox.getSelectedId());
         p.setValue (prefKey ("scale"), scaleBox.getSelectedId()); p.setValue (prefKey ("detail"), detailBox.getSelectedId());
-        p.setValue (prefKey ("multi"), multiBtn.getToggleState()); p.setValue (prefKey ("link"), linkBtn.getToggleState()); p.setValue (prefKey ("roll"), view.rollValue());
+        p.setValue (prefKey ("multi"), multiBtn.getToggleState()); p.setValue (prefKey ("link"), linkBtn.getToggleState()); p.setValue (prefKey ("roll"), view.rollValue()); p.setValue (prefKey ("tab"), tab);
     }
     ~RepairDialog() override
     {
@@ -1737,45 +1739,176 @@ public:
         }
         if (ctx.hold) ctx.hold (false);
     }
+    // ---- the tools at the bottom: one tab for each tool (only one set of controls shows at a time, so the picture keeps the room), then the transport and the fixes ----
+    enum { kTabTouch, kTabGain, kTabClick, kTabDenoise, kTabCount };
+    static constexpr int kRowH = 24, kRowGap = 4, kPanelPad = 6, kTabW = 84, kTabGap = 12, kCapGap = 12, kTransportH = 26;
+    static constexpr int sliderW = 140;                                           // a slider with its number: short on purpose
+    static constexpr int kChoicesW = 184 + 8 + 180 + 8 + 96 + 8 + 132 + 8 + 112;                       // the five choices of ReTouch in a row
+    static constexpr int kAmountsW = (58 + sliderW) + kCapGap + (116 + sliderW) + kCapGap + (100 + sliderW) + 16 + 110;   // its three sliders and the button in a row
+    static constexpr int kClickW = 112 + 8 + sliderW + 16 + 110;                                      // De-click: the slider and the button in a row
+    static constexpr int kListenW = 70 + 6 + 60 + 6 + 64 + 12 + 62 + 170, kBarMinW = 90, kFixesW = 120 + 8 + 70 + 8 + 176 + 8 + 96;
+    int tab = kTabTouch;
+    juce::TextButton tabBtn[kTabCount];
+    juce::Label gainHint;
+    juce::Rectangle<int> panelR, contentR;                                       // the tool panel and the part of it that holds the controls (set by layoutBottom)
+    /** ReTouch has two rows (the choices; the sliders and the button) and, where the window is narrow, one more for each that does not fit in a row. */
+    static int reTouchRows (int w) { return (w >= kChoicesW ? 1 : 2) + (w >= kAmountsW ? 1 : 2); }
+    static int clickRows (int w) { return w >= kClickW ? 1 : 2; }
+    static int transportRows (int w) { return w >= kListenW + 8 + kBarMinW + 16 + kFixesW ? 1 : 2; }
+    static juce::Rectangle<int> rowOf (juce::Rectangle<int> inner, int row) { return { inner.getX(), inner.getY() + row * (kRowH + kRowGap), inner.getWidth(), kRowH }; }
+    /** Puts a control at the left of the row (nothing if it is hidden: the ones after it move up to fill the space). */
+    static void putLeft (juce::Rectangle<int>& row, juce::Component& c, int w, int gap = 8)
+    {
+        if (! c.isVisible()) return;
+        c.setBounds (row.removeFromLeft (w)); row.removeFromLeft (gap);
+    }
+    /** A caption and the slider after it. */
+    static void putSlider (juce::Rectangle<int>& row, juce::Label& cap, juce::Slider& sl, int capW)
+    {
+        if (! sl.isVisible()) { cap.setBounds ({}); return; }
+        cap.setBounds (row.removeFromLeft (capW)); sl.setBounds (row.removeFromLeft (sliderW)); row.removeFromLeft (kCapGap);
+    }
+    std::vector<juce::Component*> tabControls (int t)
+    {
+        switch (t)
+        {
+            case kTabTouch:   return { &methodBox, &dirBox, &bandsBox, &multiBtn, &linkBtn, &strengthCap, &strength, &surroundCap, &surround, &weightCap, &weight, &previewBtn };
+            case kTabGain:    return { &gainBtn, &gainHint };
+            case kTabClick:   return { &sensCap, &sens, &declickBtn };
+            default:          return { &amountCap, &amount, &residualCap, &residual, &roomBtn, &roomCap, &denoiseBtn };
+        }
+    }
+    void selectTab (int t)
+    {
+        t = juce::jlimit (0, (int) kTabCount - 1, t);
+        tab = t; tabBtn[t].setToggleState (true, juce::dontSendNotification);
+        refreshControls();                                                       // (which also lays the controls out again)
+    }
+    void setupTabs()
+    {
+        const char* names[] = { "ReTouch", "Gain", "De-click", "Denoise" };
+        const char* tips[] = { "ReTouch: rebuilds or turns down the box you drew from its surroundings (key R).", "Gain: makes the sound in the box louder or quieter (key G).",
+                               "De-click: finds and mends clicks (key D).", "Denoise: takes the room noise out of the box (keys L and N)." };
+        for (int i = 0; i < kTabCount; ++i)
+        {
+            auto& t = tabBtn[i]; t.setButtonText (names[i]); t.setTooltip (tips[i]); t.setClickingTogglesState (true); t.setRadioGroupId (7312);
+            t.setColour (juce::TextButton::buttonOnColourId, theme::accent);
+            t.onClick = [this, i] { selectTab (i); };
+            addAndMakeVisible (t);
+        }
+        tabBtn[tab].setToggleState (true, juce::dontSendNotification);
+        gainHint.setText ("Makes the sound inside the box louder or quieter, from silence up to +18 dB, and nothing else. Draw a box and press Gain [G].", juce::dontSendNotification);
+        gainHint.setColour (juce::Label::textColourId, theme::dimText); gainHint.setMinimumHorizontalScale (0.8f);
+        addAndMakeVisible (gainHint);
+    }
+    /** The controls of the tab that is showing, in the panel's content area. */
+    void placeTab (juce::Rectangle<int> in)
+    {
+        switch (tab)
+        {
+            case kTabTouch:
+            {   // first row what to do and how, then how much, and the button that does it
+                int row = 0;
+                auto r = rowOf (in, row++);
+                putLeft (r, methodBox, 184); putLeft (r, dirBox, 180); putLeft (r, bandsBox, 96);
+                if (in.getWidth() < kChoicesW) r = rowOf (in, row++);                                        // narrow: the two ticks on a row of their own
+                putLeft (r, multiBtn, 132); putLeft (r, linkBtn, 112);
+                r = rowOf (in, row++);
+                if (in.getWidth() >= kAmountsW)
+                {
+                    previewBtn.setBounds (r.removeFromRight (110)); r.removeFromRight (16);
+                    putSlider (r, strengthCap, strength, 58); putSlider (r, surroundCap, surround, 116); putSlider (r, weightCap, weight, 100);
+                }
+                else                                                                                           // narrow: Before <-> After and the button go on a second row
+                {
+                    putSlider (r, strengthCap, strength, 58); putSlider (r, surroundCap, surround, 116);
+                    r = rowOf (in, row++);
+                    putSlider (r, weightCap, weight, 100);
+                    previewBtn.setBounds (r.removeFromRight (110));
+                }
+                break;
+            }
+            case kTabGain:
+            {
+                auto r = rowOf (in, 0);
+                gainBtn.setBounds (r.removeFromLeft (96)); r.removeFromLeft (12); gainHint.setBounds (r);
+                break;
+            }
+            case kTabClick:
+            {
+                auto r = rowOf (in, 0);
+                sensCap.setBounds (r.removeFromLeft (112)); r.removeFromLeft (8); sens.setBounds (r.removeFromLeft (sliderW));
+                if (in.getWidth() >= kClickW) { r.removeFromLeft (16); declickBtn.setBounds (r.removeFromLeft (110)); }
+                else declickBtn.setBounds (rowOf (in, 1).removeFromLeft (110));
+                break;
+            }
+            default:
+            {
+                auto r1 = rowOf (in, 0), r2 = rowOf (in, 1);
+                amountCap.setBounds (r1.removeFromLeft (62)); amount.setBounds (r1.removeFromLeft (sliderW)); r1.removeFromLeft (kCapGap);
+                residualCap.setBounds (r1.removeFromLeft (66)); residual.setBounds (r1.removeFromLeft (sliderW));
+                denoiseBtn.setBounds (r2.removeFromRight (110)); r2.removeFromRight (8);
+                roomBtn.setBounds (r2.removeFromLeft (190)); r2.removeFromLeft (8); roomCap.setBounds (r2);
+                break;
+            }
+        }
+    }
+    /** The tool panel (the tabs in two columns on the left, the controls of the chosen one beside them) and under it the transport and the fixes.
+        Returns the height they need at this width (place = false only measures). */
+    int layoutBottom (juce::Rectangle<int> area, bool place)
+    {
+        const int tabsW = 2 * kTabW + kRowGap;
+        const int contentW = juce::jmax (100, area.getWidth() - 2 * kPanelPad - tabsW - kTabGap);
+        const int rows = juce::jmax (2, reTouchRows (contentW), clickRows (contentW));                  // (the same height whichever tab shows, so the picture does not jump)
+        const int panelH = 2 * kPanelPad + rows * kRowH + (rows - 1) * kRowGap;
+        const int trRows = transportRows (area.getWidth());
+        const int total = panelH + trRows * (kRowGap + kTransportH);
+        if (! place) return total;
+        panelR = { area.getX(), area.getY(), area.getWidth(), panelH };
+        auto inner = panelR.reduced (kPanelPad);
+        auto tabsArea = inner.removeFromLeft (tabsW); inner.removeFromLeft (kTabGap);
+        for (int i = 0; i < kTabCount; ++i) tabBtn[i].setBounds (tabsArea.getX() + (i % 2) * (kTabW + kRowGap), tabsArea.getY() + (i / 2) * (kRowH + kRowGap), kTabW, kRowH);
+        contentR = inner;
+        placeTab (contentR);
+        auto placeFixes = [this] (juce::Rectangle<int> r)
+        {
+            close.setBounds (r.removeFromRight (96)); r.removeFromRight (8);
+            finishBtn.setBounds (r.removeFromRight (176)); r.removeFromRight (8);
+            revertBtn.setBounds (r.removeFromRight (70)); r.removeFromRight (8);
+            compareBtn.setBounds (r.removeFromRight (120));
+        };
+        auto row = juce::Rectangle<int> (area.getX(), panelR.getBottom() + kRowGap, area.getWidth(), kTransportH);
+        if (trRows == 1) placeFixes (row.removeFromRight (kFixesW));
+        playBtn.setBounds (row.removeFromLeft (70)); row.removeFromLeft (6);
+        stopBtn.setBounds (row.removeFromLeft (60)); row.removeFromLeft (6);
+        loopBtn.setBounds (row.removeFromLeft (64)); row.removeFromLeft (12);
+        hearCap.setBounds (row.removeFromLeft (62)); hearBox.setBounds (row.removeFromLeft (170)); row.removeFromLeft (8);
+        bar.setBounds (row.withTrimmedRight (trRows == 1 ? 16 : 0).reduced (0, 3));                      // (the progress bar of a scan or a fix, shown only while it runs)
+        if (trRows == 2) placeFixes ({ area.getX(), row.getBottom() + kRowGap, area.getWidth(), kTransportH });
+        return total;
+    }
+    void paint (juce::Graphics& g) override
+    {
+        if (panelR.isEmpty()) return;
+        const auto b = panelR.toFloat().reduced (0.5f);
+        g.setColour (juce::Colours::black.withAlpha (0.16f)); g.fillRoundedRectangle (b, 5.0f);
+        const auto line = theme::manuscript() ? theme::giltDim() : theme::border.brighter (0.25f);
+        g.setColour (line); g.drawRoundedRectangle (b, 5.0f, 1.0f);
+        const float dx = (float) contentR.getX() - (float) kTabGap * 0.5f;
+        g.setColour (line.withAlpha (0.7f)); g.drawLine (dx, b.getY() + 5.0f, dx, b.getBottom() - 5.0f, 1.0f);
+    }
     void resized() override
     {
         auto r = getLocalBounds().reduced (10);
         intro.placeTopRight (*this, 6);                                          // the explanation is behind the blue i
-        auto rowC = r.removeFromBottom (32);
+        const int bottomH = layoutBottom (r, false);                             // how high the tools need to be at this width
+        auto bottom = r.removeFromBottom (bottomH);
+        layoutBottom (bottom, true);
         r.removeFromBottom (4);
-        auto rowT = r.removeFromBottom (30);                                     // the transport: Play / Stop / Loop, which sound, and the progress bar
-        r.removeFromBottom (4);
-        auto rowD = r.removeFromBottom (28);
-        auto rowB = r.removeFromBottom (28);
-        auto rowA = r.removeFromBottom (28);
-        r.removeFromBottom (4);
-        close.setBounds (rowC.removeFromRight (90)); rowC.removeFromRight (8);
-        finishBtn.setBounds (rowC.removeFromRight (170)); rowC.removeFromRight (8);
-        revertBtn.setBounds (rowC.removeFromRight (90)); rowC.removeFromRight (8);
-        compareBtn.setBounds (rowC.removeFromRight (150)); rowC.removeFromRight (8);
-        denoiseBtn.setBounds (rowC.removeFromRight (110)); rowC.removeFromRight (8);
-        previewBtn.setBounds (rowC.removeFromRight (110)); rowC.removeFromRight (8);
-        gainBtn.setBounds (rowC.removeFromRight (90)); rowC.removeFromRight (8);
-        declickBtn.setBounds (rowC.removeFromRight (110)); rowC.removeFromRight (14);
-        sensCap.setBounds (rowC.removeFromLeft (110)); sens.setBounds (rowC);
-        amountCap.setBounds (rowD.removeFromLeft (120)); amount.setBounds (rowD.removeFromLeft (200)); rowD.removeFromLeft (8);
-        residualCap.setBounds (rowD.removeFromLeft (60)); residual.setBounds (rowD.removeFromLeft (200)); rowD.removeFromLeft (10);
-        roomBtn.setBounds (rowD.removeFromLeft (190)); rowD.removeFromLeft (8); roomCap.setBounds (rowD);
-        playBtn.setBounds (rowT.removeFromLeft (90)); rowT.removeFromLeft (6);
-        stopBtn.setBounds (rowT.removeFromLeft (70)); rowT.removeFromLeft (8);
-        loopBtn.setBounds (rowT.removeFromLeft (70)); rowT.removeFromLeft (14);
-        hearCap.setBounds (rowT.removeFromLeft (70)); hearBox.setBounds (rowT.removeFromLeft (210)); rowT.removeFromLeft (14);
-        bar.setBounds (rowT.reduced (0, 4));
-        methodBox.setBounds (rowA.removeFromLeft (390)); rowA.removeFromLeft (8);
-        dirCap.setBounds (rowA.removeFromLeft (58)); dirBox.setBounds (rowA.removeFromLeft (230)); rowA.removeFromLeft (10);
-        strengthCap.setBounds (rowA.removeFromLeft (56)); strength.setBounds (rowA);
-        // second row: patch: surrounding length and before / after;  declick: the sensitivity
-        bandsBox.setBounds (rowB.removeFromLeft (110)); rowB.removeFromLeft (6); multiBtn.setBounds (rowB.removeFromLeft (140)); rowB.removeFromLeft (4); linkBtn.setBounds (rowB.removeFromLeft (150)); rowB.removeFromLeft (8);
-        surroundCap.setBounds (rowB.removeFromLeft (112)); surround.setBounds (rowB.removeFromLeft (170)); rowB.removeFromLeft (8);
-        weightCap.setBounds (rowB.removeFromLeft (92)); weight.setBounds (rowB);
         status.setBounds (r.removeFromBottom (22).reduced (2, 0));
         { auto ir = r.removeFromBottom (22); specBtn.setBounds (ir.removeFromRight (150)); ir.removeFromRight (6); scaleBox.setBounds (ir.removeFromRight (300)); ir.removeFromRight (6); detailBox.setBounds (ir.removeFromRight (210)); info.setBounds (ir.reduced (2, 0)); }
         view.setBounds (r);
+        repaint (bottom.expanded (2));
     }
 protected:
     bool keyPressed (const juce::KeyPress& k) override
@@ -1788,26 +1921,31 @@ protected:
         }
         if ((k.getTextCharacter() == 'r' || k.getTextCharacter() == 'R') && ! k.getModifiers().isAnyModifierKeyDown())      // R: do the fix with the settings as they are
         {
+            selectTab (kTabTouch);
             if (previewBtn.isEnabled()) preview (0);
             return true;
         }
         if ((k.getTextCharacter() == 'n' || k.getTextCharacter() == 'N') && ! k.getModifiers().isAnyModifierKeyDown())      // N: denoise the box
         {
+            selectTab (kTabDenoise);
             if (denoiseBtn.isEnabled()) preview (2);
             return true;
         }
         if ((k.getTextCharacter() == 'l' || k.getTextCharacter() == 'L') && ! k.getModifiers().isAnyModifierKeyDown())      // L: this box is the room tone
         {
+            selectTab (kTabDenoise);
             if (roomBtn.isEnabled()) roomFromBox();
             return true;
         }
         if ((k.getTextCharacter() == 'g' || k.getTextCharacter() == 'G') && ! k.getModifiers().isAnyModifierKeyDown())      // G: change the gain of the box
         {
+            selectTab (kTabGain);
             if (gainBtn.isEnabled()) openGain();
             return true;
         }
         if ((k.getTextCharacter() == 'd' || k.getTextCharacter() == 'D') && ! k.getModifiers().isAnyModifierKeyDown())
         {
+            selectTab (kTabClick);
             if (declickBtn.isEnabled()) preview (1);
             return true;
         }
@@ -1818,6 +1956,13 @@ private:
     bool patchMode() const { return true; }
     /** The room tone Denoise uses: a box of this picture marked with L (its time span; the whole spectrum of it), else the project's. */
     bool haveRoomTone() const { if (rtBoxT1 > rtBoxT0) return true; for (auto& p : ctx.roomMono) if (p.valid()) return true; return false; }
+    /** The same in a few words, for the little caption in the Denoise box (the full sentence is its tooltip). */
+    juce::String roomShortText() const
+    {
+        if (rtBoxT1 > rtBoxT0) return "Room tone: box at " + juce::String (rtBoxT0, 2) + " - " + juce::String (rtBoxT1, 2) + " s";
+        if (ctx.roomSource.isNotEmpty()) return "Room tone: the project's";
+        return "Room tone: none yet";
+    }
     juce::String roomText() const
     {
         if (rtBoxT1 > rtBoxT0) return "Room tone: the box at " + juce::String (rtBoxT0, 2) + " - " + juce::String (rtBoxT1, 2) + " s of this picture";
@@ -1926,16 +2071,18 @@ private:
     }
     void refreshControls()
     {
+        for (auto* c : tabControls (tab)) c->setVisible (true);                    // (the rules below hide what the chosen method does not use)
         const bool p = patchMode();
         updateSurround();
         const bool cons = consonantMethod();
         const bool att = p && (methodBox.getSelectedId() == 1 || cons);
         for (auto* c : std::initializer_list<juce::Component*> { &strength, &strengthCap, &methodBox }) c->setVisible (p);
-        for (auto* c : std::initializer_list<juce::Component*> { &dirBox, &dirCap, &surround, &surroundCap }) c->setVisible (p && ! cons);      // a stray consonant: always the sound before / after, its own search length
-        weightCap.setText (cons ? "Before <-> After (50 = auto)" : "Before  <->  After", juce::dontSendNotification);
+        for (auto* c : std::initializer_list<juce::Component*> { &dirBox, &surround, &surroundCap }) c->setVisible (p && ! cons);      // a stray consonant: always the sound before / after, its own search length
+        weightCap.setText (cons ? "Side (50 = auto)" : "Before <-> After", juce::dontSendNotification);
         bandsBox.setVisible (att); multiBtn.setVisible (att); linkBtn.setVisible (att);
         weight.setVisible (p && lookingAcross()); weightCap.setVisible (p && lookingAcross());
         sens.setVisible (true); sensCap.setVisible (true);
+        for (int t = 0; t < kTabCount; ++t) if (t != tab) for (auto* c : tabControls (t)) c->setVisible (false);      // only the tab that is showing
         if (view.hasSelection())
             info.setText ("Selected: " + juce::String (view.selT0(), 3) + " - " + juce::String (view.selT1(), 3) + " s  ("
                           + juce::String ((view.selT1() - view.selT0()) * 1000.0, 0) + " ms),  " + juce::String ((int) view.selF0()) + " - " + juce::String ((int) view.selF1()) + " Hz"
@@ -1946,12 +2093,13 @@ private:
         playBtn.setEnabled (ready); stopBtn.setEnabled (ready); loopBtn.setEnabled (ready); hearBox.setEnabled (ready);
         previewBtn.setEnabled (ready && view.hasSelection()); declickBtn.setEnabled (ready); gainBtn.setEnabled (ready && view.hasSelection());
         denoiseBtn.setEnabled (ready && view.hasSelection() && haveRoomTone()); roomBtn.setEnabled (ready && view.hasSelection());
-        roomCap.setText (roomText(), juce::dontSendNotification);
+        roomCap.setText (roomShortText(), juce::dontSendNotification); roomCap.setTooltip (roomText());
         finishBtn.setEnabled (ready && (haveRepair() || ctx.pairWritten != nullptr));
         revertBtn.setEnabled (ready && ! history.empty());
         compareBtn.setEnabled (ready && ! history.empty());
         compareBtn.setButtonText (showingAfter ? "Show before" : "Show fixed");
         if (pairLocked) { for (auto* ch : getChildren()) if (ch != &close && ch != &status && ch != &info && ch != &bar) ch->setEnabled (false); view.setInterceptsMouseClicks (false, false); }
+        resized();                                   // (what is shown decides how the boxes are packed)
     }
     /** The settings as they are now (and the part of the area they apply to). */
     /** what: 0 = ReTouch (or Gain), 1 = De-click, 2 = Denoise. */
@@ -2253,7 +2401,7 @@ private:
     }
     RepairContext ctx;
     bool declickOnly = false;                                 // true: the De-Click window (finds and mends clicks); false: Spectral Repair (rebuilds a box of the picture)
-    InfoNote intro; juce::Label info, sensCap, strengthCap, dirCap, surroundCap, weightCap, amountCap, residualCap, roomCap;
+    InfoNote intro; juce::Label info, sensCap, strengthCap, surroundCap, weightCap, amountCap, residualCap, roomCap;
     SpectrogramView view; juce::ComboBox modeBox, dirBox, scaleBox, detailBox, methodBox, bandsBox; juce::ToggleButton multiBtn { "Multi-resolution" }, linkBtn { "Link stereo" }; juce::TextButton specBtn { "Spectrogram settings..." };
     std::shared_ptr<std::atomic<bool>> detailCancel; juce::Slider sens, strength, surround, weight, amount, residual;
     juce::TextButton roomBtn { "This box is the room tone [L]" }, denoiseBtn { "Denoise [N]" }; double rtBoxT0 = -1.0, rtBoxT1 = -1.0;
@@ -2264,7 +2412,7 @@ private:
     size_t preparedOps = 0;                                        // how many changes the prepared files contain
     std::vector<RepairOp> committed;                               // the changes accepted so far (in order)
     std::shared_ptr<std::vector<std::vector<float>>> pvTracks;     // the audio with the previewed change in it
-    juce::TextButton previewBtn { "ReTouch" }, declickBtn { "De-click" }, compareBtn { "Show before" }, revertBtn { "Undo" }, finishBtn { "Write back to file" }, close { "Cancel" };
+    juce::TextButton previewBtn { "ReTouch [R]" }, declickBtn { "De-click [D]" }, compareBtn { "Show before" }, revertBtn { "Undo" }, finishBtn { "Write back to file" }, close { "Cancel" };
     juce::TextButton gainBtn { "Gain [G]" };
     bool gainNext = false; double gainNextDb = 0.0;                // the next fix is a gain change of the box (set by the Gain pop-up)
     struct Step { std::shared_ptr<std::vector<std::vector<float>>> tracks; std::shared_ptr<MergedSpectrogram> spec; };

@@ -208,7 +208,7 @@ public:
         the whole picture is painted once where it is, then the band is painted again over the top of the visible part. */
     void paint (juce::Graphics& g) override
     {
-        const auto tPaint0 = paintprof::enabled() ? juce::Time::getMillisecondCounterHiRes() : 0.0;
+        const auto tPaint0 = juce::Time::getMillisecondCounterHiRes();          // (always timed: one call, to tell a slow redraw from a late clock in the hitch report)
         headerPass = false;
         paintAll (g);
         const int sy = viewport.getViewPositionY();
@@ -227,7 +227,9 @@ public:
             g.setColour (theme::accent.withAlpha (0.13f)); g.fillRect (lr);
             g.setColour (theme::accent.withAlpha (0.9f));  g.drawRect (lr, 1);
         }
-        if (paintprof::enabled()) paintprof::paintDone ("edit window", juce::Time::getMillisecondCounterHiRes() - tPaint0, g.getClipBounds().getWidth(), g.getClipBounds().getHeight());
+        const double paintMs = juce::Time::getMillisecondCounterHiRes() - tPaint0;
+        if (hitch.active) hitch.painted (paintMs);
+        if (paintprof::enabled()) paintprof::paintDone ("edit window", paintMs, g.getClipBounds().getWidth(), g.getClipBounds().getHeight());
     }
     // ---- Alt + drag: a lasso; every piece it touches is selected (whole pieces, overdubs too)
     bool lassoActive = false, lassoMoved = false; juce::Point<int> lassoFrom, lassoTo;
@@ -1754,6 +1756,7 @@ private:
     void changeListenerCallback (juce::ChangeBroadcaster* source) override
     {
         if (source != &app.project) { thumbsChanged = true; return; }      // a waveform was read a bit further: shown at the next tick (see timerCallback)
+        if (hitch.active) ++hitch.fullRedraws;
         saver.saveFinished (thumbs, wavesFolder()); updateSize(); repaint();
     }
     void timerCallback() override
@@ -1770,6 +1773,7 @@ private:
         if (thumbsChanged && juce::Time::getMillisecondCounter() - lastThumbRefresh >= 150)
         {
             thumbsChanged = false; lastThumbRefresh = juce::Time::getMillisecondCounter();
+            if (hitch.active) ++hitch.fullRedraws;
             saver.saveFinished (thumbs, wavesFolder()); repaint();
         }
         const bool meterMoving = updateMeterFall();
@@ -1788,12 +1792,75 @@ private:
     {
         double ph = -1.0;
         if (app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId) ph = app.playheadSecondsSmooth();
+        noteHitches (ph);
         const int x = ph >= 0.0 ? xOf (ph) : kNoLine;
         if (x == shownPhX) return;
         const int h = juce::jmax (1, getHeight() - kRulerH);
         if (shownPhX != kNoLine) repaint (theme::playheadStrip (shownPhX, kRulerH, h));      // (the whole reach of the line and its glow, or a trail of glow is left behind it)
         if (x != kNoLine) repaint (theme::playheadStrip (x, kRulerH, h));
         shownPhX = x;
+    }
+    /** A very light record of how steadily the playhead moved during a play, written as ONE line to fermata-log.txt when the play ends (only the
+        time of each screen refresh and the position it showed are noted; nothing is drawn or measured on the audio side). It tells apart a late
+        screen (the refreshes themselves came late), a clock that stood still or jumped (the position, not the screen), and slow or whole-window
+        redraws, and says where on the timeline each happened, so a stutter can be matched with the place in the music. */
+    struct HitchLog
+    {
+        static constexpr int kKeep = 8;
+        bool active = false; double t0 = 0.0, lastT = 0.0, firstPh = 0.0, lastPh = 0.0; int baseUnderruns = 0;
+        int frames = 0, late = 0, stalls = 0, jumps = 0, stallRun = 0, slowPaints = 0, fullRedraws = 0;
+        double worstGap = 0.0, worstGapAt = 0.0, worstPaint = 0.0, worstPaintAt = 0.0;
+        std::vector<double> lateAt, stallAt, jumpAt, paintAt;
+        static void keep (std::vector<double>& v, double at) { if ((int) v.size() < kKeep) v.push_back (at); }
+        void painted (double ms)
+        {
+            if (ms < 12.0) return;
+            ++slowPaints; keep (paintAt, lastPh);
+            if (ms > worstPaint) { worstPaint = ms; worstPaintAt = lastPh; }
+        }
+        static juce::String list (const std::vector<double>& v)
+        {
+            juce::String t; for (double d : v) t << (t.isEmpty() ? "" : ", ") << juce::String (d, 1);
+            return t.isEmpty() ? juce::String() : " (at " + t + " s)";
+        }
+    } hitch;
+    void noteHitches (double ph)
+    {
+        auto& h = hitch;
+        const double now = juce::Time::getMillisecondCounterHiRes();
+        if (ph < 0.0) { if (h.active) endHitchLog(); return; }
+        if (! h.active)
+        {
+            h = HitchLog(); h.active = true; h.t0 = h.lastT = now; h.firstPh = h.lastPh = ph;
+            h.baseUnderruns = app.engine.playbackUnderruns();
+            return;
+        }
+        const double dt = now - h.lastT, dph = (ph - h.lastPh) * 1000.0;                       // both in milliseconds
+        h.lastT = now; ++h.frames;
+        if (dt > 25.0) { ++h.late; HitchLog::keep (h.lateAt, ph); if (dt > h.worstGap) { h.worstGap = dt; h.worstGapAt = ph; } }
+        if (dph < -50.0 || dph > 2000.0) { h.lastPh = ph; h.stallRun = 0; return; }              // a loop went round, or a new play: not a hitch
+        if (dph < 0.25 * dt) { if (++h.stallRun == 2) { ++h.stalls; HitchLog::keep (h.stallAt, ph); } } else h.stallRun = 0;
+        if (dph > 2.5 * dt + 4.0) { ++h.jumps; HitchLog::keep (h.jumpAt, ph); }
+        h.lastPh = ph;
+    }
+    void endHitchLog()
+    {
+        auto& h = hitch;
+        const bool worth = h.frames >= 120;                                                     // (a play of two seconds or more)
+        if (worth)
+        {
+            juce::String line;
+            line << "Edit window playhead: " << juce::String ((juce::Time::getMillisecondCounterHiRes() - h.t0) / 1000.0, 1) << " s played (timeline "
+                 << juce::String (h.firstPh, 1) << " to " << juce::String (h.lastPh, 1) << " s), " << h.frames << " screen refreshes; "
+                 << "refreshes late (over 25 ms): " << h.late << (h.late > 0 ? ", worst " + juce::String (h.worstGap, 0) + " ms at " + juce::String (h.worstGapAt, 1) + " s" : juce::String()) << HitchLog::list (h.lateAt) << "; "
+                 << "playhead stood still: " << h.stalls << HitchLog::list (h.stallAt) << "; "
+                 << "playhead jumped: " << h.jumps << HitchLog::list (h.jumpAt) << "; "
+                 << "redraws over 12 ms: " << h.slowPaints << (h.slowPaints > 0 ? ", worst " + juce::String (h.worstPaint, 0) + " ms at " + juce::String (h.worstPaintAt, 1) + " s" : juce::String()) << HitchLog::list (h.paintAt) << "; "
+                 << "whole-window redraws: " << h.fullRedraws << "; "
+                 << "playback underruns: " << juce::jmax (0, app.engine.playbackUnderruns() - h.baseUnderruns);
+            juce::Logger::writeToLog (line);
+        }
+        h = HitchLog();
     }
     int shownPhX = kNoLine;
     double lastHead = 0.0;

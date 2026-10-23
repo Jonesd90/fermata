@@ -350,5 +350,10 @@ private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;   // re-plan the engine after structural edits
     int savesHeldWhilePlaying = 0;                   // automatic saves put off while the music plays (see timerCallback)
     void afterProjectReplaced();
+public:
+    /** The Trim window's own waveform size (its . and , keys): independent of the take and edit windows, remembered between sessions, and every Trim window opens at it. */
+    float trimWaveZoom = 1.0f;
+    juce::ChangeBroadcaster trimWaveZoomChanged;
+    void changeTrimWaveZoom (float factor);
 };
 } // namespace td

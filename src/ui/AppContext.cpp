@@ -90,6 +90,7 @@ AppContext::AppContext()
     if (auto* st = props.getUserSettings())
     {
         playheadFollows = st->getBoolValue ("playheadFollows", true);
+        trimWaveZoom = juce::jlimit (0.25f, 40.0f, (float) st->getDoubleValue ("trimWaveZoom", 1.0));
         trimSlipLeft = st->getBoolValue ("trimSlipLeft", true);
         trimSlipRight = st->getBoolValue ("trimSlipRight", true);
         showInsertFlag = st->getBoolValue ("showInsertFlag", true);
@@ -1176,6 +1177,13 @@ void AppContext::setTrimSlip (bool left, bool right)
 {
     trimSlipLeft = left; trimSlipRight = right;
     if (auto* st = props.getUserSettings()) { st->setValue ("trimSlipLeft", left); st->setValue ("trimSlipRight", right); props.saveIfNeeded(); }
+}
+
+void AppContext::changeTrimWaveZoom (float factor)
+{
+    trimWaveZoom = juce::jlimit (0.25f, 40.0f, trimWaveZoom * factor);
+    if (auto* st = props.getUserSettings()) { st->setValue ("trimWaveZoom", (double) trimWaveZoom); props.saveIfNeeded(); }
+    trimWaveZoomChanged.sendChangeMessage();           // only the Trim windows redraw
 }
 
 void AppContext::setPlayheadFollows (bool on)

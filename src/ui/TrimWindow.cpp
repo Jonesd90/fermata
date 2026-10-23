@@ -428,7 +428,7 @@ TrimComponent::TrimComponent (AppContext& a, const juce::Uuid& eid, const juce::
 {
     formats.registerBasicFormats();
     waves.reset (new TrimWaves (*this));
-    waves->extraZoom = app.waveZoom;
+    waves->extraZoom = app.trimWaveZoom;
     addAndMakeVisible (*waves);
     setWantsKeyboardFocus (true);
 
@@ -563,6 +563,7 @@ TrimComponent::TrimComponent (AppContext& a, const juce::Uuid& eid, const juce::
     refreshControls();
     refreshReaders();
     app.project.addChangeListener (this);
+    app.trimWaveZoomChanged.addChangeListener (this);
     startTimerHz (15);
     setSize (1100, 770);
 }
@@ -570,6 +571,7 @@ TrimComponent::TrimComponent (AppContext& a, const juce::Uuid& eid, const juce::
 TrimComponent::~TrimComponent()
 {
     app.project.removeChangeListener (this);
+    app.trimWaveZoomChanged.removeChangeListener (this);
     stopAll();
 }
 
@@ -724,10 +726,16 @@ void TrimComponent::refreshReaders()
     if (rf.B != nullptr) rdB = open (*rf.B, fsB);
 }
 
-void TrimComponent::changeListenerCallback (juce::ChangeBroadcaster*)
+void TrimComponent::changeListenerCallback (juce::ChangeBroadcaster* src)
 {
+    if (src == &app.trimWaveZoomChanged)               // the . / , keys of a Trim window: only the waveform size changed
+    {
+        waves->extraZoom = app.trimWaveZoom;
+        waves->invalidate();
+        return;
+    }
     refreshControls();
-    waves->extraZoom = app.waveZoom;
+    waves->extraZoom = app.trimWaveZoom;
     const auto rf = refs();
     if (rf.ok() && ((rf.A != nullptr ? rf.A->id : juce::Uuid::null()) != readersForA || (rf.B != nullptr ? rf.B->id : juce::Uuid::null()) != readersForB || trackBox.getSelectedId() != readersTrack))
         refreshReaders();
@@ -910,8 +918,8 @@ bool TrimComponent::keyPressed (const juce::KeyPress& k)
     if (k == juce::KeyPress::returnKey) { accept(); return true; }
     if (k == juce::KeyPress::rightKey) { zoomBy (1.0 / 1.25); return true; }      // right = zoom in
     if (k == juce::KeyPress::leftKey)  { zoomBy (1.25); return true; }            // left = zoom out
-    if (c == '.' || c == '>') { app.changeWaveZoom (1.4f);        return true; }          // . bigger waveforms
-    if (c == ',' || c == '<') { app.changeWaveZoom (1.0f / 1.4f); return true; }          // , smaller
+    if (c == '.' || c == '>') { app.changeTrimWaveZoom (1.4f);        return true; }          // . bigger waveforms
+    if (c == ',' || c == '<') { app.changeTrimWaveZoom (1.0f / 1.4f); return true; }          // , smaller
     if (c == '[') { step (-1); return true; }                                     // accept, then the fade on the left
     if (c == ']') { step (1);  return true; }                                     // accept, then the fade on the right
     if (c == 'a') { copyFade (true);  return true; }
