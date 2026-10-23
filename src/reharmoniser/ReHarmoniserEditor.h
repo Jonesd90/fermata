@@ -18,6 +18,7 @@ struct NoteEdit
     Params params;
     Vec ts, f0, off;                               // the measured note (seconds, Hz) and the correction (cents) on the same grid
     std::vector<Vec> nb;                           // the lines (Hz, on the same grid) of other voices found beside the note: they are kept as they were
+    std::vector<Vec> nbActive;                     // per line of nb: empty = there all through the note, else when it sounds (0..1 on the same grid): a piano note struck inside the box
     bool enabled = true;
     juce::String label;
     bool isVoices = false; VoiceSet vs; Vec offs, vis; int vtarget = 0; std::vector<bool> vticks;     // a Section ReFinement move: the voices found, how far each moved, the See gains used
@@ -88,7 +89,7 @@ private:
     class View; class Worker; class EditsList; struct Section; class SectionHeader;
     friend class View;
     std::unique_ptr<juce::LookAndFeel_V4> look;      // (declared first so it is destroyed last)
-    struct Cand { bool has = false; double t0 = 0, t1 = 0, fLo = 0, fHi = 0; Vec ts, f0; std::vector<Vec> nb; int hint = 1, midi = 57; Plan plan; } cand;
+    struct Cand { bool has = false; double t0 = 0, t1 = 0, fLo = 0, fHi = 0; Vec ts, f0; std::vector<Vec> nb, nbActive; int hint = 1, midi = 57; Plan plan; } cand;
     struct Hist { Params p; };
     struct BCand { bool has = false; Brush b; } bcand;
     struct VCand { bool has = false, preview = false; VoiceSet vs; } vcand;

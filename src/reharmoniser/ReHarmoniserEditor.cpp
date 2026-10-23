@@ -1040,7 +1040,7 @@ void ReHarmoniserEditor::measure()
     const double t0 = cand.t0, t1 = cand.t1, fLo = cand.fLo, fHi = cand.fHi; const int mode = refModeId, part = partial; const double a4in = a4; const Vec vis = seeGainsDb();
     const bool lookForOthers = ! params.oneVoice;
     auto audio = orig; const int rate = sr; const double total = dur;
-    struct Res { Vec ts, f0; std::vector<Vec> nb; int hint = 1; double a4 = 440.0; bool refFound = false; };
+    struct Res { Vec ts, f0; std::vector<Vec> nb, nbActive; int hint = 1; double a4 = 440.0; bool refFound = false; };
     auto res = std::make_shared<Res>();
     measuring = true; tipLabel.setVisible (false); tipUse.setVisible (false); tipIgnore.setVisible (false);
     startJob ("Measuring the note", [=] (Worker& w) -> juce::String
@@ -1068,7 +1068,7 @@ void ReHarmoniserEditor::measure()
         const auto tk = trackingInputs (spansOf (seg), rate, fLo, fHi, vis);
         std::vector<Span> chans; for (int c : tk.channels) chans.push_back ({ seg[(size_t) c].data(), seg[(size_t) c].size() });
         const auto nm = measureNote (chans, tk.weights, rate, s0, t0, t1, fLo, fHi, h, 20.0, lookForOthers);
-        res->f0 = nm.f0; res->ts = nm.ts; res->nb = nm.nb;
+        res->f0 = nm.f0; res->ts = nm.ts; res->nb = nm.nb; res->nbActive = nm.nbActive;
         res->hint = part == 1 ? detectPartial (chans, tk.weights, rate, s0, res->ts, res->f0) : 1;
         return {};
     },
@@ -1076,7 +1076,7 @@ void ReHarmoniserEditor::measure()
     {
         measuring = false;
         if (err.isNotEmpty()) { cand.has = false; view->clearSelection(); setStatus (err == "Cancelled." ? err : err, err != "Cancelled."); updateInfo(); view->repaint(); return; }
-        cand.ts = res->ts; cand.f0 = res->f0; cand.nb = res->nb; cand.hint = res->hint;
+        cand.ts = res->ts; cand.f0 = res->f0; cand.nb = res->nb; cand.nbActive = res->nbActive; cand.hint = res->hint;
         if (res->refFound) { a4 = res->a4; a4Box.setText (juce::String (a4, 1), false); refInfo.setText ("Measured: A4 " + juce::String (a4, 1) + " Hz", juce::dontSendNotification); view->dirty = true; }
         if (! midiLocked) cand.midi = (int) std::lround (midiOf (median (cand.f0), a4));
         cand.has = true; inHistory = true; syncSliders(); inHistory = false; hist.clear(); hist.push_back ({ params }); histPos = 0;
@@ -1210,7 +1210,7 @@ void ReHarmoniserEditor::renderAndSet (bool withPending, std::function<void()> t
     }
     if (withPending && cand.has)
     {
-        NoteEdit p; p.t0 = cand.t0; p.t1 = cand.t1; p.fLo = cand.fLo; p.fHi = cand.fHi; p.midi = cand.midi; p.a4 = a4; p.params = params; p.ts = cand.ts; p.f0 = cand.f0; p.nb = cand.nb; p.off = cand.plan.off;
+        NoteEdit p; p.t0 = cand.t0; p.t1 = cand.t1; p.fLo = cand.fLo; p.fHi = cand.fHi; p.midi = cand.midi; p.a4 = a4; p.params = params; p.ts = cand.ts; p.f0 = cand.f0; p.nb = cand.nb; p.nbActive = cand.nbActive; p.off = cand.plan.off;
         list.push_back (std::move (p));
     }
     originalMode = false; originalBtn.setToggleState (false, juce::dontSendNotification);
@@ -1298,7 +1298,7 @@ void renderCorrection (const Correction& c, Block& out, int rate, double origin,
             continue;
         }
         if (e.ts.empty() || ! cut (e.ts.front() - 0.15 - 0.3, e.ts.back() + e.params.hold + e.params.fadeOut + ((e.params.lone && e.nb.empty()) || e.params.oneVoice ? e.params.tailMax : 0.0) + 0.3, i0, i1)) continue;    // (a voice on its own: room for the ring-out)
-        put (retuneSegment (take (i0, i1), rate, origin + (double) i0 / rate, e.ts, e.f0, e.off, e.params, sub, e.nb), i0);
+        put (retuneSegment (take (i0, i1), rate, origin + (double) i0 / rate, e.ts, e.f0, e.off, e.params, sub, e.nb, e.nbActive), i0);
     }
     size_t i0 = 0, i1 = 0;
     if (! c.isoTs.empty() && cut (c.isoTs.front() - 0.5, c.isoTs.back() + 0.5, i0, i1))
@@ -1309,7 +1309,7 @@ void ReHarmoniserEditor::applyCorrection()
 {
     if (! cand.has || busy) return;
     NoteEdit e; e.id = nextId++; e.t0 = cand.t0; e.t1 = cand.t1; e.fLo = cand.fLo; e.fHi = cand.fHi; e.midi = cand.midi; e.a4 = a4;
-    e.params = params; e.ts = cand.ts; e.f0 = cand.f0; e.nb = cand.nb; e.off = cand.plan.off;
+    e.params = params; e.ts = cand.ts; e.f0 = cand.f0; e.nb = cand.nb; e.nbActive = cand.nbActive; e.off = cand.plan.off;
     e.label = noteName (e.midi) + " at " + fmtTime (e.t0) + "   " + juce::String (median (cand.plan.c), 1) + " > " + juce::String (median (cand.plan.planned), 1) + " c";
     edits.push_back (e); undone.clear();
     cand = Cand(); view->clearSelection(); nameBox.setText ("", false); hist.clear(); histPos = 0;
@@ -1521,7 +1521,7 @@ void ReHarmoniserEditor::redoStep()
 
 void ReHarmoniserEditor::loadAsPending (const NoteEdit& e)
 {
-    cand = Cand(); cand.has = true; cand.t0 = e.t0; cand.t1 = e.t1; cand.fLo = e.fLo; cand.fHi = e.fHi; cand.ts = e.ts; cand.f0 = e.f0; cand.nb = e.nb; cand.midi = e.midi;
+    cand = Cand(); cand.has = true; cand.t0 = e.t0; cand.t1 = e.t1; cand.fLo = e.fLo; cand.fHi = e.fHi; cand.ts = e.ts; cand.f0 = e.f0; cand.nb = e.nb; cand.nbActive = e.nbActive; cand.midi = e.midi;
     a4 = e.a4; a4Box.setText (juce::String (a4, 1), false); params = e.params; midiLocked = true; partial = 1; partialBox.setSelectedId (1, juce::dontSendNotification);
     inHistory = true; syncSliders(); inHistory = false; hist.clear(); hist.push_back ({ params }); histPos = 0;
     replan(); view->setSelection (cand.t0, cand.t1, midiOf (cand.fLo, a4), midiOf (cand.fHi, a4));

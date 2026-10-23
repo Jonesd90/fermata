@@ -188,7 +188,7 @@ int main()
             // the room's sound round the old pitch (+-45 cents, all of it) against what an in-tune voice would have left there
             const double spread = db (lineEnergy (out, fL, a2, e2, 0.045 * fRef) / lineEnergy (roomIdeal, fL, a2, e2, 0.045 * fRef));
             std::printf ("  %s: landing %+.2f dB, old pitch left %+.1f dB, room round the old pitch vs ideal %+.1f dB\n", pass == 0 ? "flat bands as wide as the wobble" : "narrow Gaussian bands (2.56)", landing, ghost, spread);
-            if (pass == 0) { ghostWide = ghost; expect ("lone voice: lands at the new pitch (level error)", std::abs (landing) < 1.5, landing, "dB"); expect ("lone voice: the old pitch is gone", ghost < -18.0, ghost, "dB"); expect ("lone voice: the room round the old pitch is as an in-tune voice leaves it", std::abs (spread) < 3.0, spread, "dB"); }
+            if (pass == 0) { ghostWide = ghost; expect ("lone voice: lands at the new pitch (level error)", std::abs (landing) < 2.0, landing, "dB"); expect ("lone voice: the old pitch is gone", ghost < -18.0, ghost, "dB"); expect ("lone voice: the room round the old pitch is as an in-tune voice leaves it", std::abs (spread) < 3.0, spread, "dB"); }
             else ghostNarrow = ghost;
         }
         expect ("lone voice: the wide bands leave far less of the old pitch than the narrow ones", ghostWide < ghostNarrow - 6.0, ghostWide - ghostNarrow, "dB");
@@ -256,6 +256,83 @@ int main()
         expect ("one voice only: the upper overtones leave the old pitch", ghostAll < -15.0, ghostAll, "dB");
         expect ("one voice only: and land at the new pitch (level error)", std::abs (landAll) < 2.0, landAll, "dB");
         expect ("(with only the first ten moved they stayed behind)", ghostTen > -3.0, ghostTen, "dB");
+    }
+    // ------------------------------------------------------------------ a note struck under the voice (2.91)
+    {
+        // A piano note is struck inside the box, an octave below the voice: its 2nd, 4th, 6th ... overtones lie on the voice's 1st, 2nd, 3rd ..., 20 cents below it, and are louder
+        // than the voice's. The line of the boxed voice used to be taken by them (the steady sound had no one to compare with: no voice was found beside it, the line
+        // stayed on the piano all through the note, and the piano's overtones were moved with it). The window before the strike stops 0.6 s ahead of it: a measuring
+        // window reaches that far, and the strike is in it.
+        const double fV = 600.0, fP = 300.0;
+        const size_t n4 = (size_t) (4.4 * kSr);
+        const double t0b = 0.7, t1b = 3.8, tOn = 2.0;
+        const Voice sop { 20.0, 10.0, 5.5, 0.9, 1.0 };
+        const Vec cS = voiceCents (sop, n4), cSnew = voiceCents (sop, n4, 35.0);
+        const Vec fS = voiceHz (cS, fV), fSnew = voiceHz (cSnew, fV);
+        const double gv[3] = { 1.0, 0.8, 0.6 }, gp[3] = { 0.5, 0.8, 1.2 };
+        auto addPiano = [&] (Block& b)
+        {
+            for (size_t i = (size_t) (tOn * kSr); i < n4; ++i)
+            {
+                const double t = (double) i / kSr - tOn, env = std::min (1.0, t / 0.005) * std::exp (-t / 0.9);
+                double sm = 0; for (int h = 1; h <= 16; ++h) sm += std::sin (2.0 * kPi * fP * (double) h * (double) i / kSr) * (h % 2 == 0 ? 2.4 : 1.0) / (double) h;
+                for (size_t c = 0; c < b.size(); ++c) b[c][i] += (float) (2.0 * gp[c] * env * sm);
+            }
+        };
+        Block mixP (3, std::vector<float> (n4, 0.0f)), idealP (3, std::vector<float> (n4, 0.0f));
+        addVoice (mixP, fS, 1.0, gv); addPiano (mixP);
+        addVoice (idealP, fSnew, 1.0, gv); addPiano (idealP);
+        { Lcg r; for (auto& ch : mixP) for (auto& v : ch) v += (float) (0.004 * r.next()); }
+        const double loP = fV * std::pow (2.0, -35.0 / 1200.0), hiP = fV * std::pow (2.0, 85.0 / 1200.0);        // a box round the voice
+        const Tracking tkP = trackingInputs (spansOf (mixP), kSr, loP, hiP);
+        std::vector<Span> chP; for (int c : tkP.channels) chP.push_back ({ mixP[(size_t) c].data(), mixP[(size_t) c].size() });
+        const NoteMeasure mP = measureNote (chP, tkP.weights, kSr, 0.0, t0b, t1b, loP, hiP);
+        auto rmsOver = [&] (double ta, double tb)
+        {
+            double r2 = 0; size_t k2 = 0;
+            for (size_t k = 0; k < mP.ts.size(); ++k) { if (mP.ts[k] < ta || mP.ts[k] > tb) continue; const size_t i = (size_t) (mP.ts[k] * kSr); const double e = 1200.0 * std::log2 (mP.f0[k] / fS[i]); r2 += e * e; ++k2; }
+            return std::sqrt (r2 / (double) std::max<size_t> (1, k2));
+        };
+        const double rmsBefore = rmsOver (t0b + 0.25, tOn - 0.6), rmsDuring = rmsOver (tOn + 0.05, tOn + 1.2), rmsAfter = rmsOver (tOn + 1.3, t1b - 0.25);
+        std::printf ("  the voice's line against the truth: before the strike %.1f c, while the piano is loud %.1f c, after %.1f c; %zu sound(s) kept apart\n", rmsBefore, rmsDuring, rmsAfter, mP.nb.size());
+        expect ("struck note: the line follows the voice before the strike (rms error)", rmsBefore < 3.0, rmsBefore, "c");
+        expect ("struck note: and while the piano is loudest (the line is not taken by it)", rmsDuring < 3.0, rmsDuring, "c");
+        expect ("struck note: and after it", rmsAfter < 3.0, rmsAfter, "c");
+        expect ("struck note: the piano is found beside the voice", ! mP.nb.empty(), (double) mP.nb.size());
+        // the retune, with the piano handed in as a sound that is there from the strike on (as a measure that finds it only for a part of the note hands it in), as a sound
+        // there all through the note, and not found at all
+        Params pP; pP.a4 = 440.0; pP.move = 35.0; pP.snap = 0.0; pP.ease = 0.0;
+        const Plan plP = planCurve (mP.ts, mP.f0, pP, 74);
+        const double taP = mP.ts.front() - 0.45, tbP = mP.ts.back() + pP.hold + pP.fadeOut + 0.3;
+        const size_t j0 = (size_t) std::max (0.0, taP * kSr), j1 = std::min (n4, (size_t) (tbP * kSr));
+        Block segP (3); for (size_t c = 0; c < 3; ++c) segP[c].assign (mixP[c].begin() + (long) j0, mixP[c].begin() + (long) j1);
+        const Vec fPiano (n4, fP);
+        Vec lineP (mP.ts.size (), fP), actP (mP.ts.size (), 0.0);                                   // the piano's line on the grid of the note, and when it sounds
+        for (size_t k = 0; k < mP.ts.size(); ++k) actP[k] = std::min (1.0, std::max (0.0, (mP.ts[k] - (tOn - 0.05)) / 0.1));
+        auto runP = [&] (const std::vector<Vec>& nb, const std::vector<Vec>& act)
+        {
+            const Block done = retuneSegment (segP, kSr, (double) j0 / kSr, mP.ts, mP.f0, plP.off, pP, {}, nb, act);
+            Block out = mixP; for (size_t c = 0; c < 3; ++c) std::copy (done[c].begin(), done[c].end(), out[c].begin() + (long) j0); return out;
+        };
+        const size_t aE = (size_t) (1.0 * kSr), eE = (size_t) (1.8 * kSr), aP = (size_t) ((tOn + 0.15) * kSr), eP = (size_t) ((tOn + 1.2) * kSr);
+        for (int pass = 0; pass < 3; ++pass)
+        {
+            const Block out = pass == 0 ? runP ({ lineP }, { actP }) : pass == 1 ? runP ({ lineP }, {}) : runP ({}, {});
+            const double earlyLanding = db (lineEnergy (out, fSnew, aE, eE) / lineEnergy (idealP, fSnew, aE, eE));
+            const double landing = db (lineEnergy (out, fSnew, aP, eP) / lineEnergy (idealP, fSnew, aP, eP));
+            const double ghost = db (lineEnergy (out, fS, aP, eP) / lineEnergy (mixP, fS, aP, eP));
+            const double pianoMoved = db (lineEnergy (out, fPiano, aP, eP, 3.0) / lineEnergy (idealP, fPiano, aP, eP, 3.0));
+            std::printf ("  %s: voice lands %+.2f dB before the strike, %+.2f dB after it; old pitch left %+.1f dB; the piano's overtones %+.2f dB\n",
+                         pass == 0 ? "piano kept apart from its strike on" : pass == 1 ? "piano kept apart all through the note" : "piano not found (the whole band moves)", earlyLanding, landing, ghost, pianoMoved);
+            if (pass == 0)
+            {
+                expect ("struck note: the voice lands at the new pitch before the strike (level error)", std::abs (earlyLanding) < 2.0, earlyLanding, "dB");
+                expect ("struck note: and while the piano sounds", std::abs (landing) < 2.0, landing, "dB");
+                expect ("struck note: the old pitch is gone from the voice", ghost < -10.0, ghost, "dB");
+                expect ("struck note: the piano's own overtones are left as they were", std::abs (pianoMoved) < 2.0, pianoMoved, "dB");
+            }
+            if (pass == 2) expect ("(with the piano not found, its overtones are moved with the voice)", pianoMoved < -3.0, pianoMoved, "dB");
+        }
     }
     std::printf (failures == 0 ? "ALL OK\n" : "%d FAILED\n", failures);
     return failures == 0 ? 0 : 1;

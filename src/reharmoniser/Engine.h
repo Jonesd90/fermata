@@ -54,12 +54,20 @@ Track trackNoteLocked (const std::vector<Span>& chans, const Vec& ws, int sr, do
     wide, so a voice swinging far from the line (a big vibrato) is still caught; only for a voice with no other near it (or with the others taken out first). */
 Vec refineTrackLocked (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, const Vec& ts, const Vec& f0, double b0 = 20.0, bool wide = false);
 /** refineTrackLocked with the other voices taken out first: nb[i] are the lines (Hz) of the neighbouring voices on the same time grid as ts. */
-Vec refineTrackPeeled (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, const Vec& ts, const Vec& f0, const std::vector<Vec>& nb, double b0 = 20.0, bool wide = false);
+Vec refineTrackPeeled (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, const Vec& ts, const Vec& f0, const std::vector<Vec>& nb, double b0 = 20.0, bool wide = false,
+                       const std::vector<Vec>* nbActive = nullptr);
 /** The other voices singing within +-span cents of the boxed one (on the same time grid as ts): the boxed voice is taken out, then the strongest steady line left near
-    it is followed, refined and taken out too, up to maxVoices times; a line is only kept when it clearly stands above its surroundings. */
-std::vector<Vec> findNeighbours (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, const Vec& ts, const Vec& f0, double span = 110.0, int maxVoices = 2);
+    it is followed, refined and taken out too, up to maxVoices times; a line is only kept when it clearly stands above its surroundings. A voice has to be there all through
+    the note. With 'active' given, a sound that is there for a part of it only (a piano note struck, or dying away, inside the box; a singer who comes in) is kept too: its line is
+    held flat outside that part, and active gets for every line returned either an empty Vec (there all through the note) or when it sounds (0..1 on the grid ts). */
+std::vector<Vec> findNeighbours (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, const Vec& ts, const Vec& f0, double span = 110.0, int maxVoices = 2,
+                                 std::vector<Vec>* active = nullptr);
 /** Everything the editor measures about a boxed note: its line (Hz) on the grid ts, and the lines of the voices beside it (empty when it is alone). */
-struct NoteMeasure { Vec ts, f0; std::vector<Vec> nb; };
+struct NoteMeasure
+{
+    Vec ts, f0; std::vector<Vec> nb;
+    std::vector<Vec> nbActive;                 // per line of nb: empty = that voice is there all through the note; else 0..1 on the grid ts = when it sounds (a piano note struck inside the box, say)
+};
 /** lookForOthers = false ("One voice only"): no voices are looked for beside the note (nb stays empty). */
 NoteMeasure measureNote (const std::vector<Span>& chans, const Vec& ws, int sr, double tSeg0, double t0, double t1, double fLo, double fHi, const Hooks& hooks = {}, double prior = 20.0,
                          bool lookForOthers = true);
@@ -78,8 +86,11 @@ Plan planCurve (const Vec& ts, const Vec& f0, const Params& p, int midi, const V
 
 /** Retunes the note in 'seg' (all channels alike). f0 in Hz and off in cents on the grid ts (seconds, from the start of seg + tSeg0). Returns the corrected copy.
     nb: the lines (Hz, on the grid ts) of other voices found beside the note: they are taken out of what the note is measured in and the band is kept narrow, so
-    they are left as they were. Empty (or none found) = the band is p.bw * sqrt (overtone number), as it always was. */
-Block retuneSegment (const Block& seg, int sr, double tSeg0, const Vec& ts, const Vec& f0, const Vec& off, const Params& p, const Hooks& hooks = {}, const std::vector<Vec>& nb = {});
+    they are left as they were. Empty (or none found) = the band is p.bw * sqrt (overtone number), as it always was.
+    nbActive: for the lines of nb that sound for a part of the note only (a piano note struck inside the box), when they do (0..1 on the grid ts; an empty entry, or none
+    given, = all through the note). */
+Block retuneSegment (const Block& seg, int sr, double tSeg0, const Vec& ts, const Vec& f0, const Vec& off, const Params& p, const Hooks& hooks = {}, const std::vector<Vec>& nb = {},
+                     const std::vector<Vec>& nbActive = {});
 /** Keeps only the picked note (fundamental and overtones, following fPts) between tA and tB; everything else there is removed (for the Isolate audition). */
 Block soloSegment (const Block& seg, int sr, double tSeg0, const Vec& ts, const Vec& fPts, const Params& p, double tA, double tB, double fade = 0.06);
 
