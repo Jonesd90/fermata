@@ -96,6 +96,8 @@ public:
         checkPreampShown();
     }
 
+    bool aliasHasFocus() const { return alias.hasKeyboardFocus (false); }
+    void focusAlias() { alias.grabKeyboardFocus(); alias.selectAll(); }
     void refreshFromModel()
     {
         using desk::Ic;
@@ -347,6 +349,8 @@ public:
         addAndMakeVisible (tbButton);
         refreshFromModel();
     }
+    bool aliasHasFocus() const { return alias.hasKeyboardFocus (false); }
+    void focusAlias() { alias.grabKeyboardFocus(); alias.selectAll(); }
     void refreshFromModel()
     {
         if (idx >= (int) app.project.outputs.size()) return;
@@ -797,6 +801,9 @@ void MainComponent::resized()
 
 void MainComponent::rebuildRows()
 {
+    int focusIn = -1, focusOut = -1;                                     // naming the inputs one after another: Tab hands the focus on and the name just typed rebuilds the rows - the focus must survive that
+    for (int i = 0; i < inputRows.size(); ++i)  if (inputRows[i]->aliasHasFocus())  focusIn = i;
+    for (int i = 0; i < outputRows.size(); ++i) if (outputRows[i]->aliasHasFocus()) focusOut = i;
     inputRows.clear();
     inputsHolder.removeAllChildren();
     for (int i = 0; i < (int) app.project.inputs.size(); ++i) { inputRows.add (new InputRow (app, i)); inputsHolder.addAndMakeVisible (inputRows.getLast()); }
@@ -804,6 +811,8 @@ void MainComponent::rebuildRows()
     outputsHolder.removeAllChildren();
     for (int i = 0; i < (int) app.project.outputs.size(); ++i) { outputRows.add (new OutputRow (app, i)); outputsHolder.addAndMakeVisible (outputRows.getLast()); }
     resized();
+    if (juce::isPositiveAndBelow (focusIn, inputRows.size()))   inputRows[focusIn]->focusAlias();
+    else if (juce::isPositiveAndBelow (focusOut, outputRows.size())) outputRows[focusOut]->focusAlias();
 }
 
 void MainComponent::changeListenerCallback (juce::ChangeBroadcaster* src)

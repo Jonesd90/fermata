@@ -142,6 +142,10 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     /** The Loop button of the take or edit window used last: -1 there is none, 0 off, 1 on; and the same as pressing it (key L). Set by the application. */
     std::function<int()> deskLoopState;
     std::function<void()> deskLoopToggle;
+    /** The window keys of the take or edit window used last (mark1 mark2 align search trim markers feedback) and the slip keys (slipl slipr, the setting every window shares).
+        State: -1 not available now, 0 off, 1 lit; Act: the same as pressing that button. Set by the application. */
+    std::function<int (const juce::String&)> deskActState;
+    std::function<void (const juce::String&)> deskAct;
     /** Arm All / Arm None in one key: 0 no track is armed, 1 some are, 2 all are; the toggle arms all, or disarms all when they all are armed (not while recording). */
     int armState() const;
     void remoteArmToggle();

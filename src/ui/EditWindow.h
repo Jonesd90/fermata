@@ -20,6 +20,9 @@ public:
     /** The Loop button, for the Stream Deck: is it lit, and the same as pressing it (key L). */
     bool loopIsOn() const { return loopToggle.getToggleState(); }
     void toggleLoop();
+    /** The Stream Deck's window keys: what = mark1 mark2 align trim markers feedback. State: -1 not in this window, 0 off, 1 lit. Action: the same as pressing that button. */
+    int deskActState (const juce::String& what) const;
+    void deskAct (const juce::String& what);
     void mouseDown (const juce::MouseEvent&) override;
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void goToSeconds (double seconds) { goTo (seconds); }       // (the timeline's feedback flags use it)

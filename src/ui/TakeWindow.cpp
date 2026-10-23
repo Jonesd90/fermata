@@ -1817,6 +1817,23 @@ void TakeWindowComponent::toggleLoop()
     loopChanged();
 }
 
+int TakeWindowComponent::deskActState (const juce::String& what) const
+{
+    if (what == "mark1" || what == "mark2" || what == "align") return 0;
+    if (what == "search")  return searchBar > 0 ? 1 : 0;
+    if (what == "markers") { auto* w = def(); return w != nullptr && w->showMarkers ? 1 : 0; }
+    return -1;
+}
+
+void TakeWindowComponent::deskAct (const juce::String& what)
+{
+    if (what == "mark1") editMarkIn();
+    else if (what == "mark2") editMarkOut();
+    else if (what == "align") { if (app.showAlign) app.showAlign (false, windowId); }
+    else if (what == "search") toggleBarSearch();
+    else if (what == "markers") markersToggle.triggerClick();
+}
+
 void TakeWindowComponent::loopChanged()
 {
     const bool on = loopToggle.getToggleState();

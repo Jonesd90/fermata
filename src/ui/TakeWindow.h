@@ -19,6 +19,9 @@ public:
     /** The Loop button, for the Stream Deck: is it lit, and the same as pressing it (key L). */
     bool loopIsOn() const { return loopToggle.getToggleState(); }
     void toggleLoop();
+    /** The Stream Deck's window keys: what = mark1 mark2 align search markers. State: -1 not in this window, 0 off, 1 lit. Action: the same as pressing that button. */
+    int deskActState (const juce::String& what) const;
+    void deskAct (const juce::String& what);
     // drag audio files (or a folder) from another program's session onto this window to import them as takes
     bool isInterestedInFileDrag (const juce::StringArray& files) override;
     void filesDropped (const juce::StringArray& files, int x, int y) override;

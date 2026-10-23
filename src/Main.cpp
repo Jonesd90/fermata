@@ -227,6 +227,28 @@ public:
             if (auto* t = dynamic_cast<TakeWindowComponent*> (c)) t->toggleLoop();
             else if (auto* e = dynamic_cast<EditWindowComponent*> (c)) e->toggleLoop();
         };
+        ctx->deskActState = [this] (const juce::String& what)
+        {
+            if (what == "slipl") return ctx->trimSlipLeft ? 1 : 0;
+            if (what == "slipr") return ctx->trimSlipRight ? 1 : 0;
+            const auto key = lastWorkWindowKey();
+            auto it = windows.find (key);
+            if (key.isEmpty() || it == windows.end() || it->second == nullptr) return -1;
+            auto* c = it->second->getContentComponent();
+            if (auto* t = dynamic_cast<TakeWindowComponent*> (c)) return t->deskActState (what);
+            if (auto* e = dynamic_cast<EditWindowComponent*> (c)) return e->deskActState (what);
+            return -1;
+        };
+        ctx->deskAct = [this] (const juce::String& what)
+        {
+            if (what == "slipl") { ctx->setTrimSlip (! ctx->trimSlipLeft, ctx->trimSlipRight); return; }
+            if (what == "slipr") { ctx->setTrimSlip (ctx->trimSlipLeft, ! ctx->trimSlipRight); return; }
+            auto it = windows.find (lastWorkWindowKey());
+            if (it == windows.end() || it->second == nullptr) return;
+            auto* c = it->second->getContentComponent();
+            if (auto* t = dynamic_cast<TakeWindowComponent*> (c)) t->deskAct (what);
+            else if (auto* e = dynamic_cast<EditWindowComponent*> (c)) e->deskAct (what);
+        };
         ctx->showAlign = [this] (bool isEdit, const juce::Uuid& id)
         {
             if (auto it = windows.find ("align"); it != windows.end() && it->second != nullptr)       // open already: it measures on the window it was asked from now

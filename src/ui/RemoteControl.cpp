@@ -114,6 +114,7 @@ void RemoteControlServer::execute (const remote::Command& c)
         else if (c.name == "armtoggle") app.remoteArmToggle();
         else if (c.name == "wavecolour") app.remoteWaveColour();
         else if (c.name == "loop") { if (app.deskLoopToggle) app.deskLoopToggle(); }
+        else if (c.name == "wact") { if (app.deskAct && remote::isWindowAct (c.what)) app.deskAct (c.what); }
         else if (c.name == "monitor") desk::monitorCycle (P, c.input);
         else if (c.name == "talkin") { if (juce::isPositiveAndBelow (c.input, (int) P.inputs.size())) app.setCrMicInput (c.input, ! P.isCrMic (c.input)); }
         else if (c.name == "preamp") desk::preampKey (P, c.input, c.what);
@@ -172,6 +173,9 @@ juce::String RemoteControlServer::collectDesk()
     o->setProperty ("arm", app.armState());                                // 0 none, 1 some, 2 all
     o->setProperty ("wc", app.waveColour);
     o->setProperty ("loop", app.deskLoopState ? app.deskLoopState() : -1);
+    auto* wa = new juce::DynamicObject();                                  // -1 not available now (no such window), 0 off, 1 lit
+    for (auto* what : remote::kWindowActs) wa->setProperty (what, app.deskActState ? app.deskActState (what) : -1);
+    o->setProperty ("wact", juce::var (wa));
     o->setProperty ("rec", app.engine.isRecording());
     return juce::JSON::toString (juce::var (o), true);
 }

@@ -2428,6 +2428,25 @@ void EditWindowComponent::toggleLoop()
     loopChanged();
 }
 
+int EditWindowComponent::deskActState (const juce::String& what) const
+{
+    if (what == "mark1" || what == "mark2" || what == "align") return 0;
+    if (what == "trim")     return trimButton.getToggleState() ? 1 : 0;
+    if (what == "markers")  { auto* e = edit(); return e != nullptr && e->showMarkers ? 1 : 0; }
+    if (what == "feedback") { auto* e = edit(); return e != nullptr && e->showFeedback ? 1 : 0; }
+    return -1;
+}
+
+void EditWindowComponent::deskAct (const juce::String& what)
+{
+    if (what == "mark1") setFixMark (true);
+    else if (what == "mark2") setFixMark (false);
+    else if (what == "align") { if (app.showAlign) app.showAlign (true, editId); }
+    else if (what == "trim") trimSelected();
+    else if (what == "markers") markersToggle.triggerClick();
+    else if (what == "feedback") feedbackToggle.triggerClick();
+}
+
 void EditWindowComponent::loopChanged()
 {
     const bool on = loopToggle.getToggleState();
