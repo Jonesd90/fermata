@@ -957,9 +957,19 @@ public:
         if (const int lat = shownLatency(); lat >= 0)
         {
             const bool zero = lat == 0;
-            g.setColour (zero ? t.dim : t.text);
-            g.setFont (juce::FontOptions (9.5f, zero ? juce::Font::plain : juce::Font::bold));
-            g.drawText (juce::String (lat) + (lat == 1 ? " sample" : " samples"), latencyRect(), juce::Justification::centred, false);
+            const auto al = alignText();
+            if (al.isNotEmpty())                                                 // a spot mic lined up with the main pair: its delay, then any plug-in delay
+            {
+                auto lr = latencyRect();
+                g.setColour (theme::accent); g.setFont (juce::FontOptions (9.5f, juce::Font::bold));
+                g.drawText (zero ? al : al + "  " + juce::String (lat) + " smp", lr, juce::Justification::centred, false);
+            }
+            else
+            {
+                g.setColour (zero ? t.dim : t.text);
+                g.setFont (juce::FontOptions (9.5f, zero ? juce::Font::plain : juce::Font::bold));
+                g.drawText (juce::String (lat) + (lat == 1 ? " sample" : " samples"), latencyRect(), juce::Justification::centred, false);
+            }
         }
         if (appPtr != nullptr)
         {
@@ -1013,6 +1023,8 @@ protected:
     juce::Rectangle<int> body() const { return getLocalBounds().withTrimmedTop (1 + kBandH + 3).withTrimmedBottom (1 + kPlateH + 3 + (shownLatency() >= 0 ? kLatH : 0)).reduced (4, 0); }
     /** Delay compensation: the samples this channel's plug-ins hold the sound back by (-1: this kind of strip shows nothing). */
     virtual int shownLatency() const { return -1; }
+    /** A spot mic's alignment delay now in force ("+3.42 ms"), or nothing. */
+    virtual juce::String alignText() const { return {}; }
     /** The VCAs that control this strip (bit n = VCA n+1): they are drawn as glowing numbers on the coloured bar. */
     virtual juce::uint32 vcaMask() const { return 0; }
     void setLatencyTip (int own, const MixerState& m)
@@ -1288,6 +1300,13 @@ public:
     }
 
     int shownLatency() const override { int t = strip.lowCut.latencySamples(); for (auto& sl : strip.slots) t += sl.latencySamples(); return t; }
+    juce::String alignText() const override
+    {
+        const auto* tr = app.project.findTrack (strip.trackId);
+        const double sr = app.engine.getSampleRate() > 0.0 ? app.engine.getSampleRate() : 48000.0;
+        const double smp = tr != nullptr ? app.project.alignSamplesFor (*tr, sr) : 0.0;
+        return smp > 0.0 ? juce::String::charToString (0x0394) + " " + juce::String (smp * 1000.0 / sr, 2) + " ms" : juce::String();
+    }
     juce::uint32 vcaMask() const override { return strip.vcaMask.load(); }
     void refreshFromModel() override
     {

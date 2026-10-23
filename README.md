@@ -32,7 +32,13 @@ Windows' own driver work (DPCs) cannot be moved by any program: if you still get
 
 ## Recording
 
-Arm the inputs you want (ARM next to each input), open a **Take Window** (one per piece), and press **R** (or REC). **Space** stops. Each armed track makes its own file, named like `005 - Symphony 2 - violin.wav`. There is no click track.
+Arm the inputs you want (ARM next to each input), open a **Take Window** (one per piece), and press **R** (or REC). **Space** stops. Each armed track makes its own file, named like `005 - Symphony 2 - violin.wav` (with BWF metadata: the piece, take and track, and the time of day of its first sample).
+
+**Pitch pipe** and **Click** (on the menu bar) play to the outputs you tick - the stage speakers, the performers' headphones, or only your control-room speakers - and are never recorded. The pitch pipe plays single notes or held chords on any reference A in seven tunings (equal, just, Pythagorean, meantone, Werckmeister III, Vallotti, Kirnberger III) built on the key you choose, a chord pure major or pure minor if wanted; the click runs on its own (start / stop by hand, not with Play or Record) with an accented first beat and four sounds.
+
+**Spot mics lined up with the main pair** (**Align**, in the take and edit windows). Mark the tracks Main, Spot, Distance or Not used, record the run-through and press Analyse: each spot is delayed by exactly as much as it hears its instrument earlier than the main pair, in every mixer (the files are not changed), with the pans taken into account. Every piece keeps its own measurements; an edit can be measured in post.
+
+**Take sheet** (take window, or the Project menu for every take window): every take with its time, length, bars, markers and problems, as a PDF and a CSV in the project's Take Sheets folder.
 
 ## Editing
 

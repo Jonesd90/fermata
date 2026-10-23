@@ -7,6 +7,7 @@
 #include "BackupCopier.h"
 #include "HostTransport.h"
 #include "TakeWriter.h"
+#include "PitchPipe.h"
 
 namespace td
 {
@@ -243,6 +244,8 @@ public:
     int    getNumInputs()  const noexcept { return deviceInputs; }
     int    getNumOutputs() const noexcept { return deviceOutputs; }
     bool   isRunning() const noexcept     { return running.load(); }
+    /** The pitch pipe and the click: added to the outputs chosen for them, after the mixers (heard, never recorded, never bounced). */
+    AuxSounds& auxSounds() noexcept        { return aux; }
 
 private:
     struct Node;
@@ -266,6 +269,7 @@ private:
         // delay compensation (samples): when the signals arrive at this channel, and when they leave it, counted from the sources
         int inLat = 0, outLat = 0;
         PathDelay srcDelay;                     // Audio Track: holds back its own source (disk / live input) to meet what is sent to it
+        PathDelay alignDelay;                   // Audio Track: the spot-mic time alignment (Project::alignSamplesFor): this track is heard this much later, on purpose
         PathDelay outDelay;                     // Ext Bus: holds back the driver outputs so every Ext Bus of the mixer comes out together
         PathDelay tapDelay;                     // offline render: the same, for the captured signals
     };
@@ -291,7 +295,7 @@ private:
         std::vector<int> touched;               // the driver outputs it wrote in this block (room for every Ext Bus pair and the audition pair)
         int numTouched = 0;
     };
-    struct TrackPlan { int numCh = 1; int inputs[kMaxTrackChannels] {}; std::shared_ptr<TrackLive> live; };
+    struct TrackPlan { int numCh = 1; int inputs[kMaxTrackChannels] {}; std::shared_ptr<TrackLive> live; int alignSamples = 0; };
     /** One mixer to run in this block, and how. */
     struct MixerJob { MixerPlan* mp = nullptr; bool silenceOwnOutput = false; int alsoToFirst = -1; bool strict = false; bool capMain = false; };   // capMain: copy its main output aside (for the cue mixers that follow it)
     struct Plan
@@ -411,6 +415,7 @@ private:
     std::atomic<juce::int64> scopeWrite { 0 };
 
     LtcLive ltcIn; LtcGenerator ltcGen;
+    AuxSounds aux;
     std::atomic<int> ltcInCh { -1 }, ltcOutCh { -1 }, ltcOutFormat { 1 }, ltcOutRestart { 0 };
     std::atomic<double> ltcOutStart { 0.0 };
     std::atomic<bool> ltcOutRunning { false };

@@ -290,6 +290,7 @@ bool BounceComponent::buildSettings (BounceSettings& bs, juce::String& error) co
         bs.sampleRate = e->sampleRate;
         bs.segments = segmentsForEdit (p, *e);
         if (e->automationOn) bs.automationEdit = e->id;                  // the edit's automation is part of what is bounced
+        bs.alignOwner = p.alignOwnerFor (true, e->id);                   // and its piece's spot-mic alignment
         if (fullButton.getToggleState())
         {
             bs.items.push_back ({ base, e->audibleStart(), e->audibleEnd() });       // (the fades included, even where they reach outside the first and last piece)
@@ -315,6 +316,7 @@ bool BounceComponent::buildSettings (BounceSettings& bs, juce::String& error) co
     {
         auto* w = p.findTakeWindow (ctx.id);
         if (w == nullptr) { error = "The take window no longer exists."; return false; }
+        bs.alignOwner = p.alignOwnerFor (false, w->id);                  // the piece's spot-mic alignment
         if (selectedButton.getToggleState() || allTakesButton.getToggleState())
         {
             const bool all = allTakesButton.getToggleState();

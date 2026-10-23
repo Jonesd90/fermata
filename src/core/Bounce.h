@@ -11,6 +11,7 @@ struct BounceItem
     std::vector<PlaySegment> segments;       // the audio this piece comes from; empty = BounceSettings::segments (different takes need their own)
     juce::Uuid mixerId = juce::Uuid::null();          // the mixer this piece goes through (null = BounceSettings::mixerId): an Edit's own mixer, so each piece keeps its own mix
     juce::Uuid automationEdit = juce::Uuid::null();   // the edit whose automation is applied to this item (null = BounceSettings::automationEdit)
+    juce::String alignOwner;                          // whose spot-mic alignment it plays with (Project::alignOwnerFor; empty = BounceSettings::alignOwner)
 };
 
 /** What to bounce out and how. */
@@ -21,6 +22,7 @@ struct BounceSettings
     std::vector<BounceItem> items;           // one file each
     double leadSeconds = 0.0, tailSeconds = 0.0;     // extra time before / after each item (the mixer keeps running, so plug-ins settle and tails ring out)
     juce::Uuid automationEdit;               // the edit whose automation is applied while bouncing (null = none)
+    juce::String alignOwner;                 // whose spot-mic alignment the items play with (the piece's: Project::alignOwnerFor)
     juce::Uuid mixerId;                      // the mixer whose settings are used (normally the processing mixer)
     std::vector<juce::Uuid> sources;         // the post-fader signal of these audio tracks / Int Buses / Ext Buses. Every one chosen is written to its own stereo file.
     std::vector<juce::Uuid> sourcesPre;      // the same, taken BEFORE the fader (after inserts and pan, not affected by mute / solo): files are named "... - <name> (before fader)"

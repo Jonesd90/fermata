@@ -305,10 +305,10 @@ private:
     AppContext& app;
     MenuBarButton projectButton { "Project" }, audioButton { "Audio settings" }, preampsButton { "Preamps" }, designButton { "Project Designer" },
                   takesButton { "Take Window" }, editsButton { "Edit Window" }, mixersButton { "Mixer" }, bridgeButton { "Meter bridge" }, mediaButton { "Media" }, masteringButton { "Mastering" },
-                  sessionButton { "Pre-Rec" }, takeDisplayButton { "Take Display" }, organiserButton { "Display Organiser" };
+                  sessionButton { "Pre-Rec" }, takeDisplayButton { "Take Display" }, organiserButton { "Display Organiser" }, pitchPipeButton { "Pitch pipe" }, clickButton { "Click" };
     int menuBarH = 34;
     std::unique_ptr<MenuBarStrip> menuStrip;                  // declared after the buttons: it goes first when this window is destroyed
-    std::vector<MenuBarButton*> menuItems() { return { &projectButton, &audioButton, &preampsButton, &designButton, &takesButton, &editsButton, &mixersButton, &bridgeButton, &takeDisplayButton, &organiserButton, &mediaButton, &masteringButton }; }
+    std::vector<MenuBarButton*> menuItems() { return { &projectButton, &audioButton, &preampsButton, &designButton, &takesButton, &editsButton, &mixersButton, &bridgeButton, &takeDisplayButton, &organiserButton, &pitchPipeButton, &clickButton, &mediaButton, &masteringButton }; }
     LogoBadge logo;
     static constexpr int kTakeBoxW = 36;                       // the take counter at the left of the menu bar
     void layoutMenuBar();                                      // everything in the bar on one line, as large as the width allows

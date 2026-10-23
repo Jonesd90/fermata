@@ -1277,7 +1277,7 @@ public:
 /** The little pictures on the buttons of the edit and take windows. Each is drawn from a 24 x 24 grid so it stays sharp at any size. */
 enum class Icon { Start, Rewind, Play, Stop, Forward, End, Record, Trim, Bounce, Pitch, Repair, Reharm, Tracks, Feedback, Mixer, Earlier, Later, Delete, Undo, Automation, Buses,
                   ExportProc, ImportMulti, Markers, FeedbackMarkers, SlipLeft, SlipRight, Shuffle, InsertFlag, NextAtEnd,
-                  Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search, Denoise };
+                  Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search, Denoise, Align, TakeSheet };
 
 inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area, juce::Colour ink = theme::text)
 {
@@ -1438,6 +1438,24 @@ inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area, j
         case Icon::ArmAll:  arm (true);  break;
         case Icon::ArmNone: arm (false); break;
         case Icon::ImportTakes: container (1, 8, 11, 10); clipboard (14.5f, 4.5f, 8, 15); break;
+        case Icon::Align:
+        {
+            // a spot's note (above) moved later to sit over the main pair's (below): two blips, a dashed line between them, an arrow
+            P top; top.startNewSubPath (2, 7); top.lineTo (5, 7); top.lineTo (6.5f, 3); top.lineTo (8, 11); top.lineTo (9.5f, 7); top.lineTo (12, 7); stroke (top, 1.6f, Ye);
+            arrowH (12.5f, 19.5f, 7, Ye, 1.6f);
+            P bot; bot.startNewSubPath (2, 17); bot.lineTo (14, 17); bot.lineTo (15.5f, 13); bot.lineTo (17, 21); bot.lineTo (18.5f, 17); bot.lineTo (22, 17); stroke (bot, 1.6f, Bl);
+            for (float y = 9.5f; y < 14.5f; y += 2.0f) seg (16.2f, y, 16.2f, y + 1.0f, 1.0f, W);
+            break;
+        }
+        case Icon::TakeSheet:
+        {
+            P page; page.startNewSubPath (5, 2.5f); page.lineTo (15, 2.5f); page.lineTo (19.5f, 7); page.lineTo (19.5f, 21.5f); page.lineTo (5, 21.5f); page.closeSubPath();
+            fill (page, Colour (0xfff4f1ea)); g.setColour (W); g.strokePath (page, juce::PathStrokeType (1.2f));
+            P fold; fold.startNewSubPath (15, 2.5f); fold.lineTo (15, 7); fold.lineTo (19.5f, 7); g.setColour (Colour (0xff9aa3ad)); g.strokePath (fold, juce::PathStrokeType (1.0f));
+            g.setColour (Rd); g.fillEllipse (7, 5, 4, 4);
+            for (float y : { 11.0f, 14.0f, 17.0f, 20.0f }) { seg (7.5f, y - 1.0f, 9.5f, y - 1.0f, 1.2f, Dk); seg (11, y - 1.0f, 17.5f, y - 1.0f, 1.0f, Colour (0xff6b7480)); }
+            break;
+        }
         case Icon::Search:
             g.setColour (W); g.drawEllipse (3.0f, 3.0f, 12.0f, 12.0f, 2.2f);
             g.setColour (Bl.withAlpha (0.25f)); g.fillEllipse (4.2f, 4.2f, 9.6f, 9.6f);

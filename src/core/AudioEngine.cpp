@@ -1,4 +1,7 @@
 #include "AudioEngine.h"
+#ifndef FERMATA_VERSION_STRING
+ #define FERMATA_VERSION_STRING "dev"      // (the program gets its number from CMakeLists.txt; the tests build without it)
+#endif
 #include "CoreReservation.h"
 #include <algorithm>
 #include <cstring>
@@ -105,6 +108,7 @@ void AudioEngine::prepare (double sr, int block)
     project.restoreBlock = maxBlock;
     zeros.assign ((size_t) juce::jmax (maxBlock * 4, 8192), 0.0f);
     ltcIn.prepare (sr); ltcGen.prepare (sr); ltcSeenRestart = -1;
+    aux.prepare (sr, juce::jmax (maxBlock * 4, 8192));
     tbTap.assign (zeros.size() * 2, 0.0f);   // also the silence for the pre-roll hand-over (4096 samples at a time)
     mainCap.assign (zeros.size() * 2, 0.0f);
     for (auto& m : project.mixers)                // plug-ins must know the new sample rate / block size
@@ -131,6 +135,7 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
         tp.numCh = t.channelCount();
         for (int c = 0; c < tp.numCh; ++c) tp.inputs[c] = t.inputOf (c);
         tp.live = t.live;
+        tp.alignSamples = juce::jlimit (0, (int) (0.25 * sampleRate), (int) std::lround (project.alignSamplesFor (t, sampleRate)));     // (the piece being played / recorded / worked on)
         p->tracks.push_back (tp);
     }
     for (auto& m : project.mixers)
@@ -281,6 +286,8 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
                     sp.delay.init (sp.dest->inLat - (nd->outLat + chainLat (sp.st->slots, kSendSlots)), 2);
                 if (nd->kind == NodeKind::Track && nd->inLat > 0)
                     nd->srcDelay.init (nd->inLat, juce::jlimit (1, (int) kMaxTrackChannels, p->tracks[(size_t) nd->trackIndex].numCh));
+                if (nd->kind == NodeKind::Track && p->tracks[(size_t) nd->trackIndex].alignSamples > 0)     // spot-mic alignment: on purpose, so NOT compensated
+                    nd->alignDelay.init (p->tracks[(size_t) nd->trackIndex].alignSamples, juce::jlimit (1, (int) kMaxTrackChannels, p->tracks[(size_t) nd->trackIndex].numCh));
                 if (nd->kind == NodeKind::ExtBus) longest = juce::jmax (longest, nd->outLat);
             }
             for (auto& nd : mp->order) if (nd->kind == NodeKind::ExtBus) nd->outDelay.init (longest - nd->outLat, 2);
@@ -566,6 +573,7 @@ void AudioEngine::carryOver (Plan& from, Plan& to) noexcept
             if (fn == nullptr) for (auto& x : fm->order) if (same (*x, tn)) { fn = x.get(); break; }
             if (fn == nullptr) continue;
             takeDelay (tn.srcDelay, fn->srcDelay);
+            takeDelay (tn.alignDelay, fn->alignDelay);
             takeDelay (tn.outDelay, fn->outDelay);
             for (auto& sp : tn.sends)
                 for (auto& fsp : fn->sends)
@@ -938,6 +946,9 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
         else { if (ltcGen.isRunning()) ltcGen.stop(); ltcOutRunning.store (false, std::memory_order_relaxed); }
     }
 
+    // the pitch pipe and the click, on the outputs chosen for them (after everything else: heard, never recorded)
+    aux.process (out, numOut, numSamples);
+
     // output meters
     for (int c = 0; c < numOut && c < kMaxInputs; ++c)
     {
@@ -990,7 +1001,7 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
         if (starts)
         for (auto& nd : mp.order)
         {
-            nd->srcDelay.clear(); nd->outDelay.clear(); nd->tapDelay.clear(); nd->tapDelayPre.clear();
+            nd->srcDelay.clear(); nd->alignDelay.clear(); nd->outDelay.clear(); nd->tapDelay.clear(); nd->tapDelayPre.clear();
             for (auto& sp : nd->sends) sp.delay.clear();
         }
     }
@@ -1037,6 +1048,12 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
                 const int idx = route.inputs[c];
                 if (liveOn && idx >= 0 && idx < numIn && in[idx] != nullptr)
                     juce::FloatVectorOperations::add (dst, in[idx] + offset, n);
+            }
+            if (nd.alignDelay.len > 0)                          // spot-mic alignment: this track is heard later, so it lines up with the main pair
+            {
+                float* chp[kMaxTrackChannels];
+                for (int c = 0; c < nc; ++c) chp[c] = mp.chanBuf.getWritePointer (c);
+                nd.alignDelay.run (chp, nc, n);
             }
             if (nd.srcDelay.len > 0)                            // other channels send here through plug-ins that delay them: the track's own sound waits for them
             {
@@ -1317,6 +1334,15 @@ juce::String AudioEngine::startRecording (TakeWindowDef& window)
     group.recordedAt = juce::Time::getCurrentTime();
     const auto label = window.labelFor (group);
     const auto now = juce::Time::getCurrentTime();
+    // BWF time reference: the first sample's time of day, in samples since midnight (a take with pre-roll starts that much before Record was pressed),
+    // so other programs (Pyramix, Pro Tools, RX ...) can put the file at its place in the day
+    juce::int64 timeReference = 0;
+    {
+        const double pre = ringNow != nullptr && sampleRate > 0.0 ? (double) ringNow->preLen / sampleRate : 0.0;
+        double tod = now.getHours() * 3600.0 + now.getMinutes() * 60.0 + now.getSeconds() + now.getMilliseconds() / 1000.0 - pre;
+        if (tod < 0.0) tod += 86400.0;
+        timeReference = (juce::int64) std::llround (tod * sampleRate);
+    }
     double bytesPerSecond = 0.0;
 
     for (auto* t : armed)
@@ -1342,7 +1368,19 @@ juce::String AudioEngine::startRecording (TakeWindowDef& window)
                         .withMetadata (juce::WavAudioFormat::bwavDescription, window.name + " / " + window.displayName (group) + " / " + t->name)
                         .withMetadata (juce::WavAudioFormat::bwavOriginator, "Fermata")
                         .withMetadata (juce::WavAudioFormat::bwavOriginationDate, now.formatted ("%Y-%m-%d"))
-                        .withMetadata (juce::WavAudioFormat::bwavOriginationTime, now.formatted ("%H:%M:%S"));
+                        .withMetadata (juce::WavAudioFormat::bwavOriginationTime, now.formatted ("%H:%M:%S"))
+                        // (the description above is what re-linking reads: keep its form "<window> / <take> / <track>")
+                        .withMetadata (juce::WavAudioFormat::bwavTimeReference, juce::String (timeReference))
+                        .withMetadata (juce::WavAudioFormat::bwavOriginatorRef, ("FERMATA" + pad3 (group.number) + group.recordedAt.formatted ("%H%M%S")).substring (0, 32))
+                        .withMetadata (juce::WavAudioFormat::bwavCodingHistory, "A=PCM,F=" + juce::String ((int) std::lround (sampleRate)) + ",W=24,M="
+                                                                                + (rt.info.numChannels == 1 ? juce::String ("mono") : rt.info.numChannels == 2 ? juce::String ("stereo") : juce::String ("multitrack"))
+                                                                                + ",T=Fermata " + juce::String (FERMATA_VERSION_STRING) + "\r\n")
+                        // RIFF INFO: what Explorer, players and most editors show
+                        .withMetadata (juce::WavAudioFormat::riffInfoTitle, window.displayName (group) + " - " + t->name)
+                        .withMetadata (juce::WavAudioFormat::riffInfoProductName, project.name)
+                        .withMetadata (juce::WavAudioFormat::riffInfoComment, "Take " + juce::String (group.number) + " of \"" + window.name + "\", track \"" + t->name + "\"")
+                        .withMetadata (juce::WavAudioFormat::riffInfoDateCreated, now.formatted ("%Y-%m-%d"))
+                        .withMetadata (juce::WavAudioFormat::riffInfoSoftware, "Fermata " + juce::String (FERMATA_VERSION_STRING));
 
         std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (file, 1024);     // (a small buffer: see TakeWriter)
         if (static_cast<juce::FileOutputStream*> (stream.get())->failedToOpen()) return "Cannot create " + file.getFullPathName();

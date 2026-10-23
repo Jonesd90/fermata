@@ -31,6 +31,9 @@ struct TrackDef
     bool         isLtc = false;          // the track that records the LTC (timecode) signal; it is shown in the take / edit windows only when LTC is switched on there
     std::array<int, kMaxTrackChannels> inputs;   // 0-based physical input of each channel of the track (-1 = none)
     std::shared_ptr<TrackLive> live = std::make_shared<TrackLive>();
+    /** Spot-mic time alignment (see timealign::analyse): the track's role - 0 not used, 1 main, 2 spot, 3 distance. The role belongs to the track
+        (where the mic is in the set-up); the delays and measurements belong to each piece (Project::alignSets). */
+    int          alignRole = 0;
 
     TrackDef() { inputs.fill (-1); }
 
@@ -45,6 +48,64 @@ struct TrackDef
         return juce::jlimit (3, kMaxTrackChannels, surroundChannels);
     }
     int inputOf (int c) const noexcept { return juce::isPositiveAndBelow (c, kMaxTrackChannels) ? inputs[(size_t) c] : -1; }
+};
+
+/** One track's last spot-mic measurement (see timealign::analyse), kept so the results can be looked at later - in post - and a spot's delay can
+    follow a new pan without measuring again. */
+struct AlignResult
+{
+    bool   measured = false;
+    double leftMs = 0.0, rightMs = 0.0; bool hasLeft = false, hasRight = false;     // a spot's lead over the left / right main channels
+    double arrivalMs = 0.0;                                                           // a distance mic: how much later than the main pair
+    double spreadMs = 0.0;
+    float  clarity = 0.0f, suggestedPan = 0.0f;
+    float  suggestedPanR = 0.0f; bool suggestedStereo = false;                         // a stereo pair: suggestedPan for its left channel, this for its right
+    bool   inverted = false;
+    int    severity = 0;
+    juce::String message;
+};
+/** One track in a piece's alignment: its delay (on or off) and the measurement it came from. */
+struct AlignTrack
+{
+    double ms = 0.0;
+    bool   on = false;
+    AlignResult result;
+};
+/** A piece's spot-mic alignment: a take window's (measured on one of its takes), or an edit's own (measured on the edit, in post). People, mics,
+    distances and the temperature change from piece to piece, so every piece keeps its own. The mixers use the set of the piece being recorded,
+    played or worked on (Project::alignActive). */
+struct AlignSet
+{
+    std::map<juce::String, AlignTrack> tracks;       // track id -> its delay and measurement
+    juce::String measuredOn;                          // "Take 004 - Kyrie (the whole take, 6:12), 22 Oct 2026 21:30"
+    bool hasDelays() const { for (auto& kv : tracks) if (kv.second.on && kv.second.ms > 0.0) return true; return false; }
+    bool measured() const  { for (auto& kv : tracks) if (kv.second.result.measured) return true; return measuredOn.isNotEmpty(); }
+    AlignTrack* find (const juce::Uuid& track) { auto it = tracks.find (track.toString()); return it != tracks.end() ? &it->second : nullptr; }
+    const AlignTrack* find (const juce::Uuid& track) const { auto it = tracks.find (track.toString()); return it != tracks.end() ? &it->second : nullptr; }
+};
+
+/** The pitch pipe (its window, from the menu bar): kept with the project, as the outputs it plays to belong to this project's set-up. */
+struct PitchPipeDef
+{
+    double refA = 440.0;                  // the reference: A4 in Hz
+    int    temperament = 0;               // tuning::Temperament
+    int    key = 0;                       // the key the tuning is built on (pitch class, 0 = C)
+    bool   chordMode = false;             // the Chord tick box: notes are chosen first, then held together with Play
+    int    chordTuning = 0;               // tuning::ChordTuning (chord mode only)
+    float  levelDb = -14.0f;
+    std::vector<int> outputs;             // the driver outputs it plays to (0-based)
+    int    lowestC = 48;                  // the keyboard's lowest key (MIDI: 48 = C3)
+};
+
+/** The click (its window, from the menu bar): the tempo, the bar, the sound and where it goes. Switched on and off by hand (never saved as on). */
+struct ClickDef
+{
+    double bpm = 100.0;
+    int    beatsPerBar = 4, beatUnit = 4;
+    bool   accent = true;
+    int    sound = 2;                     // ClickTrack::Sound (2 = Soft)
+    float  levelDb = -14.0f;
+    std::vector<int> outputs;
 };
 
 /** An Int Bus (fed by audio tracks / other Int Buses, goes to tracks and buses) or an Ext Bus
@@ -94,6 +155,31 @@ public:
     int    ltcOutFormat = 1;                  // see LtcGenerator::formatInfo (1 = 25 fps)
     int    ltcOutStartMode = 0;               // 0 = starts at the time of day on this computer's clock, 1 = starts at ltcOutStartSeconds
     double ltcOutStartSeconds = 0.0;
+    // ---- spot-mic alignment (the Align window): every piece keeps its own set (a take window's id -> its set; an edit measured in post: the edit's id)
+    std::map<juce::String, AlignSet> alignSets;
+    juce::String alignActive;                 // whose set the mixers use now: the piece being recorded, played or worked on (set by the program)
+    bool         alignEnabled = true;         // the A / B switch in the Align window: off, no track is delayed
+    /** The set an edit plays with: its own (measured on the edit), else that of the take window most of its audio comes from. A take window: its own. */
+    juce::String alignOwnerFor (bool isEdit, const juce::Uuid& id) const;
+    AlignSet* alignSetOf (const juce::String& owner) { auto it = alignSets.find (owner); return it != alignSets.end() ? &it->second : nullptr; }
+    const AlignSet* alignSetOf (const juce::String& owner) const { auto it = alignSets.find (owner); return it != alignSets.end() ? &it->second : nullptr; }
+    /** How much later this track is heard now (samples at this rate): the active set's delay, if it is on and alignment is on. */
+    double alignSamplesFor (const TrackDef& t, double sampleRate) const
+    {
+        if (! alignEnabled) return 0.0;
+        const auto* set = alignSetOf (alignActive);
+        const auto* at = set != nullptr ? set->find (t.id) : nullptr;
+        return at != nullptr && at->on && at->ms > 0.0 ? at->ms * sampleRate / 1000.0 : 0.0;
+    }
+    /** The delays a piece plays with, as text (for knowing when a render is out of date). */
+    juce::String alignSignature (const juce::String& owner) const
+    {
+        juce::String s = alignEnabled ? "on" : "off";
+        if (const auto* set = alignSetOf (owner)) for (auto& kv : set->tracks) if (kv.second.on && kv.second.ms > 0.0) s << ";" << kv.first << "=" << juce::String (kv.second.ms, 3);
+        return s;
+    }
+    PitchPipeDef pitchPipe;                   // the pitch pipe's settings (not an undo step)
+    ClickDef     click;                       // the click's settings (not an undo step)
     /** The mixer the Stream Deck's second Mixer key opens (null = the first mixer after the processing mixer). */
     juce::Uuid altMixer = juce::Uuid::null();
     /** Index in 'mixers' of the Alt Mixer, or -1 when there is only the processing mixer. */

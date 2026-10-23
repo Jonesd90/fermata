@@ -47,6 +47,13 @@ AppContext::AppContext()
             forgetWaveforms (done);
             project.sendChangeMessage();
         }
+        if (++alignTicks % 3 == 0 && ! engine.isPlaying() && ! engine.isRecording())   // idle: the live inputs are aligned for the piece being worked on
+            setAlignOwner (currentAlignOwner());
+        if (engine.isPlaying() && ! discAlign.empty() && playInfo.kind == PlayInfo::Kind::Other && playInfo.id == discToken)
+        {                                                                    // a disc through the mixers: each piece with its own spot delays, switched in the pause before it
+            const double pos = playInfo.startSeconds + playedSeconds();
+            for (auto& d : discAlign) if (pos < d.end) { setAlignOwner (d.owner); break; }
+        }
     };
     watcher.startTimer (100);
     loadTicker.fn = [this] { tickLoad(); };
@@ -160,9 +167,45 @@ void AppContext::setLtcInput (int ch)
     project.structureChanged();
 }
 
+void AppContext::applyAux()
+{
+    auto& aux = engine.auxSounds();
+    const auto& pp = project.pitchPipe;
+    const auto& ck = project.click;
+    aux.setPipeOutputs (pp.outputs); aux.pipe.setLevelDb (pp.levelDb);
+    aux.setClickOutputs (ck.outputs); aux.click.setLevelDb (ck.levelDb);
+    aux.click.setTempo (ck.bpm); aux.click.setBeatsPerBar (ck.beatsPerBar); aux.click.setAccent (ck.accent); aux.click.setSound (ck.sound);
+    if (! hasProject()) { aux.click.setRunning (false); aux.pipe.allOff(); }
+}
+
+void AppContext::setAlignOwner (const juce::String& owner)
+{
+    if (owner == project.alignActive) return;
+    project.alignActive = owner;
+    engine.rebuildPlan();                                                    // (at once: playback may be about to start)
+    project.sendChangeMessage();                                             // the mixer strips show the delays now in force
+}
+
+juce::String AppContext::currentAlignOwner()
+{
+    if (engine.isRecording()) return project.alignOwnerFor (false, recordTarget);
+    if (engine.isPlaying())
+    {
+        if (playInfo.kind == PlayInfo::Kind::Take) return project.alignOwnerFor (false, playInfo.windowId);
+        if (playInfo.kind == PlayInfo::Kind::Edit) return project.alignOwnerFor (true, playInfo.id);
+        return project.alignActive;
+    }
+    const auto key = lastWorkWindowKey ? lastWorkWindowKey() : juce::String();
+    const juce::Uuid id (key.fromFirstOccurrenceOf (":", false, false));
+    if (key.startsWith ("take:")) return project.alignOwnerFor (false, id);
+    if (key.startsWith ("edit:")) return project.alignOwnerFor (true, id);
+    return project.alignActive;
+}
+
 void AppContext::applyTalkback()
 {
     applyLtc();
+    applyAux();
     engine.setTalkbackRouting (project.crMicInputs, project.tbOutputs);
     engine.setStageMix (project.stageGainDb, project.stagePan, project.stagePlaybackDb, project.stageOutputDb);
     engine.setCrMic (crMicOpen());
@@ -535,6 +578,7 @@ bool AppContext::newProject (const juce::File& file)
 {
     if (engine.isRecording()) { showError ("Recording", "Stop recording first."); return false; }
     stopPlayback();
+    engine.auxSounds().click.setRunning (false); engine.auxSounds().pipe.allOff();     // (the click and the pitch pipe belong to the old project's outputs)
     plugins.closeAllEditors();                       // (the old project's plug-ins go with it)
     saveNow();
     auto insertFactory = project.insertFactory;
@@ -684,6 +728,7 @@ bool AppContext::closeProject (bool save)
 {
     if (engine.isRecording()) { showError ("Recording", "Stop recording first."); return false; }
     stopPlayback();
+    engine.auxSounds().click.setRunning (false); engine.auxSounds().pipe.allOff();
     plugins.closeAllEditors();
     if (save) saveNow();
     props.saveIfNeeded();
@@ -877,6 +922,7 @@ void AppContext::toggleRecord (const juce::Uuid& takeWindowId)
     auto* w = project.findTakeWindow (takeWindowId);
     if (w == nullptr) { showError ("Record", "Choose a take window to record into."); return; }
     recordTarget = takeWindowId;
+    setAlignOwner (project.alignOwnerFor (false, takeWindowId));           // monitoring while recording: this piece's alignment
     auto err = engine.startRecording (*w);
     if (err.isNotEmpty()) showError ("Cannot record", err);
     else saveNow (true);   // write the project at once so the new take is never lost
@@ -928,6 +974,7 @@ juce::String AppContext::playTakeWindow (const juce::Uuid& windowId, double from
         if (std::abs (g.sampleRate - rate) > 0.5) continue;                        // another sample rate cannot be mixed in
         for (auto s : segmentsForTake (project, g, (juce::int64) std::llround (g.startSeconds * rate))) segs.push_back (std::move (s));
     }
+    setAlignOwner (project.alignOwnerFor (false, windowId));                // the piece's own spot-mic alignment, before the first sample plays
     const juce::int64 a = (juce::int64) std::llround (juce::jmax (0.0, fromSec) * rate);
     const juce::int64 open = a + (juce::int64) std::llround (kOpenEndSeconds * rate);
     const bool loop = loopToSec > fromSec;
@@ -949,6 +996,7 @@ juce::String AppContext::playTake (const juce::Uuid& windowId, const juce::Uuid&
     auto segs = segmentsForTake (project, *g);
     transportFades (segs, a, b, rate);
     loop = loop && toSec >= 0 && b > a;
+    setAlignOwner (project.alignOwnerFor (false, windowId));
     auto err = beginSession (*this, std::move (segs), a, b, rate, nullptr, loop);
     if (err.isEmpty()) { playInfo = { PlayInfo::Kind::Take, windowId, takeId, (double) a / rate }; playInfo.loopLen = loop ? (double) (b - a) / rate : 0.0; }
     return err;
@@ -966,6 +1014,7 @@ juce::String AppContext::playEdit (const juce::Uuid& editId, double fromSec, dou
     auto segs = segmentsForEdit (project, *e);
     loop = loop && toSec >= 0 && b > a;
     const bool goOn = loop && goOnAfterLoop;
+    setAlignOwner (project.alignOwnerFor (true, editId));
     transportFades (segs, a, b, rate, ! goOn);                            // (a loop that may be let go of has its end faded by the session)
     project.resolveAllAutomation();
     auto err = beginSession (*this, std::move (segs), a, b, rate, automationPlanFor (project, *e), loop, true, editId,
@@ -980,6 +1029,13 @@ juce::String AppContext::playDisc (const std::vector<DiscPlayItem>& items, doubl
     std::vector<PlaySegment> segs;
     auto plan = std::make_shared<AutomationPlan>();
     project.resolveAllAutomation();
+    discAlign.clear();                                                       // each piece's spot delays, switched in the pause before it (see the watcher)
+    for (auto& it : items)
+        if (auto* e = project.findEdit (it.editId); e != nullptr && ! e->isEmpty() && e->sampleRate > 0.0)
+            discAlign.push_back ({ it.startSeconds + (double) e->lengthSamples() / e->sampleRate, project.alignOwnerFor (true, it.editId) });
+    std::sort (discAlign.begin(), discAlign.end(), [] (const DiscAlign& x, const DiscAlign& y) { return x.end < y.end; });
+    discToken = token;
+    for (auto& d : discAlign) if (fromSec < d.end) { setAlignOwner (d.owner); break; }      // the piece it starts in (or the next one)
     int used = 0;
     for (auto& it : items)
     {
@@ -1054,6 +1110,7 @@ juce::String AppContext::playRegionOriginal (const juce::Uuid& editId, const juc
     const auto limit = r->sourceLength > 0 ? r->sourceLength : r->srcOut + (juce::int64) (60.0 * r->sampleRate);
     const juce::int64 a = juce::jlimit ((juce::int64) 0, limit, fromSample);
     const juce::int64 b = juce::jlimit (a, limit, toSample);
+    setAlignOwner (project.alignOwnerFor (true, editId));
     auto err = beginSession (*this, segmentsForRegionOriginal (project, *r), a, b, r->sampleRate, nullptr, false, false, editId);
     if (err.isEmpty()) playInfo = { PlayInfo::Kind::Other, juce::Uuid::null(), regionId, (double) a / r->sampleRate };
     return err;
@@ -1147,6 +1204,7 @@ void AppContext::stopPlayback()
     }
     engine.stopPlayback();
     playInfo = {};
+    discAlign.clear();
     freeRetiredMixersSoon();                           // (mixers retired while it played waited for this)
     if (savesHeldWhilePlaying > 0)                     // a save waited while it played: do it now
     {

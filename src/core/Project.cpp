@@ -317,7 +317,7 @@ Project::Project() { createDefaultDesign(); }
 
 void Project::createDefaultDesign()
 {
-    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); preampDevices.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); preampDevices.clear(); pitchPipe = PitchPipeDef(); click = ClickDef(); alignEnabled = true; alignSets.clear(); alignActive.clear();
     windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear(); oldWindowFiles.clear();     // (nothing of the project that was open before: its missing files are not this one's)
     setInputCount (8);
     setOutputCount (4);
@@ -1252,6 +1252,7 @@ var Project::toVar (bool editorialOnly, bool withWindows) const
         var o = obj();
         put (o, "id", t.id.toString()); put (o, "name", t.name); put (o, "format", (int) t.format);
         put (o, "surround", t.surroundChannels); put (o, "colour", (juce::int64) t.colour); put (o, "armed", t.isArmed()); put (o, "monitor", (int) t.monitor()); if (t.isLtc) put (o, "ltc", true);
+        if (t.alignRole != 0) put (o, "alignRole", t.alignRole);
         juce::Array<var> ins;
         for (int c = 0; c < t.channelCount(); ++c) ins.add (t.inputOf (c));
         put (o, "inputs", ins);
@@ -1283,6 +1284,46 @@ var Project::toVar (bool editorialOnly, bool withWindows) const
     put (root, "altMixer", altMixer.toString());
     put (root, "ltcInput", ltcInput); put (root, "ltcOutput", ltcOutput); put (root, "ltcOutOn", ltcOutOn); put (root, "ltcOutFormat", ltcOutFormat);
     put (root, "ltcOutStartMode", ltcOutStartMode); put (root, "ltcOutStartSeconds", ltcOutStartSeconds);
+    {
+        auto outs = [] (const std::vector<int>& v) { juce::Array<var> a; for (int o : v) a.add (o); return var (a); };
+        var pp = obj();
+        put (pp, "refA", pitchPipe.refA); put (pp, "temperament", pitchPipe.temperament); put (pp, "key", pitchPipe.key); put (pp, "chordMode", pitchPipe.chordMode);
+        put (pp, "chordTuning", pitchPipe.chordTuning); put (pp, "levelDb", (double) pitchPipe.levelDb); put (pp, "outputs", outs (pitchPipe.outputs)); put (pp, "lowestC", pitchPipe.lowestC);
+        put (root, "pitchPipe", pp);
+        var ck = obj();
+        put (ck, "bpm", click.bpm); put (ck, "beatsPerBar", click.beatsPerBar); put (ck, "beatUnit", click.beatUnit); put (ck, "accent", click.accent);
+        put (ck, "sound", click.sound); put (ck, "levelDb", (double) click.levelDb); put (ck, "outputs", outs (click.outputs));
+        put (root, "click", ck);
+        put (root, "alignEnabled", alignEnabled);
+        put (root, "alignActive", alignActive);
+        var sets = obj();
+        for (auto& [owner, set] : alignSets)
+        {
+            const juce::Uuid oid (owner);
+            bool exists = false;
+            for (auto& w : takeWindows) exists = exists || w->id == oid;
+            for (auto& e : edits) exists = exists || e->id == oid;
+            if (! exists) continue;                                                       // (a piece that was deleted: its measurements go with it)
+            var so = obj(); put (so, "measuredOn", set.measuredOn);
+            var tr = obj();
+            for (auto& [tid, at] : set.tracks)
+            {
+                var al = obj(); const auto& ar = at.result;
+                put (al, "ms", at.ms); put (al, "on", at.on);
+                if (ar.measured || ar.message.isNotEmpty())
+                {
+                    put (al, "measured", ar.measured); if (ar.hasLeft) put (al, "left", ar.leftMs); if (ar.hasRight) put (al, "right", ar.rightMs);
+                    put (al, "arrival", ar.arrivalMs); put (al, "spread", ar.spreadMs); put (al, "clarity", (double) ar.clarity); put (al, "pan", (double) ar.suggestedPan);
+                    if (ar.suggestedStereo) put (al, "panR", (double) ar.suggestedPanR);
+                    put (al, "inverted", ar.inverted); put (al, "severity", ar.severity); put (al, "message", ar.message);
+                }
+                tr.getDynamicObject()->setProperty (juce::Identifier (tid), al);
+            }
+            put (so, "tracks", tr);
+            sets.getDynamicObject()->setProperty (juce::Identifier (owner), so);
+        }
+        put (root, "alignSets", sets);
+    }
     { juce::Array<var> tb; for (int o : tbOutputs) tb.add (o); put (root, "tbOutputs", juce::var (tb)); }
 
     juce::Array<var> mx;
@@ -1390,6 +1431,7 @@ bool Project::fromVar (const var& root)
             TrackDef t; t.id = juce::Uuid (v["id"].toString()); t.name = v["name"].toString();
             t.format = (TrackFormat) (int) v["format"]; t.surroundChannels = (int) v["surround"]; t.colour = (juce::uint32) (juce::int64) v["colour"]; t.isLtc = v.hasProperty ("ltc") && (bool) v["ltc"];
             t.setArmed ((bool) v["armed"]); t.setMonitor ((Monitor) juce::jlimit (0, 3, (int) v["monitor"]));
+            t.alignRole = juce::jlimit (0, 3, (int) v.getProperty ("alignRole", 0));
             if (auto* ins = v["inputs"].getArray())
                 for (int c = 0; c < kMaxTrackChannels && c < ins->size(); ++c) t.inputs[(size_t) c] = (int) (*ins)[c];
             else for (int c = 0; c < t.channelCount(); ++c) t.inputs[(size_t) c] = (int) v["firstInput"] + c;   // older project files
@@ -1428,6 +1470,52 @@ bool Project::fromVar (const var& root)
     std::sort (tbOutputs.begin(), tbOutputs.end()); tbOutputs.erase (std::unique (tbOutputs.begin(), tbOutputs.end()), tbOutputs.end());
     ltcInput = (int) root.getProperty ("ltcInput", -1); ltcOutput = (int) root.getProperty ("ltcOutput", -1); ltcOutOn = (bool) root.getProperty ("ltcOutOn", false);
     ltcOutFormat = (int) root.getProperty ("ltcOutFormat", 1); ltcOutStartMode = (int) root.getProperty ("ltcOutStartMode", 0); ltcOutStartSeconds = (double) root.getProperty ("ltcOutStartSeconds", 0.0);
+    {
+        auto outs = [this] (const var& v) { std::vector<int> r; if (auto* a = v.getArray()) for (auto& x : *a) { const int o = (int) x; if (o >= 0 && o < (int) outputs.size() && std::find (r.begin(), r.end(), o) == r.end()) r.push_back (o); } return r; };
+        pitchPipe = PitchPipeDef();
+        if (auto pp = root["pitchPipe"]; pp.isObject())
+        {
+            pitchPipe.refA = juce::jlimit (380.0, 500.0, (double) pp.getProperty ("refA", 440.0));
+            pitchPipe.temperament = juce::jlimit (0, 6, (int) pp.getProperty ("temperament", 0)); pitchPipe.key = juce::jlimit (0, 11, (int) pp.getProperty ("key", 0));
+            pitchPipe.chordMode = (bool) pp.getProperty ("chordMode", false); pitchPipe.chordTuning = juce::jlimit (0, 2, (int) pp.getProperty ("chordTuning", 0));
+            pitchPipe.levelDb = (float) juce::jlimit (-60.0, 0.0, (double) pp.getProperty ("levelDb", -14.0)); pitchPipe.outputs = outs (pp["outputs"]);
+            pitchPipe.lowestC = juce::jlimit (24, 72, (int) pp.getProperty ("lowestC", 48));
+        }
+        alignEnabled = (bool) root.getProperty ("alignEnabled", true);
+        alignActive = root.getProperty ("alignActive", "").toString();
+        alignSets.clear();
+        if (auto* so = root["alignSets"].getDynamicObject())
+            for (auto& sp : so->getProperties())
+            {
+                AlignSet set; set.measuredOn = sp.value.getProperty ("measuredOn", "").toString();
+                if (auto* to = sp.value["tracks"].getDynamicObject())
+                    for (auto& tp : to->getProperties())
+                    {
+                        const auto& al = tp.value;
+                        AlignTrack at;
+                        at.ms = juce::jlimit (0.0, 200.0, (double) al.getProperty ("ms", 0.0)); at.on = (bool) al.getProperty ("on", false);
+                        auto& ar = at.result;
+                        ar.measured = (bool) al.getProperty ("measured", false);
+                        ar.hasLeft = al.hasProperty ("left"); ar.leftMs = (double) al.getProperty ("left", 0.0);
+                        ar.hasRight = al.hasProperty ("right"); ar.rightMs = (double) al.getProperty ("right", 0.0);
+                        ar.arrivalMs = (double) al.getProperty ("arrival", 0.0); ar.spreadMs = (double) al.getProperty ("spread", 0.0);
+                        ar.clarity = (float) (double) al.getProperty ("clarity", 0.0); ar.suggestedPan = (float) (double) al.getProperty ("pan", 0.0);
+                        ar.suggestedStereo = al.hasProperty ("panR"); ar.suggestedPanR = (float) (double) al.getProperty ("panR", 0.0);
+                        ar.inverted = (bool) al.getProperty ("inverted", false); ar.severity = (int) al.getProperty ("severity", 0);
+                        ar.message = al.getProperty ("message", "").toString();
+                        set.tracks[tp.name.toString()] = at;
+                    }
+                alignSets[sp.name.toString()] = set;
+            }
+        click = ClickDef();
+        if (auto ck = root["click"]; ck.isObject())
+        {
+            click.bpm = juce::jlimit (20.0, 400.0, (double) ck.getProperty ("bpm", 100.0));
+            click.beatsPerBar = juce::jlimit (1, 32, (int) ck.getProperty ("beatsPerBar", 4)); click.beatUnit = juce::jlimit (1, 32, (int) ck.getProperty ("beatUnit", 4));
+            click.accent = (bool) ck.getProperty ("accent", true); click.sound = juce::jlimit (0, 3, (int) ck.getProperty ("sound", 2));
+            click.levelDb = (float) juce::jlimit (-60.0, 0.0, (double) ck.getProperty ("levelDb", -14.0)); click.outputs = outs (ck["outputs"]);
+        }
+    }
     altMixer = root["altMixer"].toString().isEmpty() ? juce::Uuid::null() : juce::Uuid (root["altMixer"].toString());
 
     if (auto* a = root["mixers"].getArray())
@@ -1938,6 +2026,23 @@ bool Project::save (juce::String& error, bool quick)
     }
     oldWindowFiles.clear();
     return true;
+}
+
+juce::String Project::alignOwnerFor (bool isEdit, const juce::Uuid& id) const
+{
+    if (! isEdit) return id.toString();
+    const auto own = id.toString();
+    if (const auto* s = alignSetOf (own); s != nullptr && (s->measured() || s->hasDelays())) return own;     // measured on the edit itself (in post)
+    // the take window most of the edit's audio comes from (each piece knows its window)
+    const EditDef* e = nullptr;
+    for (auto& ep : edits) if (ep->id == id) e = ep.get();
+    if (e == nullptr) return own;
+    std::map<juce::String, juce::int64> weight;
+    for (auto& r : e->regions) if (! r.windowId.isNull()) weight[r.windowId.toString()] += r.length();
+    if (weight.empty() && ! e->windowId.isNull()) return e->windowId.toString();
+    juce::String best; juce::int64 bestW = -1;
+    for (auto& [w, n] : weight) if (n > bestW) { bestW = n; best = w; }
+    return best.isNotEmpty() ? best : own;
 }
 
 std::unique_ptr<Project> Project::cloneForRender (double sampleRate, int maxBlock) const

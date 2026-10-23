@@ -158,6 +158,7 @@ juce::String masterRenderFingerprint (const Project& cp, const EditDef& e, const
     for (auto& t : p.tracks) text << "|T:" << t.id.toString() << ":" << (int) t.format << ":" << t.surroundChannels;
     for (auto& b : p.buses)  text << "|B:" << b.id.toString() << ":" << (b.external ? 1 : 0);
     text << "|S:" << rp.sourceId.toString() << ":" << juce::String (rp.tailSeconds, 4) << ":" << (rp.ownMixers ? "own" : rp.mixerId.toString());
+    text << "|A:" << p.alignSignature (p.alignOwnerFor (true, e.id));                // the spot-mic delays it plays with
     // two 64-bit FNV-1a hashes with different starting values (128 bits in all)
     juce::uint64 h1 = 1469598103934665603ull, h2 = 0x9E3779B97F4A7C15ull;
     for (auto c = text.toUTF8(); *c != 0; ++c) { h1 = (h1 ^ (juce::uint8) *c) * 1099511628211ull; h2 = (h2 ^ (juce::uint8) *c) * 0x100000001B3ull + 0x7F4A7C15ull; }
@@ -328,6 +329,7 @@ MasterRenderBatch::MasterRenderBatch (const Project& live, const std::vector<juc
             bi.start = e->audibleStart(); bi.end = e->audibleEnd();           // (what playing the edit plays: the fades included, even where they reach outside the first and last piece)
             bi.segments = segmentsForEdit (live, *e);
             bi.automationEdit = e->automationOn ? e->id : juce::Uuid::null();
+            bi.alignOwner = live.alignOwnerFor (true, e->id);                 // the piece's own spot-mic alignment
             if (rp.ownMixers) if (auto* em = live.mixerOfEdit (e->id)) bi.mixerId = em->id;
             bs.items.push_back (std::move (bi));
         }

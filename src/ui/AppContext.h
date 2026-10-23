@@ -143,6 +143,15 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     std::function<void (const juce::Uuid& mixerId, const juce::Uuid& trackId)> selectStripInMixer;
     std::function<bool (const juce::Uuid& mixerId, const juce::Uuid& trackId)> isStripSelectedInMixer;
     std::function<void()> showSurfacePanel;              // the "Mixer controller" window (MIDI ports, what the buttons do, the MIDI monitor)
+    std::function<void()> showPitchPipe, showClick;      // the Pitch pipe and Click windows (menu bar)
+    /** The Align window (spot-mic time alignment), measuring on a take window (isEdit false) or an edit. */
+    std::function<void (bool isEdit, const juce::Uuid& id)> showAlign;
+    /** Gives the engine the pitch pipe's and the click's settings from the project (outputs, level, tempo ...). */
+    void applyAux();
+    /** Spot-mic alignment: the mixers use this piece's set from now on (a take window's id, or an edit's: see Project::alignOwnerFor). */
+    void setAlignOwner (const juce::String& owner);
+    /** The piece the mixers should align for now: the one being recorded, played, or worked on (the take / edit window used last). */
+    juce::String currentAlignOwner();
     /** The take or edit window you last worked in registers how its Play button behaves; the remote's play / pause uses it. */
     void setTransportHandler (const void* owner, std::function<void()> fn) { transportOwner = owner; transportHandler = std::move (fn); }
     void clearTransportHandler (const void* owner) { if (transportOwner == owner) { transportOwner = nullptr; transportHandler = nullptr; } }
@@ -182,6 +191,10 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     /** Deletes a cue mixer (never the processing mixer, which is the first one). */
     bool deleteMixer (const juce::Uuid& mixerId);
     juce::Uuid recordTarget;                         // take window used by the main Record button (the one recorded into last)
+    int alignTicks = 0;                              // (the watcher looks at which piece to align for three times a second)
+    struct DiscAlign { double end = 0.0; juce::String owner; };
+    std::vector<DiscAlign> discAlign;                // while a disc plays through the mixers: where each piece ends on the disc and the spot delays it has
+    juce::Uuid discToken;
     /** For the "Next Take / This Take" box: true while recording (number = the take being recorded), otherwise number = the next take of the most recently used take window. */
     bool takeBoxInfo (int& number);
 

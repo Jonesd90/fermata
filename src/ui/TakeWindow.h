@@ -70,7 +70,8 @@ private:
     juce::TextButton zoomInButton { "+" }, zoomOutButton { "-" };
     IconButton editInButton { "Mark 1 [1]" }, editOutButton { "Mark 2 [2]" },
                toEditButton { "To edit [3]" }, toEditAtButton { "To playhead [4]" }, editWindowButton { "Edit window" },
-               importButton { "Import takes..." }, exportProcButton { "Export for Processing..." }, barSearchButton { "Search for bar" };
+               importButton { "Import takes..." }, exportProcButton { "Export for Processing..." }, barSearchButton { "Search for bar" },
+               alignButton { "Align spot mics" }, takeSheetButton { "Take sheet" };
     IconButton overdubBox { "Overdub" }, markersToggle { "Markers" };         // (toggles)
     LoopButton loopToggle;
     PlayheadModeButton playheadMode;

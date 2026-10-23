@@ -19,6 +19,9 @@
 #include "ui/RemoteControl.h"
 #include "ui/Surface.h"
 #include "ui/SurfacePanel.h"
+#include "ui/PitchPipeWindow.h"
+#include "ui/ClickWindow.h"
+#include "ui/AlignWindow.h"
 #include "ui/CpuCoresPanel.h"
 #include "ui/PluginManager.h"
 #if JUCE_WINDOWS
@@ -199,6 +202,18 @@ public:
             return false;
         };
         ctx->showSurfacePanel = [this] { showWindow ("surface", "Mixer controller", [this] { return new SurfacePanel (*ctx); }); };
+        ctx->showPitchPipe = [this] { showWindow ("pitchpipe", "Pitch pipe", [this] { return new PitchPipeComponent (*ctx); }); };
+        ctx->showClick = [this] { showWindow ("click", "Click", [this] { return new ClickComponent (*ctx); }); };
+        ctx->showAlign = [this] (bool isEdit, const juce::Uuid& id)
+        {
+            if (auto it = windows.find ("align"); it != windows.end() && it->second != nullptr)       // open already: it measures on the window it was asked from now
+            {
+                auto* c = it->second->getContentComponent();
+                if (auto* host = dynamic_cast<CornerStripHost*> (c)) c = host->content.get();
+                if (auto* ac = dynamic_cast<AlignComponent*> (c)) ac->setSource (isEdit, id);
+            }
+            showWindow ("align", "Align spot mics", [this, isEdit, id] { return new AlignComponent (*ctx, isEdit, id); });
+        };
         surface = std::make_unique<SurfaceController> (*ctx);
         ctx->surface = surface.get();
         ctx->showAudioSettings = [this] { openAudioSettings(); };
@@ -448,7 +463,7 @@ private:
         }
         if (stayInFront != nullptr) return;                                          // not open, and the user is working elsewhere: do not open it (the work is already in the project)
         juce::Component* content = make();
-        if (key == "organiser" || key == "takedisplay" || key == "bridge") content = new CornerStripHost (content);     // (their pin and sun / moon buttons get a strip of their own)
+        if (key == "organiser" || key == "takedisplay" || key == "bridge" || key == "pitchpipe" || key == "click" || key == "align") content = new CornerStripHost (content);     // (their pin and sun / moon buttons get a strip of their own)
         auto w = std::make_unique<ToolWindow> (title, [this, key] (ToolWindow*)
         {
             juce::MessageManager::callAsync ([this, key] { windows.erase (key); });
@@ -461,7 +476,7 @@ private:
         if (auto* host = dynamic_cast<CornerStripHost*> (content)) host->content->setWantsKeyboardFocus (true);
         w->setIcon (makeFermataIcon (256));
         w->isTransportWindow = key.startsWith ("take:") || key.startsWith ("edit:");
-        w->forwardKeys = key.startsWith ("mixer:") || key.startsWith ("scope:") || key == "bridge" || key == "media" || key == "takedisplay" || key == "organiser";
+        w->forwardKeys = key.startsWith ("mixer:") || key.startsWith ("scope:") || key == "bridge" || key == "media" || key == "takedisplay" || key == "organiser" || key == "pitchpipe" || key == "click" || key == "align";
         juce::Rectangle<int> mixerRemembered;                                         // a mixer's size when it was last closed (put back by fitWindowToStrips)
         {   // where it was left last time (kept in the project), or else centred; never wider than the screen, nor taller
             const auto& displays = juce::Desktop::getInstance().getDisplays();

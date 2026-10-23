@@ -13,6 +13,7 @@ Bouncer::Bouncer (const Project& live, const BounceSettings& s) : settings (s)
     if (s.sources.empty() && s.sourcesPre.empty()) { prepareError = "Choose at least one output to bounce (an Ext bus, an Int bus or an audio track)."; return; }
     if (s.items.empty()) { prepareError = "Nothing to bounce."; return; }
     shadow = live.cloneForRender (s.sampleRate, kBlock);
+    if (! s.items.empty()) shadow->alignActive = s.items.front().alignOwner.isNotEmpty() ? s.items.front().alignOwner : s.alignOwner;
     engine = std::make_unique<AudioEngine> (*shadow);
     engine->setOfflineTarget (s.mixerId, s.sources, s.sourcesPre);
     engine->prepare (s.sampleRate, kBlock);
@@ -107,6 +108,8 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
         bool replan = autoPlan != nullptr && autoPlan->end();               // (the previous piece's automation lets go)
         autoPlan = planForEdit (it.automationEdit.isNull() ? settings.automationEdit : it.automationEdit, renderedMixer);
         if (autoPlan != nullptr && autoPlan->begin()) replan = true;         // sends this automation moves go into the plan (see SendState::autoHeld)
+        if (const auto owner = it.alignOwner.isNotEmpty() ? it.alignOwner : settings.alignOwner; owner != shadow->alignActive)
+        { shadow->alignActive = owner; replan = true; }                         // each piece with its own spot-mic alignment
         if (replan) engine->rebuildPlan();
 
         std::vector<juce::File> finals, tmps;

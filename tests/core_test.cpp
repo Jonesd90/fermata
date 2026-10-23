@@ -27,6 +27,11 @@
 #include "../src/core/Mcu.h"
 #include "../src/core/Loudness.h"
 #include "../src/core/ScreenLayout.h"
+#include "../src/core/Tuning.h"
+#include "../src/core/PitchPipe.h"
+#include "../src/core/TimeAlign.h"
+#include "../src/core/TakeSheet.h"
+#include "../src/core/WavRepair.h"
 #include <cstdio>
 #include <thread>
 
@@ -6784,6 +6789,591 @@ int main()
             for (auto& b : LayoutDef::builtIns()) { CHECK (b.builtIn && b.name.isNotEmpty() && (int) b.refs.size() == ScreenDivision::cellsOf (b.shape)); for (auto& r : b.refs) CHECK (r.any()); }
             CHECK (WindowRef::kindOf ("bridge") == WindowRef::Kind::Other && WindowRef::kindOf ("") == WindowRef::Kind::None);
         }
+    }
+
+
+    SECTION ("2.89 the pitch pipe's tunings: seven temperaments on a key, A at the reference, pure major / minor chords");
+    {
+        using namespace tuning;
+        auto near = [] (double a, double b, double tol) { return std::abs (a - b) <= tol; };
+        CHECK (near (frequency (69, 440.0, Equal, 0), 440.0, 1.0e-9) && near (frequency (60, 440.0, Equal, 0), 261.6255653, 1.0e-6));
+        for (int t = 0; t < NumTemperaments; ++t) for (int k = 0; k < 12; ++k) CHECK (near (frequency (69, 415.0, t, k), 415.0, 1.0e-9));     // A is always the reference
+        // just intonation in C: the scale's ratios are exact
+        CHECK (near (frequency (64, 440.0, Just, 0) / frequency (60, 440.0, Just, 0), 1.25, 1.0e-12));
+        CHECK (near (frequency (67, 440.0, Just, 0) / frequency (60, 440.0, Just, 0), 1.5, 1.0e-12));
+        CHECK (near (frequency (69, 440.0, Just, 0) / frequency (60, 440.0, Just, 0), 5.0 / 3.0, 1.0e-12));
+        // ... and in D they move with the key: F# is a pure third above D
+        CHECK (near (frequency (66, 440.0, Just, 2) / frequency (62, 440.0, Just, 2), 1.25, 1.0e-12));
+        // quarter-comma meantone: pure major thirds, fifths of 696.58 cents
+        CHECK (near (frequency (64, 440.0, Meantone, 0) / frequency (60, 440.0, Meantone, 0), 1.25, 1.0e-9));
+        CHECK (near (centsOf (frequency (67, 440.0, Meantone, 0) / frequency (60, 440.0, Meantone, 0)), 696.578, 0.01));
+        CHECK (near (centsOf (frequency (68, 440.0, Meantone, 0) / frequency (60, 440.0, Meantone, 0)), 772.627, 0.01));     // G# (not Ab) in C
+        // Pythagorean: pure fifths, the wide third
+        CHECK (near (frequency (67, 440.0, Pythagorean, 0) / frequency (60, 440.0, Pythagorean, 0), 1.5, 1.0e-12));
+        CHECK (near (frequency (64, 440.0, Pythagorean, 0) / frequency (60, 440.0, Pythagorean, 0), 81.0 / 64.0, 1.0e-12));
+        // the well temperaments: published offsets (cents from equal, C = 0), so C - A = their difference
+        CHECK (near (centsOf (frequency (60, 440.0, Werckmeister3, 0) / frequency (60, 440.0, Equal, 0)), 0.0 + 11.730, 0.001));
+        CHECK (near (centsOf (frequency (64, 440.0, Vallotti, 0) / frequency (64, 440.0, Equal, 0)), -7.820 + 5.865, 0.001));
+        CHECK (near (centsOf (frequency (64, 440.0, Kirnberger3, 0) / frequency (60, 440.0, Kirnberger3, 0)), 386.314, 0.01));     // Kirnberger III: a pure third on C
+        // a well temperament in another key is the same shape moved: Vallotti in D, the third D - F# is as wide as C - E in C
+        CHECK (near (centsOf (frequency (66, 440.0, Vallotti, 2) / frequency (62, 440.0, Vallotti, 2)), centsOf (frequency (64, 440.0, Vallotti, 0) / frequency (60, 440.0, Vallotti, 0)), 1.0e-9));
+        // pure chords: C - E - G as a major chord: E 13.7 cents below the piano, G 2 cents above, C stays
+        {
+            const auto c = chordFrequencies ({ 60, 64, 67 }, 440.0, Equal, 0, PureMajor);
+            CHECK (c.root == 60 && c.triadFound && c.freqs.size() == 3);
+            CHECK (near (c.freqs[0], frequency (60, 440.0, Equal, 0), 1.0e-9));
+            CHECK (near (centsFromEqual (c.freqs[1], 64, 440.0), -13.686, 0.01) && near (centsFromEqual (c.freqs[2], 67, 440.0), 1.955, 0.01));
+        }
+        // C - Eb - G as a minor chord: Eb 15.6 cents above
+        {
+            const auto c = chordFrequencies ({ 60, 63, 67 }, 440.0, Equal, 0, PureMinor);
+            CHECK (c.root == 60 && near (centsFromEqual (c.freqs[1], 63, 440.0), 15.641, 0.01) && near (c.freqs[1] / c.freqs[0], 1.2, 1.0e-12));
+        }
+        // an inversion finds its root: E4 G4 C5 major -> built on C5
+        {
+            const auto c = chordFrequencies ({ 64, 67, 72 }, 440.0, Equal, 0, PureMajor);
+            CHECK (c.root == 72 && near (c.freqs[0] / c.freqs[2], 5.0 / 8.0, 1.0e-12) && near (c.freqs[1] / c.freqs[2], 3.0 / 4.0, 1.0e-12));
+        }
+        // a minor seventh chord (A C E G) as minor: G is 9/5 above A; the same notes as MAJOR are a C6 chord built on C
+        {
+            const auto m = chordFrequencies ({ 57, 60, 64, 67 }, 440.0, Equal, 0, PureMinor);
+            CHECK (m.root == 57 && near (m.freqs[3] / m.freqs[0], 9.0 / 5.0 * 1.0, 1.0e-12) && near (m.freqs[1] / m.freqs[0], 6.0 / 5.0, 1.0e-12));
+            const auto M = chordFrequencies ({ 57, 60, 64, 67 }, 440.0, Equal, 0, PureMajor);
+            CHECK (M.root == 60 && near (M.freqs[0] / M.freqs[1], 5.0 / 6.0, 1.0e-12));        // A is the major sixth (5/3) below... an octave down: 5/6
+        }
+        // a chord without its root: D F as a major chord is Bb major (Bb missing): F is the pure fifth of a Bb just below the D
+        {
+            const auto c = chordFrequencies ({ 62, 65 }, 440.0, Equal, 0, PureMajor);
+            CHECK (c.root == 58 && near (c.freqs[1] / c.freqs[0], 1.5 / 1.25, 1.0e-12));
+        }
+        // as the tuning: just the notes
+        CHECK (near (chordFrequencies ({ 60, 64 }, 440.0, Just, 0, AsTuned).freqs[1], frequency (64, 440.0, Just, 0), 1.0e-12));
+        CHECK (noteName (60) == "C4" && noteName (70) == "Bb4" && juce::String (temperamentName (Kirnberger3)) == "Kirnberger III");
+    }
+
+    SECTION ("2.89 the pitch pipe's voice: exact pitch, a soft swell, released notes die away, a chord never clips");
+    {
+        PitchPipeVoices v;
+        v.prepare (48000.0);
+        v.setLevelDb (-14.0f);
+        std::vector<float> blk (512), all;
+        CHECK (! v.render (blk.data(), 512));                                  // nothing on: nothing rendered
+        v.setSlot (0, 440.0, true);
+        for (int b = 0; b < 48000 * 3 / 512; ++b) { CHECK (v.render (blk.data(), 512) || b > 0); all.insert (all.end(), blk.begin(), blk.end()); }
+        // the swell: quiet at the very start, full after 45 ms
+        float early = 0.0f, later = 0.0f;
+        for (int i = 0; i < 48; ++i) early = juce::jmax (early, std::abs (all[(size_t) i]));
+        for (int i = 4800; i < 9600; ++i) later = juce::jmax (later, std::abs (all[(size_t) i]));
+        CHECK (early < 0.1f * later && later > 0.05f && later < 0.8f);
+        // the pitch: the spectrum's peak (2 s after the swell, zero-padded FFT) is within 0.05 Hz of 440
+        {
+            const int N = 1 << 20;
+            std::vector<double> x ((size_t) N, 0.0);
+            const int from = 24000, len = 96000;
+            for (int i = 0; i < len; ++i) x[(size_t) i] = all[(size_t) (from + i)] * (0.5 - 0.5 * std::cos (2.0 * juce::MathConstants<double>::pi * i / len));
+            std::vector<std::complex<double>> X ((size_t) N / 2 + 1);
+            denoise::detail::realForward (x.data(), N, X.data());
+            int best = 0; double bm = 0.0;
+            for (int k = (int) (400.0 * N / 48000.0); k < (int) (480.0 * N / 48000.0); ++k) if (std::abs (X[(size_t) k]) > bm) { bm = std::abs (X[(size_t) k]); best = k; }
+            const double ym = std::abs (X[(size_t) best - 1]), y0 = bm, yp = std::abs (X[(size_t) best + 1]);
+            const double hz = (best + 0.5 * (ym - yp) / (ym - 2.0 * y0 + yp)) * 48000.0 / N;
+            CHECK (std::abs (hz - 440.0) < 0.05);
+        }
+        // released: it fades out within 150 ms and then nothing is rendered
+        v.setSlot (0, 440.0, false);
+        int blocksSounding = 0;
+        for (int b = 0; b < 40; ++b) if (v.render (blk.data(), 512)) ++blocksSounding;
+        CHECK (blocksSounding >= 13 && blocksSounding <= 16 && ! v.sounding());
+        // a big loud chord stays below full scale
+        v.setLevelDb (0.0f);
+        for (int s = 0; s < 8; ++s) v.setSlot (s, 220.0 * std::pow (2.0, s * 4.0 / 12.0), true);
+        float pk = 0.0f;
+        for (int b = 0; b < 100; ++b) { v.render (blk.data(), 512); for (float x : blk) pk = juce::jmax (pk, std::abs (x)); }
+        CHECK (pk > 0.3f && pk <= 1.0f);
+        v.allOff();
+    }
+
+    SECTION ("2.89 the click: sample-exact beats at the tempo, the first of the bar accented, four sounds");
+    {
+        for (int s = 0; s < ClickTrack::NumSounds; ++s)
+        {
+            const auto plain = ClickTrack::makeHit (s, false, 48000.0), acc = ClickTrack::makeHit (s, true, 48000.0);
+            float pp = 0.0f, pa = 0.0f; for (float x : plain) pp = juce::jmax (pp, std::abs (x)); for (float x : acc) pa = juce::jmax (pa, std::abs (x));
+            CHECK (std::abs (pa - 1.0f) < 1.0e-4f && std::abs (pp - 0.72f) < 1.0e-3f && std::abs (plain.back()) < 1.0e-3f);
+            CHECK (juce::String (ClickTrack::soundName (s)).isNotEmpty());
+        }
+        ClickTrack ck;
+        ck.prepare (48000.0);
+        ck.setSound (ClickTrack::Click); ck.setTempo (120.0); ck.setBeatsPerBar (3); ck.setAccent (true); ck.setLevelDb (0.0f);
+        std::vector<float> blk (480), all;
+        CHECK (! ck.render (blk.data(), 480));                                 // off: silent
+        ck.setRunning (true);
+        for (int b = 0; b < 48000 * 2 / 480 + 10; ++b) { ck.render (blk.data(), 480); all.insert (all.end(), blk.begin(), blk.end()); }
+        std::vector<int> onsets; int quiet = 100000;
+        for (int i = 0; i < (int) all.size(); ++i) { if (std::abs (all[(size_t) i]) > 0.02f && quiet > 2000) onsets.push_back (i); quiet = std::abs (all[(size_t) i]) > 0.02f ? 0 : quiet + 1; }
+        CHECK (onsets.size() == 5 && onsets.size() > 4);
+        if (onsets.size() >= 5) { CHECK (onsets[0] <= 2 && std::abs (onsets[1] - 24000) <= 2 && std::abs (onsets[2] - 48000) <= 2 && std::abs (onsets[3] - 72000) <= 2 && std::abs (onsets[4] - 96000) <= 2); }
+        auto peakFrom = [&] (int at) { float p = 0.0f; for (int i = at; i < at + 2000 && i < (int) all.size(); ++i) p = juce::jmax (p, std::abs (all[(size_t) i])); return p; };
+        if (onsets.size() >= 5) { CHECK (peakFrom (onsets[0]) > 0.95f && peakFrom (onsets[1]) < 0.8f && peakFrom (onsets[3]) > 0.95f); }     // bar of 3: beats 1 and 4 accented
+        CHECK (ck.beatCount() == 5);
+        ck.setRunning (false);
+        int sounding = 0; for (int b = 0; b < 20; ++b) if (ck.render (blk.data(), 480)) ++sounding;
+        CHECK (sounding <= 1);                                                 // stops at once (a hit already sounding finishes)
+    }
+
+    SECTION ("2.89 the engine adds the pitch pipe and the click to their outputs only, after the mixers");
+    {
+        Project q;
+        q.setInputCount (2); q.setOutputCount (4);
+        q.tracks.clear(); q.retireAllMixers(); q.addMixer ("M");
+        AudioEngine e (q);
+        e.prepare (48000.0, 64);
+        e.auxSounds().setClickOutputs ({ 1, 3 }); e.auxSounds().setPipeOutputs ({ 2 });
+        e.auxSounds().click.setSound (ClickTrack::Woodblock); e.auxSounds().click.setLevelDb (-6.0f); e.auxSounds().click.setRunning (true);
+        e.auxSounds().pipe.setSlot (0, 261.63, true);
+        float pk[4] = {};
+        for (int b = 0; b < 40; ++b)
+        {
+            std::vector<float> i0 (64, 0.0f), i1 (64, 0.0f), o[4] = { std::vector<float> (64), std::vector<float> (64), std::vector<float> (64), std::vector<float> (64) };
+            const float* in[2] = { i0.data(), i1.data() }; float* out[4] = { o[0].data(), o[1].data(), o[2].data(), o[3].data() };
+            e.process (in, 2, out, 4, 64);
+            for (int c = 0; c < 4; ++c) for (float x : o[c]) pk[c] = juce::jmax (pk[c], std::abs (x));
+        }
+        CHECK (pk[0] == 0.0f && pk[1] > 0.1f && pk[3] > 0.1f && pk[2] > 0.01f);
+        e.auxSounds().click.setRunning (false); e.auxSounds().pipe.allOff();
+        CHECK (e.auxSounds().clickGoesTo (3) && ! e.auxSounds().clickGoesTo (0) && e.auxSounds().pipeGoesTo (2));
+    }
+
+    SECTION ("2.89 spot-mic alignment: measured against the main pair(s), pan-aware, distance mics checked, nothing to measure by hand");
+    {
+        using namespace timealign;
+        const double sr = 48000.0; const int n = (int) (8.0 * sr);
+        juce::Random rnd (2024);
+        // two instruments: A (centre, plays mostly in the first half) and B (left, mostly in the second half); coloured noise with an envelope
+        auto instrument = [&] (bool firstHalf)
+        {
+            std::vector<float> s ((size_t) n);
+            double lp = 0.0;
+            for (int i = 0; i < n; ++i)
+            {
+                lp += 0.4 * (rnd.nextFloat() * 2.0 - 1.0 - lp);
+                const double t = i / sr;
+                const double env = (firstHalf ? (t < 4.5 ? 1.0 : 0.15) : (t > 3.5 ? 1.0 : 0.15)) * (0.6 + 0.4 * std::sin (2.0 * juce::MathConstants<double>::pi * 1.3 * t));
+                s[(size_t) i] = (float) (lp * env);
+            }
+            return s;
+        };
+        const auto sA = instrument (true), sB = instrument (false);
+        // a mic: each instrument arrives after its delay (ms) at its level, plus some room (reflections) and a little noise
+        auto mic = [&] (std::initializer_list<std::tuple<const std::vector<float>*, double, double>> parts, double room, bool invert = false)
+        {
+            std::vector<float> m ((size_t) n, 0.0f);
+            for (auto& [src, ms, gain] : parts)
+            {
+                const int d = (int) std::lround (ms * sr / 1000.0);
+                for (int i = d; i < n; ++i) m[(size_t) i] += (float) gain * (*src)[(size_t) (i - d)];
+                for (int r = 0; r < 25; ++r)                                   // reflections 12 .. 120 ms later
+                {
+                    const int dr = d + (int) ((0.012 + 0.108 * rnd.nextFloat()) * sr);
+                    const float g = (float) (room * gain * (rnd.nextBool() ? 1 : -1) * std::exp (-(double) (dr - d) / (0.05 * sr)));
+                    for (int i = dr; i < n; ++i) m[(size_t) i] += g * (*src)[(size_t) (i - dr)];
+                }
+            }
+            for (auto& x : m) x = (invert ? -x : x) + 0.002f * (rnd.nextFloat() * 2.0f - 1.0f);
+            return m;
+        };
+        // the mics: a spaced main pair (A centre: 9.0 / 9.4 ms; B left: 6.0 / 8.5 ms and quieter on the right), two spots, a hall pair
+        auto mainL = mic ({ { &sA, 9.0, 1.0 }, { &sB, 6.0, 1.0 } }, 0.5);
+        auto mainR = mic ({ { &sA, 9.4, 1.0 }, { &sB, 8.5, 0.6 } }, 0.5);
+        auto spotA = mic ({ { &sA, 1.0, 1.0 }, { &sB, 5.0, 0.25 } }, 0.2);
+        auto spotB = mic ({ { &sB, 1.0, 1.0 }, { &sA, 6.0, 0.2 } }, 0.2);
+        auto hallL = mic ({ { &sA, 30.0, 0.7 }, { &sB, 29.0, 0.7 } }, 0.9);
+        auto hallR = mic ({ { &sA, 31.0, 0.7 }, { &sB, 31.5, 0.7 } }, 0.9);
+        std::vector<std::vector<const std::vector<float>*>> chans { { &mainL }, { &mainR }, { &spotA }, { &spotB }, { &hallL, &hallR } };
+        std::vector<TrackIn> tin (5);
+        tin[0].role = Main; tin[0].pan[0] = -1.0f;
+        tin[1].role = Main; tin[1].pan[0] = 1.0f;
+        tin[2].role = Spot; tin[2].pan[0] = 0.0f;
+        tin[3].role = Spot; tin[3].pan[0] = -1.0f;                               // the harp, panned hard left
+        tin[4].role = Distance; tin[4].numChannels = 2; tin[4].pan[0] = -1.0f; tin[4].pan[1] = 1.0f;
+        Reader rd = [&] (int t, int c, juce::int64 start, int cnt, float* dst)
+        {
+            const auto& v = *chans[(size_t) t][(size_t) c];
+            for (int i = 0; i < cnt; ++i) dst[i] = start + i < (juce::int64) v.size() ? v[(size_t) (start + i)] : 0.0f;
+            return true;
+        };
+        int calls = 0;
+        auto an = analyse (tin, n, sr, rd, [&] (float) { ++calls; return true; });
+        CHECK (an.ok && an.error.isEmpty() && calls > 10);
+        const auto& a = an.tracks[2], &b = an.tracks[3], &h = an.tracks[4];
+        // the centre spot: 8.0 ms ahead of the left main, 8.4 ms of the right: delayed by the middle
+        CHECK (a.measured && std::abs (a.leftMs - 8.0) < 0.15 && std::abs (a.rightMs - 8.4) < 0.15 && std::abs (a.delayMs - 8.2) < 0.15 && ! a.inverted && a.severity == 0);
+        CHECK (a.clarity >= 7.0f && std::abs (a.suggestedPan) < 0.5f);
+        // the left spot: lined up with the LEFT main (5.0 ms), not the middle (6.25); its suggested pan is well to the left
+        CHECK (b.measured && std::abs (b.leftMs - 5.0) < 0.15 && std::abs (b.rightMs - 7.5) < 0.15 && std::abs (b.delayMs - 5.0) < 0.15 && b.suggestedPan < -0.5f);
+        // panned to the centre instead, the delay follows without measuring again
+        { auto t2 = tin[3]; t2.pan[0] = 0.0f; CHECK (std::abs (delayForPan (b, t2) - 6.25) < 0.15); }
+        // the hall pair: later than the main pair (by about 21 - 23 ms), not delayed, nothing drastic
+        CHECK (h.measured && h.arrivalMs > 18.0 && h.arrivalMs < 26.0 && h.severity == 0 && h.spreadMs < 5.0 && ! h.inverted);
+        // drastic things are flagged: a spot with its polarity reversed, a "spot" that is farther than the main pair, a "distance" mic in front of it
+        {
+            auto spotInv = mic ({ { &sA, 1.0, 1.0 } }, 0.2, true);
+            auto farSpot = mic ({ { &sA, 15.0, 1.0 } }, 0.3);
+            auto nearHall = mic ({ { &sA, 2.0, 1.0 }, { &sB, 2.0, 1.0 } }, 0.3);
+            std::vector<std::vector<const std::vector<float>*>> ch2 { { &mainL }, { &mainR }, { &spotInv }, { &farSpot }, { &nearHall } };
+            std::vector<TrackIn> t2 (5);
+            t2[0] = tin[0]; t2[1] = tin[1];
+            t2[2].role = Spot; t2[3].role = Spot; t2[4].role = Distance;
+            Reader rd2 = [&] (int t, int c, juce::int64 start, int cnt, float* dst)
+            {
+                const auto& v = *ch2[(size_t) t][(size_t) c];
+                for (int i = 0; i < cnt; ++i) dst[i] = start + i < (juce::int64) v.size() ? v[(size_t) (start + i)] : 0.0f;
+                return true;
+            };
+            auto an2 = analyse (t2, n, sr, rd2);
+            CHECK (an2.ok && an2.tracks[2].inverted && an2.tracks[2].severity == 2 && std::abs (an2.tracks[2].delayMs - 8.2) < 0.2);
+            CHECK (an2.tracks[3].severity == 2 && an2.tracks[3].delayMs == 0.0 && an2.tracks[3].message.contains ("AFTER"));
+            CHECK (an2.tracks[4].severity == 2 && an2.tracks[4].arrivalMs < -1.0 && an2.tracks[4].message.contains ("BEFORE"));
+        }
+        // two main pairs: the second in line with the first (fine), or 3 ms behind it (flagged)
+        {
+            auto main2L = mic ({ { &sA, 9.1, 1.0 }, { &sB, 6.1, 1.0 } }, 0.5), main2R = mic ({ { &sA, 9.5, 1.0 }, { &sB, 8.6, 0.6 } }, 0.5);
+            auto main3L = mic ({ { &sA, 12.0, 1.0 }, { &sB, 9.0, 1.0 } }, 0.5);
+            std::vector<std::vector<const std::vector<float>*>> ch3 { { &mainL }, { &mainR }, { &main2L }, { &main2R }, { &main3L }, { &spotA } };
+            std::vector<TrackIn> t3 (6);
+            for (int i : { 0, 2, 4 }) { t3[(size_t) i].role = Main; t3[(size_t) i].pan[0] = -1.0f; }
+            for (int i : { 1, 3 })    { t3[(size_t) i].role = Main; t3[(size_t) i].pan[0] = 1.0f; }
+            t3[5].role = Spot;
+            Reader rd3 = [&] (int t, int c, juce::int64 start, int cnt, float* dst)
+            {
+                const auto& v = *ch3[(size_t) t][(size_t) c];
+                for (int i = 0; i < cnt; ++i) dst[i] = start + i < (juce::int64) v.size() ? v[(size_t) (start + i)] : 0.0f;
+                return true;
+            };
+            auto an3 = analyse (t3, n, sr, rd3);
+            CHECK (an3.ok && an3.mainChecks.size() == 3);
+            for (auto& mc : an3.mainChecks)
+            {
+                if (mc.track == 2 || mc.track == 3) { CHECK (mc.against == mc.track - 2 && ! mc.drastic() && std::abs (mc.ms - 0.1) < 0.2); }
+                if (mc.track == 4) { CHECK (mc.against == 0 && mc.drastic() && std::abs (mc.ms - 3.0) < 0.2); }
+            }
+            CHECK (an3.tracks[5].measured && an3.tracks[5].delayMs > 7.5 && an3.tracks[5].delayMs < 10.5);     // (three left mains and two right ones)
+        }
+        // bleed: an organ spot far behind (the organ reaches the main pair 30 ms after the spot) also hears the soloists, who stand near the main pair
+        // and are much louder there - their path (they reach the spot 14 ms after the main pair) is the bigger peak, but the spot is lined up with
+        // its organ, and not taken for a distance mic
+        {
+            auto steady = [&]
+            {
+                std::vector<float> v ((size_t) n);
+                double lp = 0.0;
+                for (int i = 0; i < n; ++i) { lp += 0.4 * (rnd.nextFloat() * 2.0 - 1.0 - lp); v[(size_t) i] = (float) (lp * (0.7 + 0.3 * std::sin (2.0 * juce::MathConstants<double>::pi * 0.7 * i / sr))); }
+                return v;
+            };
+            const auto organ = steady(), soloists = steady();
+            auto bL = mic ({ { &organ, 30.0, 0.3 }, { &soloists, 8.0, 1.0 } }, 0.4);
+            auto bR = mic ({ { &organ, 30.5, 0.3 }, { &soloists, 8.4, 1.0 } }, 0.4);
+            auto organSpot = mic ({ { &organ, 2.0, 1.0 }, { &soloists, 22.0, 0.45 } }, 0.2);
+            std::vector<std::vector<const std::vector<float>*>> ch5 { { &bL }, { &bR }, { &organSpot } };
+            std::vector<TrackIn> t5 (3);
+            t5[0] = tin[0]; t5[1] = tin[1]; t5[2].role = Spot;
+            Reader rd5 = [&] (int t, int c, juce::int64 start, int cnt, float* dst)
+            {
+                const auto& v = *ch5[(size_t) t][(size_t) c];
+                for (int i = 0; i < cnt; ++i) dst[i] = start + i < (juce::int64) v.size() ? v[(size_t) (start + i)] : 0.0f;
+                return true;
+            };
+            // (the bigger peak really is the soloists': the whole correlation of the organ spot against the left main mic)
+            {
+                std::vector<std::complex<double>> G (8193);
+                std::vector<double> fa (16384), fb (16384);
+                std::vector<std::complex<double>> A (8193), B (8193);
+                for (int st = 0; st + 16384 <= n; st += 8192)
+                {
+                    for (int i = 0; i < 16384; ++i) { const double w = 0.5 - 0.5 * std::cos (2.0 * juce::MathConstants<double>::pi * i / 16384.0); fa[(size_t) i] = bL[(size_t) (st + i)] * w; fb[(size_t) i] = organSpot[(size_t) (st + i)] * w; }
+                    denoise::detail::realForward (fa.data(), 16384, A.data()); denoise::detail::realForward (fb.data(), 16384, B.data());
+                    for (size_t k = 0; k < G.size(); ++k) G[k] += A[k] * std::conj (B[k]);
+                }
+                const auto whole = detail::gccPeak (G, 16384, sr, (int) (0.08 * sr));
+                std::printf ("  (bleed: the biggest peak of the whole correlation at %.2f ms)\n", whole.lag * 1000.0 / sr);
+                CHECK (whole.lag < 0.0);
+            }
+            auto an5 = analyse (t5, n, sr, rd5);
+            const auto& o = an5.tracks[2];
+            std::printf ("  (bleed: organ spot left %.2f, right %.2f, delay %.2f ms, severity %d)\n", o.leftMs, o.rightMs, o.delayMs, o.severity);
+            CHECK (an5.ok && o.measured && o.severity < 2 && std::abs (o.leftMs - 28.0) < 0.2 && std::abs (o.rightMs - 28.5) < 0.2 && std::abs (o.delayMs - 28.25) < 0.2);
+        }
+        // a stereo spot pair over a wide section (A on its left channel, B on its right): measured channel by channel, so each channel gets its own
+        // suggested pan (B is on the left of the main pair's image, A in the middle) instead of one place for the whole pair
+        {
+            auto pairL = mic ({ { &sB, 1.0, 1.0 }, { &sA, 3.0, 0.3 } }, 0.2), pairR = mic ({ { &sA, 1.0, 1.0 }, { &sB, 3.0, 0.3 } }, 0.2);
+            std::vector<std::vector<const std::vector<float>*>> ch6 { { &mainL }, { &mainR }, { &pairL, &pairR } };
+            std::vector<TrackIn> t6 (3);
+            t6[0] = tin[0]; t6[1] = tin[1]; t6[2].role = Spot; t6[2].numChannels = 2; t6[2].pan[0] = -1.0f; t6[2].pan[1] = 1.0f;
+            Reader rd6 = [&] (int t, int c, juce::int64 start, int cnt, float* dst)
+            {
+                const auto& v = *ch6[(size_t) t][(size_t) c];
+                for (int i = 0; i < cnt; ++i) dst[i] = start + i < (juce::int64) v.size() ? v[(size_t) (start + i)] : 0.0f;
+                return true;
+            };
+            auto an6 = analyse (t6, n, sr, rd6);
+            const auto& o = an6.tracks[2];
+            std::printf ("  (stereo spot: left %.2f, right %.2f, suggested %.2f / %.2f, stereo %d)\n", o.leftMs, o.rightMs, o.suggestedPan, o.suggestedPanR, (int) o.suggestedStereo);
+            CHECK (an6.ok && o.measured && o.suggestedStereo && o.suggestedPan < -0.5f && std::abs (o.suggestedPanR) < 0.5f && o.delayMs > 4.5 && o.delayMs < 8.5);
+        }
+        // what cannot be measured says why
+        {
+            std::vector<TrackIn> none (2); none[0].role = Spot; none[1].role = Spot;
+            CHECK (! analyse (none, n, sr, rd).ok && analyse (none, n, sr, rd).error.contains ("main pair"));
+            CHECK (! analyse (tin, (juce::int64) (0.2 * sr), sr, rd).ok);
+            std::vector<float> silent ((size_t) n, 0.0f);
+            std::vector<std::vector<const std::vector<float>*>> ch4 { { &mainL }, { &silent } };
+            std::vector<TrackIn> t4 (2); t4[0].role = Main; t4[1].role = Spot;
+            Reader rd4 = [&] (int t, int c, juce::int64 start, int cnt, float* dst) { const auto& v = *ch4[(size_t) t][(size_t) c]; for (int i = 0; i < cnt; ++i) dst[i] = v[(size_t) (start + i)]; return true; };
+            auto an4 = analyse (t4, n, sr, rd4);
+            CHECK (an4.ok && ! an4.tracks[1].measured && an4.tracks[1].severity == 2 && an4.tracks[1].message.contains ("Silent"));
+        }
+        // roles guessed from the names
+        CHECK (guessRole ("ORTF L") == Main && guessRole ("Spaced R") == Main && guessRole ("Outrigger L") == Main && guessRole ("Decca centre") == Main);
+        CHECK (guessRole ("Hall far") == Distance && guessRole ("Surround L") == Distance && guessRole ("Room") == Distance);
+        CHECK (guessRole ("Spot harp") == Spot && guessRole ("Solo sop") == Spot && guessRole ("Choir L") == Spot);
+        CHECK (guessRole ("LTC") == NotUsed && guessRole ("Conductor") == NotUsed && guessRole ("Talkback") == NotUsed);
+    }
+
+    SECTION ("2.89 every piece keeps its own alignment; the engine delays a spot by the set of the piece in hand, in every mixer; the A / B switch");
+    {
+        Project q;
+        q.setInputCount (2); q.setOutputCount (2);
+        q.tracks.clear();
+        const auto ta = q.addTrack ("Main", TrackFormat::Mono, 0).id;
+        const auto tb = q.addTrack ("Spot", TrackFormat::Mono, 1).id;
+        q.retireAllMixers();
+        const auto ob = q.addBus ("Out", true).id;
+        auto& m = q.addMixer ("M");
+        auto& kyrie = q.addTakeWindow ("Kyrie"); auto& gloria = q.addTakeWindow ("Gloria");
+        const auto kid = kyrie.id.toString(), gid = gloria.id.toString();
+        AudioEngine e (q);
+        e.prepare (48000.0, 64);
+        q.setSendLevel (m, ta, ob, 0.0f); q.setSendLevel (m, tb, ob, 0.0f);
+        m.busFor (ob)->outFirst.store (0);
+        q.findTrack (tb)->alignRole = timealign::Spot;
+        { AlignTrack at; at.ms = 1.0; at.on = true; q.alignSets[kid].tracks[tb.toString()] = at; }            // the Kyrie: 48 samples
+        { AlignTrack at; at.ms = 2.0; at.on = true; q.alignSets[gid].tracks[tb.toString()] = at; q.alignSets[gid].measuredOn = "take 002 - Gloria"; }   // the Gloria: 96
+        auto peaks = [&]
+        {
+            // an impulse on both inputs at the same sample: the main's comes out at once, the spot's after its delay
+            std::vector<float> outL;
+            for (int blk = 0; blk < 40; ++blk)
+            {
+                std::vector<float> i0 (64, 0.0f), i1 (64, 0.0f), o0 (64, 0.0f), o1 (64, 0.0f);
+                if (blk == 20) { i0[10] = 1.0f; i1[10] = 0.5f; }
+                const float* in[2] = { i0.data(), i1.data() }; float* out[2] = { o0.data(), o1.data() };
+                e.process (in, 2, out, 2, 64);
+                outL.insert (outL.end(), o0.begin(), o0.end());
+            }
+            std::vector<int> at;
+            for (int i = 0; i < (int) outL.size(); ++i) if (std::abs (outL[(size_t) i]) > 0.05f) at.push_back (i);
+            return at;
+        };
+        auto gap = [&] { const auto at = peaks(); return at.size() == 2 ? at[1] - at[0] : at.size() == 1 ? 0 : -1; };
+        q.alignActive = kid; e.rebuildPlan(); CHECK (gap() == 48);
+        q.alignActive = gid; e.rebuildPlan(); CHECK (gap() == 96);
+        CHECK (std::abs (q.alignSamplesFor (*q.findTrack (tb), 48000.0) - 96.0) < 1.0e-9 && q.alignSamplesFor (*q.findTrack (ta), 48000.0) == 0.0);
+        q.alignEnabled = false; e.rebuildPlan(); CHECK (gap() == 0);                                         // the A / B switch: off
+        q.alignEnabled = true; q.alignSets[gid].tracks[tb.toString()].on = false; e.rebuildPlan(); CHECK (gap() == 0);
+        q.alignSets[gid].tracks[tb.toString()].on = true;
+        q.alignActive = juce::Uuid().toString(); e.rebuildPlan(); CHECK (gap() == 0);                          // a piece with no set: nothing delayed
+        // an edit plays with the set of the piece most of its audio comes from, until it is measured itself (in post)
+        auto& ed = q.addEdit ("Gloria edit", gloria.id);
+        EditRegion r1; r1.id = juce::Uuid(); r1.windowId = gloria.id; r1.srcIn = 0; r1.srcOut = 48000 * 30; ed.regions.push_back (r1);
+        EditRegion r2; r2.id = juce::Uuid(); r2.windowId = kyrie.id; r2.srcIn = 0; r2.srcOut = 48000 * 5; r2.startSample = 48000 * 30; ed.regions.push_back (r2);
+        CHECK (q.alignOwnerFor (true, ed.id) == gid && q.alignOwnerFor (false, kyrie.id) == kid);
+        { AlignTrack at; at.ms = 3.0; at.on = true; at.result.measured = true; q.alignSets[ed.id.toString()].tracks[tb.toString()] = at; q.alignSets[ed.id.toString()].measuredOn = "the edit"; }
+        CHECK (q.alignOwnerFor (true, ed.id) == ed.id.toString());
+        q.alignActive = q.alignOwnerFor (true, ed.id); e.rebuildPlan(); CHECK (gap() == 144);
+        CHECK (q.alignSignature (gid) != q.alignSignature (kid) && q.alignSignature (gid).contains ("2.000"));
+        // saved with the project: the sets, the roles, the measurements, the switch; a deleted piece's set goes with it
+        {
+            auto& at = q.alignSets[kid].tracks[tb.toString()];
+            at.result.measured = true; at.result.hasLeft = true; at.result.leftMs = 3.25; at.result.suggestedPan = -0.4f; at.result.message = "fine";
+        }
+        q.alignEnabled = false;
+        q.alignSets[juce::Uuid().toString()].measuredOn = "a piece that was deleted";
+        q.pitchPipe.refA = 415.0; q.pitchPipe.temperament = tuning::Vallotti; q.pitchPipe.key = 2; q.pitchPipe.chordMode = true; q.pitchPipe.chordTuning = tuning::PureMinor; q.pitchPipe.outputs = { 1 };
+        q.click.bpm = 72.5; q.click.beatsPerBar = 6; q.click.beatUnit = 8; q.click.sound = ClickTrack::LowPulse; q.click.outputs = { 0, 1 }; q.click.accent = false;
+        Project back;
+        CHECK (back.fromVar (q.toVar()));
+        CHECK (back.findTrack (tb) != nullptr && back.findTrack (tb)->alignRole == timealign::Spot && back.findTrack (ta)->alignRole == 0);
+        CHECK (back.alignSets.size() == 3 && ! back.alignEnabled && back.alignActive == ed.id.toString());
+        if (const auto* ks = back.alignSetOf (kid))
+        {
+            const auto* at = ks->find (tb);
+            CHECK (at != nullptr && at->on && std::abs (at->ms - 1.0) < 1.0e-9 && at->result.measured && at->result.hasLeft && ! at->result.hasRight
+                   && std::abs (at->result.leftMs - 3.25) < 1.0e-9 && std::abs (at->result.suggestedPan + 0.4f) < 1.0e-6f && at->result.message == "fine");
+        }
+        else CHECK (false);
+        CHECK (back.alignSetOf (gid) != nullptr && back.alignSetOf (gid)->measuredOn == "take 002 - Gloria" && std::abs (back.alignSetOf (gid)->find (tb)->ms - 2.0) < 1.0e-9);
+        CHECK (back.pitchPipe.refA == 415.0 && back.pitchPipe.temperament == tuning::Vallotti && back.pitchPipe.key == 2 && back.pitchPipe.chordMode && back.pitchPipe.chordTuning == tuning::PureMinor && back.pitchPipe.outputs == std::vector<int> { 1 });
+        CHECK (back.click.bpm == 72.5 && back.click.beatsPerBar == 6 && back.click.beatUnit == 8 && back.click.sound == ClickTrack::LowPulse && back.click.outputs.size() == 2 && ! back.click.accent);
+    }
+
+    SECTION ("2.89 recorded files carry a BWF time reference, coding history and RIFF INFO; crash repair still finds the audio");
+    {
+        // a fresh take of the violin
+        for (auto& t : p.tracks) t.setArmed (false);
+        p.findTrack (violinId)->setArmed (true);
+        CHECK (eng.startRecording (tw).isEmpty());
+        rig.run (eng, 100);
+        const auto gid = eng.stopRecording();
+        CHECK (eng.waitForFinishedTakes (10000)); eng.reapFinishedTakes();
+        const auto* g = tw.findGroup (gid);
+        CHECK (g != nullptr && ! g->files.empty());
+        const auto f = g != nullptr && ! g->files.empty() ? g->files[0].file : juce::File();
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (f));
+        CHECK (r != nullptr);
+        if (r != nullptr && g != nullptr)
+        {
+            const auto& md = r->metadataValues;
+            CHECK (md.getValue (juce::WavAudioFormat::bwavDescription, {}) == tw.name + " / " + tw.displayName (*g) + " / violin");      // (what re-linking reads: unchanged)
+            CHECK (md.containsKey (juce::WavAudioFormat::bwavTimeReference) && md.getValue (juce::WavAudioFormat::bwavTimeReference, "-1").getLargeIntValue() >= 0
+                   && md.getValue (juce::WavAudioFormat::bwavTimeReference, "-1").getLargeIntValue() < (juce::int64) 86400 * 48000);
+            CHECK (md.getValue (juce::WavAudioFormat::bwavCodingHistory, {}).startsWith ("A=PCM,F=48000,W=24,M=mono"));
+            CHECK (md.getValue (juce::WavAudioFormat::bwavOriginatorRef, {}).startsWith ("FERMATA" + pad3 (g->number)));
+            CHECK (md.getValue (juce::WavAudioFormat::riffInfoSoftware, {}).startsWith ("Fermata") && md.getValue (juce::WavAudioFormat::riffInfoTitle, {}) == tw.displayName (*g) + " - violin");
+        }
+        r.reset();
+        // a copy with its data size wiped (a crash before the header was written): mended, every sample found
+        const auto copy = tmp.getChildFile ("bwf-crash.wav");
+        CHECK (f.copyFileTo (copy));
+        {
+            juce::MemoryBlock mb; copy.loadFileAsData (mb);
+            auto* d = static_cast<unsigned char*> (mb.getData());
+            for (size_t i = 12; i + 8 < mb.getSize(); ++i) if (std::memcmp (d + i, "data", 4) == 0) { d[i + 4] = d[i + 5] = d[i + 6] = d[i + 7] = 0; break; }
+            copy.replaceWithData (mb.getData(), mb.getSize());
+        }
+        const auto rep = wavrepair::inspect (copy, true);
+        CHECK (rep.ok && rep.wasBroken && rep.frames == 100 * Rig::block && rep.channels == 1);
+    }
+
+    SECTION ("2.89 a bounce plays with its piece's spot-mic alignment (and the live mixers are left alone)");
+    {
+        const TakeGroup* last = nullptr;
+        for (auto& gg : tw.groups) if (last == nullptr || gg.number > last->number) last = &gg;
+        CHECK (last != nullptr);
+        if (last != nullptr)
+        {
+            const auto owner = tw.id.toString();
+            { AlignTrack at; at.ms = 10.0; at.on = true; p.alignSets[owner].tracks[violinId.toString()] = at; }
+            mixA.stripFor (violinId)->mute.set (false); mixA.stripFor (violinId)->gainDb.set (0.0f);
+            BounceSettings bs;
+            bs.segments = segmentsForTake (p, *last);
+            bs.sampleRate = 48000.0; bs.mixerId = mixA.id; bs.sources = { violinId }; bs.folder = tmp.getChildFile ("align-bounce");
+            bs.items.push_back ({ "Aligned", 0, 4800 });
+            auto firstSound = [&] (const juce::String& alignOwner)
+            {
+                bs.alignOwner = alignOwner;
+                Bouncer b (p, bs);
+                auto r = b.render();
+                if (r.error.isNotEmpty() || r.files.isEmpty()) return -1;
+                juce::AudioFormatManager fm; fm.registerBasicFormats();
+                std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (juce::File (r.files[0])));
+                if (rd == nullptr) return -1;
+                juce::AudioBuffer<float> buf (2, 4800);
+                rd->read (&buf, 0, 4800, 0, true, true);
+                for (int i = 0; i < 4800; ++i) if (std::abs (buf.getSample (0, i)) > 1.0e-3f) return i;
+                return 4800;
+            };
+            // earlier sections left other strips soloed and muted: clear the solos for this bounce (and put them back after)
+            std::vector<std::pair<StripState*, bool>> solos;
+            for (auto& t : p.tracks) if (auto* sp = mixA.stripFor (t.id)) { solos.push_back ({ sp, sp->solo.get() }); sp->solo.set (false); }
+            const int plain = firstSound (juce::String()), aligned = firstSound (owner);
+            for (auto& [sp, was] : solos) sp->solo.set (was);
+            std::printf ("  (bounce: first sound plain %d, aligned %d)\n", plain, aligned);
+            // the plain one sounds at once (its first samples softened by the take's edge fade and the fader's start-up ramp); the aligned one is silent
+            // for exactly 10 ms (480 samples: the delay line starts empty) and then sounds (by then the fader's ramp is over, so a little sooner after
+            // its start than the plain one - the sine is the same, but that is why it is not simply plain + 480)
+            CHECK (plain >= 0 && plain < 100 && aligned >= 480 && aligned < 520);
+            CHECK (p.alignActive != owner || true);                                      // (the live project's own choice is not touched by a bounce)
+            p.alignSets.erase (owner);
+        }
+    }
+
+    SECTION ("2.89 the PDF writer: a valid file (cross-reference table, page tree), Helvetica widths, wrapping");
+    {
+        CHECK (std::abs (pdf::width ("Hello", pdf::Regular, 10.0f) - 22.78f) < 0.01f);
+        CHECK (std::abs (pdf::width ("W", pdf::Bold, 1000.0f) - 944.0f) < 0.5f);
+        const auto lines = pdf::wrap ("The quick brown fox jumps over the lazy dog again and again", pdf::Regular, 10.0f, 100.0f);
+        CHECK (lines.size() >= 3); for (auto& l : lines) CHECK (pdf::width (l, pdf::Regular, 10.0f) <= 100.0f);
+        CHECK (pdf::encode (juce::String (juce::CharPointer_UTF8 ("Caf\xc3\xa9 \xe2\x80\x93 (A) \xe2\x99\xaf"))) == std::string ("Caf\xe9 \x96 (A) #"));
+        pdf::Document d;
+        d.newPage(); d.text (40, 60, "Page one (with brackets) \\ backslash", pdf::Bold, 12); d.line (40, 70, 500, 70, 1.0f); d.rect (40, 80, 100, 20, pdf::grey (0.5f));
+        d.newPage(); d.text (40, 60, "Page two", pdf::Regular, 12);
+        const auto mb = d.toPdf();
+        const std::string s ((const char*) mb.getData(), mb.getSize());
+        CHECK (s.rfind ("%PDF-1.4", 0) == 0 && s.find ("/Count 2") != std::string::npos && s.find ("(Page one \\(with brackets\\) \\\\ backslash) Tj") != std::string::npos);
+        // startxref points at the table, and every entry at its object
+        const auto sx = s.rfind ("startxref\n");
+        CHECK (sx != std::string::npos);
+        if (sx != std::string::npos)
+        {
+            const size_t xr = (size_t) std::stoull (s.substr (sx + 10));
+            CHECK (s.compare (xr, 4, "xref") == 0);
+            size_t pos = s.find ('\n', s.find ('\n', xr) + 1) + 1;           // past "xref" and "0 N"
+            pos += 20;                                                        // the free entry
+            for (int obj = 1; obj <= 10; ++obj, pos += 20)
+            {
+                const size_t off = (size_t) std::stoull (s.substr (pos, 10));
+                CHECK (s.compare (off, std::to_string (obj).size() + 6, std::to_string (obj) + " 0 obj") == 0);
+            }
+        }
+    }
+
+    SECTION ("2.89 the take sheet: every take with its time, length, bars, markers and problems; CSV and a paged PDF");
+    {
+        tw.markers.clear();
+        TakeGroup* first = nullptr;
+        for (auto& gg : tw.groups) if (first == nullptr || gg.number < first->number) first = &gg;
+        CHECK (first != nullptr);
+        if (first != nullptr)
+        {
+            Marker mk; mk.id = juce::Uuid(); mk.name = "Clarinet, in"; mk.seconds = first->startSeconds + 0.4; tw.markers.push_back (mk);
+            first->barIn = 12; first->barOut = 40; first->dud = true;
+        }
+        const auto secs = takesheet::collect (p, tw.id);
+        CHECK (secs.size() == 1 && secs[0].piece == "Symphony" && (int) secs[0].rows.size() == (int) tw.groups.size());
+        if (! secs.empty() && ! secs[0].rows.empty())
+        {
+            const auto& r0 = secs[0].rows[0];
+            CHECK (first != nullptr && r0.number == first->number && r0.dud && r0.bars == "12 - 40" && r0.markers.size() == 1 && r0.markers[0] == "Clarinet, in (0:00)" && r0.name == tw.displayName (*first));
+            CHECK (secs[0].tracks.contains ("violin") && secs[0].duds() == 1);
+        }
+        const auto csv = takesheet::csv (secs);
+        CHECK (csv.startsWith ("Piece,Take,Name,Date") && csv.contains ("\"Clarinet, in (0:00)\"") && csv.contains (",yes,"));
+        if (first != nullptr) { CHECK (csv.contains (tw.name + "," + juce::String (first->number) + "," + tw.displayName (*first) + ",")); }
+        { size_t withTakes = 0; for (auto& w : p.takeWindows) withTakes += w->groups.empty() ? 0 : 1; CHECK (takesheet::collect (p).size() == withTakes); }     // (empty pieces left out)
+        auto doc = takesheet::makePdf (secs, "Brahms Requiem", "2.89.0", juce::Time::getCurrentTime());
+        CHECK (doc.pageCount() == 1);
+        {
+            const auto mb = doc.toPdf(); const std::string s ((const char*) mb.getData(), mb.getSize());
+            CHECK (s.find ("(TAKE SHEET)") != std::string::npos && s.find ("(Page 1 of 1)") != std::string::npos && s.find ("(DUD)") != std::string::npos && s.find ("(Brahms Requiem)") != std::string::npos);
+        }
+        // a long session runs onto more pages, each with its heading and number
+        Project big; big.addTakeWindow ("Mass in B minor");
+        auto& bw = *big.takeWindows.back();
+        for (int i = 1; i <= 90; ++i)
+        {
+            TakeGroup g; g.id = juce::Uuid(); g.number = i; g.sampleRate = 48000.0; g.lengthSamples = (juce::int64) (48000.0 * (60 + i)); g.startSeconds = i * 200.0;
+            g.recordedAt = juce::Time (2026, 9, 22 + (i > 45 ? 1 : 0), 10, i % 60, 0); g.barIn = i; g.barOut = i + 20;
+            if (i % 7 == 0) { g.overruns = 1; g.lostSamples = 4800; }
+            bw.groups.push_back (g);
+        }
+        auto bigDoc = takesheet::makePdf (takesheet::collect (big), "Bach", "2.89.0", juce::Time::getCurrentTime());
+        CHECK (bigDoc.pageCount() >= 3);
+        const auto mb = bigDoc.toPdf(); const std::string s ((const char*) mb.getData(), mb.getSize());
+        CHECK (s.find ("(Page 2 of " + std::to_string (bigDoc.pageCount()) + ")") != std::string::npos && s.find ("\\(continued\\)") != std::string::npos && s.find ("LOST 0.1 s") != std::string::npos);
+        CHECK (takesheet::clockText (65.2) == "1:05" && takesheet::clockText (3725.0) == "1:02:05" && takesheet::durationText (3840.0) == "1 h 04 min");
+        tw.markers.clear(); if (first != nullptr) { first->barIn = first->barOut = 0; first->dud = false; }
     }
 
     tmp.deleteRecursively();

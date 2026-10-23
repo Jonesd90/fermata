@@ -6,6 +6,7 @@
 #include "FixTools.h"
 #include "ColourPicker.h"
 #include "MarkerStrip.h"
+#include "TakeSheetExport.h"
 
 namespace td
 {
@@ -1485,6 +1486,11 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     repairButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::repairTake (app, windowId, this, false); }); };
     exportProcButton.setTooltip ("Export for Processing: sends the marked part (Mark 1 / Mark 2, all tracks) to the Processing Media folder to be corrected in other software (e.g. iZotope RX). Re-link it afterwards with a right-click on the 'Waiting for corrected audio' block");
     exportProcButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::exportForProcessingTake (app, windowId, this); }); };
+    alignButton.setTooltip ("Align spot mics: after a run-through, measure how much earlier each spot mic hears the music than the main pair, and delay it to line up "
+                            "(every mixer; the files are not changed). Uses this take window's take between marks 1 and 2, or the whole take under the playhead.");
+    alignButton.onClick = [this] { if (app.showAlign) app.showAlign (false, windowId); };
+    takeSheetButton.setTooltip ("Take sheet: every take of this window with its time, length, bars, markers and duds, as a PDF to print or send (and a CSV for a spreadsheet)");
+    takeSheetButton.onClick = [this] { exportTakeSheet (app, windowId); };
     undoFixButton.setTooltip ("Undo the last pitch correction, repair, de-click, denoise or export for processing (the original audio files were never touched)");
     undoFixButton.onClick = [this] { fixtools::undoLastFix (app); };
     bounceButton.setTooltip ("Make a master file of the marked take (or the marked part of it) through the processing mixer");
@@ -1497,12 +1503,13 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     overdubBox.setIcon (Icon::Overdub, "Overdub"); markersToggle.setIcon (Icon::Flag, "Markers");
     armAllButton.setIcon (Icon::ArmAll, "Arm all"); armNoneButton.setIcon (Icon::ArmNone, "Arm none");
     importButton.setIcon (Icon::ImportTakes, "Import takes"); exportProcButton.setIcon (Icon::ImportMulti, "Export for Processing"); barSearchButton.setIcon (Icon::Search, "Search for bar");
+    alignButton.setIcon (Icon::Align, "Align spot mics"); takeSheetButton.setIcon (Icon::TakeSheet, "Take sheet");
     for (auto* t : { &overdubBox, &markersToggle }) { t->setClickingTogglesState (true); t->setColour (juce::TextButton::buttonOnColourId, theme::accent); }
     for (auto* c : std::initializer_list<juce::Component*> { &recordButton, &zoomInButton, &zoomOutButton, &playButton,
-                                                              &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &exportProcButton, &undoFixButton, &barSearchButton, &lengthClock, &statusLabel, &markLabel })
+                                                              &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &exportProcButton, &undoFixButton, &barSearchButton, &alignButton, &takeSheetButton, &lengthClock, &statusLabel, &markLabel })
         addAndMakeVisible (c);
     for (auto* b : std::initializer_list<juce::Button*> { &recordButton, &zoomInButton, &zoomOutButton, &playButton,
-                                                          &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &exportProcButton, &undoFixButton, &barSearchButton })
+                                                          &editInButton, &editOutButton, &toEditButton, &toEditAtButton, &editWindowButton, &bounceButton, &importButton, &pitchButton, &repairButton, &exportProcButton, &undoFixButton, &barSearchButton, &alignButton, &takeSheetButton })
         b->setWantsKeyboardFocus (false);       // keep the keyboard shortcuts working after a button click
     // the take's length: a quieter box of the same kind as the time readout (fixed digit cells, 30 times a second, so it counts as smoothly);
     // grey with softer digits, always h:m:s.ms, dashes when nothing is recording here
@@ -1602,7 +1609,7 @@ void TakeWindowComponent::resized()
         { &editInButton, IW, IH, 2 }, { &editOutButton, IW, IH, 6 }, { &toEditButton, IW, IH, 2 }, { &toEditAtButton, IW, IH, 2 }, { &overdubBox, IW, IH, 6 }, { &markersToggle, IW, IH, 14 },
         { &editWindowButton, IW, IH, 2 }, { &bounceButton, IW, IH, 14 },
         { &ltcButton, 74, grid::btnH, 14 }, { &armAllButton, IW, IH, 2 }, { &armNoneButton, IW, IH, 14 },
-        { &importButton, IW, IH, 6 }, { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 6 }, { &exportProcButton, IW, IH, 2 }, { &undoFixButton, IW, IH, 14 }, { &barSearchButton, IW, IH, 14 },
+        { &importButton, IW, IH, 6 }, { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 6 }, { &exportProcButton, IW, IH, 2 }, { &undoFixButton, IW, IH, 14 }, { &barSearchButton, IW, IH, 14 }, { &alignButton, IW, IH, 2 }, { &takeSheetButton, IW, IH, 14 },
         { &zoomOutButton, 34 }, { &zoomInButton, 34 }
     };
     // the head, left to right: the window's name and where "To edit" goes (one column, a line between them), Next Take, REC, the take's length, the time readout

@@ -6,6 +6,7 @@
 #include "WinOwner.h"
 #include "FixTools.h"
 #include "PreampSetup.h"
+#include "TakeSheetExport.h"
 #include "ThemeSwitch.h"
 
 namespace td
@@ -490,7 +491,13 @@ MainComponent::MainComponent (AppContext& a) : app (a), controllerBox (a)
     takeDisplayButton.onClick = [this] { if (app.showTakeDisplay) app.showTakeDisplay(); };
     takeDisplayButton.setTooltip ("Show the take number, time of day and time left in the session, full screen, on another display");
     organiserButton.onClick = [this] { if (app.showOrganiser) app.showOrganiser(); };
-    organiserButton.setTooltip ("Let the computer arrange your open windows on the screen: 2, 3 or 4 windows, each in its own part");
+    organiserButton.setTooltip ("Arrange Fermata's windows on this screen: choose a shape and a window for each part (or a saved layout), then Arrange");
+    pitchPipeButton.onClick = [this] { if (app.showPitchPipe) app.showPitchPipe(); };
+    pitchPipeButton.setTooltip ("Pitch pipe: a keyboard that plays a note or a chord on the outputs you choose (the stage speakers, or your control-room speakers alone), in seven tunings at any A");
+    clickButton.onClick = [this] { if (app.showClick) app.showClick(); };
+    clickButton.setTooltip ("Click: a metronome on the outputs you choose, switched on and off by hand (lit while it runs)");
+    clickButton.setClickingTogglesState (false);
+    clickButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff1f7a46));
     sessionButton.setClickingTogglesState (false);
     sessionButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffd32f2f));
     sessionButton.setTooltip ("Pre-Rec (session mode): the inputs are kept for the last 6 seconds all the time, so when you press Record the take starts 6 seconds BEFORE you pressed it. "
@@ -830,6 +837,7 @@ void MainComponent::timerCallback()
     // The menu bar (with the Pre-Rec / C-R / P-B squares) is always there, in front of the other Fermata windows (not other programs), and goes with the main window when it is minimised.
     if (menuStrip != nullptr && getPeer() != nullptr && ! getPeer()->isMinimised() && ! menuStrip->isVisible()) menuStrip->setVisible (true);
     flagPre.set (app.sessionMode()); flagCr.set (app.crMicOpen()); flagPb.set (app.tbPlaybackOn());
+    if (const bool clickOn = app.engine.auxSounds().click.running(); clickButton.getToggleState() != clickOn) clickButton.setToggleState (clickOn, juce::dontSendNotification);
     {
         const auto kind = app.activeKind ? app.activeKind() : juce::String();
         auto light = [&] (const char* k) { return app.windowLight ? app.windowLight (k) : (kind == k ? 2 : 0); };
@@ -957,6 +965,7 @@ void MainComponent::showProjectMenu()
     m.addSeparator();
     const auto workKey = app.lastWorkWindowKey ? app.lastWorkWindowKey() : juce::String();
     m.addItem (9, "Import AAF as edit windows...");
+    m.addItem (15, "Take sheet of every take window (PDF and CSV)...", app.hasProject());
     m.addItem (8, "Re-draw all waveforms in current window", workKey.isNotEmpty());
     m.addSeparator();
     {
@@ -980,6 +989,7 @@ void MainComponent::showProjectMenu()
         if (r == 20 || r == 21) { pickStyle (r - 20); return; }
         if (r == 12) { chooseBackupFolder(); return; }
         if (r == 14) { if (app.showSurfacePanel) app.showSurfacePanel(); return; }
+        if (r == 15) { exportTakeSheet (app, juce::Uuid::null()); return; }
         if (r == 13)
         {
             app.engine.setBackupFolder ({});
