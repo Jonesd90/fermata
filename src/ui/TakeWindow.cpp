@@ -256,7 +256,7 @@ public:
             case ctrl | alt:   case ctrl | alt | shift:
                                return { "Drag over a take: mark 1 - 2 on only the tracks you drag over" };
             case alt | shift:  return { "Drag: lasso - selects every take it touches" };
-            case shift:        return { "Click a track's name: select every track from the last one clicked", "Left / Right arrow: nudge the playhead by 10 ms" };
+            case shift:        return { "Click a track's name: select every track from the last one clicked", "Left / Right arrow: nudge the playhead by 10 ms", "4: send the marked part to the edit's playhead as an INSERT (the rest moves later; 4 alone replaces)" };
             case ctrl | shift: return { "Ctrl + Shift + Z: redo" };
             default:           return {};
         }
@@ -1431,7 +1431,9 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     endTransportButton.onClick = [this] { goToEnd(); };
     for (auto* b : { &startButton, &backButton, &fwdButton, &endTransportButton }) { addAndMakeVisible (b); b->setWantsKeyboardFocus (false); }
     toEditButton.onClick = [this] { toEdit(false); };
-    toEditAtButton.onClick = [this] { toEdit(true); };
+    toEditAtButton.onClick = [this] { toEdit (true, juce::ModifierKeys::getCurrentModifiersRealtime().isShiftDown()); };
+    toEditAtButton.setTooltip ("Puts the marked part at the edit window's playhead and REPLACES the same length of what is there: the rest of the edit does not move. "
+                               "Shift + click (or Shift + 4) INSERTS it instead: what is there is cut in two and everything after it moves later.");
     editInButton.onClick = [this] { editMarkIn(); };
     editOutButton.onClick = [this] { editMarkOut(); };
     overdubBox.setTooltip ("Pieces sent to the edit are laid OVER it and play together with what is already there");
@@ -1678,7 +1680,7 @@ void TakeWindowComponent::editMarkOut()
     app.project.changed();
 }
 
-void TakeWindowComponent::toEdit (bool atEditPlayhead)
+void TakeWindowComponent::toEdit (bool atEditPlayhead, bool insert)
 {
     auto* w = def();
     if (w == nullptr) return;
@@ -1690,7 +1692,7 @@ void TakeWindowComponent::toEdit (bool atEditPlayhead)
         aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
         aw->addButton ("Close", 0, juce::KeyPress (juce::KeyPress::escapeKey));
         auto safe = juce::Component::SafePointer<TakeWindowComponent> (this);
-        aw->enterModalState (true, juce::ModalCallbackFunction::create ([safe, aw, atEditPlayhead] (int r)
+        aw->enterModalState (true, juce::ModalCallbackFunction::create ([safe, aw, atEditPlayhead, insert] (int r)
         {
             if (r == 1 && safe != nullptr)
                 if (auto* w2 = safe->def())
@@ -1701,19 +1703,19 @@ void TakeWindowComponent::toEdit (bool atEditPlayhead)
                         auto& e = safe->app.project.addEdit (nm, safe->windowId);
                         w2->targetEdit = e.id;
                         safe->app.project.changed();
-                        safe->sendToEdit (atEditPlayhead);
+                        safe->sendToEdit (atEditPlayhead, insert);
                     }
             delete aw;
         }), false);
         return;
     }
-    sendToEdit (atEditPlayhead);
+    sendToEdit (atEditPlayhead, insert);
 }
 
-void TakeWindowComponent::sendToEdit (bool atEditPlayhead)
+void TakeWindowComponent::sendToEdit (bool atEditPlayhead, bool insert)
 {
     juce::Uuid editId;
-    auto err = app.copyMarkedToEdit (windowId, atEditPlayhead, &editId);
+    auto err = app.copyMarkedToEdit (windowId, atEditPlayhead, &editId, insert);
     if (err.isNotEmpty()) { showError ("To edit", err); return; }
     // You stay in this window: send all the takes you want, then go and edit. The edit window is never opened, restored or raised by this; it just
     // picks the new material up from the project whenever it is open.
@@ -1862,13 +1864,14 @@ bool TakeWindowComponent::keyPressed (const juce::KeyPress& k)
     if (c == 'c' && ! k.getModifiers().isAnyModifierKeyDown()) { timeline->centreOnPlayhead(); return true; }
     if (c == '.' || c == '>')           { app.changeWaveZoom (1.4f);        return true; }     // . bigger waveforms
     if (c == ',' || c == '<')           { app.changeWaveZoom (1.0f / 1.4f); return true; }     // , smaller
+    if (isShiftFour (k))                { toEdit (true, true); return true; }                   // Shift + 4: the same, but an INSERT (the rest of the edit moves later)
     if (! k.getModifiers().isAnyModifierKeyDown())
     {
         if (c == '1') { editMarkIn();  return true; }
         if (c == '2') { editMarkOut(); return true; }
         if (c == '5') { if (auto* w5 = def()) { w5->editTake = juce::Uuid::null(); w5->editIn = w5->editOut = -1.0; w5->editTracks.clear(); app.project.changed(); } return true; }     // 5: take both Edit flags away
         if (c == '3') { toEdit (false); return true; }
-        if (c == '4') { toEdit (true);  return true; }
+        if (c == '4') { toEdit (true);  return true; }                  // 4: put it at the edit's playhead over the same length of what is there
     }
     // Right = zoom in, Left = zoom out (time). Shift + arrow nudges the cursor instead.
     {   // (KeyPress == a key code is false whenever a modifier is held: Shift + arrow has to be asked for by its code, or it never arrives here)

@@ -1240,7 +1240,7 @@ double AppContext::playedSeconds() const
     return engine.playbackTimelineSeconds (false);       // in a loop the playhead goes round and round; once the loop is let go of it goes straight on
 }
 
-juce::String AppContext::copyMarkedToEdit (const juce::Uuid& windowId, bool atEditPlayhead, juce::Uuid* editIdOut)
+juce::String AppContext::copyMarkedToEdit (const juce::Uuid& windowId, bool atEditPlayhead, juce::Uuid* editIdOut, bool insert)
 {
     auto* w = project.findTakeWindow (windowId);
     if (w == nullptr) return "No take window";
@@ -1264,8 +1264,19 @@ juce::String AppContext::copyMarkedToEdit (const juce::Uuid& windowId, bool atEd
     for (auto& f : g->files) r.files.push_back ({ f.trackId, f.trackName, f.file, f.numChannels });
     r.sourceLength = g->lengthSamples;
     const juce::int64 at = (juce::int64) std::llround (juce::jmax (0.0, e->playheadSeconds) * rate);
+    const auto pieceLen = r.length();
     if (w->overdub)             e->addOverdub (r, at);
-    else if (atEditPlayhead)    e->insertRegionAt (r, at);
+    else if (atEditPlayhead && insert)
+    {
+        e->insertRegionAt (r, at);
+        setNotice ("Inserted at " + juce::String ((double) at / rate, 2) + " s: everything after it moved " + juce::String ((double) pieceLen / rate, 2) + " s later.");
+    }
+    else if (atEditPlayhead)
+    {
+        juce::int64 gone = 0;
+        e->overwriteRegionAt (r, at, &gone);
+        setNotice ("Placed at " + juce::String ((double) at / rate, 2) + " s: replaced " + juce::String ((double) gone / rate, 2) + " s of the edit (Shift + 4 inserts instead and moves the rest later).");
+    }
     else                        e->insertRegion (r);
     // the edit may have its own track order: every track of the take goes to ITS row there (by identity, never by the row it had in the take window),
     // and a track the edit does not list yet is added at the bottom, so no audio is ever hidden or put on the wrong track

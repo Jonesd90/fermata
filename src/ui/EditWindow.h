@@ -32,7 +32,7 @@ private:
     bool loopRange (double& from, double& to) const;
     void trimSelected();
     void buttSelected();
-    void placeFromTakeWindow();
+    void placeFromTakeWindow (bool insert = false);
     void deleteSelected();
     void moveSelected (int delta);
     void setFixMark (bool in);

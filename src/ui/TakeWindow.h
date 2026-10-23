@@ -29,8 +29,8 @@ private:
     void markWholeSelected();
     void editMarkIn();
     void editMarkOut();
-    void toEdit (bool atEditPlayhead = false);
-    void sendToEdit (bool atEditPlayhead);
+    void toEdit (bool atEditPlayhead = false, bool insert = false);       // insert (Shift + 4): cut the edit and push the rest later; else a piece at the playhead overwrites
+    void sendToEdit (bool atEditPlayhead, bool insert = false);
     void togglePlay();
     void toggleBarSearch();                                   // "Search for bar": asks for a bar number, then frames every take here that contains it
     void setBarSearch (int bar);

@@ -605,6 +605,14 @@ namespace modhint
     }
 }
 
+/** Shift + 4 (key 4 with Shift held: the key carries a different character then, so the key code is looked at too). */
+inline bool isShiftFour (const juce::KeyPress& k)
+{
+    const auto m = k.getModifiers();
+    if (! m.isShiftDown() || m.isCtrlDown() || m.isCommandDown() || m.isAltDown()) return false;
+    return k.getKeyCode() == '4' || k.getTextCharacter() == '$';
+}
+
 inline void showError (const juce::String& title, const juce::String& message)
 {
     juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, title, message);

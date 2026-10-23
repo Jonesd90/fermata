@@ -708,6 +708,43 @@ struct EditDef
         return at;
     }
 
+    /** Puts a piece on the main track AT 'sample' and takes away the same length of what was playing there: nothing else moves, so everything after the piece
+        stays in time. A piece that the new one only partly covers is trimmed (the part that stays is the same audio as before), a piece it covers whole goes, and the two
+        new joins get the default crossfade. Past the end of the edit, or in a gap, it just lies there (a gap beside it gets short fades, not a crossfade into silence).
+        Overdubs are left alone. 'replaced' (if given) gets the length of audio that was taken away (samples). Returns the index of the new piece. */
+    int overwriteRegionAt (EditRegion r, juce::int64 sample, juce::int64* replaced = nullptr)
+    {
+        if (isEmpty()) sampleRate = r.sampleRate;
+        sample = juce::jmax ((juce::int64) 0, sample);
+        r.startSample = sample;
+        r.inStart = r.inEnd = r.outStart = r.outEnd = 0.0;
+        const auto end = sample + r.length();
+        for (auto cut : { end, sample })                                   // cut at the new piece's end first, then at its start (the first cut does not move the second's index)
+            for (int i = 0; i < (int) regions.size(); ++i)
+            {
+                auto& x = regions[(size_t) i];
+                if (cut > x.startSample && cut < x.endSample()) { splitRegion (i, cut - x.startSample); break; }
+            }
+        juce::int64 removed = 0;
+        for (int i = 0; i < (int) regions.size();)
+        {
+            const auto& x = regions[(size_t) i];
+            if (x.startSample >= sample && x.endSample() <= end) { removed += x.length(); regions.erase (regions.begin() + i); }
+            else ++i;
+        }
+        int at = (int) regions.size();
+        for (int i = 0; i < (int) regions.size(); ++i) if (regions[(size_t) i].startSample >= sample) { at = i; break; }
+        regions.insert (regions.begin() + at, std::move (r));
+        insertIndex = -1;
+        setDefaultJoinFades (at);
+        setDefaultJoinFades (at + 1);
+        hardenEnds();
+        settleGapFades();
+        clampAll();
+        if (replaced != nullptr) *replaced = removed;
+        return at;
+    }
+
     /** Lays a piece OVER the edit at 'sample'. It plays together with everything else; short fades only stop clicks. */
     void addOverdub (EditRegion r, juce::int64 sample)
     {

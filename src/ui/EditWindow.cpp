@@ -286,7 +286,7 @@ public:
             case alt:  case alt | shift:
                                return { "Drag: lasso - selects every piece it touches" };
             case ctrl | alt:   return { "Drag over audio: mark 1 - 2 on only the tracks you drag over" };
-            case shift:        return { "Drag a track's clip: move it to another track (same time)", "Click a track's name: select every track from the last one clicked" };
+            case shift:        return { "Drag a track's clip: move it to another track (same time)", "Click a track's name: select every track from the last one clicked", "4: insert the part marked in a take window at the playhead (the rest moves later; 4 alone replaces)" };
             case ctrl | alt | shift:
                                return { "Drag a track's clip: move it to another track (same time)" };
             case ctrl | shift: return { "Ctrl + Shift + Z: redo" };
@@ -2460,8 +2460,9 @@ void EditWindowComponent::trimSelected()
     if (app.showTrim) app.showTrim (editId, e->regions[(size_t) (idx == n ? n - 1 : idx)].id, idx == n);
 }
 
-/** Key 4 here: take the part marked with 1 and 2 in a take window of this edit and lay it down at this edit's playhead. */
-void EditWindowComponent::placeFromTakeWindow()
+/** Key 4 here: take the part marked with 1 and 2 in a take window of this edit and lay it down at this edit's playhead, over the same length of what is there;
+    Shift + 4 (insert): cut what is there in two and push everything after it later. */
+void EditWindowComponent::placeFromTakeWindow (bool insert)
 {
     TakeWindowDef* best = nullptr;
     for (auto& w : app.project.takeWindows)
@@ -2473,8 +2474,8 @@ void EditWindowComponent::placeFromTakeWindow()
                                             "then click here where it should go and press 4.");
         return;
     }
-    auto err = app.copyMarkedToEdit (best->id, true, nullptr);
-    if (err.isNotEmpty()) showError ("Place at playhead [4]", err);
+    auto err = app.copyMarkedToEdit (best->id, true, nullptr, insert);
+    if (err.isNotEmpty()) showError (insert ? "Insert at playhead [Shift + 4]" : "Place at playhead [4]", err);
 }
 
 void EditWindowComponent::deleteSelected()
@@ -2594,7 +2595,8 @@ bool EditWindowComponent::keyPressed (const juce::KeyPress& k)
         return true;
     }
     if (c == 'r' && ! k.getModifiers().isAnyModifierKeyDown()) { buttSelected(); return true; }
-    if (c == '4' && ! k.getModifiers().isAnyModifierKeyDown()) { placeFromTakeWindow(); return true; }     // same as key 4 in a take window
+    if (isShiftFour (k)) { placeFromTakeWindow (true); return true; }                                         // same as Shift + 4 in a take window: an insert
+    if (c == '4' && ! k.getModifiers().isAnyModifierKeyDown()) { placeFromTakeWindow(); return true; }     // same as key 4 in a take window: replaces the same length
     if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) { deleteSelected(); return true; }
     return false;
 }

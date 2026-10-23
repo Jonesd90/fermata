@@ -265,9 +265,10 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     double playheadSeconds() const;
 
     /** Sends the EDIT-marked part (keys 1 and 2) of the marked take to the edit. Without 'atEditPlayhead' it goes after the last piece (key 3);
-        with it, at the edit window's playhead, cutting whatever is there (key 4). With the window's Overdub box ticked it is laid over the edit
-        at the playhead instead and plays together with what is under it. Returns an error or "". */
-    juce::String copyMarkedToEdit (const juce::Uuid& takeWindowId, bool atEditPlayhead = false, juce::Uuid* editIdOut = nullptr);
+        with it, at the edit window's playhead (key 4): it REPLACES the same length of what is there and nothing else moves (EditDef::overwriteRegionAt),
+        or with 'insert' (Shift + 4) it cuts what is there in two and pushes everything after it later (EditDef::insertRegionAt). With the window's
+        Overdub box ticked it is laid over the edit at the playhead instead and plays together with what is under it. Returns an error or "". */
+    juce::String copyMarkedToEdit (const juce::Uuid& takeWindowId, bool atEditPlayhead = false, juce::Uuid* editIdOut = nullptr, bool insert = false);
     /** A new, empty edit (not tied to any take window). */
     EditDef& makeEdit (const juce::String& name);
 

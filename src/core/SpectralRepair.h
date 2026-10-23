@@ -789,8 +789,101 @@ public:
         return std::sqrt (e / (double) (b - a));
     }
 
-    /** Mends the gap [g0,g1): the missing sound is predicted from both sides; a mend that came out too quiet (a hole) is redone by predicting from each side and blending. */
+    // ---- how much of a click a join is
+    /** The third difference of the sound, a sharp high-pass: the curve of the music itself hardly shows in it, so a step or a kink left where a mend meets the sound shows in it at once. */
+    static double thirdDiff (const std::vector<float>& x, long n)
+    {
+        return std::abs ((double) x[(size_t) n] - 3.0 * (double) x[(size_t) n - 1] + 3.0 * (double) x[(size_t) n - 2] - (double) x[(size_t) n - 3]);
+    }
+    /** The normal size of the third difference round the gap [a,b): the median over the 600 samples each side (the gap and 6 samples beyond it left out). 0 if there is too little sound round it. */
+    static double thirdDiffNormal (const std::vector<float>& x, long a, long b)
+    {
+        const long L = (long) x.size();
+        std::vector<double> mags;
+        for (long n = juce::jmax (3L, a - 600); n < a - 6; ++n) mags.push_back (thirdDiff (x, n));
+        for (long n = juce::jmax (3L, b + 6); n < juce::jmin (L, b + 600); ++n) mags.push_back (thirdDiff (x, n));
+        if (mags.size() < 32) return 0.0;
+        auto mid = mags.begin() + (long) mags.size() / 2; std::nth_element (mags.begin(), mid, mags.end());
+        return *mid;
+    }
+    /** The biggest third difference in [a,b) (samples of x, clipped to the sound). */
+    static double thirdDiffPeak (const std::vector<float>& x, long a, long b)
+    {
+        double peak = 0.0;
+        for (long n = juce::jmax (3L, a); n < juce::jmin ((long) x.size(), b); ++n) peak = juce::jmax (peak, thirdDiff (x, n));
+        return peak;
+    }
+    /** A join that is only the sound's own grain comes out about 1.5 - 4 times the normal size of the third difference (very rarely 8); the step left by a mend that stops short of the
+        tail of a click, 15 or more. */
+    static constexpr double cleanJoin = 8.0;
+    static constexpr long maxTail = 160;                                    // (the longest ramp a mend's correction is let die away over, outside its gap)
+
+    /** The change made inside [a,b) (x now, against 'was', which holds x as it was from index lo on) is let die away outside the gap, slowly: a raised-cosine ramp from the size of the
+        change at the edge down to nothing. A step where a mend stops short of a click's tail becomes a slope, which is no click. Only the change is spread, the sound is not touched
+        beyond that. 'score' is how sharp the join was (in units of 'normal'); kept as it was if the ramp does not make it better. Returns the sharpness after. */
+    static double spreadCorrection (std::vector<float>& x, const std::vector<float>& was, long lo, long a, long b, double normal, double score)
+    {
+        const long R = juce::jlimit (32L, maxTail, 2 * (b - a));
+        const long Rl = juce::jmin (R, a - lo), Rr = juce::jmin (R, lo + (long) was.size() - b);
+        if (Rl < 4 || Rr < 4 || normal <= 0.0) return score;
+        const std::vector<float> keep (x.begin() + (a - Rl), x.begin() + (b + Rr));
+        const double cl = (double) x[(size_t) a] - (double) was[(size_t) (a - lo)], cr = (double) x[(size_t) (b - 1)] - (double) was[(size_t) (b - 1 - lo)];
+        auto ramp = [R] (long j) { return 0.5 + 0.5 * std::cos (juce::MathConstants<double>::pi * (double) j / (double) (R + 1)); };
+        for (long j = 1; j <= Rl; ++j) x[(size_t) (a - j)] = (float) ((double) was[(size_t) (a - j - lo)] + cl * ramp (j));
+        for (long j = 1; j <= Rr; ++j) x[(size_t) (b - 1 + j)] = (float) ((double) was[(size_t) (b - 1 + j - lo)] + cr * ramp (j));
+        const double after = thirdDiffPeak (x, a - Rl - 4, b + Rr + 4) / normal;
+        if (after < score) return after;
+        std::copy (keep.begin(), keep.end(), x.begin() + (a - Rl));                                  // (no better: as it was)
+        return score;
+    }
+
+    /** Mends the gap [g0,g1) so that the mend leaves no click of its own. A mend predicts the missing sound from the sound on both sides. If a click has a tail that reaches past the
+        gap (an acoustic click does: a thump of the room dies away smoothly), the part left outside is still the click's and the part inside is now the music, and where the two meet
+        there is a step: a new, small click (the next pass of the finder then found THAT, mended it and left another step a little further out). So the join is looked at after the
+        mend: if it stands out, the gap is widened on that side, into the tail, and the mend made again from the untouched sound, until the join is clean. If no try gets there the best
+        one is kept - unless even that is no better than the click it replaces, when the sound is left as it was (a de-clicker must never add clicks). */
     static bool mendGap (std::vector<float>& x, long g0, long g1)
+    {
+        const long L = (long) x.size();
+        if (g1 <= g0 || g0 < 16 || g1 > L - 16) return mendGapOnce (x, g0, g1);
+        const double normal = thirdDiffNormal (x, g0, g1);
+        if (normal <= 0.0) return mendGapOnce (x, g0, g1);                         // (too little sound round it to judge a join)
+        const long m0 = g1 - g0, room = juce::jmax (24L, m0), pad = 8 + maxTail;
+        const long lo = juce::jmax (16L, g0 - room - pad), hi = juce::jmin (L - 16, g1 + room + pad);
+        const double clickBefore = thirdDiffPeak (x, g0 - 2, g1 + 4) / normal;     // how much of a click the sound in the gap is, by the same measure
+        const std::vector<float> orig (x.begin() + lo, x.begin() + hi);
+        const int tries = m0 > 400 ? 1 : 6;                                          // (a long gap is dear to mend)
+        long a = g0, b = g1, bestA = g0, bestB = g1;
+        double bestScore = 1.0e30;
+        std::vector<float> best;
+        for (int t = 0; t < tries; ++t)
+        {
+            std::copy (orig.begin(), orig.end(), x.begin() + lo);
+            if (! mendGapOnce (x, a, b)) { if (t == 0) return false; break; }
+            const double nrm = thirdDiffNormal (x, a, b);
+            const double kl = nrm > 0.0 ? thirdDiffPeak (x, a, a + 4) / nrm : 0.0, kr = nrm > 0.0 ? thirdDiffPeak (x, b, b + 4) / nrm : 0.0;
+            const double score = juce::jmax (kl, kr);
+            if (score < bestScore) { bestScore = score; bestA = a; bestB = b; best.assign (x.begin() + lo, x.begin() + hi); }
+            if (score <= cleanJoin) break;
+            const long step = juce::jmax (6L, (b - a) / 5);
+            bool grew = false;
+            if (kl > cleanJoin && a - step >= lo + pad && g0 - a < room) { a -= step; grew = true; }
+            if (kr > cleanJoin && b + step <= hi - pad && b - g1 < room && (b - a) + step <= 1500) { b += step; grew = true; }
+            if (! grew) break;
+        }
+        if (best.empty()) { std::copy (orig.begin(), orig.end(), x.begin() + lo); return false; }
+        std::copy (best.begin(), best.end(), x.begin() + lo);
+        if (bestScore > cleanJoin)
+        {
+            // The mend still stops short of the click's tail: the correction is let die away outside the gap, so that the step becomes a slope
+            bestScore = spreadCorrection (x, orig, lo, bestA, bestB, normal, bestScore);
+            if (bestScore > cleanJoin && bestScore >= clickBefore) { std::copy (orig.begin(), orig.end(), x.begin() + lo); return false; }
+        }
+        return true;
+    }
+
+    /** One try at mending the gap [g0,g1): the missing sound is predicted from both sides; a mend that came out too quiet (a hole) is redone by predicting from each side and blending. */
+    static bool mendGapOnce (std::vector<float>& x, long g0, long g1)
     {
         const long m = g1 - g0;
         const std::vector<float> keep (x.begin() + g0, x.begin() + g1);
@@ -1125,7 +1218,20 @@ public:
                 }
                 return total;
             }
-            if (interpolate (x, t0, t1, (int) juce::jlimit (40L, 128L, (t1 - t0) / 4))) { if (found) found->push_back ({ t0, t1 }); return 1; }
+            const long lo = juce::jmax (16L, t0 - maxTail - 8), hi = juce::jmin (L - 16, t1 + maxTail + 8);
+            const bool judge = t0 >= 16 && t1 <= L - 16 && hi > lo;
+            const std::vector<float> was (judge ? std::vector<float> (x.begin() + lo, x.begin() + hi) : std::vector<float>());
+            const double normal = judge ? thirdDiffNormal (x, t0, t1) : 0.0;
+            if (interpolate (x, t0, t1, (int) juce::jlimit (40L, 128L, (t1 - t0) / 4)))
+            {
+                if (normal > 0.0)                                           // (the area is mended whole as asked; the join must still be no click of its own)
+                {
+                    const double score = juce::jmax (thirdDiffPeak (x, t0, t0 + 4), thirdDiffPeak (x, t1, t1 + 4)) / normal;
+                    if (score > cleanJoin) spreadCorrection (x, was, lo, t0, t1, normal, score);
+                }
+                if (found) found->push_back ({ t0, t1 });
+                return 1;
+            }
             return 0;
         }
         auto& lastDeclick = lastDeclickReport(); lastDeclick = DeclickReport { 0, 0, 0, 0 };
@@ -1172,7 +1278,17 @@ public:
                     const long g0 = juce::jmax (t0, t.first - 2 * pad), g1 = juce::jmin (t1, t.second + 2 * pad);
                     if (g1 - g0 < 2 || g1 - g0 > maxGap) continue;
                     RepairParams p; p.mode = RepairMode::Attenuate; p.direction = RepairDirection::LeftRight; p.strength = 1.0; p.contextPct = 400.0; p.bands = 256; p.multiRes = false;
+                    // (as with the other mends: it must not leave a click of its own. If the sound after it is sharper than before it, and sharper than a clean join, it is put back.)
+                    const long b0 = juce::jmax (16L, g0 - 64), b1 = juce::jmin (L - 16, g1 + 64);
+                    const double normal = (g0 >= 16 && g1 <= L - 16) ? thirdDiffNormal (x, g0, g1) : 0.0;
+                    const double before = normal > 0.0 ? thirdDiffPeak (x, g0 - 2, g1 + 4) / normal : 0.0;
+                    const std::vector<float> keep (x.begin() + b0, x.begin() + juce::jmax (b0, b1));
                     repair (x, sampleRate, g0, g1, 20.0, 0.5 * sampleRate, p);
+                    if (normal > 0.0)
+                    {
+                        const double after = thirdDiffPeak (x, g0 - 2, g1 + 4) / normal;
+                        if (after > cleanJoin && after >= before) { std::copy (keep.begin(), keep.end(), x.begin() + b0); continue; }
+                    }
                     ++total; ++lastDeclick.linesMended; if (found) found->push_back ({ g0, g1 });
                 }
                 if (! still.empty()) lastDeclick.linesLeft = (int) findLines (x, sampleRate, t0, t1).size();

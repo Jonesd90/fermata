@@ -1,4 +1,5 @@
 // Headless test of the Fermata engine: recording, take naming/grouping, mixer isolation, inserts, save/load.
+#include <random>
 #include "../src/core/AudioEngine.h"
 #include "../src/core/Bounce.h"
 #include "../src/core/SessionClock.h"
@@ -881,6 +882,48 @@ int main()
         CHECK (e2.regions.front().startSample == 0 && e2.regions.size() == 5 && e2.lengthSamples() == 10 * S);
         e2.insertRegionAt (twoFiles (0, S), 20 * S);                                 // after the end: leaves a gap
         CHECK (e2.regions.back().startSample == 20 * S && e2.lengthSamples() == 21 * S);
+
+        // key 4: a piece placed AT a point OVERWRITES the same length of what is there; nothing after it moves
+        {
+            Project zp; zp.tracks = xp.tracks;
+            auto& e4 = zp.addEdit ("E4", juce::Uuid::null());
+            e4.insertRegion (twoFiles (0, 4 * S)); e4.insertRegion (twoFiles (4 * S, 8 * S));
+            auto tidy = [] (const EditDef& e) { for (size_t k = 1; k < e.regions.size(); ++k) if (e.regions[k].startSample < e.regions[k - 1].endSample()) return false; return true; };
+            juce::int64 gone = -1;
+            e4.overwriteRegionAt (twoFiles (10 * S, 11 * S), 2 * S, &gone);                    // 2 - 3 s, inside the first piece
+            CHECK (e4.regions.size() == 4 && e4.lengthSamples() == 8 * S && gone == S && tidy (e4));
+            CHECK (e4.regions[0].startSample == 0 && e4.regions[0].length() == 2 * S && e4.regions[0].srcIn == 0);
+            CHECK (e4.regions[1].startSample == 2 * S && e4.regions[1].length() == S && e4.regions[1].srcIn == 10 * S);
+            CHECK (e4.regions[2].startSample == 3 * S && e4.regions[2].length() == S && e4.regions[2].srcIn == 3 * S);     // the part that stays is the same audio
+            CHECK (e4.regions[3].startSample == 4 * S && e4.regions[3].length() == 4 * S && e4.regions[3].srcIn == 4 * S);   // after the span: not moved
+            CHECK (e4.regions[1].inEnd > e4.regions[1].inStart && e4.regions[0].outEnd > e4.regions[0].outStart);            // the new joins have crossfades
+            // across a join: 3.5 - 5.5 s takes the end of one piece and the start of the next
+            e4.overwriteRegionAt (twoFiles (20 * S, 22 * S), 3 * S + S / 2, &gone);
+            CHECK (gone == 2 * S && e4.lengthSamples() == 8 * S && tidy (e4));
+            int found = -1; for (int i = 0; i < (int) e4.regions.size(); ++i) if (e4.regions[(size_t) i].srcIn == 20 * S) found = i;
+            CHECK (found > 0 && e4.regions[(size_t) found].startSample == 3 * S + S / 2 && e4.regions[(size_t) found].endSample() == 5 * S + S / 2);
+            CHECK (e4.regions[(size_t) found - 1].endSample() == 3 * S + S / 2 && e4.regions[(size_t) found + 1].startSample == 5 * S + S / 2);
+            CHECK (e4.regions[(size_t) found + 1].srcIn == 5 * S + S / 2 && e4.regions[(size_t) found + 1].endSample() == 8 * S);     // the rest of the second piece keeps its audio and its place
+            // an overdub is not touched
+            auto od = twoFiles (0, S); e4.addOverdub (od, 4 * S);
+            e4.overwriteRegionAt (twoFiles (0, 2 * S), 3 * S, &gone);
+            CHECK (e4.overdubs.size() == 1 && e4.overdubs[0].startSample == 4 * S && tidy (e4));
+            // longer than everything: one piece is left; past the end: it lies there with a gap before it
+            e4.overwriteRegionAt (twoFiles (0, 8 * S), 0, &gone);
+            CHECK (e4.regions.size() == 1 && e4.regions[0].startSample == 0 && e4.lengthSamples() == 8 * S && gone == 8 * S);
+            e4.overwriteRegionAt (twoFiles (0, S), 20 * S, &gone);
+            CHECK (e4.regions.size() == 2 && e4.regions.back().startSample == 20 * S && gone == 0 && e4.lengthSamples() == 21 * S);
+            CHECK (e4.regions.back().inStart == 0.0 && e4.regions[0].outEnd == 0.0);              // beside a gap: short fades at the edges, no crossfade into silence
+            // into an empty edit
+            auto& e5 = zp.addEdit ("E5", juce::Uuid::null());
+            e5.overwriteRegionAt (twoFiles (0, 3 * S), 5 * S, &gone);
+            CHECK (e5.regions.size() == 1 && e5.regions[0].startSample == 5 * S && gone == 0);
+            // the same tape: Shift + 4 (insertRegionAt) still pushes the rest later
+            auto& e6 = zp.addEdit ("E6", juce::Uuid::null());
+            e6.insertRegion (twoFiles (0, 4 * S)); e6.insertRegion (twoFiles (4 * S, 8 * S));
+            e6.insertRegionAt (twoFiles (10 * S, 12 * S), 2 * S);
+            CHECK (e6.lengthSamples() == 10 * S && e6.regions.back().startSample == 6 * S);
+        }
 
         // an overdub plays together with what is under it
         auto& e3 = xp.addEdit ("E3", juce::Uuid::null());
@@ -2152,6 +2195,51 @@ int main()
             for (size_t i = (size_t) (2.0 * sr); i < q.size(); ++i) q[i] = (float) (0.3 * std::sin (2 * dsp::kPi * 1500.0 * (double) i / sr)) + 0.001f * (rnd.nextFloat() * 2.0f - 1.0f);
             for (size_t i = 0; i < (size_t) (2.0 * sr); ++i) q[i] = 0.001f * (rnd.nextFloat() * 2.0f - 1.0f);
             CHECK (SpectralRepair::findLines (q, sr, (long) (1.0 * sr), (long) (3.0 * sr)).empty());
+        }
+        // 2.93 declick: a repair must not leave a click of its own. A quiet, hissy 96 kHz piano-like sound with room-click-like bursts (a damped ring that rises fast) in it: a mend that
+        // stopped short of a burst's tail used to leave a step where it met the sound, and at a high sensitivity the next pass found that step and mended it too. After the de-click there
+        // must be no sharp feature (a third difference far out of the normal) that was not there before, and the clicks must still be found
+        {
+            const double srh = 96000.0; const size_t N = (size_t) (2.5 * srh);
+            std::mt19937 rng (91); std::normal_distribution<double> nd (0.0, 1.0); std::uniform_real_distribution<double> ud (0.0, 1.0);
+            std::vector<double> y (N, 0.0);
+            for (int note = 0; note < 2; ++note)
+                for (int k = 1; k <= 10; ++k)
+                {
+                    double ph = ud (rng) * 6.28, am = 0.0, pw = 0.0; const double amp = 0.012 / k, dec = 0.4 + 0.2 * ud (rng), f0 = 130.0 * std::pow (2.0, note * 0.4);
+                    for (size_t i = 0; i < N; ++i)
+                    {
+                        am += 0.0004 * nd (rng) - 0.0003 * am; pw += 2.0e-5 * nd (rng) - 0.0001 * pw;             // (a little drift, so the sound is not perfectly predictable)
+                        const double t = (double) i / srh, tn = t - note * 1.2; if (tn < 0.0) continue;
+                        y[i] += amp * (1.0 + 0.3 * am) * std::exp (-tn / dec) * std::sin (2 * dsp::kPi * f0 * k * t * (1.0 + 0.0003 * k) + ph + pw);
+                    }
+                }
+            std::vector<float> x (N); for (size_t i = 0; i < N; ++i) x[i] = (float) (y[i] + 2.0e-6 * nd (rng));
+            for (int c = 0; c < 12; ++c)
+            {
+                const long at = (long) (0.15 * srh + ud (rng) * (2.2 * srh)); const double fc = 300.0 + 1700.0 * ud (rng), dec = 0.001 + 0.003 * ud (rng), amp = 0.002 + 0.006 * ud (rng);
+                for (long i = 0; i < (long) (0.02 * srh) && at + i < (long) N; ++i) { const double t = (double) i / srh; x[(size_t) (at + i)] += (float) (amp * (1.0 - std::exp (-t / 0.0001)) * std::exp (-t / dec) * std::sin (2 * dsp::kPi * fc * t)); }
+            }
+            int added = 0, changed = 0, mended = 0;
+            for (double sens : { 9.0, 10.0 })
+            {
+                auto z = x; mended += SpectralRepair::declick (z, 0, (long) N, sens, nullptr, srh);
+                for (size_t i0 = 3; i0 + 2048 < N; i0 += 2048)
+                {
+                    std::vector<double> m; for (size_t i = i0; i < i0 + 2048; ++i) m.push_back (SpectralRepair::thirdDiff (z, (long) i));
+                    std::nth_element (m.begin(), m.begin() + 1024, m.end()); const double med = m[1024] + 1.0e-12;
+                    for (size_t i = i0; i < i0 + 2048; ++i)
+                        if (SpectralRepair::thirdDiff (z, (long) i) > 14.0 * med)
+                        {
+                            double before = 0.0; for (size_t j = i - 40; j < i + 40 && j < N; ++j) before = std::max (before, SpectralRepair::thirdDiff (x, (long) j));
+                            if (SpectralRepair::thirdDiff (z, (long) i) > 1.8 * before) { ++added; i += 40; }
+                        }
+                }
+                for (size_t i = 0; i < N; ++i) if (z[i] != x[i]) ++changed;
+            }
+            std::printf ("  (declick at sensitivity 9 and 10, room-click bursts: %d mended, %d samples changed, %d sharp features added)\n", mended, changed, added);
+            CHECK (mended >= 6 && changed > 200);                             // (it still finds and mends the clicks)
+            CHECK (added == 0);
         }
         // declick: a dropout (a run of digital silence in the middle of sound) is rebuilt, not just its edges smoothed
         {
