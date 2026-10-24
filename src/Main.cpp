@@ -504,7 +504,28 @@ private:
     void closeFromKey (const juce::String& key)
     {
         if (juce::ModalComponentManager::getInstance()->getNumModalComponents() > 0) { ctx->setNotice ("Close the open menu or message first, then press the key again."); return; }
+        if (! transportWindowMayClose (key)) return;
         closeWindowLater (key);
+    }
+    /** A take or edit window is being closed (its X, or a key): what it is playing stops with it (the engine plays on its own, so the sound went on with
+        nothing left to stop it from), and the take window being recorded into is not closed at all. False = leave it open. */
+    bool transportWindowMayClose (const juce::String& key)
+    {
+        const bool take = key.startsWith ("take:"), edit = key.startsWith ("edit:");
+        if (! take && ! edit) return true;
+        const juce::Uuid id (key.fromFirstOccurrenceOf (":", false, false));
+        if (take && ctx->engine.isRecording() && (ctx->recordTarget == id || ctx->project.findTake (id, ctx->engine.currentTakeId()) != nullptr))
+        {
+            showError ("Recording", "This take window is recording. Stop the recording first, then close the window.");
+            return false;
+        }
+        if (ctx->isPlaying())
+        {
+            const auto& pi = ctx->playInfo;
+            if ((take && pi.kind == AppContext::PlayInfo::Kind::Take && pi.windowId == id) || (edit && pi.kind == AppContext::PlayInfo::Kind::Edit && pi.id == id))
+                ctx->stopPlayback();
+        }
+        return true;
     }
 
     /** 'stayInFront' (optional): a window the user is working in. An already open window is then left exactly where it is; a NEW window always opens on top. */
@@ -523,6 +544,7 @@ private:
         if (key == "organiser" || key == "takedisplay" || key == "bridge" || key == "pitchpipe" || key == "click" || key == "align") content = new CornerStripHost (content);     // (their pin and sun / moon buttons get a strip of their own)
         auto w = std::make_unique<ToolWindow> (title, [this, key] (ToolWindow*)
         {
+            if (! transportWindowMayClose (key)) return;
             juce::MessageManager::callAsync ([this, key] { windows.erase (key); });
         });
         w->setContentOwned (content, true);

@@ -2535,6 +2535,14 @@ public:
         numBox.setButtonText ("Also join names ending in 1 and 2 (Mic 1 + Mic 2) into stereo tracks");
         numBox.onClick = [this] { buildPairList(); rebuildPlan(); };
         setBase();
+        // the files are one set of tracks: each goes on the track named in its file name, whatever else the name says (numbers, the piece)
+        addAndMakeVisible (byNameBox);
+        byNameBox.setButtonText ("One set of tracks: put each file on the track named in its file name (AB, SPOT1 ...) - numbers and the rest of the name are ignored");
+        byNameBox.setTooltip ("For files whose names carry the piece and the take numbers (\"Rorate Caeli SPOT4 19 18\"), which would otherwise each make new tracks. "
+                              "A file goes on the project's track whose name its name ends with, once the numbers at the end are taken off; a file with no such "
+                              "track gets a track of its own (named without the numbers, shared by the takes). The takes are still told apart by their lengths.");
+        if (auto* st = app.props.getUserSettings()) byNameBox.setToggleState (st->getBoolValue ("importByTrackName", false), juce::dontSendNotification);
+        byNameBox.onClick = [this] { if (auto* st = app.props.getUserSettings()) st->setValue ("importByTrackName", byNameBox.getToggleState()); refreshSummary(); };
         addAndMakeVisible (copyBox); addAndMakeVisible (linkBox);
         copyBox.setButtonText ("Copy the audio into this project's folder (recommended)"); linkBox.setButtonText ("Use the audio files where they are (nothing is copied)");
         copyBox.setRadioGroupId (4711); linkBox.setRadioGroupId (4711);
@@ -2608,6 +2616,7 @@ public:
         refreshSummary();
     }
     bool linking() const { return linkBox.getToggleState(); }
+    bool byName() const { return byNameBox.getToggleState(); }
     bool splitting() const { return pieceBox.isVisible() && pieceBox.getToggleState(); }
     /** The tracks in the order the person chose (anything not in that list keeps its place after the others). */
     void applyOrder (ImportPlan& pl) const
@@ -2645,8 +2654,26 @@ public:
               << ":  " << juce::String ((int) tk.parts.size()) << " track(s),  " << formatTimeShort ((double) tk.length / juce::jmax (1.0, tk.sampleRate), 2)
               << ",  " << juce::String (tk.sampleRate, 0) << " Hz\n";
         }
-        t << "\nTracks, in this order (matched to the tracks you already have by name; new ones are added):\n";
-        for (auto& tr : plan.tracks) t << "   " << tr.name << (tr.channels == 2 ? "  (stereo)" : "") << "\n";
+        if (byName())
+        {
+            // what the tick box does: each file's track, by the name in the file name
+            t << "\nTracks (each file on the track named in its file name; new ones are added):\n";
+            std::map<juce::String, juce::StringArray> onto; std::vector<juce::String> order;
+            for (auto& tr : plan.tracks)
+            {
+                const auto* m = app.project.trackNamedIn (tr.name, tr.channels);
+                const auto target = m != nullptr ? m->name : Project::withoutEndNumbers (tr.name) + "  (new track)";
+                if (! onto.count (target)) order.push_back (target);
+                onto[target].add (tr.name);
+            }
+            for (auto& o : order)
+                t << "   " << o << "   <   " << onto[o][0] << (onto[o].size() > 1 ? " and " + juce::String (onto[o].size() - 1) + " more" : juce::String()) << "\n";
+        }
+        else
+        {
+            t << "\nTracks, in this order (matched to the tracks you already have by name; new ones are added):\n";
+            for (auto& tr : plan.tracks) t << "   " << tr.name << (tr.channels == 2 ? "  (stereo)" : "") << "\n";
+        }
         if (plan.notes.size() > 0) { t << "\nNotes:\n"; for (auto& note : plan.notes) t << "   " << note << "\n"; }
         if (! editId.isNull()) t << "\nEach take is placed in the edit, one after the other, with every track on its own row of the edit window (ready for mixing).\n";
         if (linking())
@@ -2663,6 +2690,7 @@ public:
         orderButton.setBounds (bottom.removeFromLeft (150));
         cancel.setBounds (bottom.removeFromRight (100)); bottom.removeFromRight (8); doIt.setBounds (bottom.removeFromRight (180));
         linkBox.setBounds (r.removeFromBottom (24)); copyBox.setBounds (r.removeFromBottom (24)); r.removeFromBottom (4);
+        byNameBox.setBounds (r.removeFromBottom (24)); r.removeFromBottom (4);
         { auto row = r.removeFromBottom (26); namingCap.setBounds (row.removeFromLeft (110)); namingBox.setBounds (row.removeFromLeft (juce::jmin (440, row.getWidth())).reduced (0, 1)); r.removeFromBottom (4); }
         if (pieceBox.isVisible()) pieceBox.setBounds (r.removeFromBottom (24));
         if (numBox.isVisible()) numBox.setBounds (r.removeFromBottom (24));
@@ -2680,7 +2708,7 @@ private:
     std::vector<ImportSource> sources; juce::StringArray problems;     // the files as read (header information), and what could not be read
     ImportPlan basePlan; std::vector<juce::String> trackOrder;
     juce::Label namingCap; juce::ComboBox namingBox;
-    juce::ToggleButton joinBox, numBox, copyBox, linkBox, pieceBox; juce::TextButton orderButton { "Track order..." };
+    juce::ToggleButton joinBox, numBox, copyBox, linkBox, pieceBox, byNameBox; juce::TextButton orderButton { "Track order..." };
     std::vector<StereoPairCandidate> pairCands; juce::OwnedArray<juce::ToggleButton> pairBoxes; juce::Component pairHolder; juce::Viewport pairView;
     void start()
     {
@@ -2699,7 +2727,7 @@ private:
                 st->setValue ("importMonoPairs", keep.joinIntoString ("|"));
             }
         doIt.setEnabled (false); status.setText (linking() ? "Reading the files..." : "Copying the audio...", juce::dontSendNotification);
-        const bool link = linking();
+        const bool link = linking(), named = byName();
         applyOrder (plan);
         const bool reorder = ! trackOrder.empty();
         if (reorder) if (auto* st = app.props.getUserSettings()) { juce::StringArray ks; for (auto& k : trackOrder) ks.add (k); st->setValue ("importTrackOrder", ks.joinIntoString ("|")); }
@@ -2734,12 +2762,12 @@ private:
                         }
                         return {};
                     },
-                    [safe, parts, &appRef, reorder] (const juce::String& err)
+                    [safe, parts, &appRef, reorder, named] (const juce::String& err)
                     {
                         if (safe == nullptr) return;
                         if (err.isNotEmpty()) { safe->status.setText (err, juce::dontSendNotification); safe->doIt.setEnabled (true); return; }
                         busy::begin ("Adding the takes", "Putting the imported takes into their take windows");
-                        for (auto& pt : *parts) finishImport (appRef, pt.wid, pt.plan, pt.files, reorder);
+                        for (auto& pt : *parts) finishImport (appRef, pt.wid, pt.plan, pt.files, reorder, named);
                         busy::endAfterPendingMessages();
                         closeDialogOf (safe.getComponent());
                     });
@@ -2753,13 +2781,13 @@ private:
         auto* self = this; auto& appRef = app; const auto wid = windowId; const auto eid = editId;
         juce::Component::SafePointer<ImportDialog> safe (this);
         runJob ([planCopy, folder, label, numbers, result, link] (AudioJob& j) { return copyImportFiles (formats(), *planCopy, folder, label, numbers, *result, &j, link); },
-                [safe, planCopy, result, &appRef, wid, eid, self, reorder] (const juce::String& err)
+                [safe, planCopy, result, &appRef, wid, eid, self, reorder, named] (const juce::String& err)
                 {
                     juce::ignoreUnused (self);
                     if (safe == nullptr) return;
                     if (err.isNotEmpty()) { safe->status.setText (err, juce::dontSendNotification); safe->doIt.setEnabled (true); return; }
                     busy::begin ("Adding the takes", eid.isNull() ? "Putting the imported takes into the take window" : "Putting the imported audio into the edit");
-                    if (eid.isNull()) finishImport (appRef, wid, *planCopy, *result, reorder); else finishImportToEdit (appRef, eid, *planCopy, *result, reorder);
+                    if (eid.isNull()) finishImport (appRef, wid, *planCopy, *result, reorder, named); else finishImportToEdit (appRef, eid, *planCopy, *result, reorder, named);
                     busy::endAfterPendingMessages();
                     closeDialogOf (safe.getComponent());
                 });
@@ -2780,39 +2808,66 @@ private:
         for (size_t k = 0; k < slots.size(); ++k) p.tracks[slots[k]] = picked[k];
     }
 
-    /** Finds (by name and channel count) or creates the project track of each import track. */
-    static std::map<juce::String, juce::Uuid> mapTracks (AppContext& app, const ImportPlan& plan, TakeWindowDef* w)
+    /** Finds (by name and channel count) or creates the project track of each import track. 'byName' (the "one set of tracks" box): a name that is
+        not a track's goes on the track named in it (Project::trackNamedIn: "Rorate Caeli SPOT4 19 18" -> SPOT4), else on a new track named without
+        the numbers at its end, shared by every import track with that name; and two files of one take never go on the same track. */
+    static std::map<juce::String, juce::Uuid> mapTracks (AppContext& app, const ImportPlan& plan, TakeWindowDef* w, bool byName = false)
     {
         auto& p = app.project;
         std::map<juce::String, juce::Uuid> trackFor;
         std::set<int> usedInputs; for (auto& t : p.tracks) for (int c = 0; c < t.channelCount(); ++c) if (t.inputOf (c) >= 0) usedInputs.insert (t.inputOf (c));
+        auto makeTrack = [&] (const juce::String& trackName, int channels) -> juce::Uuid
+        {
+            int first = -1;
+            for (int i = 0; i + channels <= (int) p.inputs.size() && first < 0; ++i)
+            {
+                bool freeSlot = true; for (int c = 0; c < channels; ++c) freeSlot = freeSlot && ! usedInputs.count (i + c);
+                if (freeSlot) first = i;
+            }
+            auto& nt = p.addTrack (trackName, channels == 2 ? TrackFormat::Stereo : TrackFormat::Mono, first);
+            if (first < 0) nt.inputs.fill (-1); else for (int c = 0; c < channels; ++c) usedInputs.insert (first + c);
+            return nt.id;
+        };
+        std::map<juce::String, juce::Uuid> made;                              // byName: the new track of each name without its numbers (+ channels)
         for (auto& tr : plan.tracks)
         {
             const TrackDef* found = nullptr;
             for (auto& t : p.tracks) if (t.name.equalsIgnoreCase (tr.name) && t.channelCount() == tr.channels) { found = &t; break; }
-            if (found == nullptr)
+            if (found == nullptr && byName) found = p.trackNamedIn (tr.name, tr.channels);
+            juce::Uuid id;
+            if (found != nullptr) id = found->id;
+            else if (byName)
             {
-                int first = -1;
-                for (int i = 0; i + tr.channels <= (int) p.inputs.size() && first < 0; ++i)
-                {
-                    bool freeSlot = true; for (int c = 0; c < tr.channels; ++c) freeSlot = freeSlot && ! usedInputs.count (i + c);
-                    if (freeSlot) first = i;
-                }
-                auto& nt = p.addTrack (tr.name, tr.channels == 2 ? TrackFormat::Stereo : TrackFormat::Mono, first);
-                if (first < 0) nt.inputs.fill (-1); else for (int c = 0; c < tr.channels; ++c) usedInputs.insert (first + c);
-                found = &nt;
+                const auto base = Project::withoutEndNumbers (tr.name);
+                const auto k = base.toLowerCase() + "#" + juce::String (tr.channels);
+                if (auto it = made.find (k); it != made.end()) id = it->second;
+                else id = made[k] = makeTrack (base.isNotEmpty() ? base : tr.name, tr.channels);
             }
-            trackFor[tr.key] = found->id; if (w != nullptr) w->unhide (found->id);
+            else id = makeTrack (tr.name, tr.channels);
+            trackFor[tr.key] = id;
+            if (w != nullptr) w->unhide (id);
         }
+        if (byName)                                                         // a second file of a take on the same track gets a track of its own
+            for (auto& tk : plan.takes)
+            {
+                std::set<juce::Uuid> used;
+                for (auto& pt : tk.parts)
+                {
+                    if (used.insert (trackFor[pt.trackKey]).second) continue;
+                    const auto id = makeTrack (pt.trackName, pt.trackChannels);
+                    trackFor[pt.trackKey] = id; used.insert (id);
+                    if (w != nullptr) w->unhide (id);
+                }
+            }
         return trackFor;
     }
 
     /** Edit window import: one piece of the edit per imported take (placed one after the other), each file on its own track. */
-    static void finishImportToEdit (AppContext& app, const juce::Uuid& eid, const ImportPlan& plan, const std::vector<std::vector<juce::File>>& files, bool reorder = false)
+    static void finishImportToEdit (AppContext& app, const juce::Uuid& eid, const ImportPlan& plan, const std::vector<std::vector<juce::File>>& files, bool reorder = false, bool byName = false)
     {
         auto* e = app.project.findEdit (eid);
         if (e == nullptr) return;
-        auto trackFor = mapTracks (app, plan, nullptr);
+        auto trackFor = mapTracks (app, plan, nullptr, byName);
         if (reorder) orderProjectTracks (app, plan, trackFor);
         for (size_t ti = 0; ti < plan.takes.size() && ti < files.size(); ++ti)
         {
@@ -2838,12 +2893,12 @@ private:
         app.project.changed();
     }
 
-    static void finishImport (AppContext& app, const juce::Uuid& wid, const ImportPlan& plan, const std::vector<std::vector<juce::File>>& files, bool reorder = false)
+    static void finishImport (AppContext& app, const juce::Uuid& wid, const ImportPlan& plan, const std::vector<std::vector<juce::File>>& files, bool reorder = false, bool byName = false)
     {
         auto* w = app.project.findTakeWindow (wid);
         if (w == nullptr) return;
         auto& p = app.project;
-        auto trackFor = mapTracks (app, plan, w);
+        auto trackFor = mapTracks (app, plan, w, byName);
         if (reorder) orderProjectTracks (app, plan, trackFor);
         for (size_t ti = 0; ti < plan.takes.size() && ti < files.size(); ++ti)
         {

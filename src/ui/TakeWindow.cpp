@@ -1214,7 +1214,7 @@ private:
         updateSize(); repaint();
         return true;
     }
-    /** The tracks of this window with clips whose name ends with another track's name ("VivienneSPOT1" -> "SPOT1"), each with that track. */
+    /** The tracks of this window with clips whose name names another track ("VivienneSPOT1" -> "SPOT1", "Rorate Caeli SPOT4 19 18" -> "SPOT4"), each with that track. */
     std::vector<std::pair<juce::Uuid, juce::Uuid>> nameMatchPairs()
     {
         std::vector<std::pair<juce::Uuid, juce::Uuid>> v;
@@ -1230,12 +1230,17 @@ private:
         const auto pairs = nameMatchPairs();
         if (pairs.empty()) return;
         auto nameOf = [this] (const juce::Uuid& id) { auto* t = app.project.findTrack (id); return t != nullptr ? t->name : juce::String ("?"); };
+        // one line per track the clips go onto, in the project's order ("AB   <   Rorate Caeli AB 20 19 and 20 more": an import can make hundreds)
+        std::map<juce::Uuid, juce::StringArray> from;
+        for (auto& pr : pairs) from[pr.second].add (nameOf (pr.first));
         juce::StringArray lines;
-        for (auto& pr : pairs) lines.add (nameOf (pr.first) + "   >   " + nameOf (pr.second));
+        for (auto& t : app.project.tracks)
+            if (auto it = from.find (t.id); it != from.end())
+                lines.add (t.name + "   <   " + it->second[0] + (it->second.size() > 1 ? " and " + juce::String (it->second.size() - 1) + " more" : juce::String()));
         const auto list = lines.size() <= 30 ? lines.joinIntoString ("\n") : lines.joinIntoString ("\n", 0, 28) + "\n... and " + juce::String (lines.size() - 28) + " more";
         juce::Component::SafePointer<TakeTimeline> safe (this);
-        confirmAsync ("Move clips by name", "Move every clip of these tracks onto the track its name ends with? The takes stay where they are in time "
-                      "(the pieces of edits made from them go along).\n\n" + list + "\n\nCtrl + Z puts them all back.", "Move them",
+        confirmAsync ("Move clips by name", "Move the clips of " + juce::String ((int) pairs.size()) + " tracks onto the tracks named in their names? The takes stay where they "
+                      "are in time (the pieces of edits made from them go along).\n\n" + list + "\n\nCtrl + Z puts them all back.", "Move them",
                       [safe, pairs, nameOf]
                       {
                           if (safe == nullptr) return;
@@ -1249,7 +1254,7 @@ private:
                               ++done;
                               if (! safe->app.project.trackHasAudio (pr.first)) emptied.push_back (pr.first);     // (nothing left on it anywhere: it can go)
                           }
-                          safe->app.setNotice ("Moved the clips of " + juce::String (done) + (done == 1 ? " track" : " tracks") + " onto the tracks their names end with. Ctrl + Z puts them back.");
+                          safe->app.setNotice ("Moved the clips of " + juce::String (done) + (done == 1 ? " track" : " tracks") + " onto the tracks named in their names. Ctrl + Z puts them back.");
                           const auto notMovedText = notMoved.isEmpty() ? juce::String()
                                                                        : "Moved " + juce::String (done) + " of " + juce::String ((int) pairs.size()) + ". Not moved:\n\n" + notMoved.joinIntoString ("\n");
                           // the tracks the clips came from, now empty: the import's wrongly named tracks, which can be deleted at once
@@ -1270,7 +1275,7 @@ private:
         for (auto& id : ids) if (auto* t = app.project.findTrack (id)) names.add (t->name);
         if (names.isEmpty()) return;
         const int n = names.size();
-        const auto list = n <= 40 ? names.joinIntoString (", ") : names.joinIntoString (", ", 0, 38) + " and " + juce::String (n - 38) + " more";
+        const auto list = n <= 16 ? names.joinIntoString (", ") : names.joinIntoString (", ", 0, 14) + " and " + juce::String (n - 14) + " more";
         juce::Component::SafePointer<TakeTimeline> safe (this);
         confirmAsync (title, lead + (n == 1 ? "Delete the track '" + names[0] + "' from the project?" : "Delete these " + juce::String (n) + " tracks from the project?\n\n" + list)
                       + "\n\nThere is no audio on " + (n == 1 ? "it" : "them") + " in any take window or edit, so nothing is lost, and the audio files on the disk "
@@ -1316,7 +1321,7 @@ private:
                 if (t->id != trackId && ! t->isLtc) { const auto tid = t->id; to.addItem (t->name, [safe, trackId, tid] { if (safe != nullptr) safe->moveClips (trackId, tid, safe->takesWithClipOn (trackId)); }); }
             m.addSubMenu ("Move its " + clips + " onto another track", to);
             if (const auto pairs = nameMatchPairs(); pairs.size() > 1)
-                m.addItem ("Move the clips of all " + juce::String ((int) pairs.size()) + " tracks named like this onto the tracks their names end with...", [safe] { if (safe != nullptr) safe->moveAllByName(); });
+                m.addItem ("Move the clips of all " + juce::String ((int) pairs.size()) + " tracks named like this onto the tracks named in their names...", [safe] { if (safe != nullptr) safe->moveAllByName(); });
             m.addSeparator();
         }
         if (trackSelected (trackId) && selectedTracks.size() > 1)

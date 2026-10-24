@@ -330,8 +330,15 @@ public:
                        juce::String& why, int* editPieces = nullptr);
     juce::String canMoveTakeClips (const juce::Uuid& windowId, const juce::Uuid& fromTrack, const juce::Uuid& toTrack, const std::vector<juce::Uuid>& takes);
     /** The track whose name this track's name ends with ("VivienneSPOT1" ends with "SPOT1": an import that put the same word in front of every
-        name), the longest such name; capitals and spaces at the ends do not count. Not the LTC track. Null if there is none. */
+        name), the longest such name; capitals and spaces at the ends do not count; number words at the end are taken off if that finds nothing
+        (trackNamedIn). Not the LTC track. Null if there is none. */
     const TrackDef* trackNamedAtEndOf (const juce::Uuid& trackId) const;
+    /** The track a name refers to: the longest track name it ends with (as trackNamedAtEndOf), else the same with the number words at its end taken
+        off one at a time - "Rorate Caeli SPOT4 19 18" -> "SPOT4", "Rorate CaeliROOM 414 01" -> "ROOM 414" (an import that added the piece and take
+        numbers). Never the LTC track nor 'except'; with 'channels' > 0 only a track with that many channels. Null if there is none. */
+    const TrackDef* trackNamedIn (const juce::String& name, int channels = 0, const TrackDef* except = nullptr) const;
+    /** The name without the number words at its end ("Rorate Caeli AB 20 19" -> "Rorate Caeli AB"; "SPOT4" stays as it is). */
+    static juce::String withoutEndNumbers (const juce::String& name);
     /** Is there audio on this track anywhere in the project: a clip in a take window, or a piece (or overdub) of an edit? */
     bool trackHasAudio (const juce::Uuid& trackId) const;
     /** Deletes these tracks from the project at once (one structure change), passing over the LTC track and any track with audio on it somewhere

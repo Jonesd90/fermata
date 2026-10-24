@@ -974,19 +974,47 @@ int Project::moveTakeClips (const juce::Uuid& windowId, const juce::Uuid& fromTr
 
 const TrackDef* Project::trackNamedAtEndOf (const juce::Uuid& trackId) const
 {
-    const TrackDef* self = nullptr;
-    for (auto& t : tracks) if (t.id == trackId) self = &t;
-    if (self == nullptr) return nullptr;
-    const auto own = self->name.trim().toLowerCase();
-    const TrackDef* best = nullptr; int bestLen = 0;
-    for (auto& t : tracks)
+    for (auto& t : tracks) if (t.id == trackId) return trackNamedIn (t.name, 0, &t);
+    return nullptr;
+}
+
+/** Takes one number word off the end ("... AB 20 19" -> "... AB 20"): digits with a space, '_', '-' or '.' before them. False if there is none. */
+static bool dropEndNumber (juce::String& s)
+{
+    int i = s.length();
+    while (i > 0 && juce::CharacterFunctions::isDigit (s[i - 1])) --i;
+    if (i == s.length()) return false;
+    int j = i;
+    while (j > 0 && (s[j - 1] == ' ' || s[j - 1] == '_' || s[j - 1] == '-' || s[j - 1] == '.')) --j;
+    if (j == i || j == 0) return false;                                  // ("SPOT4": the 4 is part of the name)
+    s = s.substring (0, j);
+    return true;
+}
+
+juce::String Project::withoutEndNumbers (const juce::String& name)
+{
+    auto s = name.trim();
+    while (dropEndNumber (s)) {}
+    return s.trim();
+}
+
+const TrackDef* Project::trackNamedIn (const juce::String& name, int channels, const TrackDef* except) const
+{
+    auto s = name.trim().toLowerCase();
+    for (int level = 0; level < 8 && s.isNotEmpty(); ++level)
     {
-        if (&t == self || t.isLtc) continue;
-        const auto other = t.name.trim().toLowerCase();
-        if (other.isEmpty() || other.length() >= own.length() || ! own.endsWith (other)) continue;
-        if (other.length() > bestLen) { best = &t; bestLen = other.length(); }
+        const TrackDef* best = nullptr; int bestLen = 0;
+        for (auto& t : tracks)
+        {
+            if (&t == except || t.isLtc || (channels > 0 && t.channelCount() != channels)) continue;
+            const auto other = t.name.trim().toLowerCase();
+            if (other.isEmpty() || other.length() > s.length() || (level == 0 && other.length() == s.length()) || ! s.endsWith (other)) continue;
+            if (other.length() > bestLen) { best = &t; bestLen = other.length(); }
+        }
+        if (best != nullptr) return best;
+        if (! dropEndNumber (s)) break;
     }
-    return best;
+    return nullptr;
 }
 
 bool Project::trackHasAudio (const juce::Uuid& trackId) const

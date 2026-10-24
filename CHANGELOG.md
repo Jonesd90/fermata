@@ -6,6 +6,15 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.100.0
+**Imports that put every take on tracks of its own** ("Rorate Caeli SPOT4 19 18", "Rorate CaeliAB 01" ...)
+- **Moving the clips by name now sees through the numbers at the end of a name.** Right-click one of the imported track names and choose *Move the clips of all ... tracks named like this onto the tracks named in their names...*: "Rorate Caeli SPOT4 19 18" goes onto SPOT4, "Rorate CaeliROOM 414 01" onto ROOM 414 (SPOT1 and SPOT11 are told apart). Hundreds of tracks go in one go; the question lists one line per track they go onto ("SPOT4  <  Rorate Caeli SPOT4 01 and 20 more"), and Fermata then offers to delete all the emptied tracks. One Ctrl + Z puts the clips back.
+- **Import window: new tick box "One set of tracks"** - each file goes on the project's track named in its file name, whatever numbers or piece name are round it, so the takes line up on the tracks you already have instead of making new ones. A file with no such track gets a new track named without the numbers, which the other takes then share. The list in the import window shows where each lot of files will go. Fermata remembers the tick.
+
+**Closing a window that is playing or recording**
+- Closing a take or edit window (its X, or a Stream Deck key) **stops what it is playing**. Before, the sound went on with no window left to stop it from.
+- The take window being **recorded into cannot be closed**; a message says to stop the recording first.
+
 ## 2.99.0
 **Moving clips onto another track** (for an import that put the audio on new tracks of its own - "VivienneSPOT1" beside the empty "SPOT1")
 - **Ctrl + Shift + drag** a clip up or down in a take window: the clips the selected takes have on that track go onto the track you let go on, and stay exactly where they are in time. Select the takes first - **Ctrl + A** (new) selects every take, Alt + drag or Ctrl + click choose some; a clip of a take that is not selected moves on its own. While you drag, the clips show on the track they will go to, with "Move 4 clips: VivienneSPOT1 > SPOT1"; held at the top or bottom of the window, it scrolls. It turns red and says why when they cannot go there - a take that already has audio on that track, mono clips onto a stereo track (or the other way round), the LTC track - and then nothing is moved. Ctrl + Shift + click without dragging still adds a take to the selection or takes it out. Hold Ctrl + Shift over the window and the hint box says all this.

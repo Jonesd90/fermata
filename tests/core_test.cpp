@@ -8258,6 +8258,24 @@ int main()
         CHECK (q.removeEmptyTracks ({ v1 }) == 0);                       // (gone already)
     }
 
+    SECTION ("2.99 the track named in a name, with the numbers at its end taken off (an import that added the piece and take numbers)");
+    {
+        Project q; q.setInputCount (8); q.setOutputCount (2); q.tracks.clear();
+        const auto ab = q.addTrack ("AB", TrackFormat::Stereo, 0).id;
+        const auto spot1 = q.addTrack ("SPOT1", TrackFormat::Mono, 2).id;
+        const auto spot11 = q.addTrack ("SPOT11", TrackFormat::Mono, 3).id;
+        const auto room = q.addTrack ("ROOM 414", TrackFormat::Mono, 4).id;
+        const auto prints = q.addTrack ("MAIN PRINTS", TrackFormat::Stereo, 5).id;
+        auto is = [&] (const char* nm, const juce::Uuid& want, int ch = 0) { auto* t = q.trackNamedIn (nm, ch); return t != nullptr && t->id == want; };
+        CHECK (is ("Rorate Caeli SPOT1 19 18", spot1) && is ("Rorate Caeli SPOT11 20 19", spot11) && is ("Rorate CaeliSPOT1 01", spot1));
+        CHECK (is ("Rorate Caeli AB 20 19", ab) && is ("Rorate CaeliAB 01", ab) && is ("Rorate CaeliMAIN PRINTS 01", prints));
+        CHECK (is ("Rorate Caeli ROOM 414 20 19", room) && is ("Rorate CaeliROOM 414 01", room) && is ("ROOM 414", room) == false);   // (a name is not its own match at the first step)
+        CHECK (is ("AB_01-02", ab) && q.trackNamedIn ("Rorate Caeli SPOT4 19 18") == nullptr && q.trackNamedIn ("SPOT12") == nullptr);
+        CHECK (is ("Rorate Caeli AB 20 19", ab, 2) && q.trackNamedIn ("Rorate Caeli AB 20 19", 1) == nullptr);                       // (the channels, when asked)
+        CHECK (Project::withoutEndNumbers ("Rorate Caeli AB 20 19") == "Rorate Caeli AB" && Project::withoutEndNumbers ("SPOT4") == "SPOT4"
+               && Project::withoutEndNumbers (" ROOM 414 01 ") == "ROOM" && Project::withoutEndNumbers ("Take_003") == "Take");
+    }
+
     SECTION ("2.99 undoing a move after the old track was deleted: the clips and the edit's pieces stay where they are (not on a track that is gone)");
     {
         Project q; q.setInputCount (4); q.setOutputCount (2); q.tracks.clear();
