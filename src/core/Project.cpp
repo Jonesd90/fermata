@@ -97,6 +97,8 @@ static const juce::Identifier k_curve ("curve");
 static const juce::Identifier k_outCurve ("outCurve");
 static const juce::Identifier k_fixIn ("fixIn");
 static const juce::Identifier k_fixOut ("fixOut");
+static const juce::Identifier k_snipIn ("snipIn");
+static const juce::Identifier k_snipOut ("snipOut");
 static const juce::Identifier k_normaliseIn ("normaliseIn");
 static const juce::Identifier k_inStart ("inStart");
 static const juce::Identifier k_inEnd ("inEnd");
@@ -1283,7 +1285,7 @@ var Project::editToVar (const EditDef& eref) const
         put (ro, key::k_id, r.id.toString()); put (ro, key::k_window, r.windowId.toString()); put (ro, key::k_take, r.takeId.toString());
         put (ro, key::k_takeName, r.takeName); put (ro, key::k_in, (juce::int64) r.srcIn); put (ro, key::k_out, (juce::int64) r.srcOut);
         put (ro, key::k_start, (juce::int64) r.startSample); put (ro, key::k_sourceLength, (juce::int64) r.sourceLength); put (ro, key::k_barIn, r.barIn); put (ro, key::k_barOut, r.barOut);
-        put (ro, key::k_rate, r.sampleRate); put (ro, key::k_curve, (int) r.curve); if (r.outCurveOwn) put (ro, key::k_outCurve, (int) r.outCurve); if (r.fixIn) put (ro, key::k_fixIn, true); if (r.fixOut) put (ro, key::k_fixOut, true); if (r.normaliseIn) put (ro, key::k_normaliseIn, true);
+        put (ro, key::k_rate, r.sampleRate); put (ro, key::k_curve, (int) r.curve); if (r.outCurveOwn) put (ro, key::k_outCurve, (int) r.outCurve); if (r.fixIn) put (ro, key::k_fixIn, true); if (r.fixOut) put (ro, key::k_fixOut, true); if (r.snipIn) put (ro, key::k_snipIn, true); if (r.snipOut) put (ro, key::k_snipOut, true); if (r.normaliseIn) put (ro, key::k_normaliseIn, true);
         put (ro, key::k_inStart, r.inStart); put (ro, key::k_inEnd, r.inEnd); put (ro, key::k_outStart, r.outStart); put (ro, key::k_outEnd, r.outEnd);
         juce::Array<var> rf;
         for (auto& f : r.files)
@@ -1471,7 +1473,7 @@ var Project::toVar (bool withWindows) const
         auto outList = [] (const std::vector<int>& v) { juce::Array<var> a; for (int o : v) a.add (o); return var (a); };
         var pp = obj();
         put (pp, "refA", pitchPipe.refA); put (pp, "temperament", pitchPipe.temperament); put (pp, "key", pitchPipe.key); put (pp, "chordMode", pitchPipe.chordMode);
-        put (pp, "chordTuning", pitchPipe.chordTuning); put (pp, "levelDb", (double) pitchPipe.levelDb); put (pp, "outputs", outList (pitchPipe.outputs)); put (pp, "lowestC", pitchPipe.lowestC); put (pp, "tone", (double) pitchPipe.tone);
+        put (pp, "chordTuning", pitchPipe.chordTuning); put (pp, "levelDb", (double) pitchPipe.levelDb); put (pp, "outputs", outList (pitchPipe.outputs)); put (pp, "lowestC", pitchPipe.lowestC); put (pp, "tone", (double) pitchPipe.tone); put (pp, "keyboard", pitchPipe.keyboard);
         put (root, "pitchPipe", pp);
         var ck = obj();
         put (ck, "bpm", click.bpm); put (ck, "beatsPerBar", click.beatsPerBar); put (ck, "beatUnit", click.beatUnit); put (ck, "accent", click.accent);
@@ -1665,6 +1667,7 @@ bool Project::fromVar (const var& root)
             pitchPipe.levelDb = (float) juce::jlimit (-60.0, 0.0, (double) pp.getProperty ("levelDb", -14.0)); pitchPipe.outputs = outs (pp["outputs"]);
             pitchPipe.lowestC = juce::jlimit (24, 84, (int) pp.getProperty ("lowestC", 48));
             pitchPipe.tone = (float) juce::jlimit (0.0, 1.0, (double) pp.getProperty ("tone", 0.35));
+            pitchPipe.keyboard = (bool) pp.getProperty ("keyboard", false);
         }
         alignEnabled = (bool) root.getProperty ("alignEnabled", true);
         alignActive = root.getProperty ("alignActive", "").toString();
@@ -1798,7 +1801,7 @@ bool Project::fromVar (const var& root)
                 r.startSample = (juce::int64) rv[key::k_start]; r.sourceLength = (juce::int64) rv[key::k_sourceLength];
                 r.barIn = juce::jmax (0, (int) rv[key::k_barIn]); r.barOut = juce::jmax (0, (int) rv[key::k_barOut]);
                 r.sampleRate = (double) rv[key::k_rate]; r.curve = (FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv[key::k_curve]);
-                r.fixIn = (bool) rv[key::k_fixIn]; r.fixOut = (bool) rv[key::k_fixOut]; r.normaliseIn = (bool) rv[key::k_normaliseIn];
+                r.fixIn = (bool) rv[key::k_fixIn]; r.fixOut = (bool) rv[key::k_fixOut]; r.snipIn = (bool) rv[key::k_snipIn]; r.snipOut = (bool) rv[key::k_snipOut]; r.normaliseIn = (bool) rv[key::k_normaliseIn];
                 if (rv.hasProperty (key::k_outCurve)) r.setOutCurve ((FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv[key::k_outCurve]));
                 r.inStart = (double) rv[key::k_inStart]; r.inEnd = (double) rv[key::k_inEnd]; r.outStart = (double) rv[key::k_outStart]; r.outEnd = (double) rv[key::k_outEnd];
                 if (auto* fs = rv[key::k_files].getArray())
@@ -1933,7 +1936,7 @@ juce::uint64 Project::undoHash (const EditDef& e)
     {
         h.add (r.id); h.add (r.windowId); h.add (r.takeId); h.add (r.takeName); h.add (r.srcIn); h.add (r.srcOut); h.add (r.startSample); h.add (r.sourceLength);
         h.add (r.barIn); h.add (r.barOut); h.add (r.sampleRate); h.add ((int) r.curve); h.add (r.outCurveOwn); if (r.outCurveOwn) h.add ((int) r.outCurve);
-        h.add (r.fixIn); h.add (r.fixOut); h.add (r.normaliseIn); h.add (r.inStart); h.add (r.inEnd); h.add (r.outStart); h.add (r.outEnd);
+        h.add (r.fixIn); h.add (r.fixOut); h.add (r.snipIn); h.add (r.snipOut); h.add (r.normaliseIn); h.add (r.inStart); h.add (r.inEnd); h.add (r.outStart); h.add (r.outEnd);
         h.count (r.files.size());
         for (auto& f : r.files) { h.add (f.trackId); h.add (f.trackName); h.add (f.file); h.add (f.numChannels); h.add (f.fileStart); }
         h.add (r.waiting.active()); if (r.waiting.active()) h.add (r.waiting);

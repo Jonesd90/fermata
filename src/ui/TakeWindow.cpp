@@ -370,7 +370,7 @@ public:
 
         const bool recordingHere = app.engine.isRecording() && w->findGroup (app.engine.currentTakeId()) != nullptr;
         const double playhead = app.playheadSeconds();
-        struct UseFlag { int x, y0, y1; bool isIn; int number; };
+        struct UseFlag { int x, y0, y1; bool isIn; int number; bool snip = false; };
         std::vector<UseFlag> useFlags;
         // Only what is inside the clip is drawn: a take wholly left or right of it is skipped, and so are the rows above and below it. With 60 takes
         // of 20 tracks in a window this is what keeps the 30 Hz meter repaint (a 150 px column) from costing as much as the whole picture.
@@ -515,8 +515,8 @@ public:
                 {
                     const auto& rg = usedEdit->regions[ri];
                     if (rg.takeId != grp.id || rg.sampleRate <= 0) continue;
-                    useFlags.push_back ({ x0 + (int) ((double) rg.srcIn / rg.sampleRate * pixelsPerSecond), y0, y1, true, usedEdit->editNumberAt ((int) ri) });     // the same numbers as the edit window shows
-                    useFlags.push_back ({ x0 + (int) ((double) rg.srcOut / rg.sampleRate * pixelsPerSecond), y0, y1, false, usedEdit->editNumberAt ((int) ri + 1) });
+                    useFlags.push_back ({ x0 + (int) ((double) rg.srcIn / rg.sampleRate * pixelsPerSecond), y0, y1, true, usedEdit->editNumberAt ((int) ri), usedEdit->isSnipJoin ((int) ri) });     // the same numbers as the edit window shows
+                    useFlags.push_back ({ x0 + (int) ((double) rg.srcOut / rg.sampleRate * pixelsPerSecond), y0, y1, false, usedEdit->editNumberAt ((int) ri + 1), usedEdit->isSnipJoin ((int) ri + 1) });
                 }
             // playhead
             if (shownPhX != kNoLine && playhead >= 0 && app.playInfo.kind != AppContext::PlayInfo::Kind::Edit && ! app.playInfo.windowTimeline && app.playInfo.windowId == windowId && app.playInfo.id == grp.id)
@@ -548,7 +548,7 @@ public:
                 {
                     const juce::Colour grey (0xff7d848c);
                     g.setColour (grey.withAlpha (0.45f)); g.fillRect (u.x, u.y0, 1, u.y1 - u.y0);
-                    const juce::String t (u.isIn ? "I fx" : "O fx");
+                    const juce::String t (u.snip ? (u.isIn ? "I sn" : "O sn") : (u.isIn ? "I fx" : "O fx"));
                     const juce::FontOptions fo (8.5f, juce::Font::bold);
                     const int fw = juce::GlyphArrangement::getStringWidthInt (fo, t) + 4;
                     juce::Rectangle<int> f (u.isIn ? u.x : u.x - fw, kRulerH + kLaneH - 12, fw, 10);

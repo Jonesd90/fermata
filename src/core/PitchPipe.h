@@ -14,7 +14,11 @@ namespace td
     go of a key (or of the chord's Play) cannot change it, whatever frequency the caller passes with the "off". Only a deliberate retune of a note that
     is still held (another tuning, a changed chord) moves it, and then in a smooth 50 ms glide that ends exactly on the new pitch.
 
-    Never recorded: the engine adds it to the outputs chosen for it, after the mixers. */
+    Never recorded: the engine adds it to the outputs chosen for it, after the mixers.
+
+    THE KEYBOARD SOUND (setKeyboard, the window's tick box) plays the same notes as a simple keyboard instead: a bright strike (2 ms) that mellows and dies
+    away to a steady 35 % while the key is held (a reference that never fades out), and a quick, damper-like fade (0.3 s) when it is let go. It is made from
+    two wavetables per band (bright and mellow) crossfaded as the note goes on: no samples, nothing to load. The pitch is just as true. */
 class PitchPipeVoices
 {
 public:
@@ -48,6 +52,37 @@ public:
             for (int i = 0; i < kTableSize; ++i) t[(size_t) i] = (float) (acc[(size_t) i] / peak);
             t[(size_t) kTableSize] = t[0];                                               // (the guard point for the interpolation)
         }
+        // the keyboard sound: per band a bright table (the strike: many harmonics, falling away) and a mellow one (the note as it rings on: the fundamental
+        // and a trace of the next two). Same phases in both (so they crossfade cleanly), each normalised to a peak of 1.
+        kbBright.assign ((size_t) kBands, std::vector<float> ((size_t) kTableSize + 1, 0.0f));
+        kbMellow.assign ((size_t) kBands, std::vector<float> ((size_t) kTableSize + 1, 0.0f));
+        for (int b = 0; b < kBands; ++b)
+        {
+            const double fTop = 32.703 * std::pow (2.0, (double) b + 1.0), fMid = fTop / std::sqrt (2.0);
+            const int harmonics = juce::jlimit (1, 40, (int) std::floor (0.45 * sr / fTop));
+            for (int which = 0; which < 2; ++which)
+            {
+                std::vector<double> acc ((size_t) kTableSize, 0.0);
+                for (int h = 1; h <= harmonics; ++h)
+                {
+                    double a = which == 0 ? (h == 1 ? 1.0 : 0.62 * std::pow ((double) h, -1.25)) / std::sqrt (1.0 + std::pow (fMid * h / 5000.0, 4.0))
+                                          : (h == 1 ? 1.0 : h == 2 ? 0.14 : h == 3 ? 0.04 : 0.0);
+                    if (a == 0.0) continue;
+                    for (int i = 0; i < kTableSize; ++i)
+                        acc[(size_t) i] += a * std::sin (juce::MathConstants<double>::twoPi * (double) h * (double) i / (double) kTableSize);
+                }
+                double peak = 1.0e-9;
+                for (double v : acc) peak = juce::jmax (peak, std::abs (v));
+                auto& t = which == 0 ? kbBright[(size_t) b] : kbMellow[(size_t) b];
+                for (int i = 0; i < kTableSize; ++i) t[(size_t) i] = (float) (acc[(size_t) i] / peak);
+                t[(size_t) kTableSize] = t[0];
+            }
+        }
+        kbAttackStep = 1.0 / (0.002 * sr);
+        kbDecayMul = std::exp (-1.0 / (0.9 * sr));                   // the strike dies away to the held level (time constant 0.9 s)
+        kbBrightMul = std::exp (-1.0 / (0.18 * sr));                 // and mellows faster
+        kbReleaseMul = std::exp (std::log (1.0e-4) / (0.30 * sr));    // let go: -80 dB in 0.3 s
+        kbHammerMul = std::exp (-1.0 / (0.004 * sr));
         attackStep = 1.0 / (0.070 * sr);
         releaseStep = 1.0 / (0.150 * sr);
         glideSamples = 0.050 * sr;
@@ -72,6 +107,10 @@ public:
     void setLevelDb (float db) noexcept { level.store (db <= -60.0f ? 0.0f : juce::Decibels::decibelsToGain (db), std::memory_order_relaxed); }
     /** The tone, 0 (soft: little above the note's first few harmonics) to 1 (bright: the reed as it comes). */
     void setTone (float t) noexcept { tone.store (juce::jlimit (0.0f, 1.0f, t), std::memory_order_relaxed); }
+    /** The keyboard sound instead of the reed (see the class comment). Notes already sounding take the new sound at once. */
+    void setKeyboard (bool on) noexcept { keyboard.store (on, std::memory_order_relaxed); }
+    bool isKeyboard() const noexcept { return keyboard.load (std::memory_order_relaxed); }
+    static constexpr double kKeyboardHeld = 0.35;            // the level a held keyboard note settles at (of its strike)
     /** True while any note is sounding (including a release that is still dying away). */
     bool sounding() const noexcept { return soundingFlag.load (std::memory_order_relaxed); }
     /** The frequency a slot is sounding at now (for the tests; read it only when the audio thread is not rendering). */
@@ -101,6 +140,7 @@ public:
         if (! prepared.load (std::memory_order_acquire) || tables.empty()) return false;
         const double kCorner = toneCorner (tone.load (std::memory_order_relaxed));
         const double comp = juce::jmin (3.0, 1.0 / juce::jmax (0.3, toneKeep (kCorner)));
+        const bool kb = keyboard.load (std::memory_order_relaxed) && ! kbBright.empty();
         int active = 0;
         for (int s = 0; s < kSlots; ++s)
         {
@@ -110,16 +150,19 @@ public:
             if (on && ! v.gate)
             {
                 if (! v.active) { v.phase = 0.0; v.env = 0.0; v.chiff = 1.0; v.hp = v.lp = v.lastNoise = 0.0; v.f1 = v.f2 = 0.0; v.targetHz = 0.0; v.glideLeft = 0; }
+                else if (kb) { v.env = kbLevel (v); v.chiff = 1.0; }          // a keyboard key struck again while it dies away: a new strike, from the level it is at
+                v.kDecay = v.kBright = v.kRel = 1.0;
                 v.gate = true; v.active = true;
             }
             else if (! on && v.gate) v.gate = false;
             // the pitch is taken only while the key is held: a note let go of keeps the pitch it had for its whole fade-out
             if (v.active && v.gate && hz > 0.0)
             {
-                if (v.targetHz <= 0.0) { v.inc = v.incTo = hz / sr; v.glideLeft = 0; v.targetHz = hz; v.table = tableFor (hz); }          // a new note: at once
+                if (v.targetHz <= 0.0) { v.inc = v.incTo = hz / sr; v.glideLeft = 0; v.targetHz = hz; v.band = bandFor (hz); v.table = tables[(size_t) v.band].data(); }          // a new note: at once
                 else if (std::abs (hz - v.targetHz) > 1.0e-9 * hz)                                                                       // a held note retuned: a smooth glide
                 {
-                    v.incFrom = v.inc; v.incTo = hz / sr; v.glideLeft = juce::jmax (1, (int) glideSamples); v.glideLen = v.glideLeft; v.targetHz = hz; v.table = tableFor (hz);
+                    v.incFrom = v.inc; v.incTo = hz / sr; v.glideLeft = juce::jmax (1, (int) glideSamples); v.glideLen = v.glideLeft; v.targetHz = hz;
+                    v.band = bandFor (hz); v.table = tables[(size_t) v.band].data();
                 }
             }
             if (v.active)
@@ -140,14 +183,28 @@ public:
             auto& v = voices[(size_t) s];
             if (! v.active || v.table == nullptr) continue;
             const float* t = v.table;
+            const float* tb = kb ? kbBright[(size_t) v.band].data() : nullptr;
+            const float* tm = kb ? kbMellow[(size_t) v.band].data() : nullptr;
             double g = smoothGain;
             for (int i = 0; i < n; ++i)
             {
-                // the envelope: a raised-cosine swell while the gate is open, the same curve back down after it closes (a release that starts
-                // half way through the swell carries on from where it was: no step)
-                if (v.gate) { v.env = juce::jmin (1.0, v.env + attackStep); }
-                else        { v.env -= releaseStep; if (v.env <= 0.0) { v.env = 0.0; v.active = false; break; } }
-                const double shaped = 0.5 - 0.5 * std::cos (juce::MathConstants<double>::pi * v.env);
+                double shaped;
+                if (kb)
+                {
+                    // the keyboard: a 2 ms strike, dying away to the held level while the key is down; the damper's quick fade once it is let go
+                    if (v.gate) { v.env = juce::jmin (1.0, v.env + kbAttackStep); v.kDecay *= kbDecayMul; }
+                    else        { v.kRel *= kbReleaseMul; if (v.kRel < 1.0e-4) { v.kRel = 0.0; v.env = 0.0; v.active = false; break; } }
+                    v.kBright *= kbBrightMul;
+                    shaped = kbLevel (v);
+                }
+                else
+                {
+                    // the envelope: a raised-cosine swell while the gate is open, the same curve back down after it closes (a release that starts
+                    // half way through the swell carries on from where it was: no step)
+                    if (v.gate) { v.env = juce::jmin (1.0, v.env + attackStep); }
+                    else        { v.env -= releaseStep; if (v.env <= 0.0) { v.env = 0.0; v.active = false; break; } }
+                    shaped = 0.5 - 0.5 * std::cos (juce::MathConstants<double>::pi * v.env);
+                }
                 // a retune glides (smoothstep, 50 ms) and ends exactly on the new pitch
                 if (v.glideLeft > 0)
                 {
@@ -155,11 +212,18 @@ public:
                     const double u = 1.0 - (double) v.glideLeft / (double) juce::jmax (1, v.glideLen);
                     v.inc = v.glideLeft == 0 ? v.incTo : v.incFrom + (v.incTo - v.incFrom) * (u * u * (3.0 - 2.0 * u));
                 }
-                // the reed
+                // the reed (or the keyboard's two tables, crossfaded from the strike to the ringing note)
                 const double pos = v.phase * (double) kTableSize;
                 const int i0 = (int) pos;
                 const double fr = pos - (double) i0;
-                const double reed = (double) t[i0] + fr * ((double) t[i0 + 1] - (double) t[i0]);
+                double reed;
+                if (kb)
+                {
+                    const double b = (double) tb[i0] + fr * ((double) tb[i0 + 1] - (double) tb[i0]);
+                    const double m = (double) tm[i0] + fr * ((double) tm[i0 + 1] - (double) tm[i0]);
+                    reed = m + v.kBright * (b - m);
+                }
+                else reed = (double) t[i0] + fr * ((double) t[i0 + 1] - (double) t[i0]);
                 v.phase += v.inc; if (v.phase >= 1.0) v.phase -= 1.0;
                 // the tone: two poles that follow the note's own pitch (the same softness at every pitch)
                 v.f1 = v.pole * v.f1 + (1.0 - v.pole) * reed;
@@ -169,8 +233,8 @@ public:
                 const double white = (double) (int) (rng >> 8) / 8388608.0 - 1.0;
                 v.hp = hpA * (v.hp + white - v.lastNoise); v.lastNoise = white;
                 v.lp = (1.0 - lpA) * v.hp + lpA * v.lp;
-                const double breath = v.lp * (0.014 + 0.09 * v.chiff);
-                v.chiff *= chiffDecay;
+                const double breath = kb ? v.lp * 0.06 * v.chiff : v.lp * (0.014 + 0.09 * v.chiff);      // (the keyboard: only the knock of the hammer)
+                v.chiff *= kb ? kbHammerMul : chiffDecay;
                 dst[i] += (float) ((v.f2 * comp + breath) * shaped * g);
                 g += gStep;
             }
@@ -193,22 +257,26 @@ private:
         double targetHz = 0.0, incFrom = 0.0, incTo = 0.0;              // the pitch it holds / is gliding to
         int glideLeft = 0, glideLen = 1;
         const float* table = nullptr;
+        int band = 0;                                                    // the wavetable band of its pitch
+        double kDecay = 1.0, kBright = 1.0, kRel = 1.0;                  // the keyboard: the strike dying away, its brightness, the release
     };
-    const float* tableFor (double hz) const noexcept
+    int bandFor (double hz) const noexcept
     {
         int b = (int) std::ceil (std::log2 (juce::jmax (1.0, hz) / 32.703)) - 1;
         b = juce::jlimit (0, kBands - 1, b);
         while (b < kBands - 1 && hz > 32.703 * std::pow (2.0, (double) b + 1.0)) ++b;
-        return tables[(size_t) b].data();
+        return b;
     }
+    static double kbLevel (const Voice& v) noexcept { return v.env * (kKeyboardHeld + (1.0 - kKeyboardHeld) * v.kDecay) * v.kRel; }
 
     double sr = 48000.0, attackStep = 0.001, releaseStep = 0.001, glideSamples = 2400.0, chiffDecay = 0.99, hpA = 0.9, lpA = 0.5, smoothGain = 0.0;
-    std::vector<std::vector<float>> tables;
+    double kbAttackStep = 0.01, kbDecayMul = 0.9999, kbBrightMul = 0.999, kbReleaseMul = 0.999, kbHammerMul = 0.99;
+    std::vector<std::vector<float>> tables, kbBright, kbMellow;
     std::array<Voice, kSlots> voices {};
     std::array<std::atomic<float>, kSlots> slotHz {};
     std::array<std::atomic<bool>, kSlots> slotOn {};
     std::atomic<float> level { 0.2f }, tone { 0.35f };
-    std::atomic<bool> prepared { false }, soundingFlag { false };
+    std::atomic<bool> prepared { false }, soundingFlag { false }, keyboard { false };
     juce::uint32 rng = 22222u;
 };
 

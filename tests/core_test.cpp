@@ -8318,6 +8318,88 @@ int main()
         }
     }
 
+    SECTION ("2.101 a snip (F1): an unnumbered join with a normal 30 ms crossfade, kept through saves, undo, splits and fixes");
+    {
+        Project q; q.setInputCount (4); q.setOutputCount (2); q.tracks.clear();
+        const auto t1 = q.addTrack ("SPOT1", TrackFormat::Mono, 0).id;
+        auto& tw = q.addTakeWindow ("Piece"); const auto twId = tw.id;
+        auto& ed = q.addEdit ("Edit", twId); const auto edId = ed.id;
+        const double sr = 48000.0;
+        auto piece = [&] (juce::int64 len, const char* nm)
+        {
+            EditRegion r; r.id = juce::Uuid(); r.windowId = twId; r.takeId = juce::Uuid(); r.takeName = nm; r.sampleRate = sr;
+            r.srcIn = 48000; r.srcOut = 48000 + len; r.sourceLength = 48000 * 30;
+            RegionFile f; f.trackId = t1; f.trackName = "SPOT1"; f.file = tmp.getChildFile (juce::String (nm) + ".wav"); r.files.push_back (f);
+            return r;
+        };
+        ed.insertRegion (piece (48000 * 10, "001"));
+        ed.insertRegion (piece (48000 * 10, "002"));
+        q.undoReset();
+        auto* e = q.findEdit (edId);
+        CHECK (e->regions.size() == 2 && e->editNumberAt (1) == 2);
+        juce::String why;
+        // at 4 s, inside the first piece
+        const int k = e->snipAt (4 * 48000, why);
+        CHECK (k == 1 && why.isEmpty() && e->regions.size() == 3);
+        CHECK (e->isSnipJoin (1) && ! e->isFixJoin (1) && e->isUnnumberedJoin (1) && ! e->isSnipJoin (2));
+        CHECK (e->editNumberAt (0) == 1 && e->editNumberAt (1) == 0 && e->editNumberAt (2) == 2 && e->editNumberAt (3) == 3);     // (the edit points keep their numbers)
+        {
+            const auto& a = e->regions[0]; const auto& b = e->regions[1];
+            CHECK (a.endSample() == 4 * 48000 && b.startSample == 4 * 48000 && b.srcIn == a.srcOut && b.takeId == a.takeId);        // one take, cut, nothing moved
+            CHECK (a.outCurveValue() == FadeCurve::EqualPower && b.curve == FadeCurve::EqualPower);                                 // a normal fade
+            CHECK (a.fadeOutBegin() == 4 * 48000 - 720 && a.fadeOutFinish() == 4 * 48000 + 720 && b.fadeInBegin() == 4 * 48000 - 720 && b.fadeInFinish() == 4 * 48000 + 720);
+        }
+        // refused: on top of a crossfade (the edit point at 10 s), at the very start, past the end
+        CHECK (e->snipAt (10 * 48000 + 100, why) < 0 && why.isNotEmpty());
+        CHECK (e->snipAt (300, why) < 0 && e->snipAt (25 * 48000, why) < 0 && e->regions.size() == 3);
+        // saved and read back (through undo / redo, which write and read the edit)
+        q.changed(); q.undoTick (false, true);
+        CHECK (q.undo() && q.findEdit (edId)->regions.size() == 2);
+        CHECK (q.redo() && q.findEdit (edId)->regions.size() == 3 && q.findEdit (edId)->isSnipJoin (1));
+        e = q.findEdit (edId);
+        // a piece cut again keeps the snip on its other side; a cut next to it is a plain join
+        e->splitRegion (0, 48000);
+        CHECK (e->regions.size() == 4 && ! e->isSnipJoin (1) && e->isSnipJoin (2) && e->editNumberAt (1) == 2);
+        // a piece taken out next to a snip: the join that is left is a real edit (only one side was marked)
+        e->removeRegion (2);
+        CHECK (! e->isSnipJoin (2) && ! e->isUnnumberedJoin (2));
+        // the offline fixes count a snip as a real join (two streams), unlike their own joins: isFixJoin stays false
+        CHECK (! e->isFixJoin (1) && ! e->isFixJoin (2));
+    }
+
+    SECTION ("2.101 the pitch pipe's keyboard sound: true pitch, a strike that settles to a steady held level, a quick release");
+    {
+        PitchPipeVoices v;
+        v.prepare (48000.0); v.setLevelDb (-14.0f); v.setKeyboard (true);
+        CHECK (v.isKeyboard());
+        std::vector<float> blk (512), all;
+        v.setSlot (0, 440.0, true);
+        for (int b = 0; b < 48000 * 5 / 512; ++b) { v.render (blk.data(), 512); all.insert (all.end(), blk.begin(), blk.end()); }
+        auto rms = [&] (int from, int len) { double sum = 0.0; for (int i = from; i < from + len; ++i) sum += (double) all[(size_t) i] * all[(size_t) i]; return std::sqrt (sum / len); };
+        const double strike = rms (480, 4800), held = rms (4 * 48000, 24000);
+        CHECK (strike > 0.03 && held > 0.2 * strike && held < 0.55 * strike);            // it dies away, but never to nothing while held
+        CHECK (std::abs (all[0]) < 0.05f);                                                // (the strike starts from silence: no click)
+        {
+            const int N = 1 << 20;
+            std::vector<double> x ((size_t) N, 0.0);
+            const int from = 96000, len = 96000;
+            for (int i = 0; i < len; ++i) x[(size_t) i] = all[(size_t) (from + i)] * (0.5 - 0.5 * std::cos (2.0 * juce::MathConstants<double>::pi * i / len));
+            std::vector<std::complex<double>> X ((size_t) N / 2 + 1);
+            denoise::detail::realForward (x.data(), N, X.data());
+            int best = 0; double bm = 0.0;
+            for (int kk = (int) (400.0 * N / 48000.0); kk < (int) (480.0 * N / 48000.0); ++kk) if (std::abs (X[(size_t) kk]) > bm) { bm = std::abs (X[(size_t) kk]); best = kk; }
+            const double ym = std::abs (X[(size_t) best - 1]), y0 = bm, yp = std::abs (X[(size_t) best + 1]);
+            const double hz = (best + 0.5 * (ym - yp) / (ym - 2.0 * y0 + yp)) * 48000.0 / N;
+            CHECK (std::abs (hz - 440.0) < 0.05);
+        }
+        v.setSlot (0, 440.0, false);
+        int blocksSounding = 0;
+        for (int b = 0; b < 60; ++b) if (v.render (blk.data(), 512)) ++blocksSounding;
+        CHECK (blocksSounding >= 20 && blocksSounding <= 32 && ! v.sounding());           // gone in about 0.3 s
+        // back to the reed
+        v.setKeyboard (false); CHECK (! v.isKeyboard());
+    }
+
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;
 }

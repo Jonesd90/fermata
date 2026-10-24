@@ -435,7 +435,7 @@ public:
         {
             const int x = xOf ((double) editPointSample (*e, k) / rate);
             const bool js = selectedJoin == k;
-            if (e->isFixJoin (k))
+            if (e->isUnnumberedJoin (k))                                                         // an offline fix's join ("fx") or a snip ("sn"): no number
             {
                 g.setColour (js ? juce::Colour (0xffc26500) : theme::dimText.withAlpha (0.7f));
                 g.fillRect (x, kRulerH, 1, rowsEnd - kRulerH);
@@ -444,7 +444,7 @@ public:
                 const auto badge = juce::Rectangle<int> (x - 8, kRulerH - 13, 16, 11);          // a small grey "fx" tag instead of a number
                 g.setColour (js ? juce::Colour (0xffc26500) : theme::dimText.withAlpha (0.55f)); g.fillRoundedRectangle (badge.toFloat(), 3.0f);
                 g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (8.5f, juce::Font::bold));
-                g.drawText ("fx", badge, juce::Justification::centred);
+                g.drawText (e->isSnipJoin (k) ? "sn" : "fx", badge, juce::Justification::centred);
                 continue;
             }
             ++editNumber;
@@ -2567,6 +2567,26 @@ void EditWindowComponent::setFixMark (bool in)
     app.project.changed();
 }
 
+/** F1: a snip at the playhead (the moving one while this edit plays, else the white one): the piece there is cut with a short, normal crossfade that is not an
+    edit point ("sn" on its flag, no number). The new join is selected, so T (or a double-click on the flag) opens it in the Trim window to roll the two
+    sides together. Playback is not stopped: snips can be dropped in while listening (what is playing does not change). */
+void EditWindowComponent::snipAtPlayhead()
+{
+    auto* e = edit();
+    if (e == nullptr) return;
+    double t = app.playheadSeconds();
+    if (! (t >= 0 && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId)) t = timeline->cursorSeconds;
+    if (t < 0 || e->regions.empty()) { showError ("Snip", "Click on the timeline (or play the edit) to say where, then press F1."); return; }
+    const double rate = e->sampleRate > 0 ? e->sampleRate : 48000.0;
+    juce::String why;
+    const int k = e->snipAt ((juce::int64) std::llround (t * rate), why);
+    if (k < 0) { app.setNotice ("Snip: " + why); return; }
+    timeline->selectedJoin = k; timeline->selectedRegion = e->regions[(size_t) k].id; timeline->selectedRegions = { timeline->selectedRegion };
+    app.project.changed();
+    app.setNotice ("Snip at " + formatTimeShort (t, 3) + ": press T (or double-click its \"sn\" flag) to open it in the Trim window and roll the two sides together.");
+    timeline->repaint();
+}
+
 /** P: with pieces selected, marks 1 and 2 go to the very start of the first and the very end of the last of them (sample-exact). */
 void EditWindowComponent::markWholeSelected()
 {
@@ -2605,6 +2625,7 @@ bool EditWindowComponent::keyPressed (const juce::KeyPress& k)
     if (k == juce::KeyPress::endKey)  { goToEnd();  return true; }
     if (c == 'p') { markWholeSelected(); return true; }
     if ((c == '1' || c == '2') && ! k.getModifiers().isAnyModifierKeyDown()) { setFixMark (c == '1'); return true; }
+    if (k == juce::KeyPress::F1Key && ! k.getModifiers().isAnyModifierKeyDown()) { snipAtPlayhead(); return true; }
     if (c == '5' && ! k.getModifiers().isAnyModifierKeyDown())            // 5: take the 1 / 2 flags away; a piece selected whole is then what the process windows load
     {
         if (auto* e = edit()) { e->fixIn = -1.0; e->fixOut = -1.0; e->fixTracks.clear(); app.project.changed(); }

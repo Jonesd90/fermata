@@ -81,6 +81,7 @@ private:
     juce::Label refCap, tuningCap, keyCap, hzCap, tuningInfo, readout, offsets, outCap, levelCap, toneCap, softCap, brightCap;
     juce::ComboBox refBox, tuningBox, keyBox, chordTuningBox;
     juce::ToggleButton chordToggle { "Chord: choose the notes, then hold Play" };
+    juce::ToggleButton keyboardToggle { "Keyboard sound" };
     HoldButton playButton { "Play" };
     juce::TextButton clearButton { "Clear" }, octDown { "< Octave" }, octUp { "Octave >" };
     PianoKeys keys;

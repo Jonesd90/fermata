@@ -6,6 +6,16 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.101.0
+**Snip (F1 in the edit window)**
+- **F1 puts a snip at the playhead:** the piece there is cut with a short normal crossfade (30 ms, equal power, centred on the playhead). It is not an edit point - it gets no number (the edit points keep theirs) and its flag says **sn**, like an offline fix's **fx**. It works while the edit plays, at the moving playhead, and playback carries on.
+- The new snip is selected: press **T** (or double-click its **sn** flag) and the Trim window opens on it. Roll the two sides into each other to take a moment out - keeping the breath, losing the one singer who came in a fraction early. The Trim window says "Snip"; next / previous fade skip snips, as they skip the fx joins.
+- Not too close to a crossfade or the end of a piece (its own 30 ms crossfade must fit), and not in a piece waiting for corrected audio: the notice says why.
+- Snips are kept by Save, Undo and Redo; a take window shows "I sn" / "O sn" where a piece of the take meets one. A Repair, ReTouch or ReHarmoniSer pass over a snip treats it as a real join (two streams), so the roll is never lost.
+
+**Pitch pipe: keyboard sound**
+- New tick box **Keyboard sound** (beside Tone): a simple keyboard note instead of the reed. It strikes, settles to a steady level while you hold the key (so it never fades away as a reference), and stops quickly when you let go. Same notes, tunings and chords; made inside Fermata (no samples, nothing to install). Remembered with the project.
+
 ## 2.100.0
 **Imports that put every take on tracks of its own** ("Rorate Caeli SPOT4 19 18", "Rorate CaeliAB 01" ...)
 - **Moving the clips by name now sees through the numbers at the end of a name.** Right-click one of the imported track names and choose *Move the clips of all ... tracks named like this onto the tracks named in their names...*: "Rorate Caeli SPOT4 19 18" goes onto SPOT4, "Rorate CaeliROOM 414 01" onto ROOM 414 (SPOT1 and SPOT11 are told apart). Hundreds of tracks go in one go; the question lists one line per track they go onto ("SPOT4  <  Rorate Caeli SPOT4 01 and 20 more"), and Fermata then offers to delete all the emptied tracks. One Ctrl + Z puts the clips back.

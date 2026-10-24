@@ -179,6 +179,12 @@ PitchPipeComponent::PitchPipeComponent (AppContext& a)
                      "and the note is just as loud. You hear it change at once. Double-click for the usual setting.");
     tone.onValueChange = [this] { def().tone = (float) tone.getValue(); settingsChanged(); };
     addAndMakeVisible (tone);
+    keyboardToggle.setToggleState (def().keyboard, juce::dontSendNotification);
+    keyboardToggle.setTooltip ("A simple keyboard note instead of the pitch pipe's reed: it strikes, then settles to a steady level while you hold the key, "
+                               "and stops quickly when you let go. The same notes and tunings; nothing is recorded.");
+    keyboardToggle.onClick = [this] { def().keyboard = keyboardToggle.getToggleState(); settingsChanged(); };
+    keyboardToggle.setWantsKeyboardFocus (false);
+    addAndMakeVisible (keyboardToggle);
 
     info.setText ("The pitch pipe plays a soft reed note - like a real pitch pipe - on the outputs ticked under Plays to: the stage speakers for the performers, "
                   "or your control-room speakers to check a note yourself while they record, without them hearing it. Nothing it plays is recorded.\n\n"
@@ -192,7 +198,8 @@ PitchPipeComponent::PitchPipeComponent (AppContext& a)
                   "and A is always exactly the reference (A = 440, 415 for Baroque pitch ...). The line under the keyboard gives each note's offset in cents.\n\n"
                   "A note keeps its pitch from the moment it starts to the end of its fade-out: letting go never bends it. If you change the tuning, the key or the "
                   "lit keys while a note is held, it glides to its new pitch in a twentieth of a second, so you can hear one tuning against another.\n\n"
-                  "Tone: Soft is mostly the note and its first few overtones; Bright is the reed as it comes. Same loudness either way.");
+                  "Tone: Soft is mostly the note and its first few overtones; Bright is the reed as it comes. Same loudness either way.\n\n"
+                  "Keyboard sound: a simple keyboard note instead of the reed - it strikes, settles to a steady level while the key is held, and stops quickly when it is let go.");
     addAndMakeVisible (info);
 
     settingsChanged (false);
@@ -333,6 +340,7 @@ void PitchPipeComponent::timerCallback()
     if (tuningBox.getSelectedId() != d.temperament + 1) tuningBox.setSelectedId (d.temperament + 1, juce::dontSendNotification);
     if (keyBox.getSelectedId() != d.key + 1) keyBox.setSelectedId (d.key + 1, juce::dontSendNotification);
     if (keys.lowest != d.lowestC) { keys.lowest = d.lowestC; keys.repaint(); }
+    if (keyboardToggle.getToggleState() != d.keyboard) keyboardToggle.setToggleState (d.keyboard, juce::dontSendNotification);
 }
 
 void PitchPipeComponent::paint (juce::Graphics& g)
@@ -373,7 +381,8 @@ void PitchPipeComponent::resized()
         auto lv = r.removeFromBottom (30);
         levelCap.setBounds (lv.removeFromLeft (64)); level.setBounds (lv.removeFromLeft (290)); lv.removeFromLeft (36);
         toneCap.setBounds (lv.removeFromLeft (46)); softCap.setBounds (lv.removeFromLeft (36)); lv.removeFromLeft (4);
-        tone.setBounds (lv.removeFromLeft (200)); lv.removeFromLeft (4); brightCap.setBounds (lv.removeFromLeft (50));
+        tone.setBounds (lv.removeFromLeft (200)); lv.removeFromLeft (4); brightCap.setBounds (lv.removeFromLeft (50)); lv.removeFromLeft (24);
+        keyboardToggle.setBounds (lv.removeFromLeft (juce::jmin (160, lv.getWidth())));
     }
     r.removeFromBottom (14);
     {

@@ -42,6 +42,7 @@ private:
     void deleteSelected();
     void moveSelected (int delta);
     void setFixMark (bool in);
+    void snipAtPlayhead();                        // F1: a snip (an unnumbered join with a normal crossfade) at the playhead
     void markWholeSelected();
     void openBounce();
     void showTracksMenu();

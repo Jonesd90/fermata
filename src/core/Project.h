@@ -96,6 +96,7 @@ struct PitchPipeDef
     std::vector<int> outputs;             // the driver outputs it plays to (0-based)
     int    lowestC = 48;                  // the keyboard's lowest key (MIDI: 48 = C3); it shows two octaves from there
     float  tone = 0.35f;                  // 0 = soft ... 1 = bright (a low-pass that follows each note's pitch)
+    bool   keyboard = false;              // the Keyboard sound tick box: a simple keyboard note instead of the reed
 };
 
 /** The click (its window, from the menu bar): the tempo, the bar, the sound and where it goes. Switched on and off by hand (never saved as on). */

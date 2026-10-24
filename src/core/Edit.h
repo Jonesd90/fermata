@@ -105,6 +105,8 @@ struct EditRegion
     void setOutCurve (FadeCurve c) noexcept { if (c == curve) outCurveOwn = false; else { outCurve = c; outCurveOwn = true; } }
     void setInCurve (FadeCurve c) noexcept { const auto o = outCurveValue(); curve = c; setOutCurve (o); }      // (changes the fade-in only: the fade-out keeps its curve)
     bool         fixIn = false, fixOut = false;    // the join at its start / end was made by an offline fix (pitch, repair, de-click, export for processing), not by an edit: it is not counted as an edit point
+    bool         snipIn = false, snipOut = false;  // the join at its start / end is a snip (F1 in the edit window: a cut inside one take, to roll a moment out). Not an edit point either,
+                                                   // but a real join (both sides are needed: the offline fixes treat it as one, with its two streams). A snip needs both flags (EditDef::isSnipJoin)
     std::vector<GainChange> gains;     // volume changes inside this piece, sorted by 'at'
     bool         normaliseIn = false;  // trim window: the level given to this piece at its start glides back to 0 dB by the next crossfade (see EditDef::refreshNormalised)
 
@@ -511,6 +513,7 @@ struct EditDef
         regions[(size_t) lo].fixIn = false;
         if (lo + 2 < n) regions[(size_t) lo + 2].fixIn = false;
         regions[(size_t) lo + 1].fixOut = false;
+        for (int k = juce::jmax (0, lo - 1); k <= juce::jmin (n - 1, lo + 2); ++k) regions[(size_t) k].snipIn = regions[(size_t) k].snipOut = false;     // (the joins round them are new)
         for (int k = lo; k <= lo + 2; ++k) setDefaultJoinFades (k);
         hardenEnds();
         clampAll();
@@ -602,12 +605,16 @@ struct EditDef
     /** The number shown for edit point k (0 = start of the first piece, n = end of the last): joins made by an offline fix are not edits and have no number (0). */
     int editNumberAt (int k) const noexcept
     {
-        if (k < 0 || k > (int) regions.size() || isFixJoin (k)) return 0;
+        if (k < 0 || k > (int) regions.size() || isUnnumberedJoin (k)) return 0;
         int n = 0;
-        for (int i = 0; i <= k; ++i) if (! isFixJoin (i)) ++n;
+        for (int i = 0; i <= k; ++i) if (! isUnnumberedJoin (i)) ++n;
         return n;
     }
     bool isFixJoin (int k) const noexcept { return k > 0 && k < (int) regions.size() && (regions[(size_t) k].fixIn || regions[(size_t) k - 1].fixOut); }
+    /** Join k is a snip (F1): made inside one take to roll a moment out. Both sides carry the mark (a piece moved away from its snip partner makes a plain edit). */
+    bool isSnipJoin (int k) const noexcept { return k > 0 && k < (int) regions.size() && regions[(size_t) k].snipIn && regions[(size_t) k - 1].snipOut; }
+    /** Joins that are not edit points: no number, not counted, skipped by next / previous in the Trim window (offline fixes' joins and snips). */
+    bool isUnnumberedJoin (int k) const noexcept { return isFixJoin (k) || isSnipJoin (k); }
     EditRegion* find (const juce::Uuid& rid) { for (auto& r : regions) if (r.id == rid) return &r; return nullptr; }
     /** A piece of the main track OR an overdub. */
     EditRegion* findAny (const juce::Uuid& rid) { if (auto* r = find (rid)) return r; for (auto& o : overdubs) if (o.id == rid) return &o; return nullptr; }
@@ -629,6 +636,7 @@ struct EditDef
         left.waiting = WaitingPiece(); right.waiting = WaitingPiece();            // a cut piece no longer matches the exported files
         right.id = juce::Uuid();
         right.fixIn = false; left.fixOut = false;                            // (the new join is an edit; the caller of a fix marks it as a fix join)
+        right.snipIn = false; left.snipOut = false;                          // (the right half keeps the piece's own end, and so its snipOut)
         right.srcIn += offset; right.startSample += offset;
         right.gains.clear();
         right.normaliseIn = false;
@@ -648,6 +656,31 @@ struct EditDef
         setDefaultJoinFades (i + 1);
         clampAll();
         return i + 1;
+    }
+
+    /** F1 in the edit window: a SNIP at timeline sample 'at'. The piece playing there is cut in two with the usual short crossfade (30 ms, centred on the
+        cut) in the normal curve (equal power), and the join is marked as a snip: not an edit point (no number), shown as "sn". Opened in the Trim window, the
+        two sides are rolled into each other to take a moment out (one singer coming in a fraction early). Returns the index of the piece after the snip, or
+        -1 with 'why' when there is no piece there, the piece waits for processed audio, or the cut is too close to a crossfade already there. */
+    int snipAt (juce::int64 at, juce::String& why)
+    {
+        const int i = regionAt (at);
+        if (i < 0) { why = "There is no audio at the playhead to snip (a snip goes into the pieces of the edit, not into an overdub)."; return -1; }
+        const auto& r = regions[(size_t) i];
+        if (r.waiting.active()) { why = "This piece is waiting for corrected audio (Export for Processing): re-link it first, then snip it."; return -1; }
+        const auto half = (juce::int64) std::llround (kDefaultHalfFade * (r.sampleRate > 0 ? r.sampleRate : 48000.0));
+        if (at - half < juce::jmax (r.startSample, r.fadeInFinish()) || at + half > juce::jmin (r.endSample(), r.fadeOutBegin()))
+        {
+            why = "Too close to a crossfade or the end of a piece: the snip's own crossfade (30 ms) would run into it. Move the playhead a little further in.";
+            return -1;
+        }
+        const int k = splitRegion (i, at - r.startSample);
+        if (k == i) { why = "The piece could not be cut there."; return -1; }
+        auto& a = regions[(size_t) k - 1]; auto& b = regions[(size_t) k];
+        a.snipOut = true; b.snipIn = true;
+        a.setOutCurve (FadeCurve::EqualPower); b.setInCurve (FadeCurve::EqualPower);       // a normal fade (the joins of offline fixes are linear)
+        clampAll();
+        return k;
     }
 
     /** The audio of piece i exists only for the take range [from,to) (a corrected file from an offline fix or an external program). A crossfade at one of its FIX joins must not

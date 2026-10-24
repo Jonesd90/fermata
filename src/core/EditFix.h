@@ -94,11 +94,11 @@ inline bool applyRegionJobs (EditDef& e, const std::vector<EditRegion>& base, co
             auto& f = e.regions[(size_t) first]; auto& l = e.regions[(size_t) last];
             // the start of the original region: its own fade-in and the curve of it (the fade-out keeps the curve it has now)
             const auto fOut = f.outCurveValue();
-            f.inStart = ob.inStart; f.inEnd = ob.inEnd; f.fixIn = ob.fixIn;
+            f.inStart = ob.inStart; f.inEnd = ob.inEnd; f.fixIn = ob.fixIn; f.snipIn = ob.snipIn;
             f.curve = ob.curve; f.setOutCurve (first == last ? ob.outCurveValue() : fOut);
             // the end of the original region: its own fade-out and the curve of it
-            if (last != first) { l.outStart = ob.outStart; l.outEnd = ob.outEnd; l.fixOut = ob.fixOut; l.setOutCurve (ob.outCurveValue()); }
-            else { l.outStart = ob.outStart; l.outEnd = ob.outEnd; l.fixOut = ob.fixOut; }
+            if (last != first) { l.outStart = ob.outStart; l.outEnd = ob.outEnd; l.fixOut = ob.fixOut; l.snipOut = ob.snipOut; l.setOutCurve (ob.outCurveValue()); }
+            else { l.outStart = ob.outStart; l.outEnd = ob.outEnd; l.fixOut = ob.fixOut; l.snipOut = ob.snipOut; }
         }
     auto span = [] (const std::vector<EditRegion>& v) { juce::int64 sum = 0, lo = (std::numeric_limits<juce::int64>::max)(), hi = 0; for (auto& r : v) { sum += r.length(); lo = juce::jmin (lo, r.startSample); hi = juce::jmax (hi, r.endSample()); } return std::array<juce::int64, 3> { sum, lo, hi }; };
     if (ok && span (e.regions) != span (base)) { ok = false; gApplyWhy = "the edit would have changed length"; juce::Logger::writeToLog ("applyRegionJobs: refused, the edit would not be the same length"); }

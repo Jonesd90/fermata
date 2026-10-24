@@ -71,6 +71,7 @@ In a Take Window, click the ruler to place the playhead, mark the part you want 
 | Up / Down arrows | Make the tracks smaller / bigger |
 | Ctrl+Z / Ctrl+Y | Undo / redo |
 | Ctrl+A | Select every take (take window) |
+| F1 | Snip at the playhead (edit window): an unnumbered join ("sn") to roll a moment out in the Trim window |
 | Ctrl+Shift + drag | Move the selected takes' clips on a track onto another track (take window) |
 
 ## If something goes wrong

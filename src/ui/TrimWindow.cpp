@@ -620,8 +620,14 @@ void TrimComponent::describe()
     const int n = (int) rf.e->regions.size();
     const juce::String where = formatTimeShort (J / rate, 3);
     int editNo = 0, editTotal = 0;                                       // the edit points are counted without the joins made by offline fixes
-    for (int q = 0; q <= n; ++q) { if (! rf.e->isFixJoin (q)) { ++editTotal; if (q <= rf.k) ++editNo; } }
-    if (hasA && hasB && rf.e->isFixJoin (rf.k))
+    for (int q = 0; q <= n; ++q) { if (! rf.e->isUnnumberedJoin (q)) { ++editTotal; if (q <= rf.k) ++editNo; } }
+    if (hasA && hasB && rf.e->isSnipJoin (rf.k))
+    {
+        infoLabel.setText ("Snip (F1, not an edit point):   " + rf.A->takeName + "    at " + where + "   -   roll the two sides into each other to take a moment out", juce::dontSendNotification);
+        fadeLabel.setText ("Out-fade " + ms (rf.A->fadeOutBegin()) + " .. " + ms (rf.A->fadeOutFinish()) + " ms     In-fade " + ms (rf.B->fadeInBegin()) + " .. " + ms (rf.B->fadeInFinish())
+                           + " ms     (relative to the join mark)", juce::dontSendNotification);
+    }
+    else if (hasA && hasB && rf.e->isFixJoin (rf.k))
     {
         infoLabel.setText ("Fix join (made by an offline fix, not an edit between takes):   " + rf.A->takeName + "   ->   " + rf.B->takeName + "    at " + where, juce::dontSendNotification);
         fadeLabel.setText ("Out-fade " + ms (rf.A->fadeOutBegin()) + " .. " + ms (rf.A->fadeOutFinish()) + " ms     In-fade " + ms (rf.B->fadeInBegin()) + " .. " + ms (rf.B->fadeInFinish())
@@ -678,9 +684,9 @@ void TrimComponent::refreshControls()
         {
             const int n = (int) rf.e->regions.size();
             bool havePrev = false, haveNext = false;
-            for (int q = rf.k - 1; q >= 0; --q) if (! rf.e->isFixJoin (q)) { havePrev = true; break; }
-            for (int q = rf.k + 1; q <= n; ++q) if (! rf.e->isFixJoin (q)) { haveNext = true; break; }
-            const bool onFix = rf.e->isFixJoin (rf.k);               // a join made by an offline fix: no next / previous (they are for the edits between takes)
+            for (int q = rf.k - 1; q >= 0; --q) if (! rf.e->isUnnumberedJoin (q)) { havePrev = true; break; }
+            for (int q = rf.k + 1; q <= n; ++q) if (! rf.e->isUnnumberedJoin (q)) { haveNext = true; break; }
+            const bool onFix = rf.e->isUnnumberedJoin (rf.k);        // a join made by an offline fix, or a snip: no next / previous (they are for the edits between takes)
             prevButton.setVisible (! onFix); nextButton.setVisible (! onFix);
             prevButton.setEnabled (havePrev); nextButton.setEnabled (haveNext);
         }
@@ -905,7 +911,7 @@ void TrimComponent::step (int delta)
     if (! rf.ok()) return;
     const int n = (int) rf.e->regions.size();
     int to = rf.k + delta;
-    while (to >= 0 && to <= n && rf.e->isFixJoin (to)) to += delta;           // only the edits between takes: the joins made by offline fixes are skipped
+    while (to >= 0 && to <= n && rf.e->isUnnumberedJoin (to)) to += delta;    // only the edits between takes: the joins made by offline fixes and the snips are skipped
     if (to < 0 || to > n) return;
     app.project.changed();                            // what was done on this join is accepted
     if (to == n) gotoJoin (rf.e->regions.back().id, true);
