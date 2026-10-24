@@ -76,7 +76,7 @@ In a Take Window, click the ruler to place the playhead, mark the part you want 
 
 ## If something goes wrong
 
-Fermata keeps a log in `Documents\Fermata\fermata-log.txt`. Send that file with a description of what happened.
+Fermata keeps a log in `Documents\Fermata\fermata-log.txt`. Send that file with a description of what happened. If the program ever seems to freeze for a moment, the log has a line starting "Stall watch" saying how long and what it was doing.
 
 **Display Organiser:** a picture of your screen: pick a shape, click each part to choose its window (any take window, edit or mixer of the project: a closed one is opened), drag the lines to change the split, press Arrange. Layouts can be saved with the project; the program's own (Recording, Editing ...) take the windows you used last.
 **Fades:** the start and end of an edit (and of each take) fade for 25 ms by default; drag the top corners to change it.
@@ -87,6 +87,8 @@ Fermata keeps a log in `Documents\Fermata\fermata-log.txt`. Send that file with 
 **Choosing tracks (Alt + drag).** Dragging over the audio marks 1 and 2 on every track. Hold **Alt** while you drag and only the track(s) the mouse covers are marked (start on one track and drag up or down to include more). Pitch, Pitch curve, Spectral Repair, De-Click, Export for Processing and the volume change below then act on just those tracks. **5** clears the marks and the track choice.
 
 **Moving clips onto another track (Ctrl + Shift + drag).** In a Take Window, select the takes (**Ctrl+A** for all of them, or Alt + drag), hold **Ctrl + Shift** and drag one of their clips up or down onto another track: the clips those takes have on that track go onto the other track and stay where they are in time (the pieces of edits made from them go along). For an import that put everything on new tracks with a word in front of the names ("VivienneSPOT1" instead of "SPOT1"), right-click the track's name: *Move its clips onto SPOT1*, or *Move the clips of all ... tracks named like this*, which does them all at once (numbers at the end of the names are ignored: "Rorate Caeli SPOT4 19 18" goes onto SPOT4) and then offers to delete the emptied tracks. **Ctrl+Z** puts the clips back. To avoid this when importing, tick **One set of tracks** in the import window: each file then goes on the track named in its file name.
+
+**Visual guide track (edit window).** Right-click a track's clip in a take window - for example the ORTF or omni pair of the run-through you recorded first - and choose *Use as edit window visual guide track*: that clip (the part between 1 and 2, if they are set in that take) appears in a grey **GUIDE** lane above the edit's tracks. Drag it sideways to line it up with the edit (it can start before 0:00) and compare the gaps between the phrases. Its **S** button makes Space play only the guide; the **Guide** button at the top of the edit window shows or hides it; right-click it to move its start to 0:00 or the playhead, or to remove it. It never plays with the edit and is never bounced.
 
 **Volume change between the marks.** Right-click on the audio with marks 1 and 2 set and choose *Volume change between the marks...*: each marked track gets a fader from +30 dB (top) through 0 (no change) to -inf (bottom). The level glides to the new value over the fade length at the start and glides back to where it was at the end. The old *Volume change from here on* is still there.
 

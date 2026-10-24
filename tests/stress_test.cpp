@@ -121,10 +121,10 @@ int main (int argc, char** argv)
                         std::vector<int> counts; for (auto& t : p.tracks) counts.push_back (t.channelCount());
                         auto sess = std::make_unique<PlaybackSession> (counts, segmentsForTake (p, *g), 0, g->lengthSamples, 48000.0, eng.getMaxBlock());
                         sess->setLooping (chance (50));
-                        if (eng.startPlayback (std::move (sess)).isEmpty()) ++plays;
+                        if (eng.startPlayback (std::move (sess), chance (50)).isEmpty()) ++plays;     // (half of them do not wait for the first moments: 2.102)
                     }
                 }
-                else if (eng.isPlaying()) eng.stopPlayback();
+                else if (eng.isPlaying()) eng.stopPlayback (chance (50));       // (half of them as a press of Stop: freed by a thread of its own, 2.102)
                 break;
             case 3:
             {   // plug-ins come and go
@@ -167,6 +167,8 @@ int main (int argc, char** argv)
     if (eng.isRecording()) eng.stopRecording();
     eng.waitForFinishedTakes (20000); eng.reapFinishedTakes();
     eng.stopPlayback();
+    for (int k = 0; k < 400 && eng.sessionsWaitingToBeFreed() > 0; ++k) std::this_thread::sleep_for (std::chrono::milliseconds (5));     // (the audio thread still runs: they are freed)
+    const bool allFreed = eng.sessionsWaitingToBeFreed() == 0, neverStalled = eng.audioThreadNeverStalled();
     stop = true;
     audio.join();
     eng.setRunningForTests (false);
@@ -174,7 +176,8 @@ int main (int argc, char** argv)
     for (auto& g : tw.groups) { overruns += g.overruns; failed = failed || g.writeFailed; }
     std::printf ("stress: %ld blocks, %d recordings, %d plays, %d rebuilds, %d slot changes, %d send changes, %d overruns%s\n",
                  blocks.load(), recordings, plays, rebuilds, slotChanges, sends, overruns, failed ? ", A FILE FAILED" : "");
-    const bool ok = blocks.load() > 0 && recordings > 0 && plays > 0 && ! failed;
+    if (! allFreed || ! neverStalled) std::printf ("stress: stopped plays still waiting to be freed: %s, audio thread stalled: %s\n", allFreed ? "no" : "YES", neverStalled ? "no" : "YES");
+    const bool ok = blocks.load() > 0 && recordings > 0 && plays > 0 && ! failed && allFreed && neverStalled;
     std::printf (ok ? "STRESS TEST PASSED\n" : "STRESS TEST FAILED\n");
     tmp.deleteRecursively();
     return ok ? 0 : 1;

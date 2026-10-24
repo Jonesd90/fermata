@@ -32,6 +32,12 @@ AppContext::AppContext()
     props.setStorageParameters (o);
 
     project.insertFactory = plugins.makeFactory ([this] { return engine.getSampleRate(); }, [this] { return engine.getMaxBlock(); });
+    saver = std::make_unique<BackgroundSaver> ([this, alive = saverAlive]
+    {
+        juce::MessageManager::callAsync ([this, alive] { if (*alive && saver != nullptr) saver->drain(); });     // (what it wrote is taken in on this thread)
+    });
+    project.settleBackgroundSaves = [this] { waitForSaves(); };
+    stallWatch = std::make_unique<StallWatch>();
     timereadout::shared().fromString (props.getUserSettings()->getValue ("timeReadout"));       // how the time readouts write the time (remembered on this computer)
     timereadout::shared().addChangeListener (this);
     project.structure.addChangeListener (this);
@@ -40,7 +46,7 @@ AppContext::AppContext()
     project.onNewWindow = [this] { juce::MessageManager::callAsync ([this] { if (saveHold == 0 && project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording()) saveNow (true); }); };      // a new edit / take window / mixer gets its file at once
     watcher.fn = [this]
     {
-        if (engine.playbackFinished()) stopPlayback();                       // tidy up when a play-through reaches its end
+        if (engine.playbackFinished()) stopPlayback (true);                  // tidy up when a play-through reaches its end
         engine.servicePreRoll();                                             // Pre-Rec's memory, made in the background, goes in place
         if (const auto done = engine.reapFinishedTakes(); ! done.empty())     // a stopped take's files are finished on the disk: draw their real waveforms
         {
@@ -58,7 +64,7 @@ AppContext::AppContext()
     watcher.startTimer (100);
     loadTicker.fn = [this] { tickLoad(); };
     loadTicker.startTimer (1000);
-    undoTicker.fn = [this] { if (undoHold <= 0) project.undoTick (engine.isRecording()); };
+    undoTicker.fn = [this] { if (undoHold <= 0) { BusyLabel busy ("making an undo step"); project.undoTick (engine.isRecording()); } };
     undoTicker.startTimer (250);
     peakPoller.fn = [this]
     {
@@ -106,6 +112,10 @@ AppContext::AppContext()
 
 AppContext::~AppContext()
 {
+    project.settleBackgroundSaves = nullptr;
+    *saverAlive = false;                             // (what it finishes from here on is not taken in: the program is closing, and shutdown() saved)
+    saver.reset();                                   // (waits until everything handed to it is written)
+    stallWatch.reset();
     spaceBelongsToRecordingHook() = nullptr;
     timereadout::shared().removeChangeListener (this);
     *anemanAlive = false;
@@ -388,13 +398,31 @@ void AppContext::applyAudioSettings()
 void AppContext::timerCallback()
 {
     engine.checkLatency();
-    // The automatic save (every 4 s when something changed). While the music plays it waits, up to a minute: saving a big project takes a moment
-    // of the screen's time, and doing it every few seconds while you mix made the moving playhead hitch. Stopping saves straight away (stopPlayback).
-    if (engine.isPlaying() && ++savesHeldWhilePlaying < 15) return;
+    autosaveIfIdle();
+}
+
+void AppContext::autosaveIfIdle()
+{
+    // The automatic save, only when nothing is going on (2.102): every press of Space or Stop must be answered at once, so saving gives way to
+    // everything else. Saving less often was the price, and it is a small one: the snapshot takes a few tens of milliseconds and the writing
+    // happens on a thread of its own, so a save never holds anything up now - this only keeps even the snapshot out of the way.
+    static const bool trace = juce::SystemStats::getEnvironmentVariable ("FERMATA_LOG_AUTOSAVE", "0") == "1";      // (a development aid: why it waits)
+    auto wait = [] (const char* why) { if (trace) juce::Logger::writeToLog (juce::String ("Automatic save waits: ") + why); };
     if (saveHold > 0) return;                                               // (a preview's files are in the take's file list: not what the project file should say)
-    if (project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording())
-        saveNow (true);
-    savesHeldWhilePlaying = 0;
+    if (! project.dirty.load() || project.projectFile == juce::File()) return;
+    if (engine.isRecording()) return wait ("recording");                                    // never while recording (Record and Stop save at once)
+    if (saver != nullptr && saver->isBusy()) return wait ("the last one is being written");
+    const auto now = juce::Time::getMillisecondCounter();
+    const auto sinceSave = now - lastAutosaveMs;
+    if (engine.isPlaying() && sinceSave < kAutosaveLatestMs) return wait ("playing");      // while it plays, only once 5 minutes have gone by (a long mixing session is never left unsaved)
+    if (sinceSave < kAutosaveGapMs) return wait ("under 30 s since the last save");             // at most every 30 seconds
+    if (juce::ModifierKeys::getCurrentModifiersRealtime().isAnyMouseButtonDown()) return wait ("a mouse button is down");     // not while something is being dragged
+    if (sinceSave < kAutosaveLatestMs)                                      // (after 5 minutes it saves at the next quiet tick, whatever)
+    {
+        if (now - lastTransportMs < 3000) return wait ("Play / Stop just now");               // not just after Play / Stop: the next press may be coming
+        if (now - project.undoDirtyAt < 2000) return wait ("a change just now");              // not in the middle of making changes
+    }
+    saveNow (true);
 }
 
 void AppContext::tickLoad()
@@ -447,17 +475,105 @@ void AppContext::redoStep()
 void AppContext::saveNow (bool quick)
 {
     if (quick && saveHold > 0) return;                   // (a preview's files are in a take's file list: the project file must not say so; the save comes once they are out)
-    juce::String err;
-    if (project.projectFile != juce::File())
+    if (project.projectFile == juce::File()) return;
+    lastAutosaveMs = juce::Time::getMillisecondCounter();
+    if (saver != nullptr) saver->drain();                // (what the saver has finished is taken in first: a failed save is written again)
+    if (quick && saver != nullptr && ! wholeSaveNext)
     {
-        if (! project.save (err, quick)) showError ("Could not save project", err);
-        props.getUserSettings()->setValue ("lastProject", project.projectFile.getFullPathName());
-        props.saveIfNeeded();
+        // an automatic save: the snapshot here, the writing on the saver's thread - one at a time, so that a save which fails is known about
+        // (and its windows written again) before the next snapshot is taken: one asked for meanwhile is taken once the one being written is done
+        if (saver->isBusy()) { quickSaveWanted = true; return; }
+        BusyLabel busy ("taking the snapshot for an automatic save");
+        if (auto job = project.prepareSave (true))
+        {
+            if (job->prepareMs > 60.0)
+                juce::Logger::writeToLog ("Automatic save: the snapshot took " + juce::String (juce::roundToInt (job->prepareMs)) + " ms (" + juce::String ((int) job->windows.size())
+                                          + " window files to write)");
+            const int gen = saveGeneration;
+            saver->write (std::move (job), [this, gen] (BackgroundSaver::Result& r) { savedInBackground (r, gen); });
+        }
     }
+    else
+    {
+        BusyLabel busy ("saving the project");
+        juce::String err;
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        const bool ok = project.save (err, quick);       // (waits for the saver first: Project::settleBackgroundSaves)
+        const auto ms = juce::Time::getMillisecondCounterHiRes() - t0;
+        if (ms > 250.0) juce::Logger::writeToLog ("Saved the project in " + juce::String (juce::roundToInt (ms)) + " ms (written there and then)");
+        if (ok) { wholeSaveNext = false; lastFailedJob.reset(); }
+        else showSaveError (err, quick);
+    }
+    props.getUserSettings()->setValue ("lastProject", project.projectFile.getFullPathName());
+    props.saveIfNeeded();
+}
+
+void AppContext::waitForSaves()
+{
+    if (saver == nullptr) return;
+    if (saver->isBusy())
+    {
+        BusyLabel busy ("waiting for the automatic save to be written");
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        for (int waited = 10; ! saver->waitUntilIdle (10000); waited += 10)       // (as long as it takes, as a save written here would: never two writes of the same files at once)
+            juce::Logger::writeToLog ("Still waiting for the automatic save to be written (" + juce::String (waited) + " s): the drive is not answering");
+        const auto ms = juce::Time::getMillisecondCounterHiRes() - t0;
+        if (ms > 100.0) juce::Logger::writeToLog ("Waited " + juce::String (juce::roundToInt (ms)) + " ms for the automatic save to be written");
+    }
+    saver->drain();
+}
+
+void AppContext::savedInBackground (BackgroundSaver::Result& r, int generation)
+{
+    if (generation != saveGeneration || r.job == nullptr) return;          // (another project since: not this one's)
+    if (quickSaveWanted)                                                    // a save was asked for while this one was being written: now it can be
+    {
+        quickSaveWanted = false;
+        juce::MessageManager::callAsync ([this, alive = saverAlive] { if (*alive && ! closingProgram && project.dirty.load()) saveNow (true); });
+    }
+    if (r.ok)
+    {
+        lastFailedJob.reset();
+        if (r.job->writeMs > 2000.0)
+            juce::Logger::writeToLog ("Automatic save: writing took " + juce::String (juce::roundToInt (r.job->writeMs)) + " ms (on its own thread: nothing waited for it)");
+        return;
+    }
+    project.saveFailed (*r.job);                         // (unsaved again: the next save writes it all again)
+    wholeSaveNext = wholeSaveNext || r.windowsFailed;
+    juce::Logger::writeToLog ("Automatic save failed: " + r.error);
+    lastFailedJob = std::move (r.job);                   // (written again when the project is closed without saving: see retryFailedSave)
+    // said a moment later, and only if the project is still unsaved then (a Save that was waiting for this has written everything meanwhile)
+    juce::MessageManager::callAsync ([this, alive = saverAlive, err = r.error] { if (*alive && ! closingProgram && project.dirty.load()) showSaveError (err, true); });
+}
+
+void AppContext::retryFailedSave()
+{
+    if (lastFailedJob == nullptr) return;
+    juce::String err;
+    const bool ok = Project::writeSave (*lastFailedJob, err);
+    juce::Logger::writeToLog (ok ? juce::String ("The automatic save that had failed was written when closing")
+                                 : "The automatic save that had failed could not be written when closing either: " + err);
+    if (! ok && ! closingProgram) showError ("Could not save project", "The last automatic save could not be written:\n\n" + err);
+    lastFailedJob.reset();
+}
+
+void AppContext::showSaveError (const juce::String& err, bool automatic)
+{
+    const auto now = juce::Time::getMillisecondCounter();
+    if (automatic && lastSaveErrorMs != 0 && now - lastSaveErrorMs < 120000)     // (an automatic save that keeps failing says so every two minutes, not every time)
+    {
+        juce::Logger::writeToLog ("Could not save project (said less than two minutes ago, not shown again): " + err);
+        return;
+    }
+    lastSaveErrorMs = now;
+    showError ("Could not save project", err);
 }
 
 void AppContext::afterProjectReplaced()
 {
+    ++saveGeneration;                                  // (what a save handed over before this did is not this project's)
+    wholeSaveNext = false; quickSaveWanted = false; lastFailedJob.reset();
+    lastAutosaveMs = juce::Time::getMillisecondCounter();
     syncWithDevice();
     engine.rebuildPlan();
     freeRetiredMixersSoon();                           // the mixers (and plug-ins) of the project that was open before
@@ -734,6 +850,7 @@ bool AppContext::closeProject (bool save)
     engine.auxSounds().click.setRunning (false); engine.auxSounds().pipe.allOff();
     plugins.closeAllEditors();
     if (save) saveNow();
+    else { waitForSaves(); retryFailedSave(); }      // (the automatic saves are kept: one being written finishes first, one that failed is written again)
     props.saveIfNeeded();
     project.projectFile = juce::File();              // from here on nothing is written to it (the windows closing below may still mark changes)
     if (closeAllWindows) closeAllWindows();
@@ -865,7 +982,7 @@ void AppContext::remoteArmToggle()
 
 void AppContext::remotePlayPause()
 {
-    if (isPlaying()) { stopPlayback(); return; }
+    if (isPlaying()) { stopPlayback (true); return; }
     if (engine.isRecording()) return;
     if (transportHandler) { transportHandler(); return; }
     auto* w = project.findTakeWindow (recordTarget);
@@ -956,6 +1073,7 @@ static juce::String beginSession (AppContext& app, std::vector<PlaySegment> segs
 {
     if (segs.empty() && ! allowEmpty) return "There is nothing to play here";
     if (end <= start) return "Nothing to play (empty range)";
+    app.noteTransport();
     std::vector<int> counts;
     for (auto& t : app.project.tracks) counts.push_back (t.channelCount());
     auto session = std::make_unique<PlaybackSession> (counts, std::move (segs), start, end, rate, app.engine.getMaxBlock());
@@ -963,8 +1081,18 @@ static juce::String beginSession (AppContext& app, std::vector<PlaySegment> segs
     session->editId = editId;                                  // an Edit plays through its own mixer
     session->setLooping (loop);
     if (continueTo > end) session->setContinueTo (continueTo);              // a loop let go of carries on to there (see PlaybackSession::releaseLoop)
-    return app.engine.startPlayback (std::move (session));
+    return app.engine.startPlayback (std::move (session), false);           // (returns at once: the sound starts as soon as the first moments are read)
 }
+
+/** Times a press of Play on the message thread (for the Play / Stop timing line in the log) and labels it for the stall watch. */
+struct PlayStartTimer
+{
+    explicit PlayStartTimer (AppContext& a) : app (a) {}
+    ~PlayStartTimer() { app.lastPlayStartMs = juce::Time::getMillisecondCounterHiRes() - t0; }
+    AppContext& app;
+    const double t0 = juce::Time::getMillisecondCounterHiRes();
+    BusyLabel label { "starting playback" };
+};
 
 /** Playing from the middle of something (or to a mark) would start and stop the sound abruptly: a 1 ms fade in at the start and out at the end of what is played. */
 static void transportFades (std::vector<PlaySegment>& segs, juce::int64 a, juce::int64 b, double rate, bool fadeEnd = true)
@@ -980,6 +1108,7 @@ static void transportFades (std::vector<PlaySegment>& segs, juce::int64 a, juce:
 
 juce::String AppContext::playTakeWindow (const juce::Uuid& windowId, double fromSec, double loopToSec, const juce::Uuid& rateOfTake)
 {
+    PlayStartTimer timing (*this);
     auto* w = project.findTakeWindow (windowId);
     if (w == nullptr) return "That take window no longer exists";
     double rate = engine.getSampleRate();
@@ -1006,6 +1135,7 @@ juce::String AppContext::playTakeWindow (const juce::Uuid& windowId, double from
 
 juce::String AppContext::playTake (const juce::Uuid& windowId, const juce::Uuid& takeId, double fromSec, double toSec, bool loop)
 {
+    PlayStartTimer timing (*this);
     auto* g = project.findTake (windowId, takeId);
     if (g == nullptr) return "That take no longer exists";
     const auto rate = g->sampleRate;
@@ -1022,6 +1152,7 @@ juce::String AppContext::playTake (const juce::Uuid& windowId, const juce::Uuid&
 
 juce::String AppContext::playEdit (const juce::Uuid& editId, double fromSec, double toSec, bool loop, bool goOnAfterLoop)
 {
+    PlayStartTimer timing (*this);
     auto* e = project.findEdit (editId);
     if (e == nullptr) return "That edit no longer exists";
     // the edit may be empty, and you can start anywhere on its timeline, also after its last piece: with no end given it simply carries on (silent where there is no audio)
@@ -1041,8 +1172,82 @@ juce::String AppContext::playEdit (const juce::Uuid& editId, double fromSec, dou
     return err;
 }
 
+juce::String AppContext::playEditGuide (const juce::Uuid& editId, double fromSec, double toSec, bool loop, bool goOnAfterLoop)
+{
+    PlayStartTimer timing (*this);
+    auto* e = project.findEdit (editId);
+    if (e == nullptr) return "That edit no longer exists";
+    if (! e->guide.active()) return "This edit has no visual guide";
+    const double rate = e->guide.sampleRate;
+    const juce::int64 a = juce::jmax ((juce::int64) 0, (juce::int64) std::llround (fromSec * rate));
+    const juce::int64 b = toSec < 0 ? a + (juce::int64) std::llround (kOpenEndSeconds * rate) : juce::jmax (a, (juce::int64) std::llround (toSec * rate));
+    auto segs = segmentsForGuide (project, *e);
+    const int ti = guideTrackIndex (project, e->guide);
+    if (segs.empty() || ti < 0) return "The guide has no track to play on (its track is gone, and no other track has as many channels)";
+    loop = loop && toSec >= 0 && b > a;
+    const bool goOn = loop && goOnAfterLoop;
+    setAlignOwner (project.alignOwnerFor (true, editId));
+    transportFades (segs, a, b, rate, ! goOn);
+    auto err = beginSession (*this, std::move (segs), a, b, rate, nullptr, loop, true, editId, goOn ? a + (juce::int64) std::llround (kOpenEndSeconds * rate) : -1);
+    if (err.isNotEmpty()) return err;
+    playInfo = { PlayInfo::Kind::Edit, e->windowId, editId, (double) a / rate }; playInfo.loopLen = loop ? (double) (b - a) / rate : 0.0;
+    // the guide plays on its track's strip in the edit's mixer: if that strip cannot be heard just now, say why (rather than play silence)
+    if (auto* m = project.mixerOfEdit (editId))
+        if (auto* st = m->stripFor (project.tracks[(size_t) ti].id))
+        {
+            bool otherSolo = m->vcaSoloMask() != 0u;
+            for (auto& sp : m->stripPool) otherSolo = otherSolo || (sp.get() != st && sp->solo.get());
+            for (auto& bp : m->busPool) otherSolo = otherSolo || bp->solo.get();
+            const auto nm = project.tracks[(size_t) ti].name;
+            if (st->mute.get()) setNotice ("The guide plays on the " + nm + " strip, which is muted in this edit's mixer: switch its M off to hear it.");
+            else if (otherSolo && ! st->solo.get()) setNotice ("Another strip is soloed in this edit's mixer, so the guide (on " + nm + ") may not be heard.");
+        }
+    return {};
+}
+
+juce::String AppContext::setEditGuide (const juce::Uuid& windowId, const juce::Uuid& takeId, const juce::Uuid& trackId, juce::Uuid* editOut)
+{
+    auto* w = project.findTakeWindow (windowId);
+    if (w == nullptr) return "No take window";
+    auto* g = w->findGroup (takeId);
+    if (g == nullptr) return "That take no longer exists";
+    const TakeFile* tf = nullptr;
+    for (auto& f : g->files) if (f.trackId == trackId) tf = &f;
+    if (tf == nullptr) return "This take has no audio on that track.";
+    const double rate = g->sampleRate;
+    if (rate <= 0.0 || g->lengthSamples <= 0) return "This take has no audio yet.";
+    juce::int64 a = 0, b = g->lengthSamples;
+    if (w->editTake == takeId && w->editIn >= 0.0 && w->editOut > w->editIn)         // marks 1 and 2 in this take: only that part
+    {
+        a = juce::jlimit ((juce::int64) 0, g->lengthSamples, (juce::int64) std::llround (w->editIn * rate));
+        b = juce::jlimit ((juce::int64) 0, g->lengthSamples, (juce::int64) std::llround (w->editOut * rate));
+    }
+    if (b - a < (juce::int64) (0.1 * rate)) return "That part is too short to be a guide.";
+    // the edit: the one this take window sends to (3 / 4); else one made from it; else the edit window used last; else the only edit; else a new one
+    EditDef* e = project.findEdit (w->targetEdit);
+    if (e == nullptr) for (auto& ep : project.edits) if (ep->windowId == windowId) { e = ep.get(); break; }
+    if (e == nullptr && lastWorkWindowKey) if (const auto k = lastWorkWindowKey(); k.startsWith ("edit:")) e = project.findEdit (juce::Uuid (k.fromFirstOccurrenceOf (":", false, false)));
+    if (e == nullptr && project.edits.size() == 1) e = project.edits.front().get();
+    if (e != nullptr && ! e->isEmpty() && std::abs (e->sampleRate - rate) > 0.5)
+        return "This take is " + juce::String (rate, 0) + " Hz but the edit is " + juce::String (e->sampleRate, 0) + " Hz.";
+    if (e == nullptr) e = &project.addEdit (w->name + " - EDIT", windowId);
+    if (project.findEdit (w->targetEdit) == nullptr) w->targetEdit = e->id;          // (so what 3 and 4 send goes to the same edit as the guide)
+    EditGuide gd;
+    gd.windowId = windowId; gd.takeId = takeId; gd.trackId = trackId;
+    gd.takeName = w->displayName (*g);
+    gd.trackName = tf->trackName;
+    if (auto* t = project.findTrack (trackId)) gd.trackName = t->name;
+    gd.file = tf->file; gd.numChannels = juce::jmax (1, tf->numChannels); gd.sampleRate = rate;
+    gd.srcIn = a; gd.srcOut = b; gd.start = 0;
+    e->guide = gd; e->showGuide = true;
+    project.changed();
+    if (editOut != nullptr) *editOut = e->id;
+    return {};
+}
+
 juce::String AppContext::playDisc (const std::vector<DiscPlayItem>& items, double fromSec, double toSec, const juce::Uuid& token)
 {
+    PlayStartTimer timing (*this);
     double rate = 0.0; juce::int64 endAll = 0;
     std::vector<PlaySegment> segs;
     auto plan = std::make_shared<AutomationPlan>();
@@ -1095,6 +1300,7 @@ juce::String AppContext::playDisc (const std::vector<DiscPlayItem>& items, doubl
 
 juce::String AppContext::playRenders (const std::vector<RenderPlayItem>& items, double fromSec, double toSec, const juce::Uuid& token, int outFirst)
 {
+    PlayStartTimer timing (*this);
     double rate = 0.0; juce::int64 endAll = 0;
     std::vector<PlaySegment> segs;
     for (auto& it : items)
@@ -1112,15 +1318,17 @@ juce::String AppContext::playRenders (const std::vector<RenderPlayItem>& items, 
     const juce::int64 b = toSec < 0 ? endAll : juce::jlimit (a, endAll, (juce::int64) std::llround (toSec * rate));
     if (b <= a) return "Nothing to play (empty range)";
     transportFades (segs, a, b, rate);
+    noteTransport();
     auto session = std::make_unique<PlaybackSession> (std::vector<int> { 2 }, std::move (segs), a, b, rate, engine.getMaxBlock());
     session->directOut = juce::jmax (0, outFirst);
-    auto err = engine.startPlayback (std::move (session));
+    auto err = engine.startPlayback (std::move (session), false);
     if (err.isEmpty()) playInfo = { PlayInfo::Kind::Other, juce::Uuid::null(), token, (double) a / rate };
     return err;
 }
 
 juce::String AppContext::playRegionOriginal (const juce::Uuid& editId, const juce::Uuid& regionId, juce::int64 fromSample, juce::int64 toSample)
 {
+    PlayStartTimer timing (*this);
     auto* e = project.findEdit (editId);
     if (e == nullptr) return "That edit no longer exists";
     auto* r = e->find (regionId);
@@ -1209,8 +1417,13 @@ void AppContext::setPlayheadFollows (bool on)
     project.sendChangeMessage();                       // windows redraw their button
 }
 
-void AppContext::stopPlayback()
+void AppContext::stopPlayback (bool quick)
 {
+    const bool wasPlaying = engine.isPlaying();
+    BusyLabel busy ("stopping playback");
+    if (wasPlaying) noteTransport();
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+    const double firstSound = wasPlaying ? engine.playbackFirstSoundMs() : 0.0;
     if (playheadFollows && engine.isPlaying() && ! engine.playbackFinished() && ! playInfo.noFollow)      // stopped by hand: the playhead stays where it got to
     {
         const double pos = playInfo.startSeconds + playedSeconds();
@@ -1227,16 +1440,17 @@ void AppContext::stopPlayback()
             if (auto* e = project.findEdit (playInfo.id)) { e->playheadSeconds = pos; project.sendChangeMessage(); }
         }
     }
-    engine.stopPlayback();
+    engine.stopPlayback (quick);                       // (quick: a press of Space or Stop - the tidying up of the play is left to a thread of its own)
     playInfo = {};
     discAlign.clear();
     freeRetiredMixersSoon();                           // (mixers retired while it played waited for this)
-    if (savesHeldWhilePlaying > 0)                     // a save waited while it played: do it now
-    {
-        savesHeldWhilePlaying = 0;
-        if (project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording())
-            juce::MessageManager::callAsync ([this] { if (project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording()) saveNow (true); });
-    }
+    // (no save after Stop any more: the automatic save waits for a quiet moment - see autosaveIfIdle)
+    const auto stopMs = juce::Time::getMillisecondCounterHiRes() - t0;
+    static const bool logEvery = juce::SystemStats::getEnvironmentVariable ("FERMATA_LOG_PLAYSTOP", "0") == "1";      // (a development aid: every press)
+    if (wasPlaying && (logEvery || lastPlayStartMs > 60.0 || firstSound > 600.0 || stopMs > 40.0))      // (only when something was slow: the log is not filled with every press)
+        juce::Logger::writeToLog ("Play / Stop timing: Play took " + juce::String (juce::roundToInt (lastPlayStartMs)) + " ms of the screen's time, the first sound came after "
+                                  + (firstSound > 0.0 ? juce::String (juce::roundToInt (firstSound)) + " ms" : juce::String ("(not yet)")) + ", Stop took " + juce::String (juce::roundToInt (stopMs)) + " ms");
+    lastPlayStartMs = 0.0;
 }
 
 double AppContext::playheadSeconds() const
@@ -1319,7 +1533,9 @@ void AppContext::shutdown()
     stopPlayback();
     project.preampDriver = std::make_shared<NullPreampDriver>();
     plugins.closeAllEditors();
+    closingProgram = true;
     if (! skipFinalSave) saveNow();
+    else { waitForSaves(); retryFailedSave(); }      // "Quit without saving" keeps what was saved automatically: so it must really be on the disk
     if (auto* s = props.getUserSettings())
         if (auto xml = devices.createStateXml()) { s->setValue ("audioDevice", xml.get()); }
     props.saveIfNeeded();

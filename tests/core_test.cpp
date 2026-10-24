@@ -35,6 +35,7 @@
 #include "../src/core/TakeSheet.h"
 #include "../src/core/BoxEdges.h"
 #include "../src/core/WavRepair.h"
+#include "../src/core/SaveWriter.h"
 #include <cstdio>
 #include <thread>
 
@@ -3704,6 +3705,16 @@ int main()
         expectE ("point removed", [&] { e.lanes[0].pts.clear(); }, true);
         expectE ("lane removed", [&] { e.lanes.clear(); }, true);
         expectE ("region removed", [&] { e.regions.pop_back(); }, true);
+        // the visual guide (2.102): part of undo
+        expectE ("guide set", [&] { e.guide.file = tmp.getChildFile ("guide.wav"); e.guide.sampleRate = 48000.0; e.guide.srcIn = 0; e.guide.srcOut = 48000; e.guide.trackId = q.tracks[0].id; e.guide.trackName = "A"; e.guide.takeName = "001"; }, true);
+        expectE ("guide start", [&] { e.guide.start = -4800; }, true);
+        expectE ("guide range", [&] { e.guide.srcIn = 100; e.guide.srcOut = 40000; }, true);
+        expectE ("guide file", [&] { e.guide.file = tmp.getChildFile ("guide2.wav"); }, true);
+        expectE ("guide track", [&] { e.guide.trackId = q.tracks[1].id; e.guide.trackName = "B"; }, true);
+        expectE ("guide take", [&] { e.guide.windowId = juce::Uuid(); e.guide.takeId = juce::Uuid(); e.guide.takeName = "002"; }, true);
+        expectE ("guide channels / rate", [&] { e.guide.numChannels = 2; e.guide.sampleRate = 96000.0; }, true);
+        expectE ("guide shown (a view)", [&] { e.showGuide = false; }, false);
+        expectE ("guide removed", [&] { e.guide = EditGuide(); }, true);
         // the edit: view state, not undone
         expectE ("fix marks", [&] { e.fixIn = 1.0; e.fixOut = 2.0; e.fixTracks.push_back (q.tracks[0].id); }, false);
         expectE ("playhead", [&] { e.playheadSeconds = 3.0; }, false);
@@ -8398,6 +8409,254 @@ int main()
         CHECK (blocksSounding >= 20 && blocksSounding <= 32 && ! v.sounding());           // gone in about 0.3 s
         // back to the reed
         v.setKeyboard (false); CHECK (! v.isKeyboard());
+    }
+
+    SECTION ("2.102 undo keeps copies of the windows: a big edit's step is quick, and undo / redo put it back exactly");
+    {
+        Project q; q.setInputCount (4); q.setOutputCount (2); q.tracks.clear();
+        std::vector<juce::Uuid> ids; for (int t = 0; t < 8; ++t) ids.push_back (q.addTrack ("T" + juce::String (t), TrackFormat::Mono, t % 4).id);
+        auto& tw = q.addTakeWindow ("Piece");
+        auto& ed = q.addEdit ("Edit", tw.id); const auto edId = ed.id;
+        for (int r = 0; r < 300; ++r)
+        {
+            EditRegion rg; rg.id = juce::Uuid(); rg.windowId = tw.id; rg.takeId = juce::Uuid(); rg.takeName = "t"; rg.sampleRate = 48000.0;
+            rg.srcIn = 1000; rg.srcOut = 49000; rg.sourceLength = 96000;
+            for (auto& id : ids) { RegionFile f; f.trackId = id; f.trackName = "T"; f.file = tmp.getChildFile ("u" + juce::String (r) + ".wav"); rg.files.push_back (f); }
+            ed.insertRegion (rg);
+        }
+        q.undoReset();
+        const auto before = Project::undoHash (*q.findEdit (edId));
+        q.findEdit (edId)->regions[10].inEnd += 0.01; q.changed();
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        q.undoTick (false, true);
+        const auto ms = juce::Time::getMillisecondCounterHiRes() - t0;
+        std::printf ("   (the undo step of a 300-piece, 8-track edit: %.1f ms)\n", ms);
+        CHECK (q.undoDepth() == 1 && ms < 400.0);                       // (it used to turn the edit into text twice: about a second for a big one)
+        const auto after = Project::undoHash (*q.findEdit (edId));
+        CHECK (before != after);
+        CHECK (q.undo() && Project::undoHash (*q.findEdit (edId)) == before);
+        CHECK (q.redo() && Project::undoHash (*q.findEdit (edId)) == after);
+        // the copies are the windows as they were: changing the live edit afterwards does not change what undo puts back
+        q.findEdit (edId)->regions[20].startSample += 5; q.changed(); q.undoTick (false, true);
+        CHECK (q.undo() && Project::undoHash (*q.findEdit (edId)) == after);
+        CHECK (q.undo() && Project::undoHash (*q.findEdit (edId)) == before);
+    }
+
+    SECTION ("2.102 a save in two halves: the snapshot on the message thread, the writing on any thread; a failed write is saved again");
+    {
+        const auto dir = tmp.getChildFile ("twohalves"); dir.deleteRecursively(); dir.createDirectory();
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear();
+        const auto ta = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        q.projectFile = dir.getChildFile ("Halves.fermata"); q.name = "Halves";
+        auto& tw = q.addTakeWindow ("Piece"); const auto twId = tw.id;
+        { TakeGroup g; g.id = juce::Uuid(); g.number = 1; g.lengthSamples = 48000; g.sampleRate = 48000.0; TakeFile f; f.trackId = ta; f.trackName = "A"; f.file = dir.getChildFile ("Recorded Media/a.wav"); g.files.push_back (f); tw.groups.push_back (g); }
+        auto& ed = q.addEdit ("Edit", twId); const auto edId = ed.id;
+        { EditRegion r; r.id = juce::Uuid(); r.windowId = twId; r.takeId = tw.groups[0].id; r.takeName = "001"; r.sampleRate = 48000.0; r.srcIn = 0; r.srcOut = 24000; r.sourceLength = 48000;
+          RegionFile f; f.trackId = ta; f.trackName = "A"; f.file = dir.getChildFile ("Recorded Media/a.wav"); r.files.push_back (f); ed.insertRegion (r); }
+        juce::String err;
+        CHECK (q.save (err));                                                         // (save itself is the two halves, on one thread)
+        CHECK (dir.getChildFile ("Edit Windows/Edit.fmedit").existsAsFile() && dir.getChildFile ("Take Windows/Piece.fmtake").existsAsFile());
+        auto srcOutRead = [&] () -> juce::int64
+        {
+            Project r2; juce::String le;
+            if (! r2.load (q.projectFile, le)) return -1;
+            auto* re = r2.findEdit (edId);
+            return re != nullptr && re->regions.size() == 1 ? re->regions[0].srcOut : -2;
+        };
+        // a change: only that window is in the job, as it was at the snapshot, and it is written on another thread
+        q.findEdit (edId)->regions[0].srcOut = 30000; q.changed();
+        auto job = q.prepareSave (true);
+        CHECK (job != nullptr && ! q.dirty.load());
+        CHECK (job != nullptr && job->windows.size() == 1 && job->windows[0].edit != nullptr);
+        q.findEdit (edId)->regions[0].srcOut = 31000;                                  // (changed again after the snapshot)
+        bool ok = false; juce::String werr;
+        std::thread th ([&] { ok = job != nullptr && Project::writeSave (*job, werr); });
+        th.join();
+        CHECK (ok && werr.isEmpty());
+        CHECK (srcOutRead() == 30000);
+        // a write that fails: unsaved again, and that window is written again by the next save
+        auto job2 = q.prepareSave (true);
+        CHECK (job2 != nullptr && job2->windows.size() == 1);
+        if (job2 != nullptr)
+        {
+            for (auto& w : job2->windows) w.file = juce::File ("/proc/fermata-cannot-write/" + w.file.getFileName());
+            bool wf = false; juce::String e2;
+            CHECK (! Project::writeSave (*job2, e2, &wf) && wf && e2.isNotEmpty());
+            q.saveFailed (*job2);
+            CHECK (q.dirty.load());
+            auto job3 = q.prepareSave (true);
+            CHECK (job3 != nullptr && job3->windows.size() == 1);
+            CHECK (job3 != nullptr && Project::writeSave (*job3, e2));
+            CHECK (srcOutRead() == 31000);
+        }
+        auto job4 = q.prepareSave (true);                                              // nothing changed: only the project file to write
+        CHECK (job4 != nullptr && job4->windows.empty());
+    }
+
+    SECTION ("2.102 the background saver: jobs written in order on a thread of its own, their results taken in by drain()");
+    {
+        const auto dir = tmp.getChildFile ("bgsave"); dir.deleteRecursively(); dir.createDirectory();
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear();
+        const auto ta = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        q.projectFile = dir.getChildFile ("Bg.fermata"); q.name = "Bg";
+        auto& tw = q.addTakeWindow ("Piece");
+        auto& ed = q.addEdit ("Edit", tw.id); const auto edId = ed.id;
+        { EditRegion r; r.id = juce::Uuid(); r.windowId = tw.id; r.takeId = juce::Uuid(); r.takeName = "001"; r.sampleRate = 48000.0; r.srcIn = 0; r.srcOut = 24000; r.sourceLength = 48000;
+          RegionFile f; f.trackId = ta; f.trackName = "A"; f.file = dir.getChildFile ("a.wav"); r.files.push_back (f); ed.insertRegion (r); }
+        juce::String err; CHECK (q.save (err));
+        std::vector<int> order; std::atomic<int> wakes { 0 };
+        {
+            BackgroundSaver saver ([&] { ++wakes; });
+            q.findEdit (edId)->name = "First"; q.changed();
+            saver.write (q.prepareSave (true), [&] (BackgroundSaver::Result& r) { CHECK (r.ok); order.push_back (1); });
+            q.findEdit (edId)->name = "Second"; q.changed();
+            saver.write (q.prepareSave (true), [&] (BackgroundSaver::Result& r) { CHECK (r.ok); order.push_back (2); });
+            CHECK (saver.waitUntilIdle (10000) && ! saver.isBusy());
+            CHECK (saver.drain() == 2);
+            CHECK (order == std::vector<int> ({ 1, 2 }) && wakes.load() == 2 && saver.written() == 2);
+            CHECK (saver.drain() == 0);
+        }
+        CHECK (dir.getChildFile ("Edit Windows/Second.fmedit").existsAsFile());
+        CHECK (! dir.getChildFile ("Edit Windows/First.fmedit").existsAsFile() && ! dir.getChildFile ("Edit Windows/Edit.fmedit").existsAsFile());     // (renamed: the old files tidied away in turn)
+        Project r2; juce::String le; CHECK (r2.load (q.projectFile, le));
+        CHECK (r2.findEdit (edId) != nullptr && r2.findEdit (edId)->name == "Second");
+    }
+
+    SECTION ("2.102 a play that does not wait: silence, and the position held, until the first moments are read; then the sound");
+    {
+        const auto f = makeConstWav (tmp.getChildFile ("prime.wav"), 0.25, 3);
+        PlaySegment s; s.trackIndex = 0; s.file = f; s.rate = 48000.0; s.begin = 0; s.end = 3 * 48000;
+        auto ps = std::make_unique<PlaybackSession> (std::vector<int> { 1 }, std::vector<PlaySegment> { s }, 0, 3 * 48000, 48000.0, 512);
+        CHECK (ps->open().isEmpty());
+        ps->start (false);
+        int silentBlocks = 0; bool heard = false;
+        for (int k = 0; k < 4000 && ! heard; ++k)
+        {
+            ps->pull (512);
+            const float v = ps->trackBuffer (0).getSample (0, 511);
+            if (! ps->isPrimed()) { CHECK (ps->getPosition() == 0 && v == 0.0f); ++silentBlocks; juce::Thread::sleep (1); }
+            else heard = std::abs (v - 0.25f) < 0.01f;
+        }
+        CHECK (heard && ps->isPrimed() && ps->msToFirstSound() > 0.0);
+        CHECK (ps->getPosition() > 0 && ps->getUnderruns() == 0);
+        std::printf ("   (first sound after %.1f ms, %d silent blocks before it)\n", ps->msToFirstSound(), silentBlocks);
+        // the files are asked about for the first few seconds only: one that has gone further on does not stop the play
+        PlaySegment far = s; far.file = tmp.getChildFile ("gone-for-good.wav"); far.begin = 10 * 48000; far.end = 11 * 48000; far.srcOffset = -10 * 48000;
+        PlaySegment soon = far; soon.begin = 48000; soon.end = 2 * 48000; soon.srcOffset = -48000;
+        { auto p2 = std::make_unique<PlaybackSession> (std::vector<int> { 1 }, std::vector<PlaySegment> { s, far }, 0, 12 * 48000, 48000.0, 512); CHECK (p2->open().isEmpty()); }
+        { auto p3 = std::make_unique<PlaybackSession> (std::vector<int> { 1 }, std::vector<PlaySegment> { s, soon }, 0, 12 * 48000, 48000.0, 512); CHECK (p3->open().startsWith ("Cannot read")); }
+    }
+
+    SECTION ("2.102 Stop hands the play to a thread of its own, which frees it once the audio thread has left it");
+    {
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear();
+        q.addTrack ("A", TrackFormat::Mono, 0);
+        AudioEngine e (q);
+        e.setMixerThreads (0); e.prepare (48000.0, 64); e.rebuildPlan();
+        const auto f = makeConstWav (tmp.getChildFile ("retire.wav"), 0.1, 2);
+        PlaySegment s; s.trackIndex = 0; s.file = f; s.rate = 48000.0; s.begin = 0; s.end = 2 * 48000;
+        auto session = [&] { return std::make_unique<PlaybackSession> (std::vector<int> { 1 }, std::vector<PlaySegment> { s }, 0, 2 * 48000, 48000.0, 64); };
+        e.setRunningForTests (true);
+        CHECK (e.startPlayback (session(), false).isEmpty() && e.isPlaying());
+        const auto t0 = juce::Time::getMillisecondCounterHiRes();
+        e.stopPlayback (true);                                                          // (a press of Space or Stop)
+        const auto stopMs = juce::Time::getMillisecondCounterHiRes() - t0;
+        CHECK (! e.isPlaying() && e.sessionsWaitingToBeFreed() == 1);
+        CHECK (stopMs < 50.0);                                                          // (it no longer waits for the audio thread, nor for the reader to stop)
+        e.setRunningForTests (false);                                                   // (as if the device stopped: nothing can be reading it now)
+        for (int k = 0; k < 400 && e.sessionsWaitingToBeFreed() > 0; ++k) juce::Thread::sleep (5);
+        CHECK (e.sessionsWaitingToBeFreed() == 0 && e.audioThreadNeverStalled());
+        // any other Stop does it all itself, as before, and waits for what a transport press handed off: its files are closed when it returns
+        CHECK (e.startPlayback (session()).isEmpty());
+        e.stopPlayback();
+        CHECK (! e.isPlaying() && e.sessionsWaitingToBeFreed() == 0);
+        e.setRunningForTests (true);
+        CHECK (e.startPlayback (session(), false).isEmpty());
+        e.stopPlayback (true);
+        CHECK (e.sessionsWaitingToBeFreed() == 1);
+        std::thread blocks ([&] { juce::Thread::sleep (30); e.setRunningForTests (false); });      // (the audio thread moves on a moment later)
+        e.stopPlayback();                                                               // (nothing plays: it waits for the one handed off)
+        CHECK (e.sessionsWaitingToBeFreed() == 0);
+        blocks.join();
+    }
+
+    SECTION ("2.102 the edit's visual guide: saved and read back, part of undo (Show is not), never in the edit's play or length; played alone by segmentsForGuide");
+    {
+        const auto dir = tmp.getChildFile ("guide"); dir.deleteRecursively(); dir.createDirectory();
+        Project q; q.setInputCount (4); q.setOutputCount (2); q.tracks.clear();
+        const auto spot = q.addTrack ("SPOT1", TrackFormat::Mono, 0).id;
+        const auto ortf = q.addTrack ("ORTF", TrackFormat::Stereo, 1).id;
+        q.projectFile = dir.getChildFile ("Guide.fermata"); q.name = "Guide";
+        auto& tw = q.addTakeWindow ("Piece"); const auto twId = tw.id;
+        auto& ed = q.addEdit ("Edit", twId); const auto edId = ed.id;
+        { EditRegion r; r.id = juce::Uuid(); r.windowId = twId; r.takeId = juce::Uuid(); r.takeName = "002"; r.sampleRate = 48000.0; r.srcIn = 0; r.srcOut = 48000 * 10; r.sourceLength = 48000 * 20;
+          RegionFile f; f.trackId = spot; f.trackName = "SPOT1"; f.file = dir.getChildFile ("Recorded Media/002 - SPOT1.wav"); r.files.push_back (f); ed.insertRegion (r); }
+        const auto lenBefore = ed.lengthSamples();
+        EditGuide gd; gd.windowId = twId; gd.takeId = juce::Uuid(); gd.trackId = ortf; gd.takeName = "001"; gd.trackName = "ORTF";
+        gd.file = dir.getChildFile ("Recorded Media/001 - ORTF.wav"); gd.numChannels = 2; gd.sampleRate = 48000.0; gd.srcIn = 48000; gd.srcOut = 48000 * 31; gd.start = -48000 * 3;
+        q.undoReset();
+        q.findEdit (edId)->guide = gd; q.changed(); q.undoTick (false, true);
+        auto* e = q.findEdit (edId);
+        CHECK (e->guide.active() && e->lengthSamples() == lenBefore);                    // a picture: the edit is no longer for it
+        for (auto& sg : segmentsForEdit (q, *e)) CHECK (sg.file != gd.file);            // and it never plays with the edit
+        auto gs = segmentsForGuide (q, *e);                                              // on its own: one segment, on its track, nothing before 0:00
+        CHECK (gs.size() == 1);
+        if (gs.size() == 1)
+        {
+            CHECK (gs[0].trackIndex == 1 && gs[0].file == gd.file && gs[0].begin == 0 && gs[0].end == gd.start + (gd.srcOut - gd.srcIn));
+            CHECK (gs[0].srcOffset == 48000 * 4);                                        // (timeline 0 is 3 s into the guide, which starts 1 s into the file)
+        }
+        e->showGuide = false;
+        juce::String err; CHECK (q.save (err));
+        {
+            Project r; juce::String le; CHECK (r.load (q.projectFile, le));
+            auto* re = r.findEdit (edId);
+            CHECK (re != nullptr && re->guide.active() && ! re->showGuide);
+            if (re != nullptr)
+            {
+                const auto& g2 = re->guide;
+                CHECK (g2.file == gd.file && g2.trackId == ortf && g2.takeName == "001" && g2.trackName == "ORTF" && g2.numChannels == 2 && g2.sampleRate == 48000.0);
+                CHECK (g2.srcIn == gd.srcIn && g2.srcOut == gd.srcOut && g2.start == gd.start && g2.windowId == twId && g2.takeId == gd.takeId);
+            }
+        }
+        // a missing guide file is counted and listed with the other missing audio (and found again by a relink like them)
+        {
+            CHECK (q.missingAudioCount() == 2);                                          // (the piece's file and the guide's: neither is on the disk here)
+            const auto list = q.missingAudioList (10);
+            CHECK (list.size() == 2 && list.joinIntoString ("|").contains ("visual guide"));
+        }
+        // part of undo: sliding it is a step; showing or hiding it is not
+        const int depth = q.undoDepth();
+        e->showGuide = true; q.changed(); q.undoTick (false, true);
+        CHECK (q.undoDepth() == depth);
+        e->guide.start = 48000 * 2; q.changed(); q.undoTick (false, true);
+        CHECK (q.undoDepth() == depth + 1);
+        CHECK (q.undo() && q.findEdit (edId)->guide.start == gd.start && q.findEdit (edId)->showGuide);
+        CHECK (q.undo() && ! q.findEdit (edId)->guide.active());                         // (before it was set)
+        CHECK (q.redo() && q.findEdit (edId)->guide.active());
+        // its track gone: the track with its name, or failing that the first with as many channels
+        e = q.findEdit (edId);
+        CHECK (guideTrackIndex (q, e->guide) == 1);
+        e->guide.trackId = juce::Uuid(); CHECK (guideTrackIndex (q, e->guide) == 1);
+        e->guide.trackName = "Gone"; CHECK (guideTrackIndex (q, e->guide) == 1);
+        e->guide.numChannels = 6; CHECK (guideTrackIndex (q, e->guide) == -1 && segmentsForGuide (q, *e).empty());
+    }
+
+    SECTION ("2.102 a window never takes a file another window has, so a save never tidies away a file it has just written");
+    {
+        const auto dir = tmp.getChildFile ("ownedpaths"); dir.deleteRecursively(); dir.createDirectory();
+        Project q; q.setInputCount (2); q.setOutputCount (2);
+        q.projectFile = dir.getChildFile ("Owned.fermata"); q.name = "Owned";
+        auto& a = q.addTakeWindow ("P"); auto& b = q.addTakeWindow ("Q");
+        const auto aId = a.id, bId = b.id;
+        juce::String err; CHECK (q.save (err));
+        CHECK (dir.getChildFile ("Take Windows/P.fmtake").existsAsFile() && dir.getChildFile ("Take Windows/Q.fmtake").existsAsFile());
+        dir.getChildFile ("Take Windows/P.fmtake").deleteFile();                          // (not on the disk just now: as if a save still to be written held it)
+        q.findTakeWindow (aId)->name = "R"; q.findTakeWindow (bId)->name = "P"; q.changed();
+        CHECK (q.save (err));
+        Project r; juce::String le; CHECK (r.load (q.projectFile, le));
+        CHECK (r.loadNotes.isEmpty());                                                     // every window file the project lists is there
+        CHECK (r.findTakeWindow (aId) != nullptr && r.findTakeWindow (aId)->name == "R" && r.findTakeWindow (bId) != nullptr && r.findTakeWindow (bId)->name == "P");
     }
 
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

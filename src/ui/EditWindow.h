@@ -28,6 +28,10 @@ public:
     void goToSeconds (double seconds) { goTo (seconds); }       // (the timeline's feedback flags use it)
     void removeTracks (const std::vector<juce::Uuid>& ids) { for (auto& t : ids) removeTrackFromEdit (t); }   // (the timeline's name menu)
     void filesDropped (const juce::StringArray& files, int x, int y) override;
+    /** Plays from 'from' (to 'to', looping: as AppContext::playEdit) - the edit, or the visual guide on its own while the guide's S is on. */
+    juce::String play (double from, double to = -1.0, bool loop = false, bool goOn = false);
+    /** Playing this edit: starts again from where it is now (the guide's S was switched). */
+    void replayFromPlayhead();
 
 private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
@@ -58,6 +62,7 @@ private:
     void removeTrackFromEdit (const juce::Uuid& trackId);
     /** If the edit's audio belongs to tracks that are no longer in the project (so there is no mixer strip for them) asks whether to add them back. */
     void checkMixerStrips();
+    void refreshGuideButton();                    // the Guide button: lit when the guide is shown, dim when the edit has none
 
     bool stripAskOpen = false, skipStripAsk = false;     // the "more tracks than strips" question is open / was answered No (not asked again at every Play)
     AppContext& app;
@@ -72,7 +77,7 @@ private:
                pitchButton { "Pitch..." }, repairButton { "Repair & DeClick..." }, reharmoniserButton { "ReHarmoniSer..." }, undoFixButton { "Undo fix" }, tracksButton { "Tracks..." }, feedbackButton { "Feedback..." },
                endButton { "Next goes at end" }, exportProcButton { "Export for Processing..." }, importButton { "Import..." }, alignButton { "Align spot mics" }, roomToneButton { "Room tone" }, noiseModeButton { "Noise mode" },
                slipLeftToggle { "Slip Left" }, slipRightToggle { "Slip Right" }, shuffleToggle { "Shuffle" }, insertFlagToggle { "Insert flag" }, markersToggle { "Markers" }, feedbackToggle { "Feedback markers" };
-    juce::TextButton zoomInButton { "+" }, zoomOutButton { "-" }, ltcButton { juce::String::fromUTF8 ("\xE2\x96\xB6 LTC") };
+    juce::TextButton zoomInButton { "+" }, zoomOutButton { "-" }, ltcButton { juce::String::fromUTF8 ("\xE2\x96\xB6 LTC") }, guideToggle { "Guide" };
     LoopButton loopToggle;
     PlayheadModeButton playheadMode;
     RainbowButton waveColourBtn;

@@ -226,6 +226,25 @@ struct EditRegion
     }
 };
 
+/** The edit window's visual guide (2.102): one track's clip of a take - or the part of it between the take window's 1 and 2 - shown in a lane of
+    its own above the edit's tracks, so the timing of a reference (typically the run-through recorded at the start of the session) can be seen
+    against the edit: how long the gaps between the phrases were. It is only a picture: it never plays with the edit and is never bounced or
+    mastered, and it never makes the edit longer. Its S button plays it on its own instead of the edit (AppContext::playEditGuide). It can be slid
+    anywhere along the timeline, also to start before 0:00 (that part is simply not shown). */
+struct EditGuide
+{
+    juce::Uuid   windowId, takeId, trackId;  // where it came from: the take window, the take, the track whose clip it is
+    juce::String takeName, trackName;        // for its label ("Take 3", "ORTF")
+    juce::File   file;                       // the clip's audio file (mono, or a stereo pair)
+    int          numChannels = 1;
+    double       sampleRate = 0.0;
+    juce::int64  srcIn = 0, srcOut = 0;      // the part of the file it shows (samples)
+    juce::int64  start = 0;                  // where srcIn stands on the edit's timeline (samples at sampleRate; may be negative)
+    bool active() const noexcept           { return file != juce::File() && srcOut > srcIn && sampleRate > 0.0; }
+    juce::int64 length() const noexcept    { return srcOut - srcIn; }
+    juce::int64 end() const noexcept       { return start + length(); }
+};
+
 /** The edit: regions placed on a timeline. Normally butted end to end; slipping can open gaps / overlaps. */
 struct EditDef
 {
@@ -248,6 +267,8 @@ struct EditDef
     std::vector<FeedbackNote> feedback;         // listeners' comments (Include Feedback Form / imported marker lists), drawn as flags on this edit window (not part of undo)
     bool                 showFeedback = true;
     bool                 showMarkers = true;          // the Markers tick box in the edit window
+    EditGuide            guide;                       // the visual guide above the tracks (see EditGuide); part of undo
+    bool                 showGuide = true;            // the Guide button at the top of the edit window: the guide's lane is shown (a view: not part of undo)
     bool                 automationOn = false;       // the lane view: the automation rows are shown (the buses and VCAs are listed under the tracks). The automation itself plays whether they are shown or not.
     std::vector<AutoLane> lanes;
 

@@ -8,6 +8,68 @@
 
 namespace td
 {
+/** Frees playback sessions that have been stopped (2.102). A session can only be freed once the audio thread has certainly left it (two blocks
+    later), and freeing it means stopping its disk reader - which may be in the middle of opening or reading a file - and handing back its
+    buffers. At every Stop that used to be done on the message thread, waiting for all of it; now Stop takes the session out of the audio thread's
+    hands and gives it to this thread, which does the waiting. If the audio thread stops coming round altogether (a driver that hangs), the session
+    is left alone rather than freed under it, as before (see audioThreadNeverStalled). */
+struct AudioEngine::Retirer : juce::Thread
+{
+    Retirer (const std::atomic<juce::uint64>& blocks, const std::atomic<bool>& isRunning, std::atomic<bool>& stallFlag)
+        : juce::Thread ("Playback tidy-up"), blockCounter (blocks), running (isRunning), neverStalled (stallFlag) {}
+    ~Retirer() override
+    {
+        signalThreadShouldExit(); notify(); stopThread (10000);
+        tidy (true);
+    }
+    void add (std::unique_ptr<PlaybackSession> s)
+    {
+        { const juce::ScopedLock sl (lock); items.push_back ({ std::move (s), blockCounter.load(), juce::Time::getMillisecondCounter() }); }
+        if (! isThreadRunning()) startThread (juce::Thread::Priority::low);
+        notify();
+    }
+    int waiting() const { const juce::ScopedLock sl (lock); return (int) items.size(); }
+
+private:
+    struct Item { std::unique_ptr<PlaybackSession> session; juce::uint64 block0 = 0; juce::uint32 since = 0; };
+    void run() override
+    {
+        while (! threadShouldExit())
+        {
+            tidy (false);
+            wait (waiting() == 0 ? -1 : 2);
+        }
+    }
+    void tidy (bool closing)
+    {
+        std::vector<std::unique_ptr<PlaybackSession>> done;
+        {
+            const juce::ScopedLock sl (lock);
+            for (size_t i = 0; i < items.size();)
+            {
+                auto& it = items[i];
+                const bool left = blockCounter.load() >= it.block0 + 2 || ! running.load();
+                if (left) { done.push_back (std::move (it.session)); items.erase (items.begin() + (std::ptrdiff_t) i); continue; }
+                if (closing || juce::Time::getMillisecondCounter() - it.since > 5000)
+                {
+                    (void) it.session.release();             // the audio thread has not come round for 5 s: never free what it may still be reading
+                    neverStalled.store (false, std::memory_order_relaxed);
+                    juce::Logger::writeToLog ("Playback: the audio thread did not come round after Stop - the stopped play's memory is left alone");
+                    items.erase (items.begin() + (std::ptrdiff_t) i);
+                    continue;
+                }
+                ++i;
+            }
+        }
+        done.clear();                                        // (stops each reader and frees its buffers, outside the lock)
+    }
+    const std::atomic<juce::uint64>& blockCounter;
+    const std::atomic<bool>& running;
+    std::atomic<bool>& neverStalled;
+    juce::CriticalSection lock;
+    std::vector<Item> items;
+};
+
 AudioEngine::AudioEngine (Project& p) : project (p)
 {
     for (auto& x : inputPeak) x.store (0.0f);
@@ -37,6 +99,7 @@ AudioEngine::~AudioEngine()
     ringBuilder.stopThread (4000);
     stopPlayback();
     running = false;
+    retirer.reset();                                 // (the sessions it still holds are freed: nothing plays any more)
     delete plan.exchange (nullptr);
     delete preRollPtr.exchange (nullptr);
     writerThread.stopThread (3000);
@@ -1315,7 +1378,21 @@ void AudioEngine::processMixer (const Plan& pl, MixerPlan& mp, const float* cons
 }
 
 // ------------------------------------------------------------------ playback
-juce::String AudioEngine::startPlayback (std::unique_ptr<PlaybackSession> s)
+int AudioEngine::sessionsWaitingToBeFreed() const { return retirer != nullptr ? retirer->waiting() : 0; }
+
+bool AudioEngine::waitForStoppedPlays (int ms)
+{
+    if (retirer == nullptr) return true;
+    const auto until = juce::Time::getMillisecondCounter() + (juce::uint32) juce::jmax (0, ms);
+    while (retirer->waiting() > 0)
+    {
+        if (juce::Time::getMillisecondCounter() >= until) return false;
+        juce::Thread::sleep (1);
+    }
+    return true;
+}
+
+juce::String AudioEngine::startPlayback (std::unique_ptr<PlaybackSession> s, bool waitForPreload)
 {
     if (isRecording()) return "Stop recording before playing back";
     if (zeros.empty()) return "The audio device has not been started";
@@ -1338,22 +1415,31 @@ juce::String AudioEngine::startPlayback (std::unique_ptr<PlaybackSession> s)
                                               + pr->getName() + " / " + pr->paramName (it.paramIndex) + " set to " + juce::String (it.lastSent, 3)
                                               + (it.steps >= 2 ? " (" + juce::String (it.steps) + " positions)" : juce::String()));
     }
-    s->start();
+    s->start (waitForPreload);
     playSession = std::move (s);
     playback.store (playSession.get(), std::memory_order_release);
     return {};
 }
 
-void AudioEngine::stopPlayback()
+void AudioEngine::stopPlayback (bool handOff)
 {
-    if (playSession == nullptr) return;
+    if (playSession == nullptr) { if (! handOff && ! destroying) waitForStoppedPlays (3000); return; }
     playback.store (nullptr, std::memory_order_release);
+    if (handOff && playSession->automation == nullptr && running.load() && ! destroying)
+    {
+        // a transport press: nothing to put back on this thread (automation hands its controls back here, once the audio thread has left it),
+        // so the rest is the tidy-up thread's (see Retirer)
+        if (retirer == nullptr) retirer = std::make_unique<Retirer> (blockCounter, running, neverStalled);
+        retirer->add (std::move (playSession));
+        return;
+    }
     const bool left = waitForAudioThread();
     bool replan = false;
     if (playSession->automation != nullptr) replan = playSession->automation->end();      // the VCAs go back to their own faders; held sends leave the plan
     if (left) playSession.reset();
     else (void) playSession.release();               // the audio thread stalled: do not free what it may still be reading
     if (replan && ! destroying) rebuildPlan();
+    if (! destroying) waitForStoppedPlays (3000);    // (and what a transport press handed off before: no file that played is open any more)
 }
 
 // ------------------------------------------------------------------ recording

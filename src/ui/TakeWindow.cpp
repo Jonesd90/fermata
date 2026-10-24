@@ -232,6 +232,7 @@ public:
         the picture is painted once where it is, then the band is painted again over the top of the visible part. */
     void paint (juce::Graphics& g) override
     {
+        BusyLabel busyLabel ("drawing a take window");
         const auto tPaint0 = paintprof::enabled() ? juce::Time::getMillisecondCounterHiRes() : 0.0;
         headerPass = false;
         paintAll (g);
@@ -695,14 +696,30 @@ public:
                 pm.addItem (3, bg->roomTone && bg->roomToneIn < 0.0 ? "This whole take is the room tone  (marked)" : "This whole take is the room tone", true, bg->roomTone && bg->roomToneIn < 0.0);
                 pm.addItem (4, "Marks 1 - 2 of this take are the room tone" + (marksHere ? "  (" + juce::String (w->editIn, 1) + " - " + juce::String (w->editOut, 1) + " s)" : juce::String ("  (set marks 1 / 2 in it first)")), marksHere, bg->roomTone && bg->roomToneIn >= 0.0);
                 if (bg->roomTone) pm.addItem (5, "Not the room tone");
+                // the edit window's visual guide (2.102): this track's clip - marks 1 - 2 of it when they are set in this take
+                bool hasClip = false; juce::String clipTrack;
+                for (auto& f : bg->files) if (f.trackId == tid) { hasClip = true; clipTrack = f.trackName; }
+                if (auto* t = app.project.findTrack (tid)) clipTrack = t->name;
+                pm.addSeparator();
+                pm.addItem (6, "Use as edit window visual guide track  (" + (hasClip ? clipTrack + (marksHere ? ", marks 1 - 2" : ", the whole take") : juce::String ("right-click a track's clip")) + ")", hasClip);
                 const auto gid = bg->id; const auto pos = e.getPosition();
                 juce::Component::SafePointer<juce::Component> self (this);
-                pm.showMenuAsync (juce::PopupMenu::Options(), [this, self, files, gid, pos] (int r)
+                pm.showMenuAsync (juce::PopupMenu::Options(), [this, self, files, gid, pos, tid] (int r)
                 {
                     if (self == nullptr) return;
                     if (r == 1) app.redrawWaveforms (files);
                     else if (r == 2) showBars (gid, pos);
                     else if (r >= 3 && r <= 5) markRoomTone (gid, r);
+                    else if (r == 6)
+                    {
+                        juce::Uuid eid;
+                        const auto err = app.setEditGuide (windowId, gid, tid, &eid);
+                        if (err.isNotEmpty()) { showError ("Visual guide", err); return; }
+                        if (app.showEditBehind) app.showEditBehind (eid, this);
+                        juce::String where = "the edit";
+                        if (auto* ed = app.project.findEdit (eid)) where = "\"" + ed->name + "\"";
+                        app.setNotice ("The guide is in " + where + ", above its tracks: drag it sideways to line it up; its S plays it on its own.");
+                    }
                 });
                 return;
             }
@@ -1555,6 +1572,7 @@ private:
     void changeListenerCallback (juce::ChangeBroadcaster* source) override
     {
         if (source != &app.project) { thumbsChanged = true; return; }      // a waveform was read a bit further: shown at the next tick (see timerCallback)
+        BusyLabel busyLabel ("updating a take window after a change");
         const auto t0 = paintprof::enabled() ? juce::Time::getMillisecondCounterHiRes() : 0.0;
         paintprof::Scope prof ("take timeline change", "save thumbnails");
         saver.saveFinished (thumbs, wavesFolder());
@@ -2064,7 +2082,7 @@ void TakeWindowComponent::sendToEdit (bool atEditPlayhead, bool insert)
 
 void TakeWindowComponent::togglePlay()
 {
-    if (app.isPlaying()) { app.stopPlayback(); return; }
+    if (app.isPlaying()) { app.stopPlayback (true); return; }
     auto* w = def();
     if (w == nullptr) return;
     if (loopToggle.getToggleState())                                    // loop on and an area marked: go round it

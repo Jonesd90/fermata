@@ -17,7 +17,8 @@ PlaybackSession::PlaybackSession (std::vector<int> counts, std::vector<PlaySegme
     for (int c : channelCounts)
     {
         const int ch = juce::jlimit (1, kMaxTrackChannels, c);
-        ring.emplace_back ((size_t) ch, std::vector<float> ((size_t) kRing, 0.0f));
+        ring.emplace_back();
+        for (int k = 0; k < ch; ++k) ring.back().emplace_back ((size_t) kRing);
         chunk.emplace_back (ch, 8192);
         trackBuf.emplace_back (ch, maxBlock);
         chunk.back().clear(); trackBuf.back().clear();
@@ -53,28 +54,46 @@ PlaybackSession::Opener PlaybackSession::makeOpener (juce::AudioFormatManager& f
 juce::String PlaybackSession::open()
 {
     // Nothing is opened yet: the files are opened by the disk thread as the play reaches them, and closed again once it has passed them (an edit of
-    // thousands of pieces used to open every file here, each with a read buffer, before the first sound). What is checked now, without the disk
-    // being asked about the audio: that every file is there, and that its sample rate (as the project recorded it) is the device's.
+    // thousands of pieces used to open every file here, each with a read buffer, before the first sound). What is checked now: the sample rate of
+    // every file as the project recorded it (no disk), and that the files of the first few seconds are there. An edit with thousands of pieces used
+    // to ask the disk about every one of its files - a quarter of a second at every press of Play. A file further on that has gone is found by
+    // the reader when it gets there: that part is silent, and the log says which file.
     readers.clear(); readers.resize (segments.size());
+    const juce::int64 checkTo = startPos + (juce::int64) std::llround (3.0 * sampleRate);
     std::set<juce::String> seen;
     for (auto& s : segments)
     {
         if (s.rate > 0.0 && std::abs (s.rate - sampleRate) > 0.5)
             return s.file.getFileName() + " is " + juce::String (s.rate, 0) + " Hz but the audio device is running at " + juce::String (sampleRate, 0) + " Hz";
-        if (seen.insert (s.file.getFullPathName()).second && ! s.file.existsAsFile()) return "Cannot read " + s.file.getFullPathName();
+        if (s.begin < checkTo && s.end > startPos && seen.insert (s.file.getFullPathName()).second && ! s.file.existsAsFile())
+            return "Cannot read " + s.file.getFullPathName();
     }
     const int bufBytes = bufferBytesFor (channelCounts.size() * 3);      // (about three files per track are open at a time: a piece, the next one, a crossfade)
-    opener = makeOpener (formats, bufBytes, sampleRate, nullptr);
+    auto inner = makeOpener (formats, bufBytes, sampleRate, nullptr);
+    opener = [this, inner] (const PlaySegment& s) -> std::unique_ptr<juce::AudioFormatReader>
+    {
+        auto r = inner (s);
+        if (r == nullptr && unreadable.insert (s.file.getFullPathName()).second)
+            juce::Logger::writeToLog ("Playback: cannot read " + s.file.getFullPathName() + " (that part plays silent)");
+        return r;
+    };
     return {};
 }
 
-void PlaybackSession::start()
+void PlaybackSession::start (bool waitForPreload)
 {
+    // a loop keeps less in hand (see run()), so it needs less to start; otherwise about a third of a second (the reader carries on filling the
+    // ring - several seconds - while it plays)
+    primeTarget = looping.load() ? 16384 : (int) juce::jlimit ((juce::int64) 16384, (juce::int64) (kRing / 2), (juce::int64) std::llround (0.35 * sampleRate));
+    startedMs = juce::Time::getMillisecondCounterHiRes();
+    primed.store (waitForPreload, std::memory_order_release);
     startThread (juce::Thread::Priority::high);          // (on the ordinary cores, like the disk writer: it reads seconds ahead, so the reserved cores are left to the callback and the mixer helpers)
+    if (! waitForPreload) return;
     const auto deadline = juce::Time::getMillisecondCounter() + 3000;
-    const int preload = looping.load() ? 16384 : kRing / 2;                // a loop keeps less in hand (see run()), so it needs less to start
+    const int preload = looping.load() ? 16384 : kRing / 2;
     while (! renderDone.load() && fifo.getNumReady() < preload && juce::Time::getMillisecondCounter() < deadline)
         juce::Thread::sleep (5);
+    firstSoundMs.store (juce::jmax (0.001, juce::Time::getMillisecondCounterHiRes() - startedMs));
 }
 
 void PlaybackSession::run()
@@ -150,8 +169,8 @@ void PlaybackSession::run()
         for (size_t t = 0; t < ring.size(); ++t)
             for (size_t c = 0; c < ring[t].size(); ++c)
             {
-                if (z1 > 0) juce::FloatVectorOperations::copy (ring[t][c].data() + s1, chunk[t].getReadPointer ((int) c), z1);
-                if (z2 > 0) juce::FloatVectorOperations::copy (ring[t][c].data() + s2, chunk[t].getReadPointer ((int) c) + z1, z2);
+                if (z1 > 0) juce::FloatVectorOperations::copy (ring[t][c].get() + s1, chunk[t].getReadPointer ((int) c), z1);
+                if (z2 > 0) juce::FloatVectorOperations::copy (ring[t][c].get() + s2, chunk[t].getReadPointer ((int) c) + z1, z2);
             }
         fifo.finishedWrite (z1 + z2);
         renderPos += z1 + z2;
@@ -169,7 +188,7 @@ int PlaybackSession::readRing (int offset, int n) noexcept
         auto& dst = trackBuf[t];
         for (int c = 0; c < dst.getNumChannels(); ++c)
         {
-            const float* src = ring[t][(size_t) c].data();
+            const float* src = ring[t][(size_t) c].get();
             if (z1 > 0) dst.copyFrom (c, offset, src + s1, z1);
             if (z2 > 0) dst.copyFrom (c, offset + z1, src + s2, z2);
         }
@@ -182,6 +201,27 @@ int PlaybackSession::readRing (int offset, int n) noexcept
 void PlaybackSession::pull (int n) noexcept
 {
     n = juce::jmin (n, maxBlock);
+    if (! primed.load (std::memory_order_acquire))
+    {
+        // a start that did not wait: silence, at the start, until the reader has the first moments ready (or it gives up waiting after 3 s and
+        // plays what there is)
+        if (renderDone.load() || fifo.getNumReady() >= primeTarget || primingWaited >= (juce::int64) (3.0 * sampleRate))
+        {
+            firstSoundMs.store (juce::jmax (0.001, juce::Time::getMillisecondCounterHiRes() - startedMs));
+            primed.store (true, std::memory_order_release);
+        }
+        else
+        {
+            primingWaited += n;
+            for (auto& dst : trackBuf) dst.clear (0, n);
+            clockSeq.fetch_add (1, std::memory_order_acq_rel);
+            clockPos.store (position.load(), std::memory_order_relaxed);
+            clockMs.store (juce::Time::getMillisecondCounterHiRes(), std::memory_order_relaxed);
+            clockBlock.store (0, std::memory_order_relaxed);                   // (the playhead does not glide on meanwhile)
+            clockSeq.fetch_add (1, std::memory_order_release);
+            return;
+        }
+    }
     int got = 0;
     while (got < n)
     {
@@ -327,6 +367,34 @@ std::vector<PlaySegment> segmentsForTake (const Project& p, const TakeGroup& g, 
         if (outLen > 0) { s.fadeOutLen = juce::jmin (outLen, g.lengthSamples / 2); s.fadeOutStart = s.end - s.fadeOutLen; }
         v.push_back (s);
     }
+    return v;
+}
+
+int guideTrackIndex (const Project& p, const EditGuide& gd)
+{
+    if (const int ti = trackIndexOf (p, gd.trackId); ti >= 0 && p.tracks[(size_t) ti].channelCount() == gd.numChannels) return ti;
+    for (size_t i = 0; i < p.tracks.size(); ++i)                        // its own track has gone: one of the same name, then any with as many channels
+        if (p.tracks[i].name.equalsIgnoreCase (gd.trackName) && p.tracks[i].channelCount() == gd.numChannels) return (int) i;
+    for (size_t i = 0; i < p.tracks.size(); ++i)
+        if (p.tracks[i].channelCount() == gd.numChannels && ! p.tracks[i].isLtc) return (int) i;
+    return -1;
+}
+
+std::vector<PlaySegment> segmentsForGuide (const Project& p, const EditDef& e)
+{
+    std::vector<PlaySegment> v;
+    const auto& gd = e.guide;
+    if (! gd.active()) return v;
+    const int ti = guideTrackIndex (p, gd);
+    if (ti < 0) return v;
+    PlaySegment s;
+    s.trackIndex = ti; s.file = gd.file; s.rate = gd.sampleRate;
+    s.srcOffset = gd.srcIn - gd.start;                                  // file sample = timeline sample + srcOffset
+    s.begin = juce::jmax ((juce::int64) 0, gd.start); s.end = gd.end();
+    if (s.end <= s.begin) return v;
+    const auto fade = juce::jmin ((s.end - s.begin) / 2, (juce::int64) std::llround (0.005 * gd.sampleRate));     // (5 ms in and out: the guide's ends never click)
+    if (fade > 0) { s.fadeInStart = s.begin; s.fadeInLen = fade; s.fadeOutStart = s.end - fade; s.fadeOutLen = fade; }
+    v.push_back (s);
     return v;
 }
 

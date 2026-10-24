@@ -14,6 +14,7 @@ public:
 
     void paint (juce::Graphics& g) override
     {
+        BusyLabel busyLabel ("drawing the trim window");
         g.fillAll (theme::wave);
         const auto rf = owner.refs();
         if (! rf.ok())

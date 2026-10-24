@@ -119,9 +119,18 @@ public:
     bool isSessionMode() const noexcept   { return sessionMode.load(); }
 
     // --- playback (the mixers are fed from disk instead of the live inputs while this plays) ---
-    /** Takes over the session and starts it. Returns an error message, or an empty string. */
-    juce::String startPlayback (std::unique_ptr<PlaybackSession>);
-    void stopPlayback();
+    /** Takes over the session and starts it. Returns an error message, or an empty string. waitForPreload: see PlaybackSession::start (the
+        program's own Play buttons pass false: the screen is never held up while the first moments are read). */
+    juce::String startPlayback (std::unique_ptr<PlaybackSession>, bool waitForPreload = true);
+    /** Stops what plays. handOff (a press of Space or Stop, 2.102): a session without automation is given to a thread of its own, which frees
+        it once the audio thread has left it, and this returns at once - its files stay open a few milliseconds longer. Otherwise (the default)
+        everything is done here, as it always was, and the sessions handed off earlier are waited for too: when it returns, no file that was
+        playing is open any more (a process window deletes its preview files straight after). */
+    void stopPlayback (bool handOff = false);
+    /** Waits (at most ms) until the sessions handed off by Stop have been freed, their files closed. True when none is left. */
+    bool waitForStoppedPlays (int ms);
+    /** Stopped sessions still waiting to be freed by that thread (the tests). */
+    int sessionsWaitingToBeFreed() const;
     /** Turns looping of the running playback on or off (off: it plays on to its end). */
     void setPlaybackLooping (bool on) noexcept { if (auto* p = playback.load()) p->setLooping (on); }
     /** The take / edit window's Loop switched off while it plays: the sound carries straight on past mark 2 (see PlaybackSession::releaseLoop). */
@@ -139,6 +148,8 @@ public:
     /** The same, moving on smoothly between audio blocks: for drawing the playhead. */
     double playbackSecondsSmooth() const noexcept { auto* p = playback.load(); return p != nullptr ? p->getSmoothPositionSeconds() : 0.0; }
     int playbackUnderruns() const noexcept { auto* p = playback.load(); return p != nullptr ? p->getUnderruns() : 0; }
+    /** Milliseconds from Play to the first sound of what is playing (0 while it is still being read, or when nothing plays). */
+    double playbackFirstSoundMs() const noexcept { auto* p = playback.load(); return p != nullptr ? p->msToFirstSound() : 0.0; }
 
     /** The waveform recorded so far for one track (message thread, only while recording).
         data holds, for every bin and every channel, a min/max pair (+-32767): data[(bin * numChannels + channel) * 2].
@@ -406,6 +417,8 @@ private:
     std::vector<juce::Uuid> offlineTaps, offlinePreTaps;
     std::vector<juce::AudioBuffer<float>>* captureBufs = nullptr;  // only while renderOffline() runs
     std::unique_ptr<PlaybackSession> playSession;   // owned by the message thread
+    struct Retirer;                                 // frees stopped sessions on a thread of its own (see stopPlayback)
+    std::unique_ptr<Retirer> retirer;
     std::atomic<juce::uint64> blockCounter { 0 };
     std::atomic<bool> running { false };
     std::atomic<juce::int64> samplePosition { 0 };

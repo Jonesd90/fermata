@@ -5,6 +5,8 @@
 #include "WaveColor.h"
 #include "PluginHost.h"
 #include "../core/SessionClock.h"
+#include "../core/SaveWriter.h"
+#include "StallWatch.h"
 
 namespace td
 {
@@ -240,6 +242,14 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     /** Plays the edit, crossfades included, from fromSec to toSec (-1 = to the end), on the edit timeline. goOnAfterLoop: a loop that is let go of
         (the edit window's Loop switched off) carries straight on past toSec; without it the pass finishes and it stops (the process windows). */
     juce::String playEdit (const juce::Uuid& editId, double fromSec, double toSec = -1.0, bool loop = false, bool goOnAfterLoop = false);
+    /** The edit window's visual guide on its own (its S button, 2.102): plays only the guide, where it stands on the edit's timeline, through the
+        edit's own mixer on the guide's track - the same arguments and rules as playEdit. */
+    juce::String playEditGuide (const juce::Uuid& editId, double fromSec, double toSec = -1.0, bool loop = false, bool goOnAfterLoop = false);
+    /** Right-click on a clip in a take window: that track's clip of the take - between marks 1 and 2 if they are set in this take, otherwise the
+        whole take - becomes the visual guide of the take window's edit (the one 3 and 4 send to; else an edit made from that take window, the
+        edit window used last, or the only edit; made if there is none), starting at 0:00. It replaces the edit's guide, if it had one (Undo puts
+        that back). Returns an error or ""; 'editOut' is told which edit it went to. */
+    juce::String setEditGuide (const juce::Uuid& takeWindowId, const juce::Uuid& takeId, const juce::Uuid& trackId, juce::Uuid* editOut = nullptr);
     /** One clip of a disc audition: the edit and where it starts on the disc's timeline. */
     struct DiscPlayItem { juce::Uuid editId; double startSeconds = 0.0; };
     /** Plays the clips one after the other, each at its place on the disc timeline (the pauses between them are silence), through the mixers with the
@@ -275,7 +285,9 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     void setShowInsertFlag (bool on);
     void setTrimSlip (bool left, bool right);
     void setPlayheadFollows (bool on);
-    void stopPlayback();
+    /** quick: a press of Space or Stop (the play's tidying up is handed to a thread of its own, so it returns at once). Without it (everything
+        else: closing, a process window's Stop or Revert ...) the files that were playing are closed when it returns, so they can be deleted. */
+    void stopPlayback (bool quick = false);
     /** Seconds played since the playback began, wrapped to the loop length while a loop plays. */
     double playedSeconds() const;
     /** playheadSeconds, moving on smoothly between the audio blocks: what the windows draw the moving playhead with. */
@@ -334,8 +346,16 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     bool closeProject (bool save);
     std::function<void()> closeAllWindows;            // (set by the application) closes every project window
     AudioEngine::LoadStats lastLoad;                  // the load meter: the audio thread's last second (see tickLoad)
-    /** quick: an automatic save (see Project::save). Save from the menu, closing, Save and quit: a full one. */
+    /** quick: an automatic save - a snapshot here, written on the saver's thread (see BackgroundSaver). Save from the menu, closing, Save and
+        quit: a full one, written there and then (after the saver has finished what it was given). */
     void saveNow (bool quick = false);
+    /** Waits until the automatic saves handed to the saver's thread are on the disk, and takes in what they did (a failed one is saved again). */
+    void waitForSaves();
+    /** Play / Stop just happened (the automatic save keeps out of the way for a few seconds: the next press may be coming). */
+    void noteTransport() noexcept { lastTransportMs = juce::Time::getMillisecondCounter(); }
+    juce::uint32 lastTransportMs = 0;
+    double lastPlayStartMs = 0.0;                     // how long the last Play took on the message thread (for the log)
+    std::unique_ptr<StallWatch> stallWatch;           // logs every moment the message thread is held up (see StallWatch)
     bool skipFinalSave = false;                       // "Quit without saving": the last save when closing is left out
     void restoreLastProject();
     /** After a plan rebuild: the mixers retired before it (a removed mixer, the mixers of a project that was open before) are freed with their
@@ -369,7 +389,23 @@ private:
     void tickLoad();
     void timerCallback() override;                   // autosave
     void changeListenerCallback (juce::ChangeBroadcaster*) override;   // re-plan the engine after structural edits
-    int savesHeldWhilePlaying = 0;                   // automatic saves put off while the music plays (see timerCallback)
+    // ---- saving (2.102). An automatic save is a snapshot taken here (a few tens of milliseconds) and written on the saver's thread, and it only
+    //      happens when nothing is going on: not while playing or recording, not within a few seconds of Play / Stop or of a change, never with
+    //      a mouse button held, and at most every 30 seconds (every 5 minutes at the least, if the project keeps changing). Saving from the menu,
+    //      opening another project and closing wait for the saver, then write everything there and then.
+    static constexpr juce::uint32 kAutosaveGapMs = 30000, kAutosaveLatestMs = 300000;
+    void autosaveIfIdle();
+    void savedInBackground (BackgroundSaver::Result&, int generation);
+    void showSaveError (const juce::String& err, bool automatic);
+    void retryFailedSave();                          // closing without saving: the automatic save that failed (if the last one did) is written again
+    std::unique_ptr<Project::SaveJob> lastFailedJob; // the automatic save that failed, until a save gets through
+    bool quickSaveWanted = false;                    // an automatic save was asked for while one was being written: taken once that is done
+    bool closingProgram = false;
+    std::unique_ptr<BackgroundSaver> saver;
+    std::shared_ptr<bool> saverAlive = std::make_shared<bool> (true);
+    int saveGeneration = 0;                          // another project since a save was handed over: what it did is not this project's
+    juce::uint32 lastAutosaveMs = 0, lastSaveErrorMs = 0;
+    bool wholeSaveNext = false;                      // a window file could not be written: the next save is a full one, there and then
     void afterProjectReplaced();
 public:
     /** The Trim window's own waveform size (its . and , keys): independent of the take and edit windows, remembered between sessions, and every Trim window opens at it. */

@@ -1,4 +1,5 @@
 #pragma once
+#include <set>
 #include "Project.h"
 #include <functional>
 
@@ -75,10 +76,17 @@ public:
                      juce::int64 startPosition, juce::int64 endPosition, double sampleRate, int maxBlock);
     ~PlaybackSession() override;
 
-    /** Opens the files. Returns an error message or an empty string. */
+    /** Gets the files ready (they are opened by the disk thread as the play reaches them). Returns an error message or an empty string. */
     juce::String open();
-    /** Starts the disk thread and waits until the first second or so is ready. */
-    void start();
+    /** Starts the disk thread. waitForPreload: waits (at most 3 s) until the first second or so has been read, then returns (the tests, and
+        whatever must have sound at once). Without it (Play in the program's windows, 2.102) it returns at once: until the reader has the first
+        moments ready (primeSamples, about a third of a second) the session gives silence and its position stays at the start - so the playhead
+        waits for the sound - and then it plays. Pressing Play never holds up the screen, whatever the disk is doing. */
+    void start (bool waitForPreload = true);
+    /** True once the session has enough read to play (at once after a start that waited). Any thread. */
+    bool isPrimed() const noexcept { return primed.load (std::memory_order_acquire); }
+    /** Milliseconds from start() to the first sound (0 until it has started). Any thread. */
+    double msToFirstSound() const noexcept { return firstSoundMs.load(); }
 
     /** Automation applied while this plays (an edit's lanes); null = none. Set before the session is started. */
     std::shared_ptr<const AutomationPlan> automation;
@@ -188,7 +196,15 @@ private:
 
     static constexpr int kRing = 1 << 17;
     juce::AbstractFifo fifo { kRing };
-    std::vector<std::vector<std::vector<float>>> ring;           // [track][channel][kRing]: plain arrays, so no juce::AudioBuffer flag is shared between the two threads
+    // [track][channel][kRing]: plain arrays, so no juce::AudioBuffer flag is shared between the two threads. Not cleared when made: only what the
+    // reader has written is ever read (40 tracks' worth is 20 MB, and filling it with zeros used to be part of every press of Play)
+    std::vector<std::vector<juce::HeapBlock<float>>> ring;
+    std::atomic<bool> primed { true };                // see start()
+    int primeTarget = 16384;                          // samples the reader must have ready before a start that did not wait plays
+    juce::int64 primingWaited = 0;                    // audio thread: samples of silence given while waiting for that (it gives up after 3 s)
+    double startedMs = 0.0;
+    std::atomic<double> firstSoundMs { 0.0 };
+    std::set<juce::String> unreadable;                // disk thread: files that could not be opened (each is logged once)
     std::vector<juce::AudioBuffer<float>> chunk, trackBuf;
     juce::AudioBuffer<float> scratch;
     std::atomic<bool> renderDone { false }, finished { false }, looping { false };
@@ -210,6 +226,10 @@ std::vector<PlaySegment> segmentsForTake (const Project&, const TakeGroup&, juce
 std::vector<PlaySegment> segmentsForEdit (const Project&, const EditDef&);
 /** Where a piece's LTC stops (exclusive): see addRegionSegments. 'next' is the following piece of the edit (or nullptr). */
 juce::int64 ltcEndOf (const EditRegion&, const EditRegion* next) noexcept;
+/** Plays the edit's visual guide on its own, where it stands on the edit's timeline (2.102: its S button). Nothing when there is no guide. */
+std::vector<PlaySegment> segmentsForGuide (const Project&, const EditDef&);
+/** The track the guide plays on (its own; if that has gone, one with the same name and channels, else the first with as many channels); -1 = none. */
+int guideTrackIndex (const Project&, const EditGuide&);
 /** Plays one region's raw files on the timeline of the file's own samples (the trim window's 'play original'). */
 std::vector<PlaySegment> segmentsForRegionOriginal (const Project&, const EditRegion&);
 } // namespace td

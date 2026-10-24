@@ -6,6 +6,21 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.102.0
+**Space and Stop answer at once** (the stalls in the last log)
+- **Play no longer holds the program up while it reads ahead.** The window carries on at once; the sound starts as soon as the first third of a second has been read (the playhead waits for it), and the rest is read while it plays. Before, Play waited for over a second of audio to be read first, and asked the disk about every file of the edit - thousands of them in a well-corrected edit, a quarter of a second at every press. Now only the files of the first few seconds are checked; a file that has gone further on plays silent and the log names it.
+- **Space and the Stop button no longer wait for the reader to stop and its memory to be freed**: that is done by a thread of its own, after the audio has left it. (Every other stop - a process window's Stop or Revert, closing - still closes the files at once, so preview files can be deleted straight away.)
+- **Undo is quick in a big edit.** Half a second after every change Fermata keeps the previous state for Undo; for a big edit that took up to a second, and if you pressed Space in that moment, nothing happened until it was done. It now keeps a plain copy (under a millisecond for the same edit).
+- **Saving happens out of the way.** The automatic save takes a quick snapshot (a few tens of milliseconds) and writes the files on a thread of its own - turning a big project into text and making sure the drive has it took a few hundred milliseconds, all of it in the way of the screen and the keys. It also waits for a quiet moment now: not just after Play or Stop or a change, never with a mouse button held, never while recording, and at most every 30 seconds; while the music plays it saves only once 5 minutes have gone by (so a long mixing session is never left unsaved), and after 5 minutes of changes it saves at the next quiet moment. There is no longer a save the moment you press Stop. Starting and stopping a recording still saves at once (in the background), and Save, opening another project and closing still write everything there and then.
+- If an automatic save cannot be written (a drive that went away), it says so as before, and the next save writes everything again. **Close or Quit without saving** now writes that failed automatic save again first, so what was saved automatically really is on the disk.
+- **The log says when the program was held up, and by what**: "Stall watch: main thread busy for 270 ms at 21:05:31 (starting playback)". A press of Play or Stop that was slow is logged with its timings too. If anything still stalls, the log shows what it was.
+
+**Visual guide track in the edit window**
+- Right-click a track's clip in a take window and choose **Use as edit window visual guide track**: that track's audio of the take - the part between 1 and 2 if they are set in that take, otherwise all of it - appears in a grey **GUIDE** lane above the edit's tracks. Typically the run-through recorded at the start of the session, on the ORTF or omni pair, to see how long the gaps between the phrases were.
+- **Drag it sideways** anywhere along its lane to line it up; it can start before 0:00 (that part just drops off), and it never makes the edit longer. Right-click it to put its start at 0:00 or at the playhead, hide it, or remove it.
+- Its **S** button (where the tracks have theirs) makes Space play **only the guide**, through the edit's mixer on its track, so it is never mixed up with the edit itself; S off, the guide is silent. S is off whenever the window opens.
+- The **Guide** button at the top of the edit window shows or hides it. The guide never plays with the edit and is never bounced or mastered; it is saved with the edit, and moving or replacing it can be undone.
+
 ## 2.101.0
 **Snip (F1 in the edit window)**
 - **F1 puts a snip at the playhead:** the piece there is cut with a short normal crossfade (30 ms, equal power, centred on the playhead). It is not an edit point - it gets no number (the edit points keep theirs) and its flag says **sn**, like an offline fix's **fx**. It works while the edit plays, at the moving playhead, and playback carries on.

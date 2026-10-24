@@ -56,6 +56,18 @@ public:
 
     EditDef* edit() const { return app.project.findEdit (editId); }
 
+    // ---- the visual guide (2.102): a lane of its own under the top band, above the tracks. It belongs to the band, so it stays in view however
+    //      far down the tracks are scrolled. Drag anywhere along it to slide it; its S plays it on its own instead of the edit.
+    static constexpr int kGuideTop = kRulerH + kLaneH;
+    bool guideSolo = false;                     // its S (starts off in every window, so an edit never opens playing the guide)
+    bool guideDrag = false, guideMoved = false;
+    juce::int64 guideDragBase = 0;
+    int guideH() const { auto* e = edit(); return e != nullptr && e->guide.active() && e->showGuide ? juce::jlimit (40, 90, rowH) : 0; }
+    /** The top band's height: markers, comments, insert flag, ruler and the pieces' banners, then the guide's lane when there is one. The tracks start under it. */
+    int bandH() const { return kRulerH + kLaneH + guideH(); }
+    bool inGuideLane (int y) const { const int h = guideH(); return h > 0 && y >= kGuideTop && y < kGuideTop + h; }
+    juce::Rectangle<int> guideSoloRect (int sx) const { return { sx + 30, kGuideTop + 3, 18, 16 }; }       // (where the tracks' S is)
+
     /** One row of the window: the track / bus / VCA it belongs to, and which of that node's rows it is (0 = its own row, 1.. = the extra lane rows under it). */
     struct RowInfo { juce::Uuid node = juce::Uuid::null(); int lane = 0; NodeKind kind = NodeKind::None; int block = 0; };
     mutable std::vector<RowInfo> rowInfo;                              // (one for each of rowTracks(), in the same order)
@@ -99,7 +111,7 @@ public:
     int trackRowAtY (int y) const
     {
         rowTracks();
-        int row = juce::jlimit (0, juce::jmax (0, (int) rowInfo.size() - 1), (y - kRulerH - kLaneH) / juce::jmax (1, rowH));
+        int row = juce::jlimit (0, juce::jmax (0, (int) rowInfo.size() - 1), (y - bandH()) / juce::jmax (1, rowH));
         while (row > 0 && ! (rowInfo[(size_t) row].kind == NodeKind::Track && rowInfo[(size_t) row].lane == 0)) --row;
         return row;
     }
@@ -185,7 +197,7 @@ public:
     /** Vertical zoom: taller or shorter track rows (factor > 1 = taller). */
     void zoomVertical (double f)
     {
-        const int maxH = juce::jmax (60, viewport.getMaximumVisibleHeight() - kRulerH - kLaneH);
+        const int maxH = juce::jmax (60, viewport.getMaximumVisibleHeight() - bandH());
         rowH = juce::jlimit (12, maxH, (int) std::lround ((double) rowH * f + (f > 1.0 ? 1.0 : -1.0)));
         updateSize(); repaint();
     }
@@ -195,7 +207,8 @@ public:
     double timelineSeconds()
     {
         auto* e = edit();
-        const double content = juce::jmax (juce::jmax (0.0, e ? e->lengthSeconds() : 0.0, app.playheadSeconds()), juce::jmax (e ? e->playheadSeconds : 0.0, cursorSeconds));
+        double content = juce::jmax (juce::jmax (0.0, e ? e->lengthSeconds() : 0.0, app.playheadSeconds()), juce::jmax (e ? e->playheadSeconds : 0.0, cursorSeconds));
+        if (e != nullptr && e->guide.active()) content = juce::jmax (content, (double) e->guide.end() / e->guide.sampleRate);     // (the guide can be scrolled to: it does not make the edit longer)
         return juce::jmin (86400.0, content + juce::jmax (600.0, content));
     }
     void updateSize()
@@ -203,7 +216,7 @@ public:
         const double end = timelineSeconds();
         // always at least as big as the visible area, so the ruler, grid and empty rows fill the whole window
         const int contentW = (int) (end * pixelsPerSecond) + kNameW;
-        const int contentH = kRulerH + kLaneH + juce::jmax (1, (int) rowTracks().size()) * rowH + 8;
+        const int contentH = bandH() + juce::jmax (1, (int) rowTracks().size()) * rowH + 8;
         setSize (juce::jmax (contentW, viewport.getMaximumVisibleWidth()), juce::jmax (contentH, viewport.getMaximumVisibleHeight()));
     }
 
@@ -211,6 +224,7 @@ public:
         the whole picture is painted once where it is, then the band is painted again over the top of the visible part. */
     void paint (juce::Graphics& g) override
     {
+        BusyLabel busyLabel ("drawing the edit window");
         const auto tPaint0 = juce::Time::getMillisecondCounterHiRes();          // (always timed: one call, to tell a slow redraw from a late clock in the hitch report)
         headerPass = false;
         paintAll (g);
@@ -218,7 +232,7 @@ public:
         if (sy > 0)
         {
             juce::Graphics::ScopedSaveState ss (g);
-            g.reduceClipRegion (juce::Rectangle<int> (0, sy, getWidth(), kRulerH + kLaneH));
+            g.reduceClipRegion (juce::Rectangle<int> (0, sy, getWidth(), bandH()));
             g.setOrigin (0, sy);
             headerPass = true;
             paintAll (g);
@@ -249,7 +263,7 @@ public:
         const auto& rt = rowTracks();
         std::map<juce::Uuid, int> rowOf;
         for (size_t i = 0; i < rt.size(); ++i) if (! rt[i].id.isNull()) rowOf[rt[i].id] = (int) i;
-        const int top = kRulerH + kLaneH;
+        const int top = bandH();
         auto touches = [&] (const EditRegion& r)
         {
             const int x0 = xOf ((double) r.startSample / rate), x1 = juce::jmax (x0 + 2, xOf ((double) r.endSample() / rate));
@@ -301,9 +315,139 @@ public:
     int stickyShift (const juce::MouseEvent& e) const
     {
         const int sy = viewport.getViewPositionY();
-        return (sy > 0 && e.y >= sy && e.y < sy + kRulerH + kLaneH) ? sy : 0;
+        return (sy > 0 && e.y >= sy && e.y < sy + bandH()) ? sy : 0;
     }
     juce::MouseEvent shifted (const juce::MouseEvent& e, int by) const { return by == 0 ? e : e.withNewPosition (e.position - juce::Point<float> (0.0f, (float) by)); }
+
+    /** The guide's lane: the clip's waveform where it stands on the timeline (grey: it is a reference, not one of the edit's tracks). The part
+        before 0:00 is not drawn; a dashed edge says it carries on there. */
+    void paintGuideLane (juce::Graphics& g, const EditDef& e)
+    {
+        const int h = guideH();
+        if (h <= 0) return;
+        const auto clip = g.getClipBounds();
+        if (clip.getBottom() < kGuideTop || clip.getY() >= kGuideTop + h) return;
+        const auto& gd = e.guide;
+        g.setColour (juce::Colours::black.withAlpha (0.14f)); g.fillRect (0, kGuideTop, getWidth(), h);
+        g.setColour (juce::Colours::black.withAlpha (0.45f)); g.fillRect (0, kGuideTop + h - 2, getWidth(), 2);     // (a firm line under it: the tracks begin there)
+        const double gr = gd.sampleRate;
+        const double startSec = (double) gd.start / gr, endSec = (double) gd.end() / gr;
+        const double visStart = juce::jmax (0.0, startSec);
+        if (endSec <= visStart) return;
+        const int x0 = xOf (visStart), x1 = juce::jmax (x0 + 2, xOf (endSec));
+        const auto rr = juce::Rectangle<int> (x0, kGuideTop + 3, x1 - x0, h - 7);
+        if (rr.getRight() < clip.getX() || rr.getX() > clip.getRight()) return;
+        const auto grey = juce::Colour (0xffa9afb8);
+        g.setColour (grey.withAlpha (guideDrag ? 0.32f : 0.20f)); g.fillRect (rr);
+        {
+            setWaveColour (g, juce::Colour (0xffdfe3e8));
+            juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (rr.reduced (1));
+            const double f0 = (double) gd.srcIn / gr + (visStart - startSec), f1 = (double) gd.srcOut / gr;       // (seconds in the file)
+            if (! directWave.draw (g, rr.reduced (1), gd.file, f0, f1, app.waveZoom, nullptr, gr))
+                if (auto* th = thumbnailFor (gd.file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, f0, f1, app.waveZoom, nullptr);
+        }
+        g.setColour (grey.withAlpha (0.95f));
+        g.drawRect (rr.withTrimmedLeft (startSec < 0.0 ? 2 : 0), 1);
+        if (startSec < 0.0) for (int y = rr.getY(); y < rr.getBottom(); y += 6) g.fillRect (rr.getX(), y, 2, 3);       // cut off at 0:00
+        if (guideDrag)                                                       // while it is dragged: where it starts now
+        {
+            const juce::String txt = "starts at " + (startSec < 0.0 ? "-" + formatTimeShort (-startSec, 2) + "  (before 0:00)" : formatTimeShort (startSec, 2));
+            const auto box = juce::Rectangle<int> (juce::jmax (x0, viewport.getViewPositionX() + kNameW) + 6, kGuideTop + 5, 190, 18);
+            g.setColour (juce::Colour (0xf0101418)); g.fillRoundedRectangle (box.toFloat(), 4.0f);
+            g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+            g.drawText (txt, box.reduced (6, 0), juce::Justification::centredLeft, false);
+        }
+    }
+    /** The guide's place in the name column: GUIDE, the take and track it is, and its S. */
+    void paintGuideName (juce::Graphics& g, const EditDef& e, int sx)
+    {
+        const int h = guideH();
+        if (h <= 0) return;
+        const auto r = juce::Rectangle<int> (sx, kGuideTop, kNameW, h);
+        const auto grey = juce::Colour (0xffa9afb8);
+        g.setColour (theme::panel); g.fillRect (r);
+        g.setColour (grey.withAlpha (0.16f)); g.fillRect (r);
+        g.setColour (grey); g.fillRect (r.withWidth (6));
+        g.setColour (juce::Colours::black.withAlpha (0.45f)); g.fillRect (sx, kGuideTop + h - 2, kNameW, 2);
+        auto drawS = [&] (juce::Rectangle<int> b, bool on)
+        {
+            const auto c = juce::Colour (0xfff2c200);
+            g.setColour (on ? c : juce::Colour (0xff2a2f36)); g.fillRoundedRectangle (b.toFloat(), 3.0f);
+            g.setColour (on ? c.brighter (0.3f) : theme::border); g.drawRoundedRectangle (b.toFloat(), 3.0f, 1.0f);
+            g.setColour (on ? juce::Colours::black : theme::text); g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+            g.drawText ("S", b, juce::Justification::centred, false);
+        };
+        drawS (guideSoloRect (sx), guideSolo);
+        g.setColour (theme::text); g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
+        g.drawText ("GUIDE", sx + 54, kGuideTop + 3, kNameW - 60, 16, juce::Justification::centredLeft, true);
+        g.setColour (theme::dimText); g.setFont (juce::FontOptions (11.5f));
+        g.drawText (e.guide.takeName + "  -  " + e.guide.trackName, sx + 10, kGuideTop + 21, kNameW - 16, 16, juce::Justification::centredLeft, true);
+        if (h >= 58)
+            g.drawText (guideSolo ? "S on: Space plays the guide only" : "drag it sideways to line it up", sx + 10, kGuideTop + 37, kNameW - 16, 16, juce::Justification::centredLeft, true);
+    }
+    /** Right-click on the guide: take it away, put its start at 0:00 or at the playhead, hide it. */
+    void showGuideMenu()
+    {
+        auto* e = edit();
+        if (e == nullptr || ! e->guide.active()) return;
+        const double head = juce::jmax (0.0, cursorSeconds >= 0.0 ? cursorSeconds : e->playheadSeconds);
+        juce::PopupMenu m;
+        m.addSectionHeader ("Visual guide: " + e->guide.takeName + " - " + e->guide.trackName);
+        m.addItem (1, "Move its start to 0:00");
+        m.addItem (2, "Move its start to the playhead  (" + formatTimeShort (head, 2) + ")");
+        m.addSeparator();
+        m.addItem (3, "Hide the guide  (the Guide button shows it again)");
+        m.addItem (4, "Remove the guide from this edit  (Undo brings it back)");
+        juce::Component::SafePointer<EditTimeline> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options(), [safe, head] (int r)
+        {
+            if (safe == nullptr || r == 0) return;
+            auto* ed = safe->edit();
+            if (ed == nullptr || ! ed->guide.active()) return;
+            if (r == 1) ed->guide.start = 0;
+            else if (r == 2) ed->guide.start = (juce::int64) std::llround (head * ed->guide.sampleRate);
+            else if (r == 3) { if (safe->guideSolo) safe->setGuideSolo (false); ed->showGuide = false; safe->app.project.markDirty(); safe->updateSize(); safe->repaint(); safe->guideButtonsChanged(); return; }
+            else if (r == 4) { if (safe->guideSolo) safe->setGuideSolo (false); ed->guide = EditGuide(); }
+            safe->app.project.changed();
+            safe->updateSize(); safe->repaint(); safe->guideButtonsChanged();
+        });
+    }
+    /** The guide's S: on = Space (and the play buttons) play the guide on its own, off = the edit as usual. Playing this edit now: it carries on
+        from where it is, the other way. */
+    void setGuideSolo (bool on)
+    {
+        guideSolo = on;
+        repaint();
+        if (app.isPlaying() && ! app.engine.isRecording() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId)
+            if (auto* w = findParentComponentOfClass<EditWindowComponent>()) w->replayFromPlayhead();
+    }
+    /** The window's Guide button follows the edit (set by the window). */
+    std::function<void()> onGuideChanged;
+    void guideButtonsChanged() { if (onGuideChanged) onGuideChanged(); }
+    void guideMouseDown (const juce::MouseEvent& e, EditDef& ed)
+    {
+        const int sx = viewport.getViewPositionX();
+        if (e.mods.isPopupMenu()) { showGuideMenu(); return; }
+        if (e.x >= sx && e.x < sx + kNameW)                                  // the name column: only the S does anything
+        {
+            if (guideSoloRect (sx).expanded (2).contains (e.getPosition())) setGuideSolo (! guideSolo);
+            return;
+        }
+        if (guideSolo && app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId) app.stopPlayback();   // (what plays would no longer be where it is drawn)
+        guideDrag = true; guideMoved = false; guideDragBase = ed.guide.start;
+        setMouseCursor (juce::MouseCursor::DraggingHandCursor);
+        repaint();
+    }
+    void guideMouseDrag (const juce::MouseEvent& e, EditDef& ed)
+    {
+        if (! guideMoved && std::abs (e.getDistanceFromDragStartX()) < 3) return;
+        guideMoved = true;
+        const double gr = ed.guide.sampleRate;
+        const auto keep = juce::jmin (ed.guide.length() / 2, (juce::int64) std::llround (0.5 * gr));     // (it can go before 0:00, but never all of it)
+        ed.guide.start = juce::jmax (-(ed.guide.length() - keep), guideDragBase + (juce::int64) std::llround ((double) e.getDistanceFromDragStartX() / pixelsPerSecond * gr));
+        app.project.markDirty();
+        repaint();
+    }
 
     void paintAll (juce::Graphics& g)
     {
@@ -312,7 +456,7 @@ public:
         if (e == nullptr) return;
         const auto tracks = headerPass ? std::vector<TrackDef>() : rowTracks();
         const auto info = headerPass ? std::vector<RowInfo>() : rowInfo;               // (what each row is: see rowTracks)
-        const int top = kRulerH + kLaneH;
+        const int top = bandH();
         const int rowsEnd = top + juce::jmax (1, (int) tracks.size()) * rowH;
 
         for (size_t i = 0; i < tracks.size(); ++i)
@@ -346,6 +490,7 @@ public:
             g.setColour (theme::dimText); g.drawText (formatTimeShort (s, 0), x + 3, 2 + kRulerTop, 60, 16, juce::Justification::left);
         }
 
+        paintGuideLane (g, *e);
         if (e->isEmpty())
         {
             g.setColour (theme::dimText); g.setFont (16.0f);
@@ -636,7 +781,7 @@ public:
         }
         if (e->showMarkers) markerui::paintFlags (g, e->markers, [this] (double s) { return xOf (s); }, sx + kNameW, getHeight(), markers.draggedId());
         if (e->showFeedback && ! e->feedback.empty()) feedbackui::paintFlags (g, e->feedback, [this] (double s) { return xOf (s); }, markerui::kStripH, sx + kNameW, getHeight(), selectedFeedback);
-        g.setColour (juce::Colour (0x55ffffff)); g.fillRect (sx + kNameW - 2, kRulerH + kLaneH, 2, juce::jmax (0, getHeight() - kRulerH - kLaneH));
+        g.setColour (juce::Colour (0x55ffffff)); g.fillRect (sx + kNameW - 2, bandH(), 2, juce::jmax (0, getHeight() - bandH()));
         if (! clipMoveRegion.isNull() && clipMoveToRow >= 0)                           // Shift + drag: the row the clip will go to
         {
             g.setColour (juce::Colour (0xffffc83d)); g.drawRect (juce::Rectangle<int> (sx + kNameW, top + clipMoveToRow * rowH, getWidth() - sx - kNameW, rowH), 3);
@@ -648,13 +793,14 @@ public:
         }
         g.setColour (theme::panel.withAlpha (0.96f)); g.fillRect (sx, rowsEnd, kNameW, juce::jmax (0, getHeight() - rowsEnd));
         g.setColour (theme::panel.withAlpha (0.96f)); g.fillRect (sx, 0, kNameW, top);
+        paintGuideName (g, *e, sx);
         g.setFont (juce::FontOptions (10.5f, juce::Font::bold));                                                       // what each line of the band is
         g.setColour (e->showMarkers ? markerui::flagColour() : theme::dimText.withAlpha (0.6f));
         g.drawText (e->showMarkers ? "Markers" : "Markers (hidden)", sx + 6, 0, kNameW - 12, markerui::kStripH, juce::Justification::centredLeft, true);
         g.setColour (e->showFeedback ? juce::Colour (0xff35b7c9) : theme::dimText.withAlpha (0.6f));
         g.drawText (e->showFeedback ? "Feedback" : "Feedback (hidden)", sx + 6, markerui::kStripH, kNameW - 12, kFbH, juce::Justification::centredLeft, true);
         if (shownMods != 0 && (headerPass || viewport.getViewPositionY() == 0))         // the keys being held: what they do here (under those two lines)
-            modhint::paint (g, { sx, markerui::kStripH + kFbH, kNameW, top - markerui::kStripH - kFbH }, shownMods, modifierHints (shownMods));
+            modhint::paint (g, { sx, markerui::kStripH + kFbH, kNameW, kGuideTop - markerui::kStripH - kFbH }, shownMods, modifierHints (shownMods));
     }
 
     void mouseDown (const juce::MouseEvent& e0) override { hdrShift = stickyShift (e0); mouseDownImpl (shifted (e0, hdrShift)); }
@@ -692,18 +838,19 @@ public:
             insertDrag = true; insertDragMove (e.x);
             return;
         }
+        if (inGuideLane (e.y) && std::abs (e.x - (viewport.getViewPositionX() + kNameW)) > 4) { guideMouseDown (e, *ed); return; }     // the visual guide
         const double rate = juce::jmax (1.0, ed->sampleRate);
-        if (! e.mods.isCommandDown() && ! e.mods.isCtrlDown() && ! e.mods.isPopupMenu() && ! (e.x > kNameW && e.y >= kRulerH + kLaneH))   // a click anywhere but on the audio lets go of the selected pieces
+        if (! e.mods.isCommandDown() && ! e.mods.isCtrlDown() && ! e.mods.isPopupMenu() && ! (e.x > kNameW && e.y >= bandH()))   // a click anywhere but on the audio lets go of the selected pieces
         { selectedRegion = juce::Uuid::null(); selectedRegions.clear(); moveRegion = juce::Uuid::null(); repaint(); }
         {
             const int sxv = viewport.getViewPositionX();
             if (std::abs (e.x - (sxv + kNameW)) <= 4 && e.y >= kRulerH && ! e.mods.isPopupMenu()) { widthDrag = true; return; }
-            if (e.y >= kRulerH + kLaneH && ! e.mods.isPopupMenu() && e.x >= sxv && e.x < sxv + kNameW)
+            if (e.y >= bandH() && ! e.mods.isPopupMenu() && e.x >= sxv && e.x < sxv + kNameW)
             {
-                const int row = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
+                const int row = (e.y - bandH()) / juce::jmax (1, rowH);
                 if (juce::isPositiveAndBelow (row, (int) rowTracks().size()))
                 {
-                    const int rowTop = kRulerH + kLaneH + row * rowH;
+                    const int rowTop = bandH() + row * rowH;
                     if (const auto ms = msOf (rowTracks()[(size_t) row].id); ms.mute != nullptr)
                     {
                         if (muteRect (sxv, rowTop).expanded (1).contains (e.getPosition())) { ms.mute->set (! ms.mute->get()); app.project.markDirty(); repaint(); return; }
@@ -713,9 +860,9 @@ public:
             }
         }
         if (lanesOn (*ed) && automationMouseDown (e, *ed)) return;
-        if (e.mods.isPopupMenu() && e.x >= viewport.getViewPositionX() && e.x < viewport.getViewPositionX() + kNameW && e.y >= kRulerH + kLaneH)   // right-click on a track name: colour, remove
+        if (e.mods.isPopupMenu() && e.x >= viewport.getViewPositionX() && e.x < viewport.getViewPositionX() + kNameW && e.y >= bandH())   // right-click on a track name: colour, remove
         {
-            const int row = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
+            const int row = (e.y - bandH()) / juce::jmax (1, rowH);
             if (juce::isPositiveAndBelow (row, (int) rowTracks().size()))
             {
                 const auto id = rowTracks()[(size_t) row].id;
@@ -748,11 +895,11 @@ public:
             }
             return;
         }
-        if (e.y >= kRulerH + kLaneH)                                       // an extra lane row, a bus or a VCA has no audio to select or move and no name to pick up
-            if (const int rr = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH); juce::isPositiveAndBelow (rr, (int) rowTracks().size()) && ! isTrackRow (rr)) return;
-        if (! e.mods.isPopupMenu() && e.x >= viewport.getViewPositionX() && e.x < viewport.getViewPositionX() + kNameW && e.y >= kRulerH + kLaneH)   // a track's name: drag it to another row, or click it to select it
+        if (e.y >= bandH())                                       // an extra lane row, a bus or a VCA has no audio to select or move and no name to pick up
+            if (const int rr = (e.y - bandH()) / juce::jmax (1, rowH); juce::isPositiveAndBelow (rr, (int) rowTracks().size()) && ! isTrackRow (rr)) return;
+        if (! e.mods.isPopupMenu() && e.x >= viewport.getViewPositionX() && e.x < viewport.getViewPositionX() + kNameW && e.y >= bandH())   // a track's name: drag it to another row, or click it to select it
         {
-            const int row = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
+            const int row = (e.y - bandH()) / juce::jmax (1, rowH);
             if (juce::isPositiveAndBelow (row, (int) rowTracks().size()))
             {
                 if (e.mods.isShiftDown() || e.mods.isCtrlDown() || e.mods.isCommandDown()) { clickTrackName (rowTracks()[(size_t) row].id, e.mods); return; }
@@ -761,7 +908,7 @@ public:
         }
         EditRegion* fadeHit = nullptr; bool fadeIn = true;
         if (! e.mods.isPopupMenu() && e.mods.isAltDown() && ! (e.mods.isCommandDown() || e.mods.isCtrlDown())
-            && e.y >= kRulerH + kLaneH && e.x >= viewport.getViewPositionX() + kNameW
+            && e.y >= bandH() && e.x >= viewport.getViewPositionX() + kNameW
             && ! fadeHandleAt (*ed, e.getPosition(), rate, fadeHit, fadeIn))                 // Alt + drag: a lasso (the playhead stays where it is; a fade corner is still a fade)
         {
             lassoActive = true; lassoMoved = false; lassoFrom = lassoTo = e.getPosition();
@@ -773,11 +920,12 @@ public:
         if (e.x > kNameW && e.y < kRulerH && ! e.mods.isPopupMenu() && app.isPlaying() && ! app.engine.isRecording()       // clicking the ruler while this edit plays: carry on from there
             && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId)
         {
-            const auto err = app.playEdit (editId, cursorSeconds);
+            auto* w = findParentComponentOfClass<EditWindowComponent>();
+            const auto err = w != nullptr ? w->play (cursorSeconds) : app.playEdit (editId, cursorSeconds);
             if (err.isNotEmpty()) showError ("Play", err);
             repaint(); return;
         }
-        if (e.mods.isPopupMenu() && e.x > kNameW && e.y >= kRulerH + kLaneH) { showPieceMenu (e, *ed, t, rate); return; }
+        if (e.mods.isPopupMenu() && e.x > kNameW && e.y >= bandH()) { showPieceMenu (e, *ed, t, rate); return; }
 
         // the top corners at the two ends of a piece: drag the left one right for a longer fade-in, the right one left for a longer fade-out
         {
@@ -837,9 +985,9 @@ public:
         }
 
         // Shift + drag on a clip of one track: move that clip to another track (it keeps its place on the timeline)
-        if (e.mods.isShiftDown() && ! e.mods.isPopupMenu() && e.x > kNameW && e.y >= kRulerH + kLaneH)
+        if (e.mods.isShiftDown() && ! e.mods.isPopupMenu() && e.x > kNameW && e.y >= bandH())
         {
-            const int row = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
+            const int row = (e.y - bandH()) / juce::jmax (1, rowH);
             const auto rt = rowTracks();                                     // (a copy: overdubAt below rebuilds the list)
             if (juce::isPositiveAndBelow (row, (int) rt.size()))
             {
@@ -872,7 +1020,7 @@ public:
         // To MOVE a piece, Ctrl + click it (that selects the whole piece); once it is selected the Ctrl key can be let go and the piece dragged sideways.
         const bool hitArmed = ! selectedRegion.isNull() && selectedRegion == moveRegion;
         const bool canMove = (additive || hitArmed) && ! trackMark;
-        const bool wantMarkDrag = ! canMove && e.x > kNameW && e.y >= kRulerH + kLaneH && ! e.mods.isPopupMenu() && e.getNumberOfClicks() < 2;
+        const bool wantMarkDrag = ! canMove && e.x > kNameW && e.y >= bandH() && ! e.mods.isPopupMenu() && e.getNumberOfClicks() < 2;
         if (! additive && ! hitArmed) moveRegion = juce::Uuid::null();
         if (additive)                                        // Ctrl + click: select the whole piece (more than one for 'Selected' in Bounce Out) and arm it for moving
         {
@@ -894,7 +1042,7 @@ public:
         if (! selectedRegion.isNull())                                   // show where this piece's file is in the Media window
             if (auto* sr = ed->findAny (selectedRegion))
             {
-                const int row = e.y >= kRulerH + kLaneH ? (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH) : -1;
+                const int row = e.y >= bandH() ? (e.y - bandH()) / juce::jmax (1, rowH) : -1;
                 const juce::Uuid tid = juce::isPositiveAndBelow (row, (int) rowTracks().size()) ? rowTracks()[(size_t) row].id : juce::Uuid::null();
                 const RegionFile* hit = nullptr;
                 for (auto& f : sr->files) if (f.trackId == tid) hit = &f;
@@ -906,7 +1054,7 @@ public:
         {
             markDrag = true; markAnchor = juce::jmax (0.0, t); markStartX = e.x;
             markAlt = trackMark;                                           // Ctrl + Alt + drag: only the track(s) the mouse covers are marked
-            markRow0 = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
+            markRow0 = (e.y - bandH()) / juce::jmax (1, rowH);
         }
         else if (auto* od = canMove && ed->isOverdub (selectedRegion) ? ed->findAny (selectedRegion) : nullptr)
         {
@@ -951,6 +1099,7 @@ public:
             else repaint (before.getUnion (lassoRect()).expanded (2));
             return;
         }
+        if (guideDrag) { guideMouseDrag (e, *ed); return; }
         if (markers.mouseDrag (e)) return;
         if (insertDrag) { insertDragMove (e.x); return; }
         if (! shuffleId.isNull())
@@ -1017,7 +1166,7 @@ public:
             {
                 const auto& rt = rowTracks();
                 const int n = (int) rt.size();
-                const int r1 = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
+                const int r1 = (e.y - bandH()) / juce::jmax (1, rowH);
                 const int lo = juce::jlimit (0, juce::jmax (0, n - 1), juce::jmin (markRow0, r1)), hi = juce::jlimit (0, juce::jmax (0, n - 1), juce::jmax (markRow0, r1));
                 if (n > 0) for (int r = lo; r <= hi; ++r) if (rowInfo[(size_t) r].kind == NodeKind::Track && rowInfo[(size_t) r].lane == 0) ed->fixTracks.push_back (rt[(size_t) r].id);
             }
@@ -1048,6 +1197,7 @@ public:
     {
         auto* ed = edit(); EditRegion* fr = nullptr; bool isIn = true;
         if (std::abs (e.x - (viewport.getViewPositionX() + kNameW)) <= 4 && e.y >= kRulerH) { setMouseCursor (juce::MouseCursor::LeftRightResizeCursor); return; }
+        if (inGuideLane (e.y) && e.x >= viewport.getViewPositionX() + kNameW) { setMouseCursor (juce::MouseCursor::DraggingHandCursor); return; }     // the guide: drag it sideways
         const bool over = ed != nullptr && e.x > kNameW && fadeHandleAt (*ed, e.getPosition(), juce::jmax (1.0, ed->sampleRate), fr, isIn);
         setMouseCursor (over ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
         (void) isIn;
@@ -1060,6 +1210,13 @@ public:
             if (auto* ed = edit(); ed != nullptr && ! lassoMoved) applyLasso (*ed);       // Alt + click (no drag): the piece under the mouse, or none
             lassoActive = lassoMoved = false;
             repaint(); return;
+        }
+        if (guideDrag)
+        {
+            guideDrag = false;
+            if (guideMoved) app.project.changed();                         // (one undo step for the whole drag)
+            guideMoved = false;
+            setMouseCursor (juce::MouseCursor::NormalCursor); repaint(); return;
         }
         if (markers.mouseUp (e)) return;
         if (insertDrag)
@@ -1440,7 +1597,7 @@ private:
     /** Returns true when the click was for the automation (the lanes, their parameter label and padlock). */
     bool automationMouseDown (const juce::MouseEvent& e, EditDef& ed)
     {
-        const int top = kRulerH + kLaneH;
+        const int top = bandH();
         if (e.y < top) return false;
         const int row = (e.y - top) / juce::jmax (1, rowH);
         if (! juce::isPositiveAndBelow (row, (int) rowTracks().size())) return false;
@@ -1517,7 +1674,7 @@ private:
         auto* lane = ed.findLane (autoDragLane);
         if (lane == nullptr || lane->locked) return;
         const double rate = juce::jmax (1.0, ed.sampleRate);
-        const int rowTop = kRulerH + kLaneH + autoDragRow * rowH;
+        const int rowTop = bandH() + autoDragRow * rowH;
         const auto time = (juce::int64) std::llround (juce::jmax (0.0, (double) (e.x - kNameW) / pixelsPerSecond) * rate);
         const float cur = juce::isPositiveAndBelow (autoDragIndex, (int) lane->pts.size()) ? lane->pts[(size_t) autoDragIndex].value : 0.0f;
         autoDragIndex = ed.movePoint (*lane, autoDragIndex, time, draggedValue (*lane, (float) e.y, rowTop, e.mods.isAltDown(), cur));
@@ -1663,7 +1820,7 @@ private:
     /** The overdub whose band is under 'p' (its own tracks' rows only), or null. */
     EditRegion* overdubAt (EditDef& ed, juce::Point<int> p, double rate)
     {
-        const int top = kRulerH + kLaneH;
+        const int top = bandH();
         const int row = (p.y - top) / juce::jmax (1, rowH);
         for (auto it = ed.overdubs.rbegin(); it != ed.overdubs.rend(); ++it)
         {
@@ -1700,7 +1857,7 @@ private:
         if (isOver) { m.addSeparator(); m.addItem (4, "Delete this overdub"); }
         std::vector<juce::File> redrawFiles;                                          // the file of the track that was clicked (else every file of the piece)
         {
-            const int row = e.y >= kRulerH + kLaneH ? (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH) : -1;
+            const int row = e.y >= bandH() ? (e.y - bandH()) / juce::jmax (1, rowH) : -1;
             const auto& rt = rowTracks();
             const juce::Uuid tid = juce::isPositiveAndBelow (row, (int) rt.size()) ? rt[(size_t) row].id : juce::Uuid::null();
             for (auto& f : piece->files) if (f.trackId == tid) redrawFiles.push_back (f.file);
@@ -1761,6 +1918,7 @@ private:
     void changeListenerCallback (juce::ChangeBroadcaster* source) override
     {
         if (source != &app.project) { thumbsChanged = true; return; }      // a waveform was read a bit further: shown at the next tick (see timerCallback)
+        BusyLabel busyLabel ("updating the edit window after a change");
         if (hitch.active) ++hitch.fullRedraws;
         saver.saveFinished (thumbs, wavesFolder()); updateSize(); repaint();
     }
@@ -1769,7 +1927,7 @@ private:
         if (const int held = modhint::heldFor (*this); held != shownMods)      // the corner box: what the keys being held do here
         {
             shownMods = held;
-            repaint (viewport.getViewPositionX(), viewport.getViewPositionY(), kNameW, kRulerH + kLaneH);
+            repaint (viewport.getViewPositionX(), viewport.getViewPositionY(), kNameW, bandH());
         }
         if (auto* ed = edit())                      // the playhead moved by itself (Stop leaves it where playback got to): the cursor follows
             if (std::abs (ed->playheadSeconds - lastHead) > 1.0e-9) { lastHead = ed->playheadSeconds; cursorSeconds = ed->playheadSeconds; repaint(); }
@@ -1784,8 +1942,8 @@ private:
         const bool meterMoving = updateMeterFall();
         // While it plays only the meters are redrawn here: the playhead moves by itself with the screen (movePlayhead), redrawing just the thin strip
         // it leaves and the one it moves to. Redrawing every waveform 30 times a second is what made it stutter with many tracks.
-        if (app.isPlaying()) { updateSize(); followPlayhead(); repaint (viewport.getViewPositionX(), kRulerH + kLaneH, kNameW, getHeight()); }
-        else if (app.engine.isRecording() || meterMoving || ++meterTick % 3 == 0) repaint (viewport.getViewPositionX(), kRulerH + kLaneH, kNameW, getHeight());
+        if (app.isPlaying()) { updateSize(); followPlayhead(); repaint (viewport.getViewPositionX(), bandH(), kNameW, getHeight()); }
+        else if (app.engine.isRecording() || meterMoving || ++meterTick % 3 == 0) repaint (viewport.getViewPositionX(), bandH(), kNameW, getHeight());
         else followActive = false;
     }
     bool thumbsChanged = false; juce::uint32 lastThumbRefresh = 0;
@@ -2027,6 +2185,22 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
         }
     };
     if (auto* e0 = edit()) if (e0->showLtc) ltcButton.setButtonText (juce::String::fromUTF8 ("\xE2\x96\xBC LTC"));
+    guideToggle.setTooltip ("Shows or hides the visual guide: a take (or part of one) of one track, shown above the tracks to line the edit's timing up against - "
+                            "for example the run-through recorded at the start of the session. Set it in a take window: right-click a track's clip > Use as edit window visual guide track. "
+                            "Drag the guide sideways to line it up; its S plays it on its own. It never plays with the edit and is never bounced.");
+    guideToggle.setClickingTogglesState (true);
+    guideToggle.setColour (juce::TextButton::buttonOnColourId, theme::accent);
+    guideToggle.onClick = [this]
+    {
+        if (auto* e = edit())
+        {
+            e->showGuide = guideToggle.getToggleState();
+            if (! e->showGuide && timeline->guideSolo) timeline->setGuideSolo (false);
+            app.project.markDirty(); timeline->updateSize(); timeline->repaint();
+        }
+    };
+    timeline->onGuideChanged = [this] { refreshGuideButton(); };
+    refreshGuideButton();
     mixerButton.onClick = [this] { if (auto* m = app.project.mixerOfEdit (editId)) { if (app.showMixer) app.showMixer (m->id); } };
     zoomInButton.onClick = [this] { timeline->zoom (1.5); };
     zoomOutButton.onClick = [this] { timeline->zoom (1.0 / 1.5); };
@@ -2042,7 +2216,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     timeline->slipLeft = app.trimSlipLeft; timeline->slipRight = app.trimSlipRight;
     slipLeftToggle.onClick  = [this] { timeline->slipLeft = slipLeftToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), app.trimSlipRight); };     // (the other one as it is now)
     slipRightToggle.onClick = [this] { timeline->slipRight = slipRightToggle.getToggleState(); app.setTrimSlip (app.trimSlipLeft, slipRightToggle.getToggleState()); };
-    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &ltcButton, &automationButton, &pitchButton, &repairButton, &roomToneButton, &noiseModeButton, &reharmoniserButton, &exportProcButton, &undoFixButton, &alignButton,
+    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &ltcButton, &guideToggle, &automationButton, &pitchButton, &repairButton, &roomToneButton, &noiseModeButton, &reharmoniserButton, &exportProcButton, &undoFixButton, &alignButton,
                                                           &slipLeftToggle, &slipRightToggle, &shuffleToggle, &insertFlagToggle })
     {
         addAndMakeVisible (b);
@@ -2097,7 +2271,7 @@ void EditWindowComponent::resized()
         { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
         { &trimButton, IW, IH, 2 }, { &deleteButton, IW, IH, 14 },
         { &leftButton, IW, IH, 2 }, { &rightButton, IW, IH, 6 }, { &endButton, IW, IH, 14 },
-        { &bounceButton, IW, IH, 2 }, { &mixerButton, IW, IH, 6 }, { &ltcButton, 74, grid::btnH, 14 },
+        { &bounceButton, IW, IH, 2 }, { &mixerButton, IW, IH, 6 }, { &ltcButton, 74, grid::btnH, 6 }, { &guideToggle, 58, grid::btnH, 14 },
         { &automationButton, IW, IH, 14 },
         { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 2 }, { &roomToneButton, IW, IH, 2 }, { &noiseModeButton, IW, IH, 2 }, { &reharmoniserButton, IW, IH, 10 }, { &exportProcButton, IW + 8, IH, 2 }, { &undoFixButton, IW, IH, 14 }, { &alignButton, IW, IH, 14 },
         { &tracksButton, IW, IH, 2 }, { &importButton, IW + 8, IH, 14 }, { &feedbackButton, IW, IH, 8 }, { &markersToggle, IW, IH, 2 }, { &feedbackToggle, IW + 8, IH, 14 },
@@ -2152,11 +2326,34 @@ void EditWindowComponent::goTo (double seconds)
     e->playheadSeconds = seconds; timeline->cursorSeconds = seconds;
     if (app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId)
     {
-        const auto err = app.playEdit (editId, seconds);
+        const auto err = play (seconds);
         if (err.isNotEmpty()) showError ("Play", err);
     }
     app.project.changed();
     timeline->scrollTo (seconds);
+}
+
+juce::String EditWindowComponent::play (double from, double to, bool loop, bool goOn)
+{
+    auto* e = edit();
+    if (timeline->guideSolo && e != nullptr && e->guide.active() && e->showGuide) return app.playEditGuide (editId, from, to, loop, goOn);
+    return app.playEdit (editId, from, to, loop, goOn);
+}
+
+void EditWindowComponent::replayFromPlayhead()
+{
+    if (! (app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId)) return;
+    double a = 0.0, b = 0.0;
+    const auto err = app.playInfo.loopLen > 0.0 && loopRange (a, b) ? play (a, b, true, true) : play (juce::jmax (0.0, app.playheadSeconds()));
+    if (err.isNotEmpty()) showError ("Play", err);
+}
+
+void EditWindowComponent::refreshGuideButton()
+{
+    auto* e = edit();
+    const bool has = e != nullptr && e->guide.active();
+    guideToggle.setEnabled (has);
+    guideToggle.setToggleState (has && e->showGuide, juce::dontSendNotification);
 }
 
 void EditWindowComponent::goToEnd() { if (auto* e = edit()) goTo (e->lengthSeconds()); }
@@ -2405,19 +2602,19 @@ void EditWindowComponent::checkMixerStrips()
 
 void EditWindowComponent::togglePlay()
 {
-    if (app.isPlaying()) { app.stopPlayback(); return; }
+    if (app.isPlaying()) { app.stopPlayback (true); return; }
     auto* e = edit();
     if (e == nullptr) return;
     if (! skipStripAsk) checkMixerStrips();
     double a = 0.0, b = 0.0;
     if (loopToggle.getToggleState() && loopRange (a, b))             // loop on and marks 1 / 2 set: go round that area
     {
-        const auto err = app.playEdit (editId, a, b, true, true);
+        const auto err = play (a, b, true, true);
         if (err.isNotEmpty()) showError ("Play", err);
         return;
     }
     if (loopToggle.getToggleState()) app.setNotice ("Loop is on, but marks 1 and 2 are not both set: playing normally.");
-    auto err = app.playEdit (editId, timeline->cursorSeconds >= 0 ? timeline->cursorSeconds : 0.0);
+    auto err = play (timeline->cursorSeconds >= 0 ? timeline->cursorSeconds : 0.0);
     if (err.isNotEmpty()) showError ("Play", err);
 }
 
@@ -2461,7 +2658,7 @@ void EditWindowComponent::loopChanged()
     double a = 0.0, b = 0.0;
     if (on && ! loopRange (a, b)) { app.setNotice ("Loop: set marks 1 and 2 first (the loop plays the area between them)."); return; }
     if (! mine) return;
-    if (on) { const auto err = app.playEdit (editId, a, b, true, true); if (err.isNotEmpty()) showError ("Play", err); }        // switched on while playing: start going round now
+    if (on) { const auto err = play (a, b, true, true); if (err.isNotEmpty()) showError ("Play", err); }        // switched on while playing: start going round now
     else app.engine.releasePlaybackLoop();                                                                                  // switched off: plays straight on past mark 2
 }
 
@@ -2655,7 +2852,7 @@ bool EditWindowComponent::keyPressed (const juce::KeyPress& k)
     return false;
 }
 
-void EditWindowComponent::changeListenerCallback (juce::ChangeBroadcaster*) { repaint(); }
+void EditWindowComponent::changeListenerCallback (juce::ChangeBroadcaster*) { refreshGuideButton(); repaint(); }
 
 void EditWindowComponent::timerCallback()
 {
