@@ -320,6 +320,24 @@ public:
     TakeWindowDef* findTakeWindow (const juce::Uuid&);
     juce::Array<int> inputsOfTrack (const TrackDef&) const;
 
+    /** Moves clips of a take window from one track to another, the takes staying where they are in time (an import that put them on new tracks of
+        their own): the clip each of 'takes' has on 'fromTrack' goes onto 'toTrack' (a take with none there is passed over). The pieces of edits made
+        from those takes go with them (an edit with a track list of its own gets 'toTrack' beside 'fromTrack'), and 'toTrack' is shown in the window
+        again if it had been removed from it. Nothing moves if one of the takes already has audio on 'toTrack', if the clips' channels are not
+        'toTrack's, or if either is the LTC track: canMoveTakeClips says why ("" = it can). Returns how many clips moved; 'editPieces' (optional)
+        how many pieces of edits went with them. One change, so one undo step. */
+    int moveTakeClips (const juce::Uuid& windowId, const juce::Uuid& fromTrack, const juce::Uuid& toTrack, const std::vector<juce::Uuid>& takes,
+                       juce::String& why, int* editPieces = nullptr);
+    juce::String canMoveTakeClips (const juce::Uuid& windowId, const juce::Uuid& fromTrack, const juce::Uuid& toTrack, const std::vector<juce::Uuid>& takes);
+    /** The track whose name this track's name ends with ("VivienneSPOT1" ends with "SPOT1": an import that put the same word in front of every
+        name), the longest such name; capitals and spaces at the ends do not count. Not the LTC track. Null if there is none. */
+    const TrackDef* trackNamedAtEndOf (const juce::Uuid& trackId) const;
+    /** Is there audio on this track anywhere in the project: a clip in a take window, or a piece (or overdub) of an edit? */
+    bool trackHasAudio (const juce::Uuid& trackId) const;
+    /** Deletes these tracks from the project at once (one structure change), passing over the LTC track and any track with audio on it somewhere
+        (trackHasAudio), so nothing is lost. The audio files on the disk are not touched. Returns how many tracks went. */
+    int removeEmptyTracks (const std::vector<juce::Uuid>& ids);
+
     /** Which parts of a mixer a copy takes: faders (levels, mutes, solos, output buttons), sends, pans, plug-in inserts. */
     using MixParts = td::MixParts;
     /** The balance of a mixer (levels, pans, mutes, solos, sends, effects returns - and optionally the plug-in inserts) as data. */

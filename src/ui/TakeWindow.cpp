@@ -251,10 +251,23 @@ public:
             g.setColour (theme::accent.withAlpha (0.13f)); g.fillRect (lr);
             g.setColour (theme::accent.withAlpha (0.9f));  g.drawRect (lr, 1);
         }
+        if (moveActive && moveMoved) paintMoveGhost (g);             // Ctrl + Shift + drag: where the clips will go
         if (paintprof::enabled()) paintprof::paintDone ("take window", juce::Time::getMillisecondCounterHiRes() - tPaint0, g.getClipBounds().getWidth(), g.getClipBounds().getHeight());
     }
     // ---- Alt + drag: a lasso; every take it touches is selected (whole takes)
     bool lassoActive = false, lassoMoved = false; juce::Point<int> lassoFrom, lassoTo;
+    // ---- Ctrl + Shift + drag up or down: the clips the selected takes have on one track moved onto another track (the takes stay where they are in time;
+    // an import that put the audio on new tracks of its own). Takes the mouse is on; the selected ones if it is one of them. A click without a drag is a Ctrl + click.
+    bool moveActive = false, moveMoved = false; int moveRow0 = -1, moveRow = -1, moveDownY = 0;
+    juce::Uuid moveFrom, moveClickTake; std::vector<juce::Uuid> moveTakes; juce::Point<int> moveMouse; juce::Rectangle<int> moveLabelArea;
+    /** Ctrl + A: every take of the window (not the one being recorded). */
+    void selectAllTakes()
+    {
+        selectedTakes.clear();
+        if (auto* w = def())
+            for (auto& grp : w->groups) if (! (app.engine.isRecording() && grp.id == app.engine.currentTakeId())) selectedTakes.push_back (grp.id);
+        repaint();
+    }
     juce::Rectangle<int> lassoRect() const
     {
         return juce::Rectangle<int>::leftTopRightBottom (juce::jmin (lassoFrom.x, lassoTo.x), juce::jmin (lassoFrom.y, lassoTo.y),
@@ -289,13 +302,13 @@ public:
         using namespace modhint;
         switch (bits)
         {
-            case ctrl:         return { "Click a take or a track's name: add it to the selection or take it out", "Ctrl + Z / Ctrl + Y: undo / redo" };
+            case ctrl:         return { "Click a take or a track's name: add it to the selection or take it out", "Ctrl + A: select every take", "Ctrl + Z / Ctrl + Y: undo / redo" };
             case alt:          return { "Drag: lasso - selects every take it touches" };
             case ctrl | alt:   case ctrl | alt | shift:
                                return { "Drag over a take: mark 1 - 2 on only the tracks you drag over" };
             case alt | shift:  return { "Drag: lasso - selects every take it touches" };
             case shift:        return { "Click a track's name: select every track from the last one clicked", "Left / Right arrow: nudge the playhead by 10 ms", "4: send the marked part to the edit's playhead as an INSERT (the rest moves later; 4 alone replaces)" };
-            case ctrl | shift: return { "Ctrl + Shift + Z: redo" };
+            case ctrl | shift: return { "Drag a clip up or down: the selected takes' clips on that track go onto another track (they stay where they are in time)", "Ctrl + Shift + Z: redo" };
             default:           return {};
         }
     }
@@ -625,7 +638,7 @@ public:
 
     void mouseDownImpl (const juce::MouseEvent& e)
     {
-        dragId = {}; dragging = false; markDragTake = {}; markActive = false; lassoActive = lassoMoved = false;
+        dragId = {}; dragging = false; markDragTake = {}; markActive = false; lassoActive = lassoMoved = false; moveActive = moveMoved = false;
         keepAndCloseBarsPopup();                                       // (a click elsewhere keeps what was typed; Esc is the way to throw it away)
         grabKeyboardFocus();
         auto* w = def();
@@ -765,6 +778,28 @@ public:
         if (auto* grp = groupAt (e.getPosition(), e.mods.isPopupMenu()))
         {
             if (inLane && e.getNumberOfClicks() > 1) { showSettings (grp->id, false); return; }
+            if (ctrlDown && e.mods.isShiftDown() && ! e.mods.isAltDown() && e.y >= kRulerH + kLaneH)    // Ctrl + Shift + drag: its clips onto another track
+            {
+                const auto shown = shownTracks();
+                const int row = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
+                if (juce::isPositiveAndBelow (row, (int) shown.size()))
+                {
+                    moveFrom = shown[(size_t) row]->id; moveRow0 = moveRow = row; moveDownY = e.y; moveMouse = e.getPosition();
+                    moveClickTake = grp->id; moveLabelArea = {};
+                    moveTakes.clear();
+                    if (isTakeSelected (grp->id))
+                    {
+                        for (auto& id : selectedTakes)
+                            if (auto* sg = w->findGroup (id))
+                                for (auto& f : sg->files) if (f.trackId == moveFrom) { moveTakes.push_back (id); break; }
+                    }
+                    else moveTakes.push_back (grp->id);
+                    moveActive = true; moveMoved = false;
+                    beginDragAutoRepeat (40);                                // (so the window keeps scrolling while the mouse is held at the top or bottom)
+                    setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
+                    return;
+                }
+            }
             if (ctrlDown && ! e.mods.isAltDown())                          // Ctrl + click: add this take to the selection, or take it out again
             {
                 auto it = std::find (selectedTakes.begin(), selectedTakes.end(), grp->id);
@@ -805,6 +840,7 @@ public:
         auto* w = def();
         if (w == nullptr) return;
         if (widthDrag) { kNameW = juce::jlimit (110, 700, e.x - viewport.getViewPositionX()); markers.setNameWidth (viewport.getViewPositionX() + kNameW); updateSize(); repaint(); return; }
+        if (moveActive) { dragMove (e); return; }
         if (lassoActive)
         {
             const auto before = lassoMoved ? lassoRect() : juce::Rectangle<int>();
@@ -884,6 +920,22 @@ public:
     void mouseUpImpl (const juce::MouseEvent& e)
     {
         if (widthDrag) { widthDrag = false; setMouseCursor (juce::MouseCursor::NormalCursor); repaint(); return; }
+        if (moveActive)
+        {
+            moveActive = false;
+            const bool moved = moveMoved; moveMoved = false;
+            setMouseCursor (juce::MouseCursor::NormalCursor);
+            repaint();
+            if (! moved)                                                     // Ctrl + Shift + click: as Ctrl + click, the take in or out of the selection
+            {
+                auto it = std::find (selectedTakes.begin(), selectedTakes.end(), moveClickTake);
+                if (it != selectedTakes.end()) selectedTakes.erase (it); else selectedTakes.push_back (moveClickTake);
+                return;
+            }
+            const auto shown = shownTracks();
+            if (moveRow != moveRow0 && juce::isPositiveAndBelow (moveRow, (int) shown.size())) moveClips (moveFrom, shown[(size_t) moveRow]->id, moveTakes);
+            return;
+        }
         if (lassoActive)
         {
             if (! lassoMoved) selectedTakes = takesIn (lassoRect());          // Alt + click (no drag): the take under the mouse, or none
@@ -1058,6 +1110,190 @@ private:
         }
     }
 
+    // ---- moving clips from one track to another (Ctrl + Shift + drag, and the track name's menu)
+    juce::Rectangle<int> moveStrip (int row) const { return { 0, kRulerH + kLaneH + row * rowH, getWidth(), rowH }; }
+    /** What dropping now would do: "" and the line by the mouse, or why it cannot. */
+    juce::String moveWhy (const std::vector<const TrackDef*>& shown)
+    {
+        if (moveRow == moveRow0 || ! juce::isPositiveAndBelow (moveRow, (int) shown.size())) return {};
+        return app.project.canMoveTakeClips (windowId, moveFrom, shown[(size_t) moveRow]->id, moveTakes);
+    }
+    juce::String moveText (const std::vector<const TrackDef*>& shown, const juce::String& why) const
+    {
+        if (moveRow == moveRow0 || ! juce::isPositiveAndBelow (moveRow, (int) shown.size())) return "Drag up or down onto another track";
+        if (why.isNotEmpty()) return why.upToFirstOccurrenceOf (" Nothing was moved.", false, false);
+        const auto* from = app.project.findTrack (moveFrom);
+        const int n = (int) moveTakes.size();
+        return "Move " + juce::String (n) + (n == 1 ? " clip: " : " clips: ") + (from != nullptr ? from->name : juce::String()) + "  >  " + shown[(size_t) moveRow]->name;
+    }
+    juce::Rectangle<int> moveLabelRect (const juce::String& text) const
+    {
+        const int sx = viewport.getViewPositionX(), sy = viewport.getViewPositionY();
+        const int w = juce::jmin (640, juce::GlyphArrangement::getStringWidthInt (juce::FontOptions (13.0f, juce::Font::bold), text) + 20), h = 24;
+        const int x = juce::jlimit (sx + kNameW + 4, juce::jmax (sx + kNameW + 4, sx + viewport.getMaximumVisibleWidth() - w - 4), moveMouse.x + 16);
+        const int y = juce::jlimit (sy + kRulerH + kLaneH + 2, juce::jmax (sy + kRulerH + kLaneH + 2, sy + viewport.getMaximumVisibleHeight() - h - 2), moveMouse.y - h - 8);
+        return { x, y, w, h };
+    }
+    /** The mouse moved (or is held at the top or bottom of the rows: the window scrolls, and this comes again every 40 ms). */
+    void dragMove (const juce::MouseEvent& e)
+    {
+        const auto shown = shownTracks();
+        if (shown.empty()) return;
+        const int sy = viewport.getViewPositionY(), visH = viewport.getMaximumVisibleHeight();
+        const int rowsTop = sy + kRulerH + kLaneH, rowsBottom = sy + visH;           // the rows that can be seen (the band at the top covers the ones under it)
+        const auto oldArea = moveStrip (moveRow).getUnion (moveLabelArea);
+        const int y = juce::jlimit (rowsTop, juce::jmax (rowsTop, rowsBottom - 1), e.y);
+        const int row = juce::jlimit (0, (int) shown.size() - 1, (y - kRulerH - kLaneH) / juce::jmax (1, rowH));
+        const juce::Point<int> mouse (e.x, y);
+        const bool wasMoved = moveMoved;
+        if (! moveMoved && (std::abs (e.y - moveDownY) > 3 || row != moveRow0)) moveMoved = true;
+        if (moveMoved && (! wasMoved || row != moveRow || mouse != moveMouse))       // (the auto-repeat calls this every 40 ms: only what changed is drawn again)
+        {
+            moveRow = row; moveMouse = mouse;
+            moveLabelArea = moveLabelRect (moveText (shown, moveWhy (shown))).expanded (2);
+            repaint (oldArea); repaint (moveStrip (moveRow).getUnion (moveLabelArea));
+        }
+        // held at the top or bottom of the rows: scroll that way, faster the further out (at most a row each time)
+        int dy = 0;
+        if (e.y < rowsTop + 10) dy = -juce::jlimit (4, juce::jmax (4, rowH), (rowsTop + 10 - e.y) / 2);
+        else if (e.y > rowsBottom - 10) dy = juce::jlimit (4, juce::jmax (4, rowH), (e.y - (rowsBottom - 10)) / 2);
+        if (dy != 0) viewport.setViewPosition (viewport.getViewPositionX(), juce::jlimit (0, juce::jmax (0, getHeight() - visH), sy + dy));
+    }
+    void paintMoveGhost (juce::Graphics& g)
+    {
+        auto* w = def();
+        const auto shown = shownTracks();
+        if (w == nullptr || ! juce::isPositiveAndBelow (moveRow, (int) shown.size())) return;
+        const int top = kRulerH + kLaneH, sx = viewport.getViewPositionX(), sy = viewport.getViewPositionY();
+        const auto why = moveWhy (shown);
+        const auto col = moveRow == moveRow0 ? theme::dimText : why.isEmpty() ? juce::Colour (0xff29b6ff) : juce::Colour (0xffff5a52);
+        const int y = top + moveRow * rowH;
+        {
+            juce::Graphics::ScopedSaveState saved (g);
+            g.reduceClipRegion (juce::Rectangle<int> (0, sy + top, getWidth(), juce::jmax (0, getHeight() - sy - top)));      // (not over the band at the top)
+            for (auto& id : moveTakes)
+                if (auto* grp = w->findGroup (id))
+                {
+                    const auto r = juce::Rectangle<int> (xOf (grp->startSeconds), y + 2, juce::jmax (4, (int) (grp->lengthSeconds() * pixelsPerSecond)), juce::jmax (4, rowH - 4));
+                    g.setColour (col.withAlpha (0.28f)); g.fillRect (r);
+                    g.setColour (col); g.drawRect (r, 2);
+                }
+            g.setColour (col.withAlpha (0.18f)); g.fillRect (juce::Rectangle<int> (sx, y, kNameW, rowH));
+            g.setColour (col); g.drawRect (juce::Rectangle<int> (sx, y, kNameW, rowH), 2);
+        }
+        const auto text = moveText (shown, why);
+        const auto lr = moveLabelRect (text);
+        g.setColour (juce::Colour (0xee101418)); g.fillRoundedRectangle (lr.toFloat(), 4.0f);
+        g.setColour (col); g.drawRoundedRectangle (lr.toFloat().reduced (0.5f), 4.0f, 1.0f);
+        g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        g.drawText (text, lr.reduced (10, 0), juce::Justification::centredLeft, true);
+    }
+    /** Every take of this window that has a clip on this track. */
+    std::vector<juce::Uuid> takesWithClipOn (const juce::Uuid& trackId)
+    {
+        std::vector<juce::Uuid> v;
+        if (auto* w = def())
+            for (auto& grp : w->groups)
+                for (auto& f : grp.files) if (f.trackId == trackId) { v.push_back (grp.id); break; }
+        return v;
+    }
+    /** The clips 'takes' have on 'from' go onto 'to' (Project::moveTakeClips): what it did on the status line, or why not in a message. */
+    bool moveClips (const juce::Uuid& from, const juce::Uuid& to, const std::vector<juce::Uuid>& takes, bool quiet = false)
+    {
+        if (app.engine.isRecording()) { showError ("Move clips", "Stop recording first."); return false; }
+        if (app.isPlaying()) app.stopPlayback();
+        juce::String why; int pieces = 0;
+        const int n = app.project.moveTakeClips (windowId, from, to, takes, why, &pieces);
+        if (n == 0) { if (! quiet) showError ("Move clips", why); return false; }
+        if (! quiet)
+        {
+            const auto* t = app.project.findTrack (to);
+            app.setNotice ("Moved " + juce::String (n) + (n == 1 ? " clip onto " : " clips onto ") + (t != nullptr ? t->name : juce::String ("the track"))
+                           + (pieces > 0 ? " (and " + juce::String (pieces) + (pieces == 1 ? " piece" : " pieces") + " of the edits made from them)" : juce::String()) + ". Ctrl + Z puts them back.");
+        }
+        updateSize(); repaint();
+        return true;
+    }
+    /** The tracks of this window with clips whose name ends with another track's name ("VivienneSPOT1" -> "SPOT1"), each with that track. */
+    std::vector<std::pair<juce::Uuid, juce::Uuid>> nameMatchPairs()
+    {
+        std::vector<std::pair<juce::Uuid, juce::Uuid>> v;
+        for (auto* t : shownTracks())
+            if (! t->isLtc && ! takesWithClipOn (t->id).empty())
+                if (auto* m = app.project.trackNamedAtEndOf (t->id)) v.push_back ({ t->id, m->id });
+        return v;
+    }
+    /** All of them at once (asked first, with the list): what could not be moved is listed afterwards. */
+    void moveAllByName()
+    {
+        if (app.engine.isRecording()) { showError ("Move clips", "Stop recording first."); return; }
+        const auto pairs = nameMatchPairs();
+        if (pairs.empty()) return;
+        auto nameOf = [this] (const juce::Uuid& id) { auto* t = app.project.findTrack (id); return t != nullptr ? t->name : juce::String ("?"); };
+        juce::StringArray lines;
+        for (auto& pr : pairs) lines.add (nameOf (pr.first) + "   >   " + nameOf (pr.second));
+        const auto list = lines.size() <= 30 ? lines.joinIntoString ("\n") : lines.joinIntoString ("\n", 0, 28) + "\n... and " + juce::String (lines.size() - 28) + " more";
+        juce::Component::SafePointer<TakeTimeline> safe (this);
+        confirmAsync ("Move clips by name", "Move every clip of these tracks onto the track its name ends with? The takes stay where they are in time "
+                      "(the pieces of edits made from them go along).\n\n" + list + "\n\nCtrl + Z puts them all back.", "Move them",
+                      [safe, pairs, nameOf]
+                      {
+                          if (safe == nullptr) return;
+                          if (safe->app.engine.isRecording()) { showError ("Move clips", "Stop recording first."); return; }
+                          int done = 0; juce::StringArray notMoved; std::vector<juce::Uuid> emptied;
+                          for (auto& pr : pairs)
+                          {
+                              const auto why = safe->app.project.canMoveTakeClips (safe->windowId, pr.first, pr.second, safe->takesWithClipOn (pr.first));
+                              if (why.isNotEmpty()) { notMoved.add (nameOf (pr.first) + ": " + why.upToFirstOccurrenceOf (" Nothing was moved.", false, false)); continue; }
+                              if (! safe->moveClips (pr.first, pr.second, safe->takesWithClipOn (pr.first), true)) continue;
+                              ++done;
+                              if (! safe->app.project.trackHasAudio (pr.first)) emptied.push_back (pr.first);     // (nothing left on it anywhere: it can go)
+                          }
+                          safe->app.setNotice ("Moved the clips of " + juce::String (done) + (done == 1 ? " track" : " tracks") + " onto the tracks their names end with. Ctrl + Z puts them back.");
+                          const auto notMovedText = notMoved.isEmpty() ? juce::String()
+                                                                       : "Moved " + juce::String (done) + " of " + juce::String ((int) pairs.size()) + ". Not moved:\n\n" + notMoved.joinIntoString ("\n");
+                          // the tracks the clips came from, now empty: the import's wrongly named tracks, which can be deleted at once
+                          if (! emptied.empty())
+                              safe->askToDeleteTracks (emptied, "Move clips by name",
+                                                       (notMovedText.isNotEmpty() ? notMovedText + "\n\n"
+                                                                                  : "Moved the clips of " + juce::String (done) + (done == 1 ? " track" : " tracks") + " (Ctrl + Z puts them back).\n\n")
+                                                       + (emptied.size() == 1 ? "The track they came from is empty now. " : "The tracks they came from are empty now. "),
+                                                       "Keep them");
+                          else if (notMovedText.isNotEmpty()) showError ("Move clips by name", notMovedText);
+                      });
+    }
+    /** Asks, then deletes these tracks from the whole project - only ones with no audio on them anywhere (Project::removeEmptyTracks), so nothing is
+        lost. 'lead' starts the question; 'noText' is the button that leaves them. */
+    void askToDeleteTracks (const std::vector<juce::Uuid>& ids, const juce::String& title, const juce::String& lead, const juce::String& noText = "Cancel")
+    {
+        juce::StringArray names;
+        for (auto& id : ids) if (auto* t = app.project.findTrack (id)) names.add (t->name);
+        if (names.isEmpty()) return;
+        const int n = names.size();
+        const auto list = n <= 40 ? names.joinIntoString (", ") : names.joinIntoString (", ", 0, 38) + " and " + juce::String (n - 38) + " more";
+        juce::Component::SafePointer<TakeTimeline> safe (this);
+        confirmAsync (title, lead + (n == 1 ? "Delete the track '" + names[0] + "' from the project?" : "Delete these " + juce::String (n) + " tracks from the project?\n\n" + list)
+                      + "\n\nThere is no audio on " + (n == 1 ? "it" : "them") + " in any take window or edit, so nothing is lost, and the audio files on the disk "
+                      "are not touched. Deleting tracks cannot be undone with Ctrl + Z.",
+                      n == 1 ? juce::String ("Delete the track") : "Delete " + juce::String (n) + " tracks",
+                      [safe, ids]
+                      {
+                          if (safe == nullptr) return;
+                          if (safe->app.engine.isRecording()) { showError ("Delete tracks", "Stop recording first."); return; }
+                          const int gone = safe->app.project.removeEmptyTracks (ids);
+                          if (safe == nullptr) return;
+                          for (auto& id : ids) safe->selectedTracks.erase (std::remove (safe->selectedTracks.begin(), safe->selectedTracks.end(), id), safe->selectedTracks.end());
+                          safe->app.setNotice ("Deleted " + juce::String (gone) + (gone == 1 ? " track" : " tracks") + " from the project.");
+                          safe->updateSize(); safe->repaint();
+                      }, noText);
+    }
+    /** Can this track be deleted from the project from here: not the LTC track, and no audio on it anywhere? */
+    bool deletable (const juce::Uuid& trackId)
+    {
+        const auto* t = app.project.findTrack (trackId);
+        return t != nullptr && ! t->isLtc && ! app.project.trackHasAudio (trackId);
+    }
+
     /** Right-click on a track name: remove the track from this take window only. */
     void showTrackMenu (const juce::Uuid& trackId, const juce::String& trackName)
     {
@@ -1065,6 +1301,24 @@ private:
         const auto where = juce::Rectangle<int> (juce::Desktop::getMousePosition(), juce::Desktop::getMousePosition()).expanded (4);
         m.addItem ("Colour...", [this, trackId, where] { showColourPickerAt (app, trackId, where); });
         m.addSeparator();
+        if (const auto withClips = takesWithClipOn (trackId); ! withClips.empty() && ! app.engine.isRecording())       // its clips onto another track
+        {
+            juce::Component::SafePointer<TakeTimeline> safe (this);
+            const int n = (int) withClips.size();
+            const juce::String clips = juce::String (n) + (n == 1 ? " clip" : " clips");
+            if (const auto* match = app.project.trackNamedAtEndOf (trackId))
+            {
+                const auto mid = match->id;
+                m.addItem ("Move its " + clips + " onto " + match->name, [safe, trackId, mid] { if (safe != nullptr) safe->moveClips (trackId, mid, safe->takesWithClipOn (trackId)); });
+            }
+            juce::PopupMenu to;
+            for (auto* t : shownTracks())
+                if (t->id != trackId && ! t->isLtc) { const auto tid = t->id; to.addItem (t->name, [safe, trackId, tid] { if (safe != nullptr) safe->moveClips (trackId, tid, safe->takesWithClipOn (trackId)); }); }
+            m.addSubMenu ("Move its " + clips + " onto another track", to);
+            if (const auto pairs = nameMatchPairs(); pairs.size() > 1)
+                m.addItem ("Move the clips of all " + juce::String ((int) pairs.size()) + " tracks named like this onto the tracks their names end with...", [safe] { if (safe != nullptr) safe->moveAllByName(); });
+            m.addSeparator();
+        }
         if (trackSelected (trackId) && selectedTracks.size() > 1)
         {
             const auto ids = selectedTracks;
@@ -1086,6 +1340,9 @@ private:
                                   }
                               });
             });
+            if (! app.engine.isRecording() && std::all_of (ids.begin(), ids.end(), [this] (const juce::Uuid& id) { return deletable (id); }))      // (empty everywhere)
+                m.addItem ("Delete the " + juce::String (n) + " selected tracks from the project...",
+                           [safe = juce::Component::SafePointer<TakeTimeline> (this), ids] { if (safe != nullptr) safe->askToDeleteTracks (ids, "Delete tracks", {}); });
             m.addItem ("Select none", [this] { selectedTracks.clear(); repaint(); });
             m.addSeparator();
         }
@@ -1105,6 +1362,9 @@ private:
                               }
                           });
         });
+        if (! app.engine.isRecording() && deletable (trackId))          // nothing on it anywhere (an import's wrongly named track, once its clips are moved)
+            m.addItem ("Delete track '" + trackName + "' from the project...",
+                       [safe = juce::Component::SafePointer<TakeTimeline> (this), trackId] { if (safe != nullptr) safe->askToDeleteTracks ({ trackId }, "Delete track", {}); });
         m.showMenuAsync (juce::PopupMenu::Options());
     }
 
@@ -1943,6 +2203,10 @@ void TakeWindowComponent::nudgeCursor (double seconds)
 
 bool TakeWindowComponent::keyPressed (const juce::KeyPress& k)
 {
+    {   // Ctrl + A: select every take (then Ctrl + Shift + drag moves all their clips on a track onto another track)
+        const auto km = k.getModifiers();
+        if ((km.isCtrlDown() || km.isCommandDown()) && ! km.isAltDown() && ! km.isShiftDown() && (k.getKeyCode() == 'A' || k.getKeyCode() == 'a')) { timeline->selectAllTakes(); return true; }
+    }
     const auto c = juce::CharacterFunctions::toLowerCase (k.getTextCharacter());
     if (k == juce::KeyPress::spaceKey)                                  // Space plays (or stops playing) from the playhead. A recording is stopped by AppContext,
     {                                                                   // which watches Space itself, from whichever window

@@ -8162,6 +8162,144 @@ int main()
         }
     }
 
+    SECTION ("2.99 clips moved from one track to another in a take window (an import that put them on tracks of their own)");
+    {
+        Project q; q.setInputCount (8); q.setOutputCount (2); q.tracks.clear();
+        const auto spot1 = q.addTrack ("SPOT1", TrackFormat::Mono, 0).id;
+        const auto spot2 = q.addTrack ("SPOT2", TrackFormat::Mono, 1).id;
+        const auto spot3 = q.addTrack ("SPOT3", TrackFormat::Mono, 2).id;
+        const auto rooms = q.addTrack ("ROOMS", TrackFormat::Mono, 3).id;
+        const auto m50 = q.addTrack ("M50 ROOMS", TrackFormat::Mono, 4).id;
+        const auto pair = q.addTrack ("AB", TrackFormat::Stereo, 5).id;
+        const auto v1 = q.addTrack ("VivienneSPOT1", TrackFormat::Mono, 0).id;
+        const auto v2 = q.addTrack ("VivienneSPOT2", TrackFormat::Mono, 1).id;
+        const auto vm50 = q.addTrack (" VivienneM50 ROOMS ", TrackFormat::Mono, 4).id;
+        const auto ltc = q.addTrack ("LTC", TrackFormat::Mono, 7).id; q.findTrack (ltc)->isLtc = true;
+        // the track a prefixed name ends with: the longest such name, capitals and spaces at the ends not counting; none for a plain name, never the LTC track
+        CHECK (q.trackNamedAtEndOf (v1) != nullptr && q.trackNamedAtEndOf (v1)->id == spot1);
+        CHECK (q.trackNamedAtEndOf (vm50) != nullptr && q.trackNamedAtEndOf (vm50)->id == m50);          // (not "ROOMS")
+        CHECK (q.trackNamedAtEndOf (spot1) == nullptr && q.trackNamedAtEndOf (rooms) == nullptr);
+        auto& tw = q.addTakeWindow ("O Sacrum Convivium"); const auto twId = tw.id;
+        std::vector<juce::Uuid> takeIds;
+        for (int n = 1; n <= 3; ++n)
+        {
+            TakeGroup g; g.id = juce::Uuid(); g.number = n; g.startSeconds = 60.0 * n; g.sampleRate = 48000.0; g.lengthSamples = 48000 * 30;
+            for (auto [tid, nm] : { std::pair<juce::Uuid, const char*> { v1, "VivienneSPOT1" }, { v2, "VivienneSPOT2" } })
+            { TakeFile f; f.trackId = tid; f.trackName = nm; f.numChannels = 1; f.file = tmp.getChildFile (juce::String (nm) + juce::String (n) + ".wav"); g.files.push_back (f); }
+            if (n == 2) { TakeFile f; f.trackId = spot2; f.trackName = "SPOT2"; f.numChannels = 1; f.file = tmp.getChildFile ("spot2-2.wav"); g.files.push_back (f); }
+            takeIds.push_back (g.id); tw.groups.push_back (g);
+        }
+        auto fileOn = [&] (int take, const juce::Uuid& tid) -> const TakeFile*
+        {
+            auto* w = q.findTakeWindow (twId); if (w == nullptr) return nullptr;
+            auto* g = w->findGroup (takeIds[(size_t) take]); if (g == nullptr) return nullptr;
+            for (auto& f : g->files) if (f.trackId == tid) return &f;
+            return nullptr;
+        };
+        // an edit made from take 1 before the move, with a track list of its own that has VivienneSPOT1 and not SPOT1
+        auto& ed = q.addEdit ("Edit 1", twId); const auto edId = ed.id;
+        {
+            EditRegion r; r.id = juce::Uuid(); r.windowId = twId; r.takeId = takeIds[0]; r.srcIn = 0; r.srcOut = 48000 * 10; r.sampleRate = 48000.0;
+            RegionFile rf; rf.trackId = v1; rf.trackName = "VivienneSPOT1"; rf.file = fileOn (0, v1)->file; rf.numChannels = 1; r.files.push_back (rf);
+            ed.regions.push_back (r);
+            ed.trackIds = { spot2, v1 };
+        }
+        q.undoReset();
+        // all three takes' clips on VivienneSPOT1 onto SPOT1: same files, same takes (so the same time), the new track's name; the edit's piece goes along
+        juce::String why; int pieces = -1;
+        CHECK (q.canMoveTakeClips (twId, v1, spot1, takeIds).isEmpty());
+        CHECK (q.moveTakeClips (twId, v1, spot1, takeIds, why, &pieces) == 3 && why.isEmpty() && pieces == 1);
+        bool allMoved = true;
+        for (int n = 0; n < 3; ++n) allMoved = allMoved && fileOn (n, v1) == nullptr && fileOn (n, spot1) != nullptr && fileOn (n, spot1)->trackName == "SPOT1"
+                                                && fileOn (n, spot1)->file == tmp.getChildFile ("VivienneSPOT1" + juce::String (n + 1) + ".wav");
+        CHECK (allMoved);
+        {
+            auto* e = q.findEdit (edId);
+            CHECK (e != nullptr && e->regions.size() == 1 && e->regions[0].files.size() == 1 && e->regions[0].files[0].trackId == spot1 && e->regions[0].files[0].trackName == "SPOT1");
+            CHECK (e != nullptr && e->trackIds.size() == 3 && e->trackIds[0] == spot2 && e->trackIds[1] == v1 && e->trackIds[2] == spot1);   // (SPOT1 beside VivienneSPOT1)
+        }
+        // one undo step puts it all back (take window and edit)
+        q.undoTick (false, true);
+        CHECK (q.undo());
+        CHECK (fileOn (0, v1) != nullptr && fileOn (2, v1) != nullptr && fileOn (0, spot1) == nullptr);
+        CHECK (q.findEdit (edId) != nullptr && q.findEdit (edId)->regions[0].files[0].trackId == v1);
+        CHECK (q.redo() && fileOn (1, spot1) != nullptr && fileOn (1, v1) == nullptr);
+        // refused, and nothing moved: a take that already has audio on the target track (take 002 has SPOT2) ...
+        why = q.canMoveTakeClips (twId, v2, spot2, takeIds);
+        CHECK (why.contains ("take 002") && q.moveTakeClips (twId, v2, spot2, takeIds, why, nullptr) == 0 && fileOn (0, v2) != nullptr && fileOn (0, spot2) == nullptr);
+        // ... other channels (mono clips onto a stereo track), the LTC track, the same track, takes with no clip there
+        CHECK (q.canMoveTakeClips (twId, v2, pair, takeIds).contains ("stereo") && q.moveTakeClips (twId, v2, pair, takeIds, why) == 0);
+        CHECK (q.canMoveTakeClips (twId, v2, ltc, takeIds).isNotEmpty() && q.canMoveTakeClips (twId, v2, v2, takeIds).isNotEmpty());
+        CHECK (q.canMoveTakeClips (twId, rooms, spot3, takeIds).isNotEmpty());
+        // only the takes asked for (the selected ones): takes 1 and 3 onto SPOT3, take 2 stays
+        CHECK (q.moveTakeClips (twId, v2, spot3, { takeIds[0], takeIds[2] }, why) == 2);
+        CHECK (fileOn (0, spot3) != nullptr && fileOn (2, spot3) != nullptr && fileOn (1, v2) != nullptr && fileOn (1, spot3) == nullptr);
+        // a track removed from the window comes back when clips are moved onto it
+        q.findTakeWindow (twId)->hiddenTracks.push_back (spot2);
+        TakeGroup g4; g4.id = juce::Uuid(); g4.number = 4; g4.sampleRate = 48000.0; g4.lengthSamples = 48000;
+        { TakeFile f; f.trackId = v2; f.trackName = "VivienneSPOT2"; f.numChannels = 1; g4.files.push_back (f); }
+        q.findTakeWindow (twId)->groups.push_back (g4);
+        CHECK (q.moveTakeClips (twId, v2, spot2, { g4.id }, why) == 1 && ! q.findTakeWindow (twId)->isHidden (spot2));
+        // audio anywhere: a take window's clip or an edit's piece (or overdub). VivienneSPOT1 has nothing left (its edit piece went along), VivienneSPOT2
+        // still has take 002's clip
+        CHECK (! q.trackHasAudio (v1) && q.trackHasAudio (v2) && q.trackHasAudio (spot1) && ! q.trackHasAudio (vm50) && ! q.trackHasAudio (rooms));
+        {
+            EditRegion od; od.id = juce::Uuid(); od.windowId = twId; od.takeId = takeIds[1]; od.srcIn = 0; od.srcOut = 48000; od.sampleRate = 48000.0;
+            RegionFile rf; rf.trackId = rooms; rf.trackName = "ROOMS"; rf.file = tmp.getChildFile ("rooms-od.wav"); rf.numChannels = 1; od.files.push_back (rf);
+            q.findEdit (edId)->overdubs.push_back (od);
+            CHECK (q.trackHasAudio (rooms));
+        }
+        // deleting the emptied tracks at once: only the ones with no audio anywhere, never the LTC track
+        const auto tracksBefore = q.tracks.size();
+        CHECK (q.removeEmptyTracks ({ v1, v2, vm50, ltc, rooms }) == 2);
+        CHECK (q.tracks.size() == tracksBefore - 2 && q.findTrack (v1) == nullptr && q.findTrack (vm50) == nullptr);
+        CHECK (q.findTrack (v2) != nullptr && q.findTrack (ltc) != nullptr && q.findTrack (rooms) != nullptr);
+        CHECK (q.missingTracksOf (*q.findEdit (edId)).empty());          // (the edit's audio is all on tracks that are still there: nothing to ask about)
+        CHECK (q.removeEmptyTracks ({ v1 }) == 0);                       // (gone already)
+    }
+
+    SECTION ("2.99 undoing a move after the old track was deleted: the clips and the edit's pieces stay where they are (not on a track that is gone)");
+    {
+        Project q; q.setInputCount (4); q.setOutputCount (2); q.tracks.clear();
+        const auto spot1 = q.addTrack ("SPOT1", TrackFormat::Mono, 0).id;
+        const auto v1 = q.addTrack ("VivienneSPOT1", TrackFormat::Mono, 1).id;
+        auto& tw = q.addTakeWindow ("Piece"); const auto twId = tw.id;
+        TakeGroup g; g.id = juce::Uuid(); g.number = 1; g.sampleRate = 48000.0; g.lengthSamples = 48000 * 10;
+        { TakeFile f; f.trackId = v1; f.trackName = "VivienneSPOT1"; f.numChannels = 1; f.file = tmp.getChildFile ("undo-v1.wav"); g.files.push_back (f); }
+        tw.groups.push_back (g);
+        auto& ed = q.addEdit ("Edit", twId); const auto edId = ed.id;
+        {
+            EditRegion r; r.id = juce::Uuid(); r.windowId = twId; r.takeId = g.id; r.srcIn = 0; r.srcOut = 48000 * 5; r.sampleRate = 48000.0;
+            RegionFile rf; rf.trackId = v1; rf.trackName = "VivienneSPOT1"; rf.file = tmp.getChildFile ("undo-v1.wav"); rf.numChannels = 1; r.files.push_back (rf);
+            ed.regions.push_back (r);
+            ed.trackIds = { v1 };
+        }
+        q.undoReset();
+        juce::String why;
+        CHECK (q.moveTakeClips (twId, v1, spot1, { g.id }, why) == 1);
+        q.undoTick (false, true);
+        CHECK (q.removeEmptyTracks ({ v1 }) == 1 && q.findTrack (v1) == nullptr);
+        q.undoTick (false, true);
+        CHECK (q.undo());
+        auto* w = q.findTakeWindow (twId);
+        CHECK (w != nullptr && w->groups.size() == 1 && w->groups[0].files.size() == 1 && w->groups[0].files[0].trackId == spot1);
+        auto* e = q.findEdit (edId);
+        CHECK (e != nullptr && e->regions.size() == 1 && e->regions[0].files[0].trackId == spot1 && e->regions[0].files[0].trackName == "SPOT1");
+        CHECK (e != nullptr && e->trackIds.size() == 1 && e->trackIds[0] == spot1);      // (the edit's own rows: SPOT1 in the place of the deleted track)
+        CHECK (e != nullptr && q.missingTracksOf (*e).empty());
+        // with the old track still there, undo puts the clip back on it as before
+        const auto v1b = q.addTrack ("VivienneSPOT1", TrackFormat::Mono, 1).id;
+        {
+            TakeGroup g2; g2.id = juce::Uuid(); g2.number = 2; g2.sampleRate = 48000.0; g2.lengthSamples = 48000;
+            TakeFile f; f.trackId = v1b; f.trackName = "VivienneSPOT1"; f.numChannels = 1; f.file = tmp.getChildFile ("undo-v1b.wav"); g2.files.push_back (f);
+            w->groups.push_back (g2); q.changed();
+            q.undoTick (false, true);
+            CHECK (q.moveTakeClips (twId, v1b, spot1, { g2.id }, why) == 1);
+            q.undoTick (false, true);
+            CHECK (q.undo() && w->findGroup (g2.id) != nullptr && w->findGroup (g2.id)->files[0].trackId == v1b);
+        }
+    }
+
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;
 }

@@ -614,11 +614,12 @@ inline void showError (const juce::String& title, const juce::String& message)
     juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, title, message);
 }
 
-/** Asks "are you sure?" without blocking; runs onYes only if the person presses the first button. */
-inline void confirmAsync (const juce::String& title, const juce::String& message, const juce::String& yesText, std::function<void()> onYes)
+/** Asks "are you sure?" without blocking; runs onYes only if the person presses the first button ('noText' is the other one). */
+inline void confirmAsync (const juce::String& title, const juce::String& message, const juce::String& yesText, std::function<void()> onYes,
+                          const juce::String& noText = "Cancel")
 {
     juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon).withTitle (title).withMessage (message)
-                                      .withButton (yesText).withButton ("Cancel"),
+                                      .withButton (yesText).withButton (noText),
                                   [onYes = std::move (onYes)] (int r) { if (r == 1 && onYes) onYes(); });
 }
 

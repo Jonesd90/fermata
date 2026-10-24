@@ -6,6 +6,14 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.99.0
+**Moving clips onto another track** (for an import that put the audio on new tracks of its own - "VivienneSPOT1" beside the empty "SPOT1")
+- **Ctrl + Shift + drag** a clip up or down in a take window: the clips the selected takes have on that track go onto the track you let go on, and stay exactly where they are in time. Select the takes first - **Ctrl + A** (new) selects every take, Alt + drag or Ctrl + click choose some; a clip of a take that is not selected moves on its own. While you drag, the clips show on the track they will go to, with "Move 4 clips: VivienneSPOT1 > SPOT1"; held at the top or bottom of the window, it scrolls. It turns red and says why when they cannot go there - a take that already has audio on that track, mono clips onto a stereo track (or the other way round), the LTC track - and then nothing is moved. Ctrl + Shift + click without dragging still adds a take to the selection or takes it out. Hold Ctrl + Shift over the window and the hint box says all this.
+- **Right-click a track's name:** *Move its 4 clips onto SPOT1* (the track its name ends with - the longest such name, so "VivienneM50 ROOMS" goes onto "M50 ROOMS", not "ROOMS"), *Move its 4 clips onto another track* (any track), and *Move the clips of all 22 tracks named like this onto the tracks their names end with...*, which lists every pair and asks before it moves them all.
+- After that one, the tracks the clips came from are empty, and Fermata offers to **delete them from the project** in one go. A track with no audio on it anywhere also has *Delete track ... from the project...* on its right-click menu (and *Delete the 3 selected tracks from the project...* when several are selected), so they need not be deleted one at a time in the Project Designer. Only tracks with nothing on them in any take window or edit can be deleted from here.
+- The pieces of edits made from those takes move with them (the same audio, so the same track); an edit with its own list of tracks gets the new track beside the old one. A track removed from the take window comes back when clips are moved onto it. The audio files are not touched (they keep their names on the disk).
+- **Ctrl + Z** puts the clips back (all of them in one step, also after *Move the clips of all...*). Deleting a track cannot be undone; Ctrl + Z after deleting the old tracks leaves the clips where they are, rather than putting them back onto a track that is gone (where they would vanish).
+
 ## 2.98.0
 A sweep through everything added since 2.71, the Stream Deck code first (that is where the crash was).
 

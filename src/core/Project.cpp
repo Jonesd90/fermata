@@ -892,6 +892,127 @@ TakeWindowDef* Project::findTakeWindow (const juce::Uuid& id)
     return nullptr;
 }
 
+juce::String Project::canMoveTakeClips (const juce::Uuid& windowId, const juce::Uuid& fromTrack, const juce::Uuid& toTrack, const std::vector<juce::Uuid>& takes)
+{
+    auto* w = findTakeWindow (windowId);
+    const auto* from = findTrack (fromTrack);
+    const auto* to = findTrack (toTrack);
+    if (w == nullptr || from == nullptr || to == nullptr) return "Nothing to move.";
+    if (fromTrack == toTrack) return "Drop them on another track.";
+    if (from->isLtc || to->isLtc) return "The LTC track holds the timecode: clips are not moved onto it or off it.";
+    juce::StringArray busy; int clips = 0, channels = 0;
+    for (auto& id : takes)
+        if (auto* g = w->findGroup (id))
+        {
+            const TakeFile* f = nullptr; bool occupied = false;
+            for (auto& tf : g->files) { if (tf.trackId == fromTrack) f = &tf; if (tf.trackId == toTrack) occupied = true; }
+            if (f == nullptr) continue;
+            ++clips;
+            if (occupied) busy.add ("take " + pad3 (g->number));
+            if (juce::jmax (1, f->numChannels) != to->channelCount()) channels = juce::jmax (1, f->numChannels);
+        }
+    if (clips == 0) return "None of these takes has a clip on " + from->name + ".";
+    if (! busy.isEmpty())
+        return to->name + " already has audio in " + (busy.size() <= 4 ? busy.joinIntoString (", ") : busy[0] + ", " + busy[1] + ", " + busy[2] + " and " + juce::String (busy.size() - 3) + " more")
+               + ". Nothing was moved.";
+    auto chName = [] (int n) { return n == 1 ? juce::String ("mono") : n == 2 ? juce::String ("stereo") : juce::String (n) + "-channel"; };
+    if (channels > 0) return "The clips are " + chName (channels) + " and " + to->name + " is a " + chName (to->channelCount()) + " track. Nothing was moved.";
+    return {};
+}
+
+int Project::moveTakeClips (const juce::Uuid& windowId, const juce::Uuid& fromTrack, const juce::Uuid& toTrack, const std::vector<juce::Uuid>& takes,
+                            juce::String& why, int* editPieces)
+{
+    if (editPieces != nullptr) *editPieces = 0;
+    why = canMoveTakeClips (windowId, fromTrack, toTrack, takes);
+    if (why.isNotEmpty()) return 0;
+    auto* w = findTakeWindow (windowId);
+    const auto* to = findTrack (toTrack);
+    std::set<juce::Uuid> moved;
+    for (auto& id : takes)
+        if (auto* g = w->findGroup (id); g != nullptr && moved.count (id) == 0)
+        {
+            bool any = false;
+            for (auto& tf : g->files) if (tf.trackId == fromTrack) { tf.trackId = toTrack; tf.trackName = to->name; any = true; }
+            if (! any) continue;
+            for (auto& wp : g->waiting) for (auto& t : wp.tracks) if (t == fromTrack) t = toTrack;     // (a part waiting for corrected audio names its tracks)
+            moved.insert (id);
+        }
+    if (moved.count (w->editTake) > 0)                                   // marks 1 - 2 on only some tracks: the marked track goes along
+        for (auto& t : w->editTracks) if (t == fromTrack) t = toTrack;
+    w->unhide (toTrack);
+    // the pieces of edits made from these takes: the same audio, so the same track (left behind, they would be on a track that is then deleted)
+    int pieces = 0;
+    for (auto& e : edits)
+    {
+        bool touched = false;
+        auto doRegions = [&] (std::vector<EditRegion>& rs)
+        {
+            for (auto& r : rs)
+            {
+                if (moved.count (r.takeId) == 0) continue;
+                bool occupied = false; for (auto& rf : r.files) if (rf.trackId == toTrack) occupied = true;
+                if (occupied) continue;                                  // (a piece that has audio on both tracks already is left as it is)
+                bool any = false;
+                for (auto& rf : r.files) if (rf.trackId == fromTrack) { rf.trackId = toTrack; rf.trackName = to->name; any = true; }
+                if (! any) continue;
+                for (auto& t : r.waiting.tracks) if (t == fromTrack) t = toTrack;
+                ++pieces; touched = true;
+            }
+        };
+        doRegions (e->regions); doRegions (e->overdubs);
+        if (touched && ! e->trackIds.empty() && std::find (e->trackIds.begin(), e->trackIds.end(), toTrack) == e->trackIds.end())
+        {
+            const auto at = std::find (e->trackIds.begin(), e->trackIds.end(), fromTrack);
+            e->trackIds.insert (at == e->trackIds.end() ? e->trackIds.end() : at + 1, toTrack);
+        }
+    }
+    if (editPieces != nullptr) *editPieces = pieces;
+    changed();
+    return (int) moved.size();
+}
+
+const TrackDef* Project::trackNamedAtEndOf (const juce::Uuid& trackId) const
+{
+    const TrackDef* self = nullptr;
+    for (auto& t : tracks) if (t.id == trackId) self = &t;
+    if (self == nullptr) return nullptr;
+    const auto own = self->name.trim().toLowerCase();
+    const TrackDef* best = nullptr; int bestLen = 0;
+    for (auto& t : tracks)
+    {
+        if (&t == self || t.isLtc) continue;
+        const auto other = t.name.trim().toLowerCase();
+        if (other.isEmpty() || other.length() >= own.length() || ! own.endsWith (other)) continue;
+        if (other.length() > bestLen) { best = &t; bestLen = other.length(); }
+    }
+    return best;
+}
+
+bool Project::trackHasAudio (const juce::Uuid& trackId) const
+{
+    for (auto& w : takeWindows)
+        for (auto& g : w->groups)
+            for (auto& f : g.files) if (f.trackId == trackId) return true;
+    auto inRegions = [&] (const std::vector<EditRegion>& rs)
+    {
+        for (auto& r : rs) for (auto& rf : r.files) if (rf.trackId == trackId) return true;
+        return false;
+    };
+    for (auto& e : edits) if (inRegions (e->regions) || inRegions (e->overdubs)) return true;
+    return false;
+}
+
+int Project::removeEmptyTracks (const std::vector<juce::Uuid>& ids)
+{
+    const auto before = tracks.size();
+    tracks.erase (std::remove_if (tracks.begin(), tracks.end(), [&] (const TrackDef& t)
+                  { return ! t.isLtc && std::find (ids.begin(), ids.end(), t.id) != ids.end() && ! trackHasAudio (t.id); }), tracks.end());
+    const int gone = (int) (before - tracks.size());
+    if (gone > 0) structureChanged();
+    return gone;
+}
+
 juce::Array<int> Project::inputsOfTrack (const TrackDef& t) const
 {
     juce::Array<int> r;
@@ -1963,6 +2084,28 @@ bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid
         bool structural = false;
         if (auto* live = p.findEdit (te->id))
         {
+            // a piece's file on a track that has been deleted since (its clips were moved onto another track, then the old track deleted) stays on
+            // the track it is on now: put back on the deleted track it would be silent, and the edit would ask to bring the track back
+            std::map<std::pair<juce::Uuid, juce::String>, std::pair<juce::Uuid, juce::String>> now;          // (piece, file) -> (track, its name)
+            for (auto* rs : { &live->regions, &live->overdubs })
+                for (auto& r : *rs) for (auto& rf : r.files) now[{ r.id, rf.file.getFullPathName() }] = { rf.trackId, rf.trackName };
+            for (auto* rs : { &te->regions, &te->overdubs })
+                for (auto& r : *rs)
+                    for (auto& rf : r.files)
+                    {
+                        if (p.findTrack (rf.trackId) != nullptr) continue;
+                        const auto it = now.find ({ r.id, rf.file.getFullPathName() });
+                        if (it == now.end() || p.findTrack (it->second.first) == nullptr) continue;
+                        const auto gone = rf.trackId;
+                        rf.trackId = it->second.first; rf.trackName = it->second.second;
+                        for (auto& t : r.waiting.tracks) if (t == gone) t = rf.trackId;
+                        auto& ids = te->trackIds;                                   // (an edit with rows of its own: the track the piece stays on is one of them)
+                        if (! ids.empty() && std::find (ids.begin(), ids.end(), rf.trackId) == ids.end())
+                        {
+                            const auto at = std::find (ids.begin(), ids.end(), gone);
+                            if (at != ids.end()) *at = rf.trackId; else ids.push_back (rf.trackId);
+                        }
+                    }
             te->fixIn = live->fixIn; te->fixOut = live->fixOut; te->fixTracks = live->fixTracks;
             te->playheadSeconds = live->playheadSeconds; te->insertIndex = live->insertIndex; te->markers = live->markers; te->feedback = live->feedback; te->showFeedback = live->showFeedback; te->showMarkers = live->showMarkers;
             te->laneRows = live->laneRows;                                // (the automation rows shown: a view setting, like the ones above)
@@ -1984,6 +2127,12 @@ bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid
             lg->label = tg.label; lg->startSeconds = tg.startSeconds; lg->fadeInSeconds = tg.fadeInSeconds; lg->fadeOutSeconds = tg.fadeOutSeconds;
             lg->dud = tg.dud; lg->barIn = tg.barIn; lg->barOut = tg.barOut; lg->number = tg.number; lg->notes = tg.notes;
             lg->roomTone = tg.roomTone; lg->roomToneIn = tg.roomToneIn; lg->roomToneOut = tg.roomToneOut;
+            // the track each file is on (clips moved onto another track, 2.99): matched by the file, so the files themselves - recorded, fixed,
+            // relinked, which have undo steps of their own or none - are never put back by this. A track deleted since then is not gone back to
+            // (the clip would vanish): the clip stays where it is
+            for (auto& tf : tg.files)
+                for (auto& lf : lg->files)
+                    if (lf.file == tf.file && lf.trackId != tf.trackId && p.findTrack (tf.trackId) != nullptr) { lf.trackId = tf.trackId; lf.trackName = tf.trackName; }
         }
         else live->groups.push_back (tg);                    // a take that was removed from the window comes back
     }
