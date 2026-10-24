@@ -4,44 +4,16 @@
 
 namespace td
 {
-struct RemoteControlServer::Client : juce::Thread
+RemoteControlServer::RemoteControlServer (AppContext& a, int port)
+    : app (a), hub ([this] (remote::Hub::Connection& c, const juce::String& line) { handleLine (c, line); })
 {
-    Client (RemoteControlServer& o, std::unique_ptr<juce::StreamingSocket> s) : juce::Thread ("Fermata remote client"), owner (o), sock (std::move (s)) { startThread(); }
-    ~Client() override { sock->close(); stopThread (2000); }
-    void run() override
+    if (port <= 0) return;                                                 // (0 in the settings file switches the control port off)
+    hub.log = [] (const juce::String& s) { juce::Logger::writeToLog (s); };
+    if (! hub.start (port))
     {
-        juce::String pending;
-        char buf[1024];
-        while (! threadShouldExit() && sock->isConnected())
-        {
-            const int ready = sock->waitUntilReady (true, 200);
-            if (ready < 0) break;
-            if (ready == 0) continue;
-            const int n = sock->read (buf, (int) sizeof (buf), false);
-            if (n <= 0) break;
-            pending += juce::String::fromUTF8 (buf, n);
-            if (pending.length() > 65536) pending.clear();                 // never grows without end
-            for (int nl = pending.indexOfChar ('\n'); nl >= 0; nl = pending.indexOfChar ('\n'))
-            {
-                const auto line = pending.substring (0, nl).trim();
-                pending = pending.substring (nl + 1);
-                if (line.isNotEmpty()) owner.handleLine (*this, line);
-            }
-        }
-        dead = true;
+        juce::Logger::writeToLog ("Control port: 127.0.0.1:" + juce::String (port) + " could not be opened (is another program, or another Fermata, using it?) - the Stream Deck cannot reach Fermata");
+        return;
     }
-    RemoteControlServer& owner;
-    std::unique_ptr<juce::StreamingSocket> sock;
-    std::atomic<bool> dead { false };
-    std::atomic<bool> desk { false };                                      // wants the "desk" and "meters" messages (the Stream Deck + XL)
-};
-
-RemoteControlServer::RemoteControlServer (AppContext& a, int port) : juce::Thread ("Fermata remote"), app (a)
-{
-    if (port <= 0) return;
-    listening = listener.createListener (port, "127.0.0.1");
-    if (! listening) return;
-    startThread();
     startTimer (50);                                                       // (the state is only sent when it has changed; the meters 20 times a second to whoever asked)
     app.peakListeners.add (this);
 }
@@ -51,49 +23,20 @@ RemoteControlServer::~RemoteControlServer()
     *alive = false;
     stopTimer();
     app.peakListeners.remove (this);
-    listener.close();
-    stopThread (2000);
-    const juce::ScopedLock sl (lock);
-    clients.clear();
+    hub.stop();                                                            // every controller's thread has ended before anything else goes
 }
 
-void RemoteControlServer::run()
-{
-    while (! threadShouldExit())
-    {
-        if (listener.waitUntilReady (true, 250) <= 0) continue;
-        std::unique_ptr<juce::StreamingSocket> s (listener.waitForNextConnection());
-        if (s == nullptr) continue;
-        const juce::ScopedLock sl (lock);
-        for (int i = clients.size(); --i >= 0;) if (clients[i]->dead.load()) clients.remove (i);
-        if (clients.size() < 8) clients.add (new Client (*this, std::move (s)));
-        lastSent.clear();                                                  // the new controller gets the state at the next tick
-    }
-}
-
-void RemoteControlServer::handleLine (Client& from, const juce::String& line)
+void RemoteControlServer::handleLine (remote::Hub::Connection& from, const juce::String& line)
 {
     const auto cmd = remote::parseCommand (line);
     if (cmd.name.isEmpty()) return;
     if (cmd.name == "desk")                                                // (answered here: it only sets a flag of this connection)
     {
-        from.desk = cmd.on;
-        deskWanted = true;
+        from.setWantsDesk (cmd.on);
+        if (cmd.on) deskWanted = true;
         return;
     }
     juce::MessageManager::callAsync ([this, cmd, flag = alive] { if (*flag) execute (cmd); });
-}
-
-MixerState* RemoteControlServer::panMixer() const
-{
-    auto& P = app.project;
-    if (P.mixers.empty()) return nullptr;
-    if (app.frontMixerId)
-    {
-        const auto id = app.frontMixerId();
-        for (auto& m : P.mixers) if (m->id == id) return m.get();
-    }
-    return P.mixers.front().get();
 }
 
 void RemoteControlServer::execute (const remote::Command& c)
@@ -120,7 +63,6 @@ void RemoteControlServer::execute (const remote::Command& c)
         else if (c.name == "talkin") { if (juce::isPositiveAndBelow (c.input, (int) P.inputs.size())) app.setCrMicInput (c.input, ! P.isCrMic (c.input)); }
         else if (c.name == "preamp") desk::preampKey (P, c.input, c.what);
         else if (c.name == "gain") desk::gainStep (P, c.input, (float) c.delta);
-        else if (c.name == "pan") { if (auto* m = panMixer()) desk::panStep (P, *m, c.input, c.side, (float) c.delta, c.centre); }
         else if (c.name == "mixout") desk::mixOutStep (P, c.index, (float) c.delta);
         else if (c.name == "mixmute") desk::mixOutMute (P, c.index);
         else if (c.name == "stage") { if (desk::stageStep (P, c.what, (float) c.delta, false)) app.applyStageMix(); }
@@ -162,9 +104,7 @@ juce::String RemoteControlServer::collectDesk()
     auto& P = app.project;
     auto* o = new juce::DynamicObject();
     o->setProperty ("type", "desk");
-    auto* pm = panMixer();
-    o->setProperty ("panMixer", pm != nullptr ? pm->name : juce::String());
-    o->setProperty ("inputs", desk::inputsToVar (P, pm));
+    o->setProperty ("inputs", desk::inputsToVar (P));
     o->setProperty ("mixers", desk::mixersToVar (P));
     o->setProperty ("stage", desk::stageToVar (P));
     auto* w = new juce::DynamicObject();                                   // 0 not open, 1 shown, 3 minimised (minimiseall: 3 = there are windows to bring back)
@@ -183,7 +123,7 @@ juce::String RemoteControlServer::collectDesk()
 
 void RemoteControlServer::peaksUpdated()
 {
-    if (deskClients() == 0) return;
+    if (hub.connections (true) == 0) return;
     if (inAcc.size() != app.inPeaks.size()) inAcc.assign (app.inPeaks.size(), 0.0f);
     for (size_t i = 0; i < inAcc.size(); ++i) inAcc[i] = juce::jmax (inAcc[i], app.inPeaks[i]);
     for (int slot = 0; slot < remote::kMixerSlots; ++slot)
@@ -211,41 +151,22 @@ juce::String RemoteControlServer::collectMeters()
     return s;
 }
 
-int RemoteControlServer::deskClients() const
-{
-    const juce::ScopedLock sl (lock);
-    int n = 0;
-    for (auto* c : clients) if (! c->dead.load() && c->desk.load()) ++n;
-    return n;
-}
-
-void RemoteControlServer::broadcast (const juce::String& json, bool deskOnly)
-{
-    const auto data = (json.replaceCharacters ("\r\n", "  ") + "\n").toUTF8();
-    const juce::ScopedLock sl (lock);
-    for (auto* c : clients)
-        if (! c->dead.load() && c->sock->isConnected() && (! deskOnly || c->desk.load()))
-            if (c->sock->write (data.getAddress(), (int) data.sizeInBytes() - 1) < 0) c->dead = true;
-}
-
 void RemoteControlServer::timerCallback()
 {
-    {
-        const juce::ScopedLock sl (lock);
-        if (clients.isEmpty()) return;
-    }
+    if (hub.connections() == 0) return;
+    if (hub.takeNewConnection()) lastSent.clear();                         // a controller has just connected: it gets the state now
     const auto json = collect().toJson();
-    if (json != lastSent) { lastSent = json; broadcast (json); }
+    if (json != lastSent) { lastSent = json; hub.broadcast (json); }
     if (deskWanted.exchange (false)) { lastDesk.clear(); noDeskSent = false; }   // a controller has just asked: send it everything
-    if (deskClients() == 0) return;
+    if (hub.connections (true) == 0) return;
     if (! app.hasProject())
     {
-        if (! noDeskSent) { noDeskSent = true; lastDesk.clear(); broadcast ("{\"type\":\"nodesk\"}", true); }    // (a project was closed: the controller's keys go back to "open a project")
+        if (! noDeskSent) { noDeskSent = true; lastDesk.clear(); hub.broadcast ("{\"type\":\"nodesk\"}", true); }    // (a project was closed: the controller's keys go back to "open a project")
         return;
     }
     noDeskSent = false;
     const auto desk = collectDesk();
-    if (desk != lastDesk) { lastDesk = desk; broadcast (desk, true); }
-    broadcast (collectMeters(), true);
+    if (desk != lastDesk) { lastDesk = desk; hub.broadcast (desk, true); }
+    hub.broadcast (collectMeters(), true);
 }
 } // namespace td

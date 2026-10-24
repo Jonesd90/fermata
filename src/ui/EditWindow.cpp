@@ -114,16 +114,19 @@ public:
     bool trackSelected (const juce::Uuid& id) const { return std::find (selectedTracks.begin(), selectedTracks.end(), id) != selectedTracks.end(); }
     /** A click on a track's name: on its own = only this track (or none, if it was the only one); Shift = every track from the last one clicked to
         this one; Ctrl = this one in or out. */
-    void clickTrackName (const juce::Uuid& id, const juce::ModifierKeys& mods)
+    void clickTrackName (juce::Uuid id, const juce::ModifierKeys& mods)       // (by value: callers pass an id from rowTracks(), which is rebuilt on every call)
     {
-        const auto& rows = rowTracks();
+        const auto rows = rowTracks();
+        const auto info = rowInfo;
         auto rowOfId = [&] (const juce::Uuid& t) { for (size_t i = 0; i < rows.size(); ++i) if (rows[i].id == t) return (int) i; return -1; };
         const bool ctrl = mods.isCtrlDown() || mods.isCommandDown();
         const int a = rowOfId (trackAnchor), b = rowOfId (id);
         if (mods.isShiftDown() && a >= 0 && b >= 0)
         {
             if (! ctrl) selectedTracks.clear();
-            std::vector<juce::Uuid> add; for (int i = juce::jmin (a, b); i <= juce::jmax (a, b); ++i) add.push_back (rows[(size_t) i].id);
+            std::vector<juce::Uuid> add;
+            for (int i = juce::jmin (a, b); i <= juce::jmax (a, b); ++i)          // only the audio tracks' own rows (not their extra lane rows, buses or VCAs)
+                if ((size_t) i < info.size() && info[(size_t) i].kind == NodeKind::Track && info[(size_t) i].lane == 0 && ! info[(size_t) i].node.isNull()) add.push_back (rows[(size_t) i].id);
             for (auto& t : add) if (! trackSelected (t)) selectedTracks.push_back (t);
         }
         else if (ctrl)
@@ -676,7 +679,7 @@ public:
                 const int fx = xOf (ed->feedback[(size_t) th.front()].seconds);
                 const auto area = localAreaToGlobal (juce::Rectangle<int> (fx, markerui::kStripH + hdrShift, feedbackui::flagWidth (feedbackui::flagText (ed->feedback, th)), kFbH));
                 juce::Component::SafePointer<EditTimeline> safe (this);
-                feedbackui::showThread ([this] { return edit(); }, th, area,
+                feedbackui::showThread ([safe] () -> EditDef* { return safe != nullptr ? safe->edit() : nullptr; }, th, area,      // (the box can outlive the window)
                                         [this, safe] { if (safe == nullptr) return; app.project.markDirty(); repaint(); },
                                         [this, safe] (double s) { if (safe == nullptr) return; if (auto* w = findParentComponentOfClass<EditWindowComponent>()) w->goToSeconds (s); });
                 return;
@@ -721,7 +724,7 @@ public:
                 const auto where = juce::Rectangle<int> (pos, pos).expanded (4);
                 if (! isTrackRow (row)) { if (! id.isNull()) showColourPickerAt (app, id, where); return; }      // (a bus / VCA row: only its colour; an extra lane row: nothing)
                 juce::PopupMenu m;
-                m.addItem ("Colour...", [this, id, where] { showColourPickerAt (app, id, where); });
+                m.addItem ("Colour...", [&a = app, id, where] { showColourPickerAt (a, id, where); });
                 m.addSeparator();
                 juce::Component::SafePointer<EditTimeline> safe (this);
                 auto removeIds = [safe] (std::vector<juce::Uuid> ids)
@@ -737,7 +740,7 @@ public:
                 {
                     const auto ids = selectedTracks;
                     m.addItem ("Remove the " + juce::String ((int) ids.size()) + " selected tracks from this edit (their audio leaves it; Undo brings it back)", [removeIds, ids] { removeIds (ids); });
-                    m.addItem ("Select none", [this] { selectedTracks.clear(); repaint(); });
+                    m.addItem ("Select none", [safe] { if (safe != nullptr) { safe->selectedTracks.clear(); safe->repaint(); } });
                     m.addSeparator();
                 }
                 m.addItem ("Remove track '" + name + "' from this edit (its audio leaves it; Undo brings it back)", [removeIds, id] { removeIds ({ id }); });
@@ -837,7 +840,7 @@ public:
         if (e.mods.isShiftDown() && ! e.mods.isPopupMenu() && e.x > kNameW && e.y >= kRulerH + kLaneH)
         {
             const int row = (e.y - kRulerH - kLaneH) / juce::jmax (1, rowH);
-            const auto& rt = rowTracks();
+            const auto rt = rowTracks();                                     // (a copy: overdubAt below rebuilds the list)
             if (juce::isPositiveAndBelow (row, (int) rt.size()))
             {
                 const juce::int64 sm = (juce::int64) (juce::jmax (0.0, t) * rate);
@@ -1590,10 +1593,12 @@ private:
         auto* lane = ed.findLane (node, s.param, s.mixer);
         m.addItem (5, "Clear this lane's points", lane != nullptr && ! lane->pts.empty() && ! lane->locked);
         const auto editId = ed.id;
-        m.showMenuAsync (juce::PopupMenu::Options(), [this, node, laneIdx, editId, keys] (int r)
+        juce::Component::SafePointer<EditTimeline> safe (this);
+        m.showMenuAsync (juce::PopupMenu::Options(), [this, safe, node, laneIdx, editId, keys] (int r)
         {
+            if (safe == nullptr || r == 0) return;                       // (the window may have been closed while the menu was up)
             auto* e2 = app.project.findEdit (editId);
-            if (r == 0 || e2 == nullptr) return;
+            if (e2 == nullptr) return;
             auto sel = e2->laneShown (node, laneIdx);
             if (r == 1) sel.param = autoparam::fader;
             else if (r == 2) sel.param = autoparam::pan;
@@ -1992,7 +1997,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     pitchButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::pitchTabsEdit (app, editId, this); }); };
     repairButton.setTooltip ("Shows the audio between marks 1 and 2 of all tracks as one spectrogram. Draw a box round a noise (drag its edges to adjust it) and rebuild it from the clean sound next to it (ReTouch), turn it up or down (Gain), "
                              "take the background noise out of it with the room tone (Denoise), or use De-click to find and mend clicks. Key: Enter, with marks 1 and 2 set.");
-    repairButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::repairEdit (app, editId, this, false); }); };
+    repairButton.onClick = [this, withWholePiece] { withWholePiece ([this] { fixtools::repairEdit (app, editId, this); }); };
     roomToneButton.setTooltip ("Room tone: tells Fermata which part of the recording holds nothing but the room, on every track - a take marked as the room tone in a take window (right-click the take), "
                                "or marks 1 - 2 of this edit. Every track's noise is learned from it once and kept with the project; the ReTouch and Noise mode windows then denoise any box you draw with it.");
     roomToneButton.onClick = [this] { fixtools::roomToneEdit (app, editId, this); };
@@ -2035,8 +2040,8 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     slipLeftToggle.setToggleState (app.trimSlipLeft, juce::dontSendNotification);          // the same Slip Left / Slip Right setting as the trim window: on by default, remembered
     slipRightToggle.setToggleState (app.trimSlipRight, juce::dontSendNotification);
     timeline->slipLeft = app.trimSlipLeft; timeline->slipRight = app.trimSlipRight;
-    slipLeftToggle.onClick  = [this] { timeline->slipLeft = slipLeftToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
-    slipRightToggle.onClick = [this] { timeline->slipRight = slipRightToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
+    slipLeftToggle.onClick  = [this] { timeline->slipLeft = slipLeftToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), app.trimSlipRight); };     // (the other one as it is now)
+    slipRightToggle.onClick = [this] { timeline->slipRight = slipRightToggle.getToggleState(); app.setTrimSlip (app.trimSlipLeft, slipRightToggle.getToggleState()); };
     for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &ltcButton, &automationButton, &pitchButton, &repairButton, &roomToneButton, &noiseModeButton, &reharmoniserButton, &exportProcButton, &undoFixButton, &alignButton,
                                                           &slipLeftToggle, &slipRightToggle, &shuffleToggle, &insertFlagToggle })
     {
@@ -2316,10 +2321,12 @@ void EditWindowComponent::showTracksMenu()
     m.addSubMenu ("Remove a track (its audio leaves this edit; Undo brings it back)", rem, shown.size() > 0);
     m.addSeparator();
     m.addItem (3, "Show every project track, in the project's order", ! e->trackIds.empty());
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&tracksButton), [this] (int r)
+    juce::Component::SafePointer<EditWindowComponent> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&tracksButton), [this, safe] (int r)
     {
+        if (safe == nullptr || r == 0) return;                           // (the window may have been closed while the menu was up)
         auto* ed = edit();
-        if (ed == nullptr || r == 0) return;
+        if (ed == nullptr) return;
         if (r == 3) { ed->trackIds.clear(); app.project.changed(); return; }
         if (r == 1 || r == 2)
         {

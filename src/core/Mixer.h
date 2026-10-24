@@ -250,7 +250,7 @@ struct StripState
     juce::Uuid outDest = juce::Uuid::null();               // an Int Bus or Ext Bus of this mixer; null = the mixer's main Ext Bus
     SendState outSend;                // how the output is carried (always at unity, after the fader)
     SendList sends;
-    LowCut lowCut;                    // the LC key: a linear-phase high-pass before the inserts
+    LowCut lowCut;                    // the LC key: a high-pass before the inserts (zero latency; linear phase when asked for - see LowCut.h)
     InsertSlot slots[kNumSlots];
     Param meterL, meterR;             // peak since last read (UI resets)
     Param rmsL, rmsR;                 // RMS level (linear, about 300 ms window), updated every block

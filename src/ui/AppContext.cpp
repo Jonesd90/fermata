@@ -472,6 +472,7 @@ void AppContext::afterProjectReplaced()
     rebuildPreampDriver();
     refreshPreampsFromAneman();
     preampChecked = false; preampAsking = false; preampWaitTicks = 0; haveWrittenPreamps = false;     // compare with the stored state once the devices have answered
+    if (closeWindowByKey) { closeWindowByKey ("pitchpipe"); closeWindowByKey ("click"); }   // (their settings are the project's: they showed the old project's while the new one's sounded)
     if (refreshTitles) refreshTitles();
 }
 
@@ -644,11 +645,11 @@ bool AppContext::openProject (const juce::File& file)
         auto count = std::make_shared<int> (0);
         project.insertFactory = [this, realFactory, count] (const juce::String& desc, const juce::String& state) -> std::unique_ptr<InsertProcessor>
         {
-            juce::String nm, file;
-            if (auto xml = juce::XmlDocument::parse (desc)) { nm = xml->getStringAttribute ("name"); file = xml->getStringAttribute ("file"); }
-            if (file.isNotEmpty() && plugins.isIgnored (file))          // on the list of ignored plug-ins: not loaded (the slot keeps it, with its settings)
+            juce::String nm, pluginFile;
+            if (auto xml = juce::XmlDocument::parse (desc)) { nm = xml->getStringAttribute ("name"); pluginFile = xml->getStringAttribute ("file"); }
+            if (pluginFile.isNotEmpty() && plugins.isIgnored (pluginFile))          // on the list of ignored plug-ins: not loaded (the slot keeps it, with its settings)
             {
-                juce::Logger::writeToLog ("Plug-in not loaded: " + (nm.isNotEmpty() ? nm : file) + " is on the list of ignored plug-ins (Audio settings > Plug-ins...)");
+                juce::Logger::writeToLog ("Plug-in not loaded: " + (nm.isNotEmpty() ? nm : pluginFile) + " is on the list of ignored plug-ins (Audio settings > Plug-ins...)");
                 return nullptr;
             }
             busy::step ("Starting plug-in " + juce::String (++*count) + (nm.isNotEmpty() ? ":  " + nm : juce::String()), -1.0);
@@ -680,7 +681,7 @@ bool AppContext::openProject (const juce::File& file)
     busy::step ("Checking for missing audio files", -1.0);
     if (const int missing = project.missingAudioCount (true); missing > 0)       // (quick: the takes found whole last time are not asked about again)
     {
-        const auto list = project.missingAudioList (12);
+        const auto list = project.missingAudioList (12, true);
         juce::String text = juce::String (missing) + (missing == 1 ? " audio file used by this project could not be found" : " audio files used by this project could not be found") + ":\n\n";
         for (auto& l : list) text << "   " << l << "\n";
         text << "\nPoint Fermata at the folder that holds them? It looks in that folder and all the folders inside it, by name; a file that was renamed is taken when "

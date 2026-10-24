@@ -908,8 +908,8 @@ public:
                 const double k = juce::jmin (2.0, target / rg);
                 for (long n = 0; n < m; ++n)
                 {
-                    const double w = std::sin (juce::MathConstants<double>::pi * ((double) n + 0.5) / (double) m);
-                    x[(size_t) (g0 + n)] = (float) ((double) x[(size_t) (g0 + n)] * (1.0 + (k - 1.0) * w * w));
+                    const double sw = std::sin (juce::MathConstants<double>::pi * ((double) n + 0.5) / (double) m);
+                    x[(size_t) (g0 + n)] = (float) ((double) x[(size_t) (g0 + n)] * (1.0 + (k - 1.0) * sw * sw));
                 }
             }
         }
@@ -1195,6 +1195,7 @@ public:
         'lostDone' >= 0 says the caller has already done that (on all the tracks together) and how many it put back in this stretch. */
     static int declick (std::vector<float>& x, long t0, long t1, double sensitivity, std::vector<std::pair<long, long>>* found = nullptr, double sampleRate = 48000.0, int lostDone = -1)
     {
+        auto& lastDeclick = lastDeclickReport(); lastDeclick = DeclickReport { 0, 0, 0, 0 };      // (reset first: a short area returns early)
         const long L = (long) x.size();
         t0 = juce::jlimit (0L, L, t0); t1 = juce::jlimit (0L, L, t1);
         if (t1 - t0 < 4) return 0;
@@ -1206,14 +1207,16 @@ public:
             if (found) for (auto& s : sp) found->push_back ({ s.at, s.at + 1 });
         }
         total += lostDone;
-        if (t1 - t0 <= (long) (0.03 * sampleRate))                         // a short area chosen by the user: mend all of it
+        // a short area chosen by the user (30 ms at most, and no longer than the prediction below can fill - 1500 samples, so at 96 and 192 kHz the limit is
+        // the length, not the time): it is the click, and all of it is mended. A longer area goes to the click finder below.
+        if (t1 - t0 <= juce::jmin ((long) (0.03 * sampleRate), 1500L))
         {
             if (lostDone > 0)                                               // (the jump of lost samples is mended by putting them back: what is left of a click in the area is mended the usual way)
             {
                 for (int pass = 0; pass < 3; ++pass)
                 {
                     const int n = declickPass (x, t0, t1, sensitivity, found, sampleRate, false);
-                    total += n;
+                    total += n; lastDeclick.mended += n;
                     if (n == 0) break;
                 }
                 return total;
@@ -1230,11 +1233,11 @@ public:
                     if (score > cleanJoin) spreadCorrection (x, was, lo, t0, t1, normal, score);
                 }
                 if (found) found->push_back ({ t0, t1 });
+                lastDeclick.mended = 1;
                 return 1;
             }
             return 0;
         }
-        auto& lastDeclick = lastDeclickReport(); lastDeclick = DeclickReport { 0, 0, 0, 0 };
         if (t1 - t0 < 256) return total;
         total += mendDropouts (x, t0, t1, sampleRate, found);                // runs of digital silence: what is left of their edges is then no click
         // the picture first: what shows as a short, sharp vertical line in the spectrogram is mended whole (the finder, judging sample by sample, used to mend pieces
@@ -1278,8 +1281,9 @@ public:
                     const long g0 = juce::jmax (t0, t.first - 2 * pad), g1 = juce::jmin (t1, t.second + 2 * pad);
                     if (g1 - g0 < 2 || g1 - g0 > maxGap) continue;
                     RepairParams p; p.mode = RepairMode::Attenuate; p.direction = RepairDirection::LeftRight; p.strength = 1.0; p.contextPct = 400.0; p.bands = 256; p.multiRes = false;
-                    // (as with the other mends: it must not leave a click of its own. If the sound after it is sharper than before it, and sharper than a clean join, it is put back.)
-                    const long b0 = juce::jmax (16L, g0 - 64), b1 = juce::jmin (L - 16, g1 + 64);
+                    // (as with the other mends: it must not leave a click of its own. If the sound after it is sharper than before it, and sharper than a clean join, it is put back -
+                    // all of what repair() changed, which reaches one analysis window (512 samples) each side of the gap: putting back less left a step of its own)
+                    const long b0 = juce::jmax (0L, g0 - 1024), b1 = juce::jmin (L, g1 + 1024);
                     const double normal = (g0 >= 16 && g1 <= L - 16) ? thirdDiffNormal (x, g0, g1) : 0.0;
                     const double before = normal > 0.0 ? thirdDiffPeak (x, g0 - 2, g1 + 4) / normal : 0.0;
                     const std::vector<float> keep (x.begin() + b0, x.begin() + juce::jmax (b0, b1));
@@ -1444,7 +1448,7 @@ private:
         }
         const long M = ctxSamples > 0 ? juce::jmin (lastClean, juce::jmax (2L, ctxSamples / H)) : juce::jmin (lastClean, 24L);
         long g = 0;
-        auto Y = X;
+        auto Y = X;                                                             // (the bins outside [b0, b1] keep the original)
         for (long f = lastClean + 1; f < F; ++f, ++g)
         {
             if (S + f * H >= t1) break;                                         // frames wholly after the gap are left alone
@@ -1459,7 +1463,6 @@ private:
                 const auto synth = std::polar (std::abs (src[(size_t) b]), phase[(size_t) b]);
                 Y[(size_t) f][(size_t) b] = w * synth + (1.0 - w) * X[(size_t) f][(size_t) b];
             }
-            for (int b = 0; b < bins; ++b) if (b < b0 || b > b1) {}              // other bins keep the original
         }
         std::vector<double> out ((size_t) (E - S) + (size_t) N, 0.0), norm (out.size(), 0.0);
         for (long f = 0; f < F; ++f)

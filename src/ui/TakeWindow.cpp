@@ -20,7 +20,7 @@ class BarsPopup : public juce::Component
 {
 public:
     BarsPopup (const juce::String& title, int bin, int bout, const juce::String& notes, std::function<void (int, int, const juce::String&)> ok, std::function<void()> more, std::function<void()> close)
-        : onOk (std::move (ok)), onMore (std::move (more)), onClose (std::move (close))
+        : onOk (std::move (ok)), onMore (std::move (more)), onClose (std::move (close)), origIn (juce::jmax (0, bin)), origOut (juce::jmax (0, bout)), origNotes (notes.trim())
     {
         setSize (400, 196);
         titleLabel.setText (title, juce::dontSendNotification); titleLabel.setFont (juce::FontOptions (12.5f, juce::Font::bold)); titleLabel.setColour (juce::Label::textColourId, theme::text);
@@ -49,6 +49,12 @@ public:
         setFocusContainerType (FocusContainerType::keyboardFocusContainer);       // (Tab goes IN -> OUT -> Notes -> the buttons, and round)
     }
     void focusFirst() { inEd.grabKeyboardFocus(); inEd.selectAll(); }
+    /** What is typed in the box now; true when it differs from what the box opened with. */
+    bool typed (int& bin, int& bout, juce::String& notes) const
+    {
+        bin = inEd.getText().getIntValue(); bout = outEd.getText().getIntValue(); notes = notesEd.getText().trim();
+        return bin != origIn || bout != origOut || notes != origNotes;
+    }
     void paint (juce::Graphics& g) override
     {
         g.setColour (theme::panel); g.fillRoundedRectangle (getLocalBounds().toFloat(), 6.0f);
@@ -83,6 +89,7 @@ private:
     NotesEditor notesEd;
     juce::TextButton okBtn { "OK" }, moreBtn { "More..." };
     std::function<void (int, int, const juce::String&)> onOk; std::function<void()> onMore, onClose;
+    const int origIn, origOut; const juce::String origNotes;
 };
 
 class TakeTimeline : public juce::Component, public juce::TooltipClient, private juce::ChangeListener, private juce::Timer
@@ -619,7 +626,7 @@ public:
     void mouseDownImpl (const juce::MouseEvent& e)
     {
         dragId = {}; dragging = false; markDragTake = {}; markActive = false; lassoActive = lassoMoved = false;
-        closeBarsPopup();
+        keepAndCloseBarsPopup();                                       // (a click elsewhere keeps what was typed; Esc is the way to throw it away)
         grabKeyboardFocus();
         auto* w = def();
         if (w == nullptr) return;
@@ -753,10 +760,11 @@ public:
             lassoActive = true; lassoMoved = false; lassoFrom = lassoTo = e.getPosition();
             return;
         }
+        if (! inLane && e.getNumberOfClicks() > 1 && e.x >= sx + kNameW && ! e.mods.isPopupMenu())       // double-click on a take: straight into its bars and notes -
+            if (auto* any = groupAt (e.getPosition(), true)) { showBars (any->id, e.getPosition()); return; }   // also the take being recorded (as the right-click)
         if (auto* grp = groupAt (e.getPosition(), e.mods.isPopupMenu()))
         {
             if (inLane && e.getNumberOfClicks() > 1) { showSettings (grp->id, false); return; }
-            if (! inLane && e.getNumberOfClicks() > 1 && e.x >= sx + kNameW) { showBars (grp->id, e.getPosition()); return; }     // double-click on a take: straight into its bars and notes
             if (ctrlDown && ! e.mods.isAltDown())                          // Ctrl + click: add this take to the selection, or take it out again
             {
                 auto it = std::find (selectedTakes.begin(), selectedTakes.end(), grp->id);
@@ -1123,7 +1131,8 @@ private:
         auto* g = w->findGroup (gid);
         auto* host = viewport.getParentComponent();
         if (g == nullptr || host == nullptr) return;
-        closeBarsPopup();
+        keepAndCloseBarsPopup();                                       // (another take's box was open: what was typed there is kept)
+        barsGroup = gid;
         juce::Component::SafePointer<TakeTimeline> safe (this);
         barsPopup.reset (new BarsPopup ("Take " + pad3 (g->number) + " - bars it starts and ends in, and notes", g->barIn, g->barOut, g->notes,
             [safe, gid] (int bin, int bout, const juce::String& notes)
@@ -1135,7 +1144,7 @@ private:
                 safe->applyNotes (gid, notes);
                 safe->closeBarsPopup();
             },
-            [safe, gid] { if (safe == nullptr) return; safe->closeBarsPopup(); safe->showSettings (gid, true, true); },
+            [safe, gid] { if (safe == nullptr) return; safe->closeBarsPopup(); safe->showSettings (gid, true); },
             [safe] { if (safe != nullptr) safe->closeBarsPopup(); }));
         host->addAndMakeVisible (barsPopup.get());
         auto pt = host->getLocalPoint (this, where);
@@ -1143,6 +1152,20 @@ private:
                                        juce::jlimit (0, juce::jmax (0, host->getHeight() - barsPopup->getHeight()), pt.y));
         barsPopup->toFront (true);
         barsPopup->focusFirst();
+    }
+    /** The box closes because of a click elsewhere or another take's box: the notes typed are kept, and the bars when they make sense
+        (a take's notes are often typed while it is recorded; losing them to a stray click was too easy). Esc still closes it without saving. */
+    void keepAndCloseBarsPopup()
+    {
+        if (barsPopup == nullptr) return;
+        int bin = 0, bout = 0; juce::String notes;
+        if (barsPopup->typed (bin, bout, notes))
+        {
+            if (bin <= 0) bin = bout = 0; else if (bout <= 0) bout = bin;
+            if (bout >= bin) applyBars (barsGroup, bin, bout);
+            applyNotes (barsGroup, notes);
+        }
+        closeBarsPopup();
     }
     void closeBarsPopup()
     {
@@ -1173,6 +1196,7 @@ private:
         app.project.changed(); repaint();
     }
     std::unique_ptr<BarsPopup> barsPopup;
+    juce::Uuid barsGroup;                                              // the take the box is about
 
     /** 3: the whole take is the room tone, 4: marks 1 - 2 of it are, 5: it is not. Only one take of a window can be the room tone. */
     void markRoomTone (const juce::Uuid& gid, int how)
@@ -1190,7 +1214,7 @@ private:
         app.project.changed(); repaint();
     }
 
-    void showSettings (const juce::Uuid& gid, bool asMenu, bool fromBars = false)
+    void showSettings (const juce::Uuid& gid, bool asMenu)
     {
         juce::PopupMenu m;
         m.addItem (1, "Take settings (rename)...");
@@ -1536,7 +1560,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     };
     pitchButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::pitchTabsTake (app, windowId, this); }); };
     repairButton.setTooltip ("Shows the marked part (Mark 1 / Mark 2) of all tracks as one spectrogram; draw a box round a noise (drag its edges to adjust it) and rebuild it from the clean sound next to it (ReTouch), take the background noise out of it with the room tone (Denoise), or use De-click to find and mend clicks");
-    repairButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::repairTake (app, windowId, this, false); }); };
+    repairButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::repairTake (app, windowId, this); }); };
     exportProcButton.setTooltip ("Export for Processing: sends the marked part (Mark 1 / Mark 2, all tracks) to the Processing Media folder to be corrected in other software (e.g. iZotope RX). Re-link it afterwards with a right-click on the 'Waiting for corrected audio' block");
     exportProcButton.onClick = [this, withWholeTake] { withWholeTake ([this] { fixtools::exportForProcessingTake (app, windowId, this); }); };
     alignButton.setTooltip ("Align spot mics: after a run-through, measure how much earlier each spot mic hears the music than the main pair, and delay it to line up "

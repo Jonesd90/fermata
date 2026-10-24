@@ -3,7 +3,6 @@
 #include "PitchShift.h"
 #include "SpectralRepair.h"
 #include "Denoise.h"
-#include <limits>
 
 namespace td
 {
@@ -43,13 +42,26 @@ struct FixSpec
     }
 };
 
-/** A job that runs on its own thread; the result is picked up on the message thread. */
+/** A job that runs on its own thread; the result is picked up on the message thread.
+    Its owner (a window) makes it with 'new' and hands it back with release() when it goes: the work is asked to stop and the job deletes itself once
+    its thread has finished. So a window that is closed during a long job never waits for it: the work may not look at the request for a long time
+    (a de-click or denoise of a long file), and waiting froze the program for up to 20 s, after which the thread was killed - which can hang it for good. */
 class AudioJob : private juce::Thread
 {
 public:
     using Work = std::function<juce::String (AudioJob&)>;            // returns an error text ("" = fine)
     AudioJob() : juce::Thread ("Audio job") {}
-    ~AudioJob() override { cancel = true; stopThread (20000); }
+    ~AudioJob() override { cancel = true; stopThread (20000); }      // (through release(): only once its thread has finished)
+    /** The owner is going: the work is asked to stop, and from here on the job looks after itself - it deletes itself (on the message thread) once its
+        thread has finished, at once if it is not running. The onDone of the last start() is still called: it must check that its window is still there.
+        Message thread. */
+    void release()
+    {
+        cancel = true;
+        const juce::ScopedLock sl (endLock);
+        released = true;
+        if (! isThreadRunning() || finished.load()) deleteSoon();
+    }
     /** onDone runs on the message thread with the error text. */
     void start (Work w, std::function<void (const juce::String&)> onDone)
     {
@@ -69,12 +81,17 @@ private:
         juce::String err;
         try { err = work (*this); } catch (...) { err = "Something went wrong while processing."; }
         if (cancel.load() && err.isEmpty()) err = "Cancelled.";
-        finished = true;
         auto cb = done;
         juce::MessageManager::callAsync ([cb, err] { if (cb) cb (err); });
+        const juce::ScopedLock sl (endLock);
+        finished = true;
+        if (released) deleteSoon();                                  // (its owner has gone: nothing else will)
     }
+    /** After run() has returned (or when it never ran): the destructor's stopThread then only waits for the thread itself to end. */
+    void deleteSoon() { juce::MessageManager::callAsync ([this] { delete this; }); }
     Work work; std::function<void (const juce::String&)> done;
     std::atomic<bool> cancel { false }, finished { false }; std::atomic<float> progressValue { 0.0f };
+    juce::CriticalSection endLock; bool released = false;            // (release() and the end of run(): whichever comes second deletes the job)
 };
 
 namespace audioops
@@ -127,49 +144,16 @@ PieceResult fixPiece (juce::AudioFormatManager&, const juce::File& source, juce:
 PieceResult fixPiece (juce::AudioFormatManager&, const juce::File& source, juce::int64 fileStart,
                       juce::int64 outFrom, juce::int64 outTo, const std::vector<FixOp>& ops, const juce::File& dest, juce::String& error);
 
-/** The background denoiser (Denoise.h) on whole files. A profile per channel of the file, learned from the room tone, and (optionally) the room's
-    decay per channel, measured over the file once so that a preview and the final run agree. */
+/** The room-tone profiles of a file for the background denoiser (Denoise.h): one per channel, learned from the room tone. */
 struct DenoiseProfiles
 {
-    std::vector<denoise::Profile> perChannel; std::vector<denoise::Decay> decay;     // decay: empty, or one per channel
+    std::vector<denoise::Profile> perChannel;
     double sampleRate = 0.0; int channels = 0;
     bool valid() const { return channels > 0 && (int) perChannel.size() == channels; }
 };
 /** Learns a profile per channel of 'file' from its samples [s0, s1): the part that holds nothing but the room (the first 60 s of it, if longer).
-    With 'decaySeconds' > 0 the room's decay is measured as well, over up to that much of the file after the room tone. Empty profiles + 'error' on failure. */
-DenoiseProfiles learnDenoise (juce::AudioFormatManager&, const juce::File&, juce::int64 s0, juce::int64 s1, const denoise::Params&, juce::String& error, double decaySeconds = 0.0);
-/** One run of the denoiser over the files of a take (all of them together: with Params::groupMode > 0 each track's gains use what the other tracks hear). */
-struct DenoiseRun
-{
-    juce::int64 a = 0, b = std::numeric_limits<juce::int64>::max();   // the stretch to denoise (samples); the rest is copied
-    juce::int64 writeFrom = 0, writeTo = std::numeric_limits<juce::int64>::max();   // the part of each source the destination file holds (the whole file by default; a piece of an edit: just that piece and its handles)
-    juce::int64 featherIn = 0, featherOut = 0;                        // (samples) the denoising fades in over the first featherIn samples of the stretch and out over its last featherOut, so it has no hard edge in time
-    bool preview = false;                                             // a preview: the part before the stretch is written as silence and the file ends with the stretch
-    bool removed = false;                                             // also write what was taken out (input - output) to the 'removed' files
-    int threads = 1;                                                  // tracks (channels) done at once
-};
-/** The share of the denoised sound at sample i of the stretch [a, b) with the run's feathers (0 at the very edge rising to 1 feather samples in, a raised cosine). */
-inline float denoiseFeather (const DenoiseRun& run, juce::int64 a, juce::int64 b, juce::int64 i)
-{
-    double w = 1.0;
-    if (run.featherIn > 0 && i - a < run.featherIn) w = juce::jmin (w, (double) (i - a) / (double) run.featherIn);
-    if (run.featherOut > 0 && b - 1 - i < run.featherOut) w = juce::jmin (w, (double) (b - 1 - i) / (double) run.featherOut);
-    w = juce::jlimit (0.0, 1.0, w);
-    return (float) (0.5 - 0.5 * std::cos (w * juce::MathConstants<double>::pi));
-}
-/** The denoiser on channels held in memory (the spectral denoise window's picture): x[i] is one channel, each its own source (with Params::groupMode > 0
-    they listen to each other), profiles[i] / decay[i] (decay may be empty) belong to it. y[i] comes out the same length: [run.a, run.b) denoised (with
-    the run's feathers), the rest exactly as it went in. */
-bool denoiseTracks (const std::vector<std::vector<float>>& x, double sampleRate, const std::vector<denoise::Profile>& profiles, const std::vector<denoise::Decay>& decay,
-                    const denoise::Params&, const DenoiseRun&, std::vector<std::vector<float>>& y, const std::function<bool (float)>& progress, juce::String& error);
-/** Writes dests[i]: sources[i] with the stretch denoised (24-bit, same rate and channels) and, when run.removed, removed[i] with what was taken out.
-    All sources must have the same sample rate; each has its own DenoiseProfiles. 'progress' (optional) is told how far it has got, 0..1, and stops the
-    work by returning false; false (and no files) when cancelled or failed. */
-bool denoiseFiles (juce::AudioFormatManager&, const std::vector<juce::File>& sources, const std::vector<juce::File>& dests, const std::vector<juce::File>& removed,
-                   const std::vector<DenoiseProfiles>&, const denoise::Params&, const DenoiseRun&, const std::function<bool (float)>& progress, juce::String& error);
-/** One file on its own (no other tracks to listen to): [a, b) denoised, the rest copied as it is. */
-bool denoiseFile (juce::AudioFormatManager&, const juce::File& source, const juce::File& dest, const juce::File& removed, juce::int64 a, juce::int64 b,
-                  const DenoiseProfiles&, const denoise::Params&, const std::function<bool (float)>& progress, juce::String& error);
+    Empty profiles + 'error' on failure. */
+DenoiseProfiles learnDenoise (juce::AudioFormatManager&, const juce::File&, juce::int64 s0, juce::int64 s1, const denoise::Params&, juce::String& error);
 
 /** The take-window version of a fix. Runs on a job thread; makes new files and returns them (the model is changed by the caller). */
 struct TakeFixResult { std::vector<juce::File> newFiles; juce::String error; };

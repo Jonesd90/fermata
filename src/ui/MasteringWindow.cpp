@@ -1316,26 +1316,18 @@ void LevelBox::write()
     if (updating) return;
     auto& v = vm();
     const int mode = juce::jlimit (0, 2, modeBox.getSelectedId() - 1);
+    const int before = forms ? v.formLoudnessMode : v.loudnessMode;
     (forms ? v.formNormalise : v.normalise) = onBox.getToggleState();
     (forms ? v.formLoudnessMode : v.loudnessMode) = mode;
+    // the number in the box belongs to the mode it was shown for: when the mode has just changed it is not copied into the new mode's setting
+    // (going from "the peak at -1.0" to a loudness target set the target to -1 LUFS)
     const float value = valueEditor.getText().getFloatValue();
-    if (mode == 2) (forms ? v.formTargetLufs : v.targetLufs) = juce::jlimit (-40.0f, 0.0f, value);
-    else if (mode == 0) (forms ? v.formPeakDb : v.peakDb) = juce::jlimit (-60.0f, 0.0f, value);
+    if (mode == before && mode == 2) (forms ? v.formTargetLufs : v.targetLufs) = juce::jlimit (-40.0f, 0.0f, value);
+    else if (mode == before && mode == 0) (forms ? v.formPeakDb : v.peakDb) = juce::jlimit (-60.0f, 0.0f, value);
     (forms ? v.formCeilingDbTp : v.ceilingDbTp) = juce::jlimit (-20.0f, 0.0f, ceilingEditor.getText().getFloatValue());
     (forms ? v.formTogether : v.peakTogether) = albumBox.getToggleState();
     refresh();                                                            // (the units and the rows follow the mode; a box being typed in is left alone)
     if (onChange) onChange();
-}
-
-juce::String LevelBox::summary() const
-{
-    auto& v = vm();
-    const bool on = forms ? v.formNormalise : v.normalise; const int mode = forms ? v.formLoudnessMode : v.loudnessMode; const bool together = forms ? v.formTogether : v.peakTogether;
-    if (! on) return "no levelling";
-    const juce::String how = together ? "per album" : "per track";
-    if (mode == 1) return "EBU R 128 (-23 LUFS, -1 dBTP), " + how;
-    if (mode == 2) return "target " + juce::String (forms ? v.formTargetLufs : v.targetLufs, 1) + " LUFS, ceiling " + juce::String (forms ? v.formCeilingDbTp : v.ceilingDbTp, 1) + " dBTP, " + how;
-    return "the peak at " + juce::String (forms ? v.formPeakDb : v.peakDb, 1) + " dBFS, " + how;
 }
 
 void LevelBox::resized()

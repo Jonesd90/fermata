@@ -25,11 +25,6 @@ inline BusState* findBus (MixerState& m, const juce::Uuid& id)
     for (auto& f : m.busPool) if (f->busId == id) return f.get();
     return nullptr;
 }
-inline StripState* findStrip (MixerState& m, const juce::Uuid& trackId)
-{
-    for (auto& s : m.stripPool) if (s->trackId == trackId) return s.get();
-    return nullptr;
-}
 /** A mixer's main output: the first Ext Bus ticked as MAIN (the one the engine calls "the" main output), else its first Ext Bus. Null = it has none. */
 inline BusState* mainBusOf (const Project& p, MixerState& m)
 {
@@ -81,7 +76,7 @@ inline bool stageStep (Project& p, const juce::String& which, float deltaDb, boo
         const size_t k = which == "mic1" ? 0 : 1;
         if (k >= p.crMicInputs.size()) return false;
         const int in = p.crMicInputs[k];
-        if (in < 0 || in >= kMaxInputs * 4) return false;
+        if (! juce::isPositiveAndBelow (in, (int) p.inputs.size())) return false;
         if ((int) p.stageGainDb.size() <= in) p.stageGainDb.resize ((size_t) in + 1, 0.0f);
         if ((int) p.stagePan.size() <= in)    p.stagePan.resize ((size_t) in + 1, 0.0f);
         v = &p.stageGainDb[(size_t) in];
@@ -92,7 +87,7 @@ inline bool stageStep (Project& p, const juce::String& which, float deltaDb, boo
     return true;
 }
 
-// ---- one input: its preamp, its monitor mode, its pan ----------------------------------------------------------------------------------------------------
+// ---- one input: its preamp, its monitor mode ------------------------------------------------------------------------------------------------------------
 inline bool hasPreamp (const Project& p, int input)
 {
     return juce::isPositiveAndBelow (input, (int) p.inputs.size()) && p.preampDriver != nullptr && p.preampDriver->controls (input);
@@ -161,30 +156,14 @@ inline int monitorCycle (Project& p, int input)
     p.markDirty();
     return next;
 }
-/** The pan of the (first) track fed by this input, in mixer 'm': a mono track has one pan; a stereo track has a left and a right one (side 1 / 2). 'centre' puts it back
-    (mono: the middle; stereo: the left channel hard left and the right hard right again). Surround tracks have no pan here. False = nothing was changed. */
-inline bool panStep (Project& p, MixerState& m, int input, int side, float delta, bool centre)
-{
-    auto fed = tracksOnInput (p, input);
-    if (fed.empty()) return false;
-    const int n = fed.front()->channelCount();
-    if (n > 2) return false;
-    auto* s = m.stripFor (fed.front()->id);
-    auto snap = [] (float v) { return juce::jlimit (-1.0f, 1.0f, std::round (v * 100.0f) / 100.0f); };
-    if (n == 1) s->pan.set (centre ? 0.0f : snap (s->pan.get() + delta));
-    else if (centre) { s->panL.set (-1.0f); s->panR.set (1.0f); }
-    else { Param& a = side == 2 ? s->panR : s->panL; a.set (snap (a.get() + delta)); }
-    p.markDirty();
-    return true;
-}
 
 // ---- what the Stream Deck draws ---------------------------------------------------------------------------------------------------------------------------
 /** The "inputs" array of the desk message (one object per driver input, at most kMaxInputs). Keys:
-    i index, n the name (yours, else the driver's), d the device and channel ("THAP-12-3"), tk in the talkback mic, mon monitor mode of its tracks (-1 = no track; 0 E, 1 S, 2 S-L, 3 T),
+    i index, n the name (yours, else the driver's), d the input's tag ("36-BHAP-12": Project::inputTag), tk in the talkback mic, mon monitor mode of its tracks (-1 = no track; 0 E, 1 S, 2 S-L, 3 T),
     pre the input has preamp controls, and then (only when pre): g gain as shown, line (1 = LINE or INSTR is the lit one), lo a fixed line input, ins it has Line / Instrument, v48 phantom,
     h48 the 48V key exists, pol phase, lc low cut (0 off, 1 on, or the Hz where there is a choice), lcc the choice exists, pad (0 off, 1 on / -12, 2 = -24), stp the pad has three steps,
-    hpad the Pad key exists. pan (only with a pan mixer and a track): [pan] for a mono track, [left, right] for a stereo one. */
-inline juce::var inputsToVar (Project& p, MixerState* panMixer)
+    hpad the Pad key exists. */
+inline juce::var inputsToVar (Project& p)
 {
     juce::Array<juce::var> out;
     const int n = juce::jmin ((int) p.inputs.size(), kMaxInputs);
@@ -215,14 +194,6 @@ inline juce::var inputsToVar (Project& p, MixerState* panMixer)
             o->setProperty ("hpad", ! lo && ! (s.steppedPad && s.line));
             o->setProperty ("pad", s.steppedPad ? s.padStep() : (s.pad ? 1 : 0));
         }
-        if (panMixer != nullptr && ! fed.empty() && fed.front()->channelCount() <= 2)
-            if (auto* st = findStrip (*panMixer, fed.front()->id))
-            {
-                juce::Array<juce::var> pn;
-                if (fed.front()->channelCount() == 1) pn.add (r2 (st->pan.get()));
-                else { pn.add (r2 (st->panL.get())); pn.add (r2 (st->panR.get())); }
-                o->setProperty ("pan", juce::var (pn));
-            }
         out.add (juce::var (o));
     }
     return juce::var (out);

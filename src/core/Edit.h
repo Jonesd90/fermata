@@ -342,9 +342,9 @@ struct EditDef
     {
         AutoPoint p; p.id = juce::Uuid(); p.value = lane.clampValue (value);
         anchorPoint (p, juce::jmax ((juce::int64) 0, t));
-        const auto id = p.id;
+        const auto pid = p.id;
         lane.pts.push_back (p); lane.sortPoints();
-        for (int i = 0; i < (int) lane.pts.size(); ++i) if (lane.pts[(size_t) i].id == id) return i;
+        for (int i = 0; i < (int) lane.pts.size(); ++i) if (lane.pts[(size_t) i].id == pid) return i;
         return (int) lane.pts.size() - 1;
     }
 

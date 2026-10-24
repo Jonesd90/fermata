@@ -478,8 +478,8 @@ TrimComponent::TrimComponent (AppContext& a, const juce::Uuid& eid, const juce::
 
     slipLeftToggle.setToggleState (app.trimSlipLeft, juce::dontSendNotification);
     slipRightToggle.setToggleState (app.trimSlipRight, juce::dontSendNotification);
-    slipLeftToggle.onClick  = [this] { app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
-    slipRightToggle.onClick = [this] { app.setTrimSlip (slipLeftToggle.getToggleState(), slipRightToggle.getToggleState()); };
+    slipLeftToggle.onClick  = [this] { app.setTrimSlip (slipLeftToggle.getToggleState(), app.trimSlipRight); };      // (the other one as it is now, not as this box last showed it)
+    slipRightToggle.onClick = [this] { app.setTrimSlip (app.trimSlipLeft, slipRightToggle.getToggleState()); };
     slipLeftToggle.setTooltip ("Sliding A: every piece to the LEFT of A slides with it. Off: they stay where they are.");
     slipRightToggle.setTooltip ("Sliding B: every piece to the RIGHT of B slides with it. Off: they stay where they are.");
 
@@ -735,7 +735,6 @@ void TrimComponent::changeListenerCallback (juce::ChangeBroadcaster* src)
         return;
     }
     refreshControls();
-    waves->extraZoom = app.trimWaveZoom;
     const auto rf = refs();
     if (rf.ok() && ((rf.A != nullptr ? rf.A->id : juce::Uuid::null()) != readersForA || (rf.B != nullptr ? rf.B->id : juce::Uuid::null()) != readersForB || trackBox.getSelectedId() != readersTrack))
         refreshReaders();
@@ -765,6 +764,9 @@ void TrimComponent::timerCallback()
     if (wasAuditioning && ! playing && loopToggle.getToggleState()) audition();    // loop
     wasAuditioning = wasAuditioning && playing;
     auditionButton.setButtonText (isAuditioning() ? "Stop  [F2]" : "Audition  [F2]");
+    // Slip Left / Right is one setting for the edit window, this window and the Stream Deck's keys: the boxes follow it
+    if (slipLeftToggle.getToggleState() != app.trimSlipLeft)   slipLeftToggle.setToggleState (app.trimSlipLeft, juce::dontSendNotification);
+    if (slipRightToggle.getToggleState() != app.trimSlipRight) slipRightToggle.setToggleState (app.trimSlipRight, juce::dontSendNotification);
 }
 
 // ------------------------------------------------------------------ editing actions

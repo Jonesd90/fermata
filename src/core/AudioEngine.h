@@ -164,17 +164,23 @@ public:
         talkback playback is on and a take or edit is playing, the processing mixer's main output computed with EVERY live input off. */
     void setTalkbackRouting (const std::vector<int>& crMicInputs, int tbOutputFirst) noexcept
     {
-        for (auto& f : crSel) f.store (false, std::memory_order_relaxed);
-        for (int i : crMicInputs) if (i >= 0 && i < kMaxInputs) crSel[(size_t) i].store (true, std::memory_order_relaxed);     // any number of inputs together make the CR mic
+        setCrMicInputs (crMicInputs);                                  // any number of inputs together make the CR mic
         setTalkbackOutputs (tbOutputFirst >= 0 ? std::vector<int> { tbOutputFirst } : std::vector<int>());
     }
     /** Any number of talkback pairs: each entry is the first output of a pair (that output and the next one: left and right). A pair that starts on the
         last output is simply mono (the right channel is ignored). Pairs may overlap; an output in two of them carries both. */
     void setTalkbackRouting (const std::vector<int>& crMicInputs, const std::vector<int>& tbFirsts) noexcept
     {
-        for (auto& f : crSel) f.store (false, std::memory_order_relaxed);
-        for (int i : crMicInputs) if (i >= 0 && i < kMaxInputs) crSel[(size_t) i].store (true, std::memory_order_relaxed);
+        setCrMicInputs (crMicInputs);
         setTalkbackOutputs (tbFirsts);
+    }
+    /** Which driver inputs make up the CR mic. Each flag is stored once, with its final value: the audio thread never sees the mic's inputs all off for a
+        moment (this is called many times a second while talkback is used; clearing them all first could drop the mic for a block - a click). */
+    void setCrMicInputs (const std::vector<int>& crMicInputs) noexcept
+    {
+        bool on[kMaxInputs] = {};
+        for (int i : crMicInputs) if (i >= 0 && i < kMaxInputs) on[i] = true;
+        for (int i = 0; i < kMaxInputs; ++i) if (crSel[(size_t) i].load (std::memory_order_relaxed) != on[i]) crSel[(size_t) i].store (on[i], std::memory_order_relaxed);
     }
     void setTalkbackOutputs (const std::vector<int>& firsts) noexcept
     {

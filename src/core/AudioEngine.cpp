@@ -250,7 +250,16 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
         // linear phase) on one channel does not put that channel out of time with the others.
         {
             auto chainLat = [] (const InsertSlot* sl, int count) { int t = 0; for (int i = 0; i < count; ++i) t += sl[i].latencySamples(); return t; };
-            for (auto& nd : mp->order) if (nd->kind == NodeKind::Track) nd->strip->lowCut.ensureChannels (p->tracks[(size_t) nd->trackIndex].numCh);   // (a surround track: a low cut per channel)
+            for (auto& nd : mp->order)
+            {
+                // a strip or Int Bus made after the device started (a new track, a new cue mixer) still has the default 48 kHz design: it is designed
+                // for the rate the device runs at before it goes into the plan (an 80 Hz low cut cut at 160 Hz at 96 kHz until the device restarted)
+                auto* lc = nd->kind == NodeKind::Track ? &nd->strip->lowCut : nd->kind == NodeKind::IntBus ? &nd->bus->lowCut : nullptr;
+                if (lc == nullptr) continue;
+                const int numCh = nd->kind == NodeKind::Track ? p->tracks[(size_t) nd->trackIndex].numCh : 2;
+                if (sampleRate > 0.0 && lc->preparedRate() != sampleRate) lc->prepare (sampleRate, maxBlock, numCh);
+                if (nd->kind == NodeKind::Track) lc->ensureChannels (numCh);            // (a surround track: a low cut per channel)
+            }
             for (auto& nd : mp->order)                                       // nodes come after all the nodes that feed them
             {
                 const int lc = nd->kind == NodeKind::Track ? nd->strip->lowCut.latencySamples() : nd->kind == NodeKind::IntBus ? nd->bus->lowCut.latencySamples() : 0;
@@ -263,24 +272,28 @@ std::unique_ptr<AudioEngine::Plan> AudioEngine::buildPlan() const
             int vcaLat[kMaxVcas] = {};
             for (auto& nd : mp->order)
             {
-                // where each automatable control acts, how late the sound is there (the automation reads its lane that much earlier: see AutomationPlan)
+                // where each automatable control acts, how late the sound is there (the automation reads its lane that much earlier: see AutomationPlan).
+                // A spot mic's alignment delay comes before every control of its track (input gain, low cut, inserts, fader, pan, sends) and is not
+                // compensated - the track is heard later on purpose - so its controls are that much later too (a lane drawn under a note of the spot
+                // landed early by the alignment, 5 - 30 ms). It is not in inLat / outLat, which line the paths up.
                 {
+                    const int align = nd->kind == NodeKind::Track ? juce::jmax (0, p->tracks[(size_t) nd->trackIndex].alignSamples) : 0;
                     InsertSlot* sl = nd->kind == NodeKind::Track ? nd->strip->slots : nd->bus->slots;
-                    int at = nd->inLat + (nd->kind == NodeKind::Track ? nd->strip->lowCut.latencySamples() : nd->kind == NodeKind::IntBus ? nd->bus->lowCut.latencySamples() : 0);   // (the low cut sits before the inserts)
+                    int at = align + nd->inLat + (nd->kind == NodeKind::Track ? nd->strip->lowCut.latencySamples() : nd->kind == NodeKind::IntBus ? nd->bus->lowCut.latencySamples() : 0);   // (the low cut sits before the inserts)
                     for (int i = 0; i < kNumSlots; ++i) { sl[i].autoLat.store (at, std::memory_order_relaxed); at += sl[i].latencySamples(); }
                     auto& latIn  = nd->kind == NodeKind::Track ? nd->strip->autoLatIn  : nd->bus->autoLatIn;
                     auto& latOut = nd->kind == NodeKind::Track ? nd->strip->autoLatOut : nd->bus->autoLatOut;
-                    latIn.store (nd->inLat, std::memory_order_relaxed); latOut.store (nd->outLat, std::memory_order_relaxed);
+                    latIn.store (align + nd->inLat, std::memory_order_relaxed); latOut.store (align + nd->outLat, std::memory_order_relaxed);
                     if (SendList* list = nd->kind == NodeKind::Track ? &nd->strip->sends : nd->kind == NodeKind::IntBus ? &nd->bus->sends : nullptr)
                         for (auto& s : list->pool)                   // (a send not in the plan - off, and not automated - as if nothing held it back; turning it on rebuilds the plan)
                         {
-                            int a = nd->outLat;
+                            int a = align + nd->outLat;
                             for (auto& ss : s->slots) { ss.autoLat.store (a, std::memory_order_relaxed); a += ss.latencySamples(); }
                             s->autoLat.store (a, std::memory_order_relaxed);
                         }
-                    for (auto& sp : nd->sends) sp.st->autoLat.store (sp.dest->inLat, std::memory_order_relaxed);     // its level is applied after its inserts AND its delay line
+                    for (auto& sp : nd->sends) sp.st->autoLat.store (align + sp.dest->inLat, std::memory_order_relaxed);     // its level is applied after its inserts AND its delay line
                     const juce::uint32 vm = nd->kind == NodeKind::Track ? nd->strip->vcaMask.load (std::memory_order_relaxed) : nd->kind == NodeKind::IntBus ? nd->bus->vcaMask.load (std::memory_order_relaxed) : 0u;
-                    for (int v = 0; v < kMaxVcas; ++v) if (vm & (1u << v)) vcaLat[v] = juce::jmax (vcaLat[v], nd->outLat);
+                    for (int v = 0; v < kMaxVcas; ++v) if (vm & (1u << v)) vcaLat[v] = juce::jmax (vcaLat[v], align + nd->outLat);
                 }
                 for (auto& sp : nd->sends)
                     sp.delay.init (sp.dest->inLat - (nd->outLat + chainLat (sp.st->slots, kSendSlots)), 2);
@@ -805,8 +818,8 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
             {
                 const auto& fp = *pl->followers[(size_t) f];
                 const bool audited = audActive && fp.mixer == aud;
-                float pk = 0.0f;
-                for (int c = 0; c < 2; ++c) { const auto mm = juce::FloatVectorOperations::findMinAndMax ((c == 0 ? mainL : mainR) + offset, n); pk = juce::jmax (pk, std::abs (mm.getStart()), std::abs (mm.getEnd())); }
+                float pk[2] = { 0.0f, 0.0f };
+                for (int c = 0; c < 2; ++c) { const auto mm = juce::FloatVectorOperations::findMinAndMax ((c == 0 ? mainL : mainR) + offset, n); pk[c] = juce::jmax (std::abs (mm.getStart()), std::abs (mm.getEnd())); }
                 auto addPair = [&] (int first)
                 {
                     for (int c = 0; c < 2; ++c)
@@ -817,8 +830,10 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
                     if (nd->kind == NodeKind::ExtBus)
                     {
                         addPair (nd->bus->outFirst.load (std::memory_order_relaxed));
-                        if (pk > nd->bus->meterL.get()) nd->bus->meterL.set (pk);
-                        if (pk > nd->bus->meterR.get()) nd->bus->meterR.set (pk);
+                        if (pk[0] > nd->bus->meterL.get()) nd->bus->meterL.set (pk[0]);
+                        if (pk[1] > nd->bus->meterR.get()) nd->bus->meterR.set (pk[1]);
+                        if (pk[0] > nd->bus->remotePkL.get()) nd->bus->remotePkL.set (pk[0]);     // (the Stream Deck's dial reads its own peak)
+                        if (pk[1] > nd->bus->remotePkR.get()) nd->bus->remotePkR.set (pk[1]);
                     }
                 if (audited) addPair (monitorOut);              // auditioned by the engineer: heard on the engineer's pair too
             }

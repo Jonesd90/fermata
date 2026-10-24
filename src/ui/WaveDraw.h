@@ -293,7 +293,9 @@ private:
         if (! covers (e.cur.get()))
         {
             e.next.reset();                                            // (whatever was on its way is for somewhere else)
-            e.cur = readChunk (formats, f, need0, need1, need0 - kBehind, need1 + kAhead);
+            // read now only a little round what is drawn (a quarter of the usual reach): this is on the message thread, for every file of the window, at
+            // every jump or zoom; the rest comes from the reader thread at once (what is held is then short of kAhead / 2, so the read-ahead starts below)
+            e.cur = readChunk (formats, f, need0, need1, need0 - kBehind / 4, need1 + kAhead / 4);
             if (! covers (e.cur.get())) { e.cur.reset(); return false; }
             e.length = e.cur->fileLength; e.checkedAt = now;
             trim (&e);

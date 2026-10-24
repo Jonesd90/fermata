@@ -68,7 +68,7 @@ public:
         for (int i = 0; i < lowcut::kNumSlopes; ++i) slopeBox.addItem (lowcut::slopeName (i), i + 1);
         slopeBox.setSelectedId (lc.slope.load() + 1, juce::dontSendNotification);
         slopeBox.onChange = [this] { pending = true; refreshText(); repaint(); startTimer (60); };
-        slopeBox.setTooltip ("How steeply the sound falls away below the cut. Every slope is linear phase (nothing is smeared); the steeper, the longer the filter and the delay.");
+        slopeBox.setTooltip ("How steeply the sound falls away below the cut. Zero latency unless Linear phase is ticked; then the steeper, the longer the filter and the delay.");
         addAndMakeVisible (slopeBox);
         lcui::caption (freqCap, "FREQUENCY", juce::Justification::centredLeft); lcui::caption (slopeCap, "SLOPE", juce::Justification::centredLeft); lcui::caption (delayCap, "DELAY", juce::Justification::centredRight);
         addAndMakeVisible (freqCap); addAndMakeVisible (slopeCap); addAndMakeVisible (delayCap);
@@ -226,6 +226,7 @@ public:
     void mouseDown (const juce::MouseEvent& e) override
     {
         if (e.eventComponent != &key) return;
+        swallow = false;                                                   // a new press: whatever an earlier one left (the panel's opening can take the click it meant to swallow)
         if (e.mods.isPopupMenu()) { swallow = true; openPanel(); return; }
         startTimer (450);
     }

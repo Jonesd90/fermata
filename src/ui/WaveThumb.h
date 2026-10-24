@@ -9,14 +9,15 @@ namespace td
 {
 /** The outline of an audio file for drawing: the lowest and highest sample of every 256 samples, per channel, as 16-bit values (so a reverb tail at
     -70 dB still has a shape: JUCE's AudioThumbnail kept 8 bits, and everything under about -42 dB came out as flat steps), plus a coarser level of
-    one point per 4096 samples for the zoomed-out views. It is read in the background (a shared pool of threads), and the part read so far can be
-    drawn at any time; a change message is sent as it comes in and when it is done. Saved to and loaded from the Waveforms folder (see WaveStore.h). */
+    one point per 4096 samples for the zoomed-out views. It is read in the background (a pool of threads that each take or edit window owns), and the part read
+    so far can be drawn at any time; a change message is sent as it comes in and when it is done. Saved to and loaded from the Waveforms folder (see WaveStore.h).
+    A file that could not be read is drawn as far as it was read but never saved (a flat outline would otherwise stay in the Waveforms folder for good). */
 class WaveThumb : public juce::ChangeBroadcaster
 {
 public:
     static constexpr int kSamplesPerPoint = 256, kCoarse = 16;         // the fine level's span, and the coarse level's span in fine points
 
-    /** The background readers shared by every thumbnail of the program. */
+    /** The background readers (each take or edit window has its own). */
     class Pool
     {
     public:
@@ -79,7 +80,7 @@ public:
     static constexpr juce::int32 kFormat = 1;
     bool saveTo (juce::OutputStream& o) const
     {
-        if (! isFullyLoaded()) return false;
+        if (! isFullyLoaded() || d->failed.load()) return false;
         o.writeInt (kFormat); o.writeInt (kSamplesPerPoint); o.writeInt (d->channels); o.writeDouble (d->rate); o.writeInt64 (d->samples); o.writeInt64 (d->points);
         for (auto& c : d->ch) { o.write (c.mn.data(), c.mn.size() * 2); o.write (c.mx.data(), c.mx.size() * 2); }
         return true;
@@ -113,6 +114,7 @@ private:
         std::vector<Channel> ch;
         std::atomic<juce::int64> done { 0 };               // fine points filled so far (the reader fills them in order)
         std::atomic<bool> alive { true };                  // false once the thumbnail is gone: the reader stops
+        std::atomic<bool> failed { false };                // the file could not be (wholly) read: drawn as far as it went, never saved
     };
 
     static void coarsen (Channel& c, juce::int64 from, juce::int64 to)
@@ -134,7 +136,7 @@ private:
     {
         juce::AudioFormatManager fm; fm.registerBasicFormats();
         std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (f));
-        if (r == nullptr) { data->done = data->points; tell (weak); return; }
+        if (r == nullptr) { data->failed = true; data->done = data->points; tell (weak); return; }
         const int block = kSamplesPerPoint * 512;                                  // 131072 samples a time
         juce::AudioBuffer<float> buf (data->channels, block);
         juce::uint32 lastTold = juce::Time::getMillisecondCounter();
@@ -143,7 +145,7 @@ private:
         {
             const int n = (int) juce::jmin ((juce::int64) block, data->samples - pos);
             buf.clear();
-            if (! r->read (&buf, 0, n, pos, true, true)) break;
+            if (! r->read (&buf, 0, n, pos, true, true)) { data->failed = true; break; }
             for (int c = 0; c < data->channels; ++c)
             {
                 const float* s = buf.getReadPointer (c);

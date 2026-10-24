@@ -152,9 +152,9 @@ private:
                 double total = 0.0, low = 0.0, wsum = 0.0, fsum = 0.0, logSum = 0.0; int nb = 0;
                 for (int k = 1; k <= N / 2; ++k)
                 {
-                    const double p = std::norm (buf[(size_t) k]), f = (double) k * binHz;
-                    total += p; if (f < 100.0) low += p;
-                    if (f >= 100.0 && f <= juce::jmin (12000.0, 0.45 * sr)) { wsum += p; fsum += p * f; logSum += std::log (p + 1.0e-18); ++nb; }
+                    const double p = std::norm (buf[(size_t) k]), hz = (double) k * binHz;
+                    total += p; if (hz < 100.0) low += p;
+                    if (hz >= 100.0 && hz <= juce::jmin (12000.0, 0.45 * sr)) { wsum += p; fsum += p * hz; logSum += std::log (p + 1.0e-18); ++nb; }
                 }
                 juce::Colour c;
                 if (rms < 1.0e-4f || total <= 0.0) c = juce::Colour (0xff808080);                              // silence: grey

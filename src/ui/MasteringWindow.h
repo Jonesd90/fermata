@@ -21,7 +21,6 @@ public:
     void refresh();                                     // the controls show the settings
     void resized() override;
     static constexpr int kHeight = 4 * 26;
-    juce::String summary() const;                       // "EBU R 128 (-23 LUFS, -1 dBTP), per album"
 private:
     void write();
     MasterExportSettings& vm() const { return get(); }
@@ -125,10 +124,8 @@ private:
     juce::ToggleButton feedbackToggle { "Include Feedback Form (a listening copy of every file)" };
     juce::ComboBox formAudioBox;
     juce::ToggleButton alsoToggle[5];
-    juce::ToggleButton normToggle { "Set the peak level to" }, overallToggle { "Overall: one gain for all the files (they keep their balance)" },
-                       individualToggle { "Individually: every file reaches the peak level on its own" }, numberToggle { "Number the files: 01 - name" };
-    juce::TextEditor peakEditor, folderEditor;
-    juce::Label peakUnit;
+    juce::ToggleButton numberToggle { "Number the files: 01 - name" };
+    juce::TextEditor folderEditor;
     juce::TextButton chooseButton { "Choose folder..." }, exportButton { "Export" }, showButton { "Show in folder" }, reportButton { "Loudness report" }, formReportButton { "Loudness report" };
     LevelBox levelBox, formLevelBox;
     juce::String lastReport;                               // the loudness report of the last export (the Loudness report button)

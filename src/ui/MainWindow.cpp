@@ -719,12 +719,12 @@ void MainComponent::resized()
     }
     auto r = getLocalBounds().withTrimmedTop (menuBarH).withTrimmedBottom (railH).reduced (kCheekW + 10, 0);
     r.removeFromTop (4); r.removeFromBottom (4);
-    // ---- the top row: the Fermata mark and name | project | the driver and recording state | DRIVER INPUTS, and the stage speaker boxes at the right
+    // ---- the top row: the Fermata mark and name (DRIVER INPUTS under it) | project | the driver and recording state | the stage speaker boxes at the right
     headerSeps.clear();
     stagePanel.setVisible (showStage);
     auto head = r.removeFromTop (headH);
     headerLine = head;
-    {   // left to right: the mark, the displays, the driver line, DRIVER INPUTS; everything to the right of that is the stage speaker boxes' room
+    {   // left to right: the mark, the displays, the driver line; everything to the right of that is the stage speaker boxes' room
         // (they sit at the right-hand end and only scroll sideways when they fill all of it)
         auto line = head;
         {   // the mark and name, with DRIVER INPUTS under it (the caption of the strips just below)
@@ -953,7 +953,7 @@ void MainComponent::timerCallback()
     if (noticeOn) s = app.notice;                                       // (a notice has both lines: it wraps)
     else if (nums.isNotEmpty()) s << "\n" << nums;
     statusLabel.setText (s, juce::dontSendNotification);
-    if (const int w = statusWidthFor (s); w != lastStatusTextW) { lastStatusTextW = w; resized(); }                                   // DRIVER INPUTS follows the end of the driver line
+    if (const int w = statusWidthFor (s); w != lastStatusTextW) { lastStatusTextW = w; resized(); }                                   // (the stage speaker boxes start after the driver line)
     if (noticeOn) statusLabel.setColour (juce::Label::textColourId, juce::Colour (0xff3ee0c0)); else
     statusLabel.setColour (juce::Label::textColourId, rec ? juce::Colour (0xffff5555) : alarmLine ? theme::warn : desk::pal().cream.withAlpha (0.8f));
     if (rec && (s.startsWith ("DISK") || s.startsWith ("RECORDING HAS"))) statusLabel.setColour (juce::Label::textColourId, ((now2 / 500) & 1) ? juce::Colour (0xffff5555) : juce::Colours::white);     // (flashes)

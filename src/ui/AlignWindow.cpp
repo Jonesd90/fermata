@@ -58,7 +58,9 @@ struct AlignComponent::Job : public juce::Thread
             }
             return true;
         };
-        result = timealign::analyse (tins, src.length, src.sampleRate, reader, [this] (float p) { progress.store (p); return ! threadShouldExit(); });
+        try { result = timealign::analyse (tins, src.length, src.sampleRate, reader, [this] (float p) { progress.store (p); return ! threadShouldExit(); }); }
+        catch (const std::bad_alloc&) { result = {}; result.error = "Not enough memory to measure this. Try a shorter take or fewer tracks."; }
+        catch (const std::exception& e) { result = {}; result.error = juce::String ("The measurement failed: ") + e.what(); }
         done.store (true);
     }
 
@@ -97,11 +99,11 @@ struct AlignComponent::Row : public juce::Component
                          "The role is the same in every piece.");
         role.onChange = [this]
         {
-            auto* t = track();
-            if (t == nullptr) return;
+            auto* tk = track();
+            if (tk == nullptr) return;
             const int r = juce::jlimit (0, timealign::NumRoles - 1, role.getSelectedId() - 1);
-            if (r == t->alignRole) return;
-            t->alignRole = r;
+            if (r == tk->alignRole) return;
+            tk->alignRole = r;
             if (r != timealign::Spot)                                          // only spots are delayed (in this piece; the next Analyse does the others)
                 if (auto* at = owner.editableSet().find (trackId)) at->on = false;
             owner.tracksChanged();
@@ -297,8 +299,12 @@ AlignComponent::~AlignComponent() { stopJob(); }
 
 void AlignComponent::setSource (bool edit, const juce::Uuid& id)
 {
+    // a measurement still running belongs to the piece it was started on: it is stopped, so its results are never saved into the piece shown now
+    const bool stopped = job != nullptr && (edit != isEdit || id != sourceId);
+    if (stopped) stopJob();
     isEdit = edit; sourceId = id;
-    mainNote.setText ({}, juce::dontSendNotification); status.setText ({}, juce::dontSendNotification);
+    mainNote.setText ({}, juce::dontSendNotification);
+    status.setText (stopped ? juce::String ("The measurement of the piece before was stopped: press Analyse to measure this one.") : juce::String(), juce::dontSendNotification);
     refreshRows();
 }
 

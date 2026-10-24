@@ -349,6 +349,7 @@ int MasterRenderBatch::toRender() const
 
 juce::String MasterRenderBatch::run (std::atomic<float>* progress, const std::atomic<bool>* cancel)
 {
+    juce::ScopedNoDenormals noDenormals;                               // (as on the audio thread)
     if (prepareError.isNotEmpty()) return prepareError;
     MasterRenders store (folder);
     juce::AudioFormatManager fm; fm.registerBasicFormats();

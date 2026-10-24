@@ -132,7 +132,7 @@ Tracking trackingInputs (const std::vector<Span>& seg, int sr, double fLo, doubl
     std::reverse (order.begin(), order.end());
     std::vector<size_t> top;
     for (size_t i = 0; i < order.size() && (int) i < kmax; ++i) if (en[order[i]] > 0) top.push_back (order[i]);
-    if (top.empty()) throw std::runtime_error ("Every channel is turned down in the visual mixer.");
+    if (top.empty()) throw std::runtime_error ("Nothing to measure: the box is silent on every track, or every channel is turned down in the visual mixer.");
     double mx = 0.0; for (auto c : top) mx = std::max (mx, w[c]);
     for (auto c : top) { t.channels.push_back ((int) c); t.weights.push_back (w[c] / mx); }
     return t;
@@ -649,9 +649,7 @@ std::vector<Vec> findNeighbours (const std::vector<Span>& chans, const Vec& ws, 
         size_t kA = ts.size(), kB = 0;
         for (size_t k = 0; k < ts.size(); ++k) if (ts[k] >= ra && ts[k] <= rb) { kA = std::min (kA, k); kB = std::max (kB, k); }
         for (size_t k = 0; k < ts.size(); ++k) { if (k < kA) ln[k] = line[kA]; else if (k > kB) ln[k] = line[kB]; }
-        const double hopS = (ts.back() - ts.front()) / (double) (ts.size() - 1);
         for (size_t k = 0; k < ts.size(); ++k) act[k] = smoothstep ((ts[k] - (ra - 0.05)) / 0.1) * smoothstep (((rb + 0.05) - ts[k]) / 0.1);
-        (void) hopS;
         found.push_back (ln); avoid.push_back (ln); active->push_back (act);
         peelLine (sig, sr, tStart, ts, ln, peelBw, 8, &act);
     }
@@ -1867,7 +1865,7 @@ RefPoints refPoints (const std::vector<Span>& seg, int sr, double segStart, cons
     std::stable_sort (order.begin(), order.end(), [&] (size_t a, size_t b) { return en[a] < en[b]; });
     std::reverse (order.begin(), order.end());
     std::vector<size_t> top; for (size_t i = 0; i < order.size() && (int) i < kmax; ++i) if (en[order[i]] > 0) top.push_back (order[i]);
-    if (top.empty()) throw std::runtime_error ("Every channel is turned down in the visual mixer.");
+    if (top.empty()) throw std::runtime_error ("Nothing to measure: the box is silent on every track, or every channel is turned down in the visual mixer.");
     const size_t N = pow2Round (sr2, 0.34), pad = 2;
     const Vec win = hanning (N);
     const double df = sr2 / (double) (N * pad);

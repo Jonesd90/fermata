@@ -35,9 +35,8 @@ struct SpectralPyramid
             hop *= 4.0;
         }
     }
-    /** The finest level's frame that holds time t (seconds), and the time of a frame's centre. */
+    /** The finest level's frame that holds time t (seconds). */
     int frameAt (double t) const { return levels.empty() ? 0 : juce::jlimit (0, levels[0].frames - 1, (int) std::floor (t / levels[0].hopSeconds)); }
-    double frameTime (int f) const { return levels.empty() ? 0.0 : ((double) f + 0.5) * levels[0].hopSeconds; }
 
     /** Adds one track's audio to the finest level over the frames [f0, f1): 'read (start, n, dst)' fills n samples of that track from sample 'start'
         (zeros past the end). Every frame takes the LOUDER of what it had and this track, bin by bin; with 'replace' the frames are cleared first

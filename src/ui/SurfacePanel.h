@@ -266,7 +266,7 @@ private:
         auto* s = app.surface;
         const auto want = s != nullptr ? s->ports() : SurfaceController::Ports();
         // the port chosen, or (nothing chosen yet) the one the surface took because it looked like the S1
-        const auto inWant = want.inId.isNotEmpty() ? want.inId : (s != nullptr ? s->openInId() : juce::String());
+        const auto inWant = want.inId.isNotEmpty() ? want.inId : (s != nullptr ? s->openInId() : juce::String());         // ("none" matches no port: (none) stays shown)
         const auto outWant = want.outId.isNotEmpty() ? want.outId : (s != nullptr ? s->openOutId() : juce::String());
         filling = true;
         inIds.clear(); outIds.clear();
@@ -284,7 +284,8 @@ private:
     {
         if (filling || app.surface == nullptr) return;
         const int i = inBox.getSelectedId() - 2, o = outBox.getSelectedId() - 2;
-        app.surface->setPorts (i >= 0 && i < inIds.size() ? inIds[i] : juce::String(), o >= 0 && o < outIds.size() ? outIds[o] : juce::String());
+        app.surface->setPorts (i >= 0 && i < inIds.size() ? inIds[i] : juce::String (SurfaceController::kNoPort),          // "(none)": really none (an empty choice would pick the S1 again)
+                               o >= 0 && o < outIds.size() ? outIds[o] : juce::String (SurfaceController::kNoPort));
     }
     void refresh()
     {

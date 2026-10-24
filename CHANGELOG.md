@@ -6,6 +6,56 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 2.98.0
+A sweep through everything added since 2.71, the Stream Deck code first (that is where the crash was).
+
+**The crash**
+- **Fermata no longer crashes with the Stream Deck connected.** The log you sent ends in `RemoteControlServer::broadcast`. Twenty times a second Fermata sends the Stream Deck what to show; the text was handed to the network as a pointer into a piece of text that had already been thrown away. Most of the time the memory still held it, now and then it did not, and Fermata stopped. The control port is rewritten: each Stream Deck (or Neo) connection has a thread of its own that does all its sending and reading, and Fermata only puts a copy of each message in that connection's queue. So nothing points at text that has gone; Fermata never waits for the Stream Deck (before, a Stream Deck that stopped reading could hold up the whole program); a long message the network takes in several goes is finished properly (it could come out garbled); and a Stream Deck that stops reading altogether is let go once 4 MB is waiting for it - it connects again by itself, straight away. `fermata-log.txt` notes when a Stream Deck connects and disconnects, and why. Tested with a test program of its own (messages in and out, a controller that stops reading, eight controllers at once, many threads at once), also under the memory and thread checkers.
+
+**Stream Deck (plug-in 1.8.0)**
+- **Three new dials:** **Time of day** (Fermata's clock), **Session time left** (the session timer of the Take Display: white, amber in the last 10 minutes, red OVER TIME when it has run out) and **Take number** (green "The next take is: 12", red "This take is: 13" while recording). They do nothing when turned or pressed, so they can go on any dial.
+- The old Pan command of the control port is gone (no key has used it since plug-in 1.5).
+
+**Found in the sweep: crashes**
+- The Stream Deck closing the Edit window (or a mixer, or the Meterbridge) while one of its menus or pop-ups was open crashed Fermata. Now it is not closed while a menu or message is up (the notice says so).
+- Loading a plug-in onto linked mixer strips crashed Fermata if the plug-in showed a window while loading (a licence or trial window) and the mixer redrew its strips meanwhile.
+- The S1 controller crashed Fermata if a strip was touched after the mixer it showed had been deleted (or the project closed); and CONTROLLER Off did not stop the strip controls.
+- A ReTouch / Noise mode window open while Windows shut Fermata down (restart, log off) could crash it on the way out, and delete the files of fixes the last save had just put in the project. Open tool windows are now closed first.
+- Noise mode: the sharp picture of a long, zoomed view could crash Fermata when the computer ran out of memory; it is capped now and the error is caught. A memory error while measuring the spot-mic alignment ended Fermata; now the window says so.
+
+**Found in the sweep: things that could lose work**
+- **A take marked as the room tone was not saved** (unless something else in that take window changed too). It is saved, and the mark is an Undo step.
+- **Undo or Redo in an Edit window put every automation row back to one** (the rows you add with the + boxes). The rows are kept now.
+- **Noise mode and the ReTouch window ask before throwing fixes away.** Closing with fixes not yet written back (Finished, Cancel, the X, or Escape - easily pressed) used to throw them away without a word; now you are asked whether to keep them (Noise mode) or throw them away. In the two stream windows of an edit point, Escape no longer hides one of the two windows (it left it open but out of sight); it does nothing there.
+- **Noise mode: a box shorter than 60 ms (about the size of a click) was not put into the edit** although the window said it was done, and on a longer box the outer 15 ms kept some of the old sound in the cross-fades. The piece that is put in now reaches a quarter of a second past the box on each side (the joins lie on sound the fix did not change).
+- **Pressing Align in another window while the spot mics were being measured** saved the measurements into the other piece. Changing the piece now stops the measuring.
+- A file that could not be opened (Open project) left the open project saving a second copy of its window files ("Piece 1 (2).fmtake"). And a window file of another project could be tidied away by this one's save.
+- The autosave could save the preview files of a ReTouch fix being listened to into the project (a crash then would have reopened the take with the previews in it and no Undo fix). Nothing is saved automatically while a preview is in.
+
+**Found in the sweep: things that did the wrong thing**
+- **De-click on a short area did nothing at 96 and 192 kHz** (an area of 30 ms or less, round a click you marked: at 96 kHz anything over 15.6 ms was left as it was). It is mended at every rate now, and the De-click report after it is right.
+- **De-click in Noise mode finds lost samples on all the tracks together** (they are one event on every track), as the ReTouch window does: before, each track looked for itself, a single odd sample on one track could be taken for one, and the tracks could then be mended differently. The time squeeze that puts them back stays inside the piece that is put in.
+- **Noise mode: Denoise with a room-tone box (L) removed much less after the room tone itself had been denoised** (the profile was learned again from the denoised sound, about 12 dB too low). It is learned from the sound as it was when you pressed L. The ReTouch window's picture had the same fault (it learned from the fixed sound, the written file from the original, so what you heard was not what was written).
+- **Noise mode: Denoise over a long box** (minutes of a piece) ran out of memory ("Something went wrong while processing"); it is done in pieces of 15 s now, with the same result (a box of up to 15 s is done exactly as before).
+- **Denoise with the project's room tone said "done" but left a track as it was** when the room tone had nothing for that track (a track added later) or was learned at another sample rate. Now it says which track and what to do.
+- **The low cut of a strip made after the audio device started** (a new track, a new cue mixer) was designed for 48 kHz: at 96 kHz an 80 Hz low cut cut at 160 Hz, until the device restarted.
+- **Automation on a spot mic with time alignment came 5 - 30 ms early** (the alignment delay comes before the track's fader, pan, sends and plug-ins); it is read that much later now.
+- A cue mixer following the processing mixer had a dead level meter on the Stream Deck.
+- Mastering: changing the Level mode copied the number in the box into the other mode (a loudness target became -1.0 LUFS).
+- The Pitch Pipe and Click windows stayed open across Open / New project and showed the old project's settings while the new ones sounded; they close now.
+- After a long press or right-click on a mixer's LC key, the next click on it did nothing.
+- A waveform whose file could not be read was saved flat and shown flat in every later session.
+- A new project showed (and saved) the Display Organiser layouts of the project before it.
+- The S1 controller's "(none)" port choice did not stick; its display is now sent one line at a time (less MIDI).
+- The Trim window's slip boxes, the track names of the Edit window (Shift + click across buses), double-click on the take being recorded, and the mixer's refresh with two mixers open: small fixes.
+- The talkback mic could drop out for a moment on the stage speakers while talkback was open.
+- Many inputs (a RAVENNA driver can have 256) made naming the inputs slow enough to fill the program's time while a Stream Deck was connected; the device names are worked out once now.
+- Opening a big project with one audio file missing checked every file of it again; the quick check now leaves out the takes found whole last time, as it should.
+- Measuring the pitch from a box over digital silence said "Every channel is turned down in the visual mixer"; it now says the box may be silent.
+
+**Tidying (nothing you will see)**
+- The take-window denoiser of 2.77 - 2.80 (whole files, "Other tracks") had been left in only for the tests; it is gone, with its tests (the denoiser's own tests against the reference are kept, and new ones cover what Noise mode and ReTouch use). Leftovers of the old De-click window, unused settings and drawing code, and out-of-date comments removed throughout.
+
 ## 2.97.0
 - **Stream Deck: open / close keys** for the Edit window, Take Display, Display Organiser, Media and Mastering (new `openwin` command; the desk message tells which are open or minimised). Needs plug-in 1.7.0.
 

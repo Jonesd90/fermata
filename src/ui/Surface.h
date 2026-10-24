@@ -6,9 +6,9 @@
 
 namespace td
 {
-/** What the surface's own buttons can be made to do: the eight keys along the bottom of an Avid S1 (whatever EuControl sends for them: they are
-    learned), the navigation arrows, Flip, the Inserts / Pan keys and the transport. The strips' own Mute / Solo / Select / Rec / dial-push keys
-    are chosen separately (StripButton / StripAction). */
+/** What the surface's own buttons can be made to do: the eight keys along the bottom of an Avid S1 (they work out of the box since 2.85.1 and can be
+    learned again in the panel), the navigation arrows, Flip, the Inserts / Pan keys and the transport. The strips' own Mute / Solo / Select / Rec /
+    dial-push keys are chosen separately (StripButton / StripAction). */
 namespace surface
 {
 enum Action : int
@@ -65,11 +65,11 @@ public:
     juce::Uuid controlledMixer() const;
 
     // ---- the MIDI ports
+    /** inId / outId: the port chosen; empty = nothing chosen yet (a port that looks like the S1 is taken); kNoPort = "(none)" was chosen: no port at all. */
     struct Ports { juce::String inId, inName, outId, outName; };
+    static constexpr const char* kNoPort = "none";
     void setPorts (const juce::String& inIdentifier, const juce::String& outIdentifier);
     Ports ports() const { return want; }
-    bool inputOpen() const noexcept  { return in != nullptr; }
-    bool outputOpen() const noexcept { return out != nullptr; }
     juce::String openInId() const  { return in != nullptr ? in->getDeviceInfo().identifier : juce::String(); }
     juce::String openOutId() const { return out != nullptr ? out->getDeviceInfo().identifier : juce::String(); }
     /** One line for the lamp / the panel: "S1: connected", "No MIDI ports chosen", "Waiting for 'EuMidi' ..." */
@@ -99,11 +99,6 @@ public:
     bool monitorPaused = false;
     bool monitorShowsOutput = false;                                  // (what Fermata sends is a lot: off unless asked for)
 
-    /** The surface shows everything again (after the panel changed something). */
-    void refreshAll() { force = true; }
-
-    static juce::String noteName (int note) { return mcu::buttonName (note); }
-
 private:
     // the channels of the controlled mixer, in the order the surface shows them
     struct Chan
@@ -125,7 +120,7 @@ private:
     void handleIncomingMidiMessage (juce::MidiInput*, const juce::MidiMessage&) override;
     void handleAsyncUpdate() override;
     void timerCallback() override;
-    void handle (const mcu::Event&, const juce::MidiMessage&);
+    void handle (const mcu::Event&);
     void doAction (int action);
     void doStripButton (int strip, int button);
     void moveFader (int strip, int value14);

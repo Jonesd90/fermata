@@ -32,8 +32,8 @@ public:
     int readersStamp() const { return stamp; }
     juce::int64 fileStartA() const { return fsA; }
     juce::int64 fileStartB() const { return fsB; }
-    bool slipLeft() const  { return slipLeftToggle.getToggleState(); }
-    bool slipRight() const { return slipRightToggle.getToggleState(); }
+    bool slipLeft() const  { return app.trimSlipLeft; }                 // (the setting the edit window and the Stream Deck share; the boxes only show it)
+    bool slipRight() const { return app.trimSlipRight; }
     bool originalPlaying() const { const auto& i = app.playInfo; if (! app.isPlaying() || i.kind != AppContext::PlayInfo::Kind::Other) return false; const auto rf = refs(); return rf.ok() && ((rf.A != nullptr && i.id == rf.A->id) || (rf.B != nullptr && i.id == rf.B->id)); }
     bool isAuditioning() const { return app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId; }
     double viewSeconds = 2.0;

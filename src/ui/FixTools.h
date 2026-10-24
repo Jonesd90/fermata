@@ -10,14 +10,14 @@ void importTakes (AppContext&, const juce::Uuid& takeWindowId, const juce::Array
 /** Pass an edit id as intoEdit to bring the audio into that edit (one piece per take, each file on its own track) instead of into a take window. */
 void showImportMenu (AppContext&, const juce::Uuid& takeWindowId, juce::Component* source, const juce::Uuid& intoEdit = juce::Uuid::null());
 void pitchTake (AppContext&, const juce::Uuid& takeWindowId, juce::Component* parent);
-/** Spectral Repair (rebuilds a box of the picture from the sound around it), or - with declick true - the De-Click window (finds and mends clicks). */
 /** Export for Processing: sends the marked part of all tracks out to the Processing Media folder (to be corrected in other software) and shows it as 'Waiting for corrected audio'. */
 void exportForProcessingEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
 void exportForProcessingTake (AppContext&, const juce::Uuid& windowId, juce::Component* parent);
 /** Brings the corrected files back (checks that they have the same channels, rate and length) and shows their waveform again. */
 void relinkEdit (AppContext&, const juce::Uuid& editId, const juce::Uuid& regionId, juce::Component* parent);
 void relinkTake (AppContext&, const juce::Uuid& windowId, const juce::Uuid& takeId, juce::int64 waitingFrom, juce::Component* parent);
-void repairTake (AppContext&, const juce::Uuid& takeWindowId, juce::Component* parent, bool declick = false);
+/** The ReTouch window (spectral repair): rebuilds a box of the picture from the sound around it, finds and mends clicks (De-click), denoises a box. */
+void repairTake (AppContext&, const juce::Uuid& takeWindowId, juce::Component* parent);
 /** Draw a line of pitch against time over the marked part, audition it, then accept or revert. */
 void pitchCurveTake (AppContext&, const juce::Uuid& takeWindowId, juce::Component* parent);
 /** The Pitch button: one window, Pitch curve on the first tab and Pitch process (semitones / cents) on the second. */
@@ -25,7 +25,8 @@ void pitchTabsTake (AppContext&, const juce::Uuid& takeWindowId, juce::Component
 
 // ---- Edit window ----
 void pitchEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
-void repairEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent, bool declick = false);
+/** The same for marks 1 - 2 of an edit (each piece repaired in its own place). */
+void repairEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
 void pitchCurveEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
 void pitchTabsEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
 /** Re-HarmoniSer: retunes individual out-of-tune notes in the marked part of all tracks, every track in the same way. */

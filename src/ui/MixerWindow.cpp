@@ -425,8 +425,11 @@ public:
     void insertOnLinked (const std::vector<InsertSlot*>& others, int want, const std::function<std::unique_ptr<InsertProcessor>()>& make, bool bypassed)
     {
         if (others.empty()) return;
+        // 'make' loads a plug-in, and one that shows a window while it loads (a licence, a trial notice) runs a modal loop in which this row of slots can be
+        // rebuilt and deleted (the mixer's refresh sees the new plug-in): from here on nothing of 'this' is used, only these copies
+        auto& a = app; const auto refreshGang = gangRefresh;
         int full = 0;
-        const double sr = app.engine.getSampleRate(); const int blk = app.engine.getMaxBlock();
+        const double sr = a.engine.getSampleRate(); const int blk = a.engine.getMaxBlock();
         for (auto* arr : others)
         {
             const int k = slotFor (arr, want);
@@ -435,9 +438,9 @@ public:
             if (p == nullptr) { showError ("Plug-in", "Could not load the plug-in on every selected strip."); break; }
             if (arr[k].set (std::move (p), sr, blk, 2)) arr[k].bypass.set (bypassed);
         }
-        app.project.markDirty(); app.engine.checkLatency();
-        if (gangRefresh) gangRefresh();
-        app.project.structure.sendChangeMessage();                                   // (a strip may need another slot row)
+        a.project.markDirty(); a.engine.checkLatency();
+        if (refreshGang) refreshGang();
+        a.project.structure.sendChangeMessage();                                     // (a strip may need another slot row)
         if (full > 0) showError ("Plug-in", juce::String (full) + " of the selected strips had no free insert slot: the plug-in was not added there.");
     }
     /** The name was clicked: open the plug-in, or (empty slot) offer the list. */
@@ -568,19 +571,23 @@ private:
         if (r == 10) { showPluginManager (app); return; }
         if (r >= 1000 && (size_t) (r - 1000) < descs.size())
         {
+            // A plug-in that shows a window while it loads runs a modal loop, in which this row of slots can be rebuilt and deleted: after a load only what
+            // outlives the row is used ('a', the strip's own slot, the copies), and 'this' only after checking 'safe'.
+            auto& a = app;
+            juce::Component::SafePointer<SlotButtons> safe (this);
+            const auto desc = descs[(size_t) (r - 1000)];
             juce::String err;
-            auto p = app.plugins.create (descs[(size_t) (r - 1000)], app.engine.getSampleRate(), app.engine.getMaxBlock(), err);
-            if (p == nullptr) { showError ("Plug-in", "Could not load " + descs[(size_t) (r - 1000)].name + ":\n" + err); return; }
-            app.plugins.closeEditorsFor (slot.getProcessorUnsafe());
-            if (! slot.set (std::move (p), app.engine.getSampleRate(), app.engine.getMaxBlock(), 2)) { showError ("Plug-in", stuckText (slot)); refresh(); return; }
-            app.project.markDirty(); app.engine.checkLatency(); refresh();
-            if (! linkedSlots.empty())                                                  // linked strips: the same plug-in on each (its own instance)
+            auto p = a.plugins.create (desc, a.engine.getSampleRate(), a.engine.getMaxBlock(), err);
+            if (p == nullptr) { showError ("Plug-in", "Could not load " + desc.name + ":\n" + err); return; }
+            a.plugins.closeEditorsFor (slot.getProcessorUnsafe());
+            if (! slot.set (std::move (p), a.engine.getSampleRate(), a.engine.getMaxBlock(), 2)) { showError ("Plug-in", stuckText (slot)); if (safe != nullptr) refresh(); return; }
+            a.project.markDirty(); a.engine.checkLatency(); if (safe != nullptr) refresh();
+            if (! linkedSlots.empty() && safe != nullptr)                              // linked strips: the same plug-in on each (its own instance)
             {
-                const auto desc = descs[(size_t) (r - 1000)];
-                const double sr = app.engine.getSampleRate(); const int blk = app.engine.getMaxBlock();
-                insertOnLinked (linkedSlots, i, [this, desc, sr, blk] { juce::String e2; return app.plugins.create (desc, sr, blk, e2); }, false);
+                const double sr = a.engine.getSampleRate(); const int blk = a.engine.getMaxBlock();
+                insertOnLinked (linkedSlots, i, [&a, desc, sr, blk] { juce::String e2; return a.plugins.create (desc, sr, blk, e2); }, false);
             }
-            app.plugins.showEditor (slot.getProcessorUnsafe());
+            a.plugins.showEditor (slot.getProcessorUnsafe());
         }
     }
     InsertSlot* slots;
@@ -1741,7 +1748,6 @@ public:
             if (vm != 0) vcaGhostFor (app, mixer, vm, add, muted, vc);
             fader.setVcaGhost (vm != 0, add, muted, vc);
         }
-        if (! external && ! panSlider.isMouseButtonDown() && std::abs (panSlider.getValue() - st.pan.get()) > 0.0001) { panSlider.setValue (st.pan.get(), juce::dontSendNotification); panValue.setText (ChannelStrip::panText (st.pan.get()), juce::dontSendNotification); }
         fader.pushPeaks (st.meterL.take(), st.meterR.take(), st.rmsL.get(), st.rmsR.get());
     }
     void resetPeaks() override { fader.resetPeaks(); }
@@ -2751,8 +2757,7 @@ void MixerComponent::timerCallback()
     else statusLabel.setText (app.plugins.isScanning() ? scan : juce::String(), juce::dontSendNotification);
     updateAuditionButton();
     if (auditionButton.isVisible() && auditionButton.getWidth() == 0) resized();
-    static int counter = 0;
-    if (++counter % 10 == 0)                                // 3 Hz: plug-in names, solo / mute changes
+    if (++refreshCounter % 10 == 0)                         // 3 Hz: plug-in names, solo / mute changes
     {
         app.engine.checkLatency();                          // a plug-in's delay changed (loaded, bypassed ...): line the paths up again
         if (slotsNeeded() != slotCount) { rebuild(); resized(); }        // an insert was used (or removed): every strip gets the new number of slots

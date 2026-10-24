@@ -17,7 +17,6 @@ namespace td::remote
         {"cmd":"talkin","input":3}                             this input in / out of the talkback (control-room) mic
         {"cmd":"preamp","input":3,"what":"mic|v48|pol|lc|pad"} a preamp key of that input
         {"cmd":"gain","input":3,"delta":0.5}                   the preamp gain of that input, up or down by delta dB
-        {"cmd":"pan","input":3,"side":0|1|2,"delta":0.02}      the pan of the track on that input (side 1 = left, 2 = right of a stereo track); "centre":true puts it back
         {"cmd":"mixout","index":0,"delta":0.5}                 the main output fader of mixer 0 (processing) .. 5 (cue mixers 1 - 5), delta dB
         {"cmd":"mixmute","index":0}                            that main output on / off
         {"cmd":"stage","what":"playback|mic1|mic2|out","delta":0.5}   the stage speaker panel's levels; {"cmd":"stagereset","what":"..."} puts one back to 0 dB
@@ -82,9 +81,7 @@ struct Command
     bool on = true;                    // desk: start / stop the desk and meters messages
     int  input = -1;                   // a driver input, 0-based (-1 = none given)
     juce::String what;                 // preamp: mic / v48 / pol / lc / pad;  stage: playback / mic1 / mic2 / out
-    double delta = 0.0;                // gain, mixout, stage: dB; pan: -1 .. 1 units
-    int  side = 0;                     // pan on a stereo track: 1 = the left channel, 2 = the right (0 = a mono track)
-    bool centre = false;               // pan: put it back
+    double delta = 0.0;                // gain, mixout, stage: dB
 };
 
 inline Command parseCommand (const juce::String& line)
@@ -95,7 +92,7 @@ inline Command parseCommand (const juce::String& line)
     const auto name = v["cmd"].toString().toLowerCase();
     static const char* known[] = { "record", "playpause", "talk", "playback", "mixer", "prerec", "hello",
                                    "desk", "bridge", "pitchpipe", "click", "takewindow", "minimiseall", "armtoggle", "wavecolour", "loop", "wact", "openwin",
-                                   "monitor", "talkin", "preamp", "gain", "pan", "mixout", "mixmute", "stage", "stagereset" };
+                                   "monitor", "talkin", "preamp", "gain", "mixout", "mixmute", "stage", "stagereset" };
     for (auto* k : known) if (name == k) c.name = name;
     c.down = (bool) v["down"];
     c.index = juce::jmax (0, (int) v["index"]);
@@ -103,8 +100,6 @@ inline Command parseCommand (const juce::String& line)
     c.input = v.hasProperty ("input") ? (int) v["input"] : -1;
     c.what = v["what"].toString().toLowerCase();
     c.delta = juce::jlimit (-100.0, 100.0, (double) v["delta"]);              // (a stray huge number never throws a fader to its end)
-    c.side = juce::jlimit (0, 2, (int) v["side"]);
-    c.centre = (bool) v["centre"];
     return c;
 }
 } // namespace td::remote

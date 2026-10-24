@@ -246,7 +246,7 @@ public:
     /** The short name of a driver input for the strips and the lists: the device label, or else the driver's own name without the part every input's
         name begins with ("MAD Input 12" -> "Input 12" when they all start "MAD "). */
     juce::String inputShortName (int i) const;
-    juce::String driverNamePrefix() const;
+    juce::String driverNamePrefix() const;                       // (remembered for the driver names it was worked out for; message thread)
     /** Sets the optional name of an input; mono tracks on it that still have an automatic name follow it (so it shows at the top of the mixer strip). */
     void setInputName (int i, const juce::String& name);
     juce::String outputLabel (int i) const;
@@ -331,6 +331,8 @@ public:
     void syncMixers();
 private:
     MixerState& makeEditMixer (const EditDef&);
+    juce::String findDriverNamePrefix() const;
+    mutable juce::String prefixCache; mutable juce::uint64 prefixKey = 0; mutable bool prefixKnown = false;     // (driverNamePrefix: the last answer, and for which names)
 public:
     /** The program sets this: strips created from now on have their output button on (so a new track is heard). Saved projects keep what they saved. */
     bool newStripsToMain = false;
@@ -396,8 +398,9 @@ public:
         the files of takes found whole at the last open (verified) are not asked about - unless the project has moved since - so a big project is not
         slowed down: a file that went missing since then is found out when it is played, or by missingAudioCount() in full. */
     int missingAudioCount (bool quick = false) const;
-    /** The missing audio files, each once, with where it is used ("Takes - Mass in B minor, 003 - Kyrie, ORTF L"). */
-    juce::StringArray missingAudioList (int atMost = 40) const;
+    /** The missing audio files, each once, with where it is used ("Takes - Mass in B minor, 003 - Kyrie, ORTF L"). With 'quick', as missingAudioCount (true):
+        the files of verified takes are not asked about (opening a big project with one file missing used to ask about every file of it again). */
+    juce::StringArray missingAudioList (int atMost = 40, bool quick = false) const;
     /** What "Find missing audio files" did. */
     struct RelinkReport
     {
@@ -439,9 +442,8 @@ public:
     std::unique_ptr<Project> cloneForRender (double sampleRate, int maxBlock) const;
     double restoreSampleRate = 48000.0; int restoreBlock = 512;    // used when plug-ins are re-created by fromVar()
 
-    /** The whole project as saved. editorialOnly: only what the undo history looks at (no inputs, tracks, mixers, plug-in states).
-        withWindows false: without the take windows and edits (a save adds them as their own files: see splitWindowFiles). */
-    juce::var toVar (bool editorialOnly = false, bool withWindows = true) const;
+    /** The whole project as saved. withWindows false: without the take windows and edits (a save adds them as their own files: see splitWindowFiles). */
+    juce::var toVar (bool withWindows = true) const;
     void addWindowsToVar (juce::var& root) const;        // the "takeWindows" and "edits" arrays
     juce::var mixerToVar (const MixerState&) const;      // one mixer, as saved (levels, sends, plug-in states)
     juce::var editToVar (const EditDef&) const;          // one edit, as saved

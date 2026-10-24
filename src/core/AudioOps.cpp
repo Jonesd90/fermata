@@ -1,7 +1,5 @@
 #include "AudioOps.h"
 #include <mutex>
-#include <thread>
-#include <atomic>
 #include <set>
 #include "Dither.h"
 
@@ -162,7 +160,9 @@ std::vector<FixSpec::Lost> findLost (const std::vector<std::vector<float>>& trac
 }
 
 /** The background denoiser on one channel's box [a, b) with the profile given: the stretch with 6 s before and 2 s after as context, the profile limited
-    to the box's pitch range (feathered a quarter of an octave inside it), the result faded in and out over 100 ms (less for a short box) at the box's ends. */
+    to the box's pitch range (feathered a quarter of an octave inside it), the result faded in and out over 100 ms (less for a short box) at the box's ends.
+    A long box is done in pieces with context (15 s, with 6 s before and 2 s after, as denoise::processChannel does; a box of up to 15 s is one piece, as
+    before): in one go the analysis took about 100 bytes a sample, so a box over a 10-minute piece at 96 kHz needed some 6 GB a channel. */
 static void denoiseBox (std::vector<float>& x, double sr, long a, long b, double f0, double f1, const FixSpec& spec, const denoise::Profile& profIn)
 {
     if (! profIn.valid() || std::abs (profIn.sampleRate - sr) > 0.5 || b - a < 16) return;
@@ -174,17 +174,25 @@ static void denoiseBox (std::vector<float>& x, double sr, long a, long b, double
     if (! any) return;
     denoise::featherProfile (prof, 0.25);
     const long L = (long) x.size();
+    a = juce::jlimit (0L, L, a); b = juce::jlimit (a, L, b);
+    if (b - a < 16) return;
     const long c0 = juce::jmax (0L, a - (long) (6.0 * sr)), c1 = juce::jmin (L, b + (long) (2.0 * sr));
-    std::vector<float> seg (x.begin() + c0, x.begin() + c1), out ((size_t) (c1 - c0), 0.0f);
-    denoise::Params p = spec.dn; p.groupMode = 0;
-    denoise::processSegment (prof, p, {}, seg.data(), (juce::int64) seg.size(), out.data());
+    const denoise::Params& p = spec.dn;
+    std::vector<float> out ((size_t) (b - a), 0.0f);                              // (only the box is kept: the context is read, not changed)
+    long at = c0;                                                                 // where the next sample processChannel hands over belongs
+    denoise::processChannel (prof, p, {}, (juce::int64) (c1 - c0),
+                             [&x, c0] (juce::int64 start, int n, float* dst) { std::copy_n (x.data() + c0 + start, n, dst); },
+                             [&out, &at, a, b] (const float* src, int n)
+                             {
+                                 for (int i = 0; i < n; ++i, ++at) if (at >= a && at < b) out[(size_t) (at - a)] = src[i];
+                             });
     const long xf = juce::jmin ((long) (0.1 * sr), (b - a) / 4);
     for (long n = a; n < b; ++n)
     {
         double w = 1.0;
         if (xf > 0) w = juce::jmin (1.0, (double) (n - a) / (double) xf, (double) (b - 1 - n) / (double) xf);
         w = 0.5 - 0.5 * std::cos (w * juce::MathConstants<double>::pi);
-        const float xv = x[(size_t) n], yv = out[(size_t) (n - c0)];
+        const float xv = x[(size_t) n], yv = out[(size_t) (n - a)];
         x[(size_t) n] = xv + (float) w * (yv - xv);
     }
 }
@@ -369,35 +377,10 @@ TakeFixResult fixTakeFiles (juce::AudioFormatManager& fm, const std::vector<juce
 }
 }} // namespace td::audioops
 
-// ======================================================================================================== the background denoiser on files
+// ======================================================================================================== the room-tone profiles of a file
 namespace td { namespace audioops {
 
-/** fn (i) for i in 0..n on up to 'threads' threads; an exception in one becomes an error text (a thread that throws would end the program). */
-static juce::String parallelFor (int n, int threads, const std::function<juce::String (int)>& fn)
-{
-    std::vector<juce::String> errs ((size_t) juce::jmax (0, n));
-    std::atomic<int> next { 0 };
-    auto worker = [&]
-    {
-        for (;;)
-        {
-            const int i = next.fetch_add (1); if (i >= n) return;
-            try { errs[(size_t) i] = fn (i); }
-            catch (const std::bad_alloc&) { errs[(size_t) i] = "Not enough memory for this (try fewer tracks at once, or a shorter preview)."; }
-            catch (...) { errs[(size_t) i] = "Something went wrong while processing."; }
-        }
-    };
-    std::vector<std::thread> pool;
-    const int count = juce::jlimit (1, juce::jmax (1, n), threads);
-    try { for (int t = 0; t < count; ++t) pool.emplace_back (worker); }
-    catch (...) {}                                           // (a thread that could not be made: the ones made do the work)
-    if (pool.empty()) worker();
-    for (auto& t : pool) t.join();
-    for (auto& e : errs) if (e.isNotEmpty()) return e;
-    return {};
-}
-
-DenoiseProfiles learnDenoise (juce::AudioFormatManager& fm, const juce::File& file, juce::int64 s0, juce::int64 s1, const denoise::Params& p, juce::String& error, double decaySeconds)
+DenoiseProfiles learnDenoise (juce::AudioFormatManager& fm, const juce::File& file, juce::int64 s0, juce::int64 s1, const denoise::Params& p, juce::String& error)
 {
     DenoiseProfiles out;
     auto r = openReader (fm, file);
@@ -410,266 +393,7 @@ DenoiseProfiles learnDenoise (juce::AudioFormatManager& fm, const juce::File& fi
     out.sampleRate = r->sampleRate; out.channels = (int) r->numChannels;
     for (auto& c : ch) out.perChannel.push_back (denoise::learnProfile ({ c }, r->sampleRate, p));
     for (auto& pr : out.perChannel) if (! pr.valid()) { error = "The marked room tone is too short for the analysis window."; out = {}; return out; }
-    if (decaySeconds > 0.0)
-    {
-        // the room's decay: over the stretch after the room tone (or before it, at the end of a take), up to decaySeconds
-        const juce::int64 len = r->lengthInSamples, want = (juce::int64) (decaySeconds * r->sampleRate);
-        juce::int64 d0 = s1, d1 = juce::jmin (len, s1 + want);
-        if (d1 - d0 < (juce::int64) (5.0 * r->sampleRate)) { d1 = s0; d0 = juce::jmax<juce::int64> (0, s0 - want); }
-        if (d1 - d0 >= (juce::int64) (5.0 * r->sampleRate))
-        {
-            bool bad = false;
-            for (int c = 0; c < out.channels; ++c)
-                out.decay.push_back (denoise::measureDecay (out.perChannel[(size_t) c], p, d1 - d0, [&] (juce::int64 start, int n, float* dst)
-                {
-                    std::vector<std::vector<float>> tmp; if (! readRange (*r, d0 + start, n, tmp)) bad = true;
-                    std::copy (tmp[(size_t) c].begin(), tmp[(size_t) c].end(), dst);
-                }));
-            if (bad) out.decay.clear();
-        }
-    }
     return out;
 }
 
-/** One piece of the stretch, all channels together: x[i] (segLen samples each, the piece with its context) -> y[i]. With groupMode > 0 each channel's
-    gains use what the other sources hear (sourceOf[i]: the source of channel i). 'profiles[i]' / 'decay[i]' belong to channel i. */
-static juce::String denoisePiece (const std::vector<std::vector<float>>& x, std::vector<std::vector<float>>& y, const std::vector<const denoise::Profile*>& profiles,
-                                  const std::vector<const denoise::Decay*>& decay, const std::vector<int>& sourceOf, const denoise::Params& p, int threads, const std::atomic<bool>& stopped)
-{
-    const int nch = (int) x.size();
-    const bool group = p.groupMode > 0 && nch > 1;                     // (the two channels of one stereo file listen to each other too)
-    std::vector<std::vector<unsigned char>> maps ((size_t) nch), others;
-    if (group)
-    {   // stage 1: what each channel hears; stage 2 (below): each channel's gains, knowing what the others hear
-        auto err = parallelFor (nch, threads, [&] (int i) -> juce::String
-        {
-            int bb = 0, ff = 0;
-            denoise::presenceSegment (*profiles[(size_t) i], p, *decay[(size_t) i], x[(size_t) i].data(), (juce::int64) x[(size_t) i].size(), maps[(size_t) i], bb, ff);
-            denoise::dilate (maps[(size_t) i], bb, ff, 2, 1);
-            return stopped ? "Cancelled." : juce::String();
-        });
-        if (err.isNotEmpty()) return err;
-        denoise::othersAgreed (maps, sourceOf, others);             // (a sound only one mic hears - a rustle at one stand - does not count)
-    }
-    return parallelFor (nch, threads, [&] (int i) -> juce::String
-    {
-        denoise::Analysis A;
-        y[(size_t) i].assign (x[(size_t) i].size(), 0.0f);
-        denoise::analyse (*profiles[(size_t) i], p, *decay[(size_t) i], x[(size_t) i].data(), (juce::int64) x[(size_t) i].size(), A);
-        denoise::finish (*profiles[(size_t) i], p, A, group ? others[(size_t) i].data() : nullptr, y[(size_t) i].data());
-        return stopped ? "Cancelled." : juce::String();
-    });
-}
-
-bool denoiseTracks (const std::vector<std::vector<float>>& x, double sr, const std::vector<denoise::Profile>& profiles, const std::vector<denoise::Decay>& decayIn,
-                    const denoise::Params& p, const DenoiseRun& run, std::vector<std::vector<float>>& y, const std::function<bool (float)>& report, juce::String& error)
-{
-    const int nch = (int) x.size();
-    if (nch == 0 || profiles.size() != x.size()) { error = "Nothing to do."; return false; }
-    for (auto& pr : profiles) if (! pr.valid() || std::abs (pr.sampleRate - sr) > 0.5) { error = "The room-tone profile does not fit the audio."; return false; }
-    juce::int64 longest = 0; for (auto& c : x) longest = juce::jmax (longest, (juce::int64) c.size());
-    const juce::int64 a = juce::jlimit<juce::int64> (0, longest, run.a), b = juce::jlimit<juce::int64> (a, longest, run.b);
-    std::atomic<bool> stopped { false };
-    auto progress = [&] (double v) { if (report && ! report ((float) v)) stopped = true; return ! stopped.load(); };
-    // the room's decay per channel over the stretch, unless it was brought
-    std::vector<denoise::Decay> decay (x.size());
-    for (size_t i = 0; i < x.size(); ++i) if (decayIn.size() == x.size() && ! decayIn[i].rates.empty()) decay[i] = decayIn[i];
-    {
-        const auto err = parallelFor (nch, run.threads, [&] (int i) -> juce::String
-        {
-            if (! decay[(size_t) i].rates.empty()) return {};
-            const auto& c = x[(size_t) i];
-            decay[(size_t) i] = denoise::measureDecay (profiles[(size_t) i], p, b - a, [&] (juce::int64 start, int n, float* dst)
-                { for (int k = 0; k < n; ++k) { const auto j = a + start + k; dst[k] = j < (juce::int64) c.size() ? c[(size_t) j] : 0.0f; } }, [&] (double) { return ! stopped.load(); });
-            progress (0.1 * (double) (i + 1) / (double) nch);
-            return {};
-        });
-        if (err.isNotEmpty()) { error = err; return false; }
-        if (stopped) { error = "Cancelled."; return false; }
-    }
-    y.assign (x.size(), {});
-    for (size_t i = 0; i < x.size(); ++i) y[i] = x[i];
-    std::vector<const denoise::Profile*> pp; std::vector<const denoise::Decay*> dp; std::vector<int> sourceOf;
-    for (size_t i = 0; i < x.size(); ++i) { pp.push_back (&profiles[i]); dp.push_back (&decay[i]); sourceOf.push_back ((int) i); }
-    const juce::int64 piece = (juce::int64) (10.0 * sr), before = (juce::int64) (6.0 * sr), after = (juce::int64) (2.0 * sr);
-    std::vector<std::vector<float>> xs ((size_t) nch), ys ((size_t) nch);
-    for (juce::int64 start = a; start < b; start += piece)
-    {
-        const juce::int64 end = juce::jmin (b, start + piece);
-        const juce::int64 s0 = juce::jmax<juce::int64> (0, start - before), s1 = juce::jmin (longest, end + after);
-        const int segLen = (int) (s1 - s0), off = (int) (start - s0);
-        for (int i = 0; i < nch; ++i)
-        {
-            xs[(size_t) i].assign ((size_t) segLen, 0.0f);
-            const auto& c = x[(size_t) i];
-            for (int k = 0; k < segLen; ++k) { const auto j = s0 + k; if (j < (juce::int64) c.size()) xs[(size_t) i][(size_t) k] = c[(size_t) j]; }
-        }
-        const auto err = denoisePiece (xs, ys, pp, dp, sourceOf, p, run.threads, stopped);
-        if (err.isNotEmpty()) { error = err; return false; }
-        for (int i = 0; i < nch; ++i)
-            for (juce::int64 j = start; j < end && j < (juce::int64) y[(size_t) i].size(); ++j)
-            {
-                const float xv = xs[(size_t) i][(size_t) (off + j - start)], yv = ys[(size_t) i][(size_t) (off + j - start)];
-                y[(size_t) i][(size_t) j] = xv + denoiseFeather (run, a, b, j) * (yv - xv);
-            }
-        if (! progress (0.1 + 0.9 * (double) (end - a) / (double) juce::jmax<juce::int64> (1, b - a))) { error = "Cancelled."; return false; }
-    }
-    return true;
-}
-
-bool denoiseFiles (juce::AudioFormatManager& fm, const std::vector<juce::File>& sources, const std::vector<juce::File>& dests, const std::vector<juce::File>& removedFiles,
-                   const std::vector<DenoiseProfiles>& profiles, const denoise::Params& p, const DenoiseRun& run, const std::function<bool (float)>& report, juce::String& error)
-{
-    const size_t nf = sources.size();
-    if (nf == 0 || dests.size() != nf || profiles.size() != nf || (run.removed && removedFiles.size() != nf)) { error = "Nothing to do."; return false; }
-    struct Src { std::unique_ptr<juce::AudioFormatReader> r; int nc = 0; juce::int64 len = 0; };
-    std::vector<Src> src (nf);
-    double sr = 0.0;
-    for (size_t f = 0; f < nf; ++f)
-    {
-        src[f].r = openReader (fm, sources[f]);
-        if (src[f].r == nullptr) { error = "Could not read " + sources[f].getFileName(); return false; }
-        src[f].nc = (int) src[f].r->numChannels; src[f].len = src[f].r->lengthInSamples;
-        if (f == 0) sr = src[f].r->sampleRate; else if (std::abs (src[f].r->sampleRate - sr) > 0.5) { error = "The files have different sample rates."; return false; }
-        if (! profiles[f].valid() || profiles[f].channels != src[f].nc || std::abs (profiles[f].sampleRate - sr) > 0.5) { error = "The room-tone profile does not fit " + sources[f].getFileName() + " (channels or sample rate)."; return false; }
-    }
-    juce::int64 longest = 0; for (auto& x : src) longest = juce::jmax (longest, x.len);
-    const juce::int64 wFrom = juce::jlimit<juce::int64> (0, longest, run.writeFrom), wTo = juce::jlimit<juce::int64> (wFrom, longest, run.writeTo);
-    const juce::int64 a = juce::jlimit<juce::int64> (wFrom, wTo, run.a), b = juce::jlimit<juce::int64> (a, wTo, run.b);
-    std::atomic<bool> stopped { false };
-    auto progress = [&] (double v) { if (report && ! report ((float) v)) stopped = true; return ! stopped.load(); };
-    std::vector<std::pair<size_t, int>> chans;                  // every (file, channel)
-    for (size_t f = 0; f < nf; ++f) for (int c = 0; c < src[f].nc; ++c) chans.push_back ({ f, c });
-    const int nch = (int) chans.size();
-
-    // pass 1: the room's decay per channel over the stretch, unless the profiles brought it
-    std::vector<std::vector<denoise::Decay>> decay (nf);
-    for (size_t f = 0; f < nf; ++f) decay[f] = profiles[f].decay.size() == (size_t) src[f].nc ? profiles[f].decay : std::vector<denoise::Decay> ((size_t) src[f].nc);
-    {
-        std::mutex readLock;
-        bool readFailed = false;
-        const auto err = parallelFor (nch, run.threads, [&] (int i) -> juce::String
-        {
-            const size_t f = chans[(size_t) i].first; const int c = chans[(size_t) i].second;
-            if (! decay[f][(size_t) c].rates.empty()) return {};
-            auto rd = [&] (juce::int64 start, int n, float* dst)
-            {
-                std::vector<std::vector<float>> tmp;
-                { std::lock_guard<std::mutex> l (readLock); if (! readRange (*src[f].r, a + start, n, tmp)) readFailed = true; }
-                std::copy (tmp[(size_t) c].begin(), tmp[(size_t) c].end(), dst);
-            };
-            decay[f][(size_t) c] = denoise::measureDecay (profiles[f].perChannel[(size_t) c], p, b - a, rd, [&] (double) { return ! stopped.load(); });
-            progress (0.1 * (double) (i + 1) / (double) nch);
-            return {};
-        });
-        if (err.isNotEmpty()) { error = err; return false; }
-        if (readFailed) { error = "Could not read the audio files."; return false; }
-        if (stopped) { error = "Cancelled."; return false; }
-    }
-
-    // the writers
-    struct Dst { std::unique_ptr<juce::AudioFormatWriter> w, wr; std::unique_ptr<DitherOut> dither, plain, rdither, rplain; };
-    std::vector<Dst> dst (nf);
-    auto fail = [&] (const juce::String& e)
-    {
-        for (size_t f = 0; f < nf; ++f) { dst[f].dither.reset(); dst[f].plain.reset(); dst[f].rdither.reset(); dst[f].rplain.reset(); dst[f].w.reset(); dst[f].wr.reset(); dests[f].deleteFile(); if (run.removed) removedFiles[f].deleteFile(); }
-        error = e; return false;
-    };
-    for (size_t f = 0; f < nf; ++f)
-    {
-        dst[f].w = makeWavWriter (dests[f], sr, src[f].nc);
-        if (dst[f].w == nullptr) return fail ("Cannot write " + dests[f].getFileName());
-        dst[f].dither = std::make_unique<DitherOut> (*dst[f].w); dst[f].plain = std::make_unique<DitherOut> (*dst[f].w, false);
-        if (run.removed)
-        {
-            dst[f].wr = makeWavWriter (removedFiles[f], sr, src[f].nc);
-            if (dst[f].wr == nullptr) return fail ("Cannot write " + removedFiles[f].getFileName());
-            dst[f].rdither = std::make_unique<DitherOut> (*dst[f].wr); dst[f].rplain = std::make_unique<DitherOut> (*dst[f].wr, false);
-        }
-    }
-    // the parts outside the stretch: copied bit for bit (a preview: written as silence, quickly, and nothing after the stretch at all)
-    std::vector<std::vector<float>> block; std::vector<const float*> ptrs;
-    auto writeSilence = [&] (Dst& d, int nc, juce::int64 n)
-    {
-        constexpr int chunk = 1 << 16; std::vector<float> z ((size_t) chunk, 0.0f); std::vector<const float*> zp ((size_t) nc, z.data());
-        for (juce::int64 pos = 0; pos < n; pos += chunk)
-        {
-            const int m = (int) juce::jmin<juce::int64> (chunk, n - pos);
-            if (! d.plain->write (zp.data(), nc, m)) return false;
-            if (d.rplain && ! d.rplain->write (zp.data(), nc, m)) return false;
-        }
-        return true;
-    };
-    auto copyRange = [&] (size_t f, juce::int64 s0, juce::int64 s1, double f0, double f1)
-    {
-        s1 = juce::jmin (s1, src[f].len);
-        if (run.preview) return writeSilence (dst[f], src[f].nc, s1 - s0);
-        constexpr int chunk = 1 << 16;
-        for (juce::int64 pos = s0; pos < s1; pos += chunk)
-        {
-            const int n = (int) juce::jmin<juce::int64> (chunk, s1 - pos);
-            if (! readRange (*src[f].r, pos, n, block)) return false;
-            ptrs.assign ((size_t) src[f].nc, nullptr); for (int c = 0; c < src[f].nc; ++c) ptrs[(size_t) c] = block[(size_t) c].data();
-            if (! dst[f].plain->write (ptrs.data(), src[f].nc, n)) return false;
-            if (dst[f].rplain) { std::vector<float> z ((size_t) n, 0.0f); std::vector<const float*> zp ((size_t) src[f].nc, z.data()); if (! dst[f].rplain->write (zp.data(), src[f].nc, n)) return false; }
-            if (! progress (f0 + (f1 - f0) * ((double) f + (double) (pos + n - s0) / (double) juce::jmax<juce::int64> (1, s1 - s0)) / (double) nf)) return false;
-        }
-        return true;
-    };
-    for (size_t f = 0; f < nf; ++f) if (! copyRange (f, wFrom, a, 0.10, 0.12)) return fail (stopped ? "Cancelled." : "Could not read or write " + dests[f].getFileName());
-
-    // the stretch, in pieces with context on both sides; all channels of all files together, so each can use what the others hear
-    const juce::int64 piece = (juce::int64) (10.0 * sr), before = (juce::int64) (6.0 * sr), after = (juce::int64) (2.0 * sr);
-    std::vector<std::vector<float>> x ((size_t) nch), y ((size_t) nch);
-    std::vector<const denoise::Profile*> pp; std::vector<const denoise::Decay*> dp; std::vector<int> sourceOf;
-    for (int i = 0; i < nch; ++i) { const size_t f = chans[(size_t) i].first; const int c = chans[(size_t) i].second; pp.push_back (&profiles[f].perChannel[(size_t) c]); dp.push_back (&decay[f][(size_t) c]); sourceOf.push_back ((int) f); }
-    for (juce::int64 start = a; start < b; start += piece)
-    {
-        const juce::int64 end = juce::jmin (b, start + piece);
-        const juce::int64 s0 = juce::jmax<juce::int64> (0, start - before), s1 = juce::jmin (longest, end + after);
-        const int segLen = (int) (s1 - s0), outLen = (int) (end - start), off = (int) (start - s0);
-        for (size_t f = 0; f < nf; ++f)                       // read every file's segment once (all its channels)
-        {
-            std::vector<std::vector<float>> seg;
-            if (! readRange (*src[f].r, s0, segLen, seg)) return fail ("Could not read " + sources[f].getFileName());
-            for (int i = 0; i < nch; ++i) if (chans[(size_t) i].first == f) { x[(size_t) i] = std::move (seg[(size_t) chans[(size_t) i].second]); y[(size_t) i].assign ((size_t) segLen, 0.0f); }
-        }
-        const auto err = denoisePiece (x, y, pp, dp, sourceOf, p, run.threads, stopped);
-        if (err.isNotEmpty()) return fail (err);
-        if (run.featherIn > 0 || run.featherOut > 0)                 // the feathers in time: the denoised sound fades in at the start of the stretch and out at its end
-            for (int i = 0; i < nch; ++i)
-                for (int k = 0; k < outLen; ++k)
-                {
-                    const float w = denoiseFeather (run, a, b, start + k);
-                    if (w < 1.0f) { auto& yv = y[(size_t) i][(size_t) (off + k)]; const float xv = x[(size_t) i][(size_t) (off + k)]; yv = xv + w * (yv - xv); }
-                }
-        for (size_t f = 0; f < nf; ++f)
-        {
-            const int nc = src[f].nc;
-            std::vector<const float*> op ((size_t) nc); std::vector<std::vector<float>> rem ((size_t) nc); std::vector<const float*> rp ((size_t) nc);
-            for (int i = 0; i < nch; ++i)
-                if (chans[(size_t) i].first == f)
-                {
-                    const int c = chans[(size_t) i].second;
-                    op[(size_t) c] = y[(size_t) i].data() + off;
-                    if (run.removed) { rem[(size_t) c].resize ((size_t) outLen); for (int k = 0; k < outLen; ++k) rem[(size_t) c][(size_t) k] = x[(size_t) i][(size_t) (off + k)] - y[(size_t) i][(size_t) (off + k)]; rp[(size_t) c] = rem[(size_t) c].data(); }
-                }
-            if (! dst[f].dither->write (op.data(), nc, outLen)) return fail ("Cannot write " + dests[f].getFileName());
-            if (run.removed && ! dst[f].rdither->write (rp.data(), nc, outLen)) return fail ("Cannot write " + removedFiles[f].getFileName());
-        }
-        if (! progress (0.12 + 0.86 * (double) (end - a) / (double) juce::jmax<juce::int64> (1, b - a))) return fail ("Cancelled.");
-    }
-    if (! run.preview)
-        for (size_t f = 0; f < nf; ++f) if (! copyRange (f, b, wTo, 0.98, 1.0)) return fail (stopped ? "Cancelled." : "Could not read or write " + dests[f].getFileName());
-    for (size_t f = 0; f < nf; ++f) { dst[f].dither.reset(); dst[f].plain.reset(); dst[f].rdither.reset(); dst[f].rplain.reset(); dst[f].w.reset(); dst[f].wr.reset(); }
-    return true;
-}
-
-bool denoiseFile (juce::AudioFormatManager& fm, const juce::File& source, const juce::File& dest, const juce::File& removed, juce::int64 a, juce::int64 b,
-                  const DenoiseProfiles& prof, const denoise::Params& p, const std::function<bool (float)>& progress, juce::String& error)
-{
-    DenoiseRun run; run.a = a; run.b = b; run.removed = removed != juce::File();
-    denoise::Params single = p; single.groupMode = 0;
-    return denoiseFiles (fm, { source }, { dest }, run.removed ? std::vector<juce::File> { removed } : std::vector<juce::File>(), { prof }, single, run, progress, error);
-}
 }} // namespace td::audioops

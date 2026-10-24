@@ -204,10 +204,6 @@ struct WindowRef
     }
     static WindowRef of (const juce::String& k) { WindowRef r; r.kind = kindOf (k); r.key = k; return r; }
     static WindowRef anyOf (Kind k) { WindowRef r; r.kind = k; return r; }
-    static const char* kindName (Kind k)
-    {
-        switch (k) { case Kind::Main: return "Main window"; case Kind::Take: return "Take window"; case Kind::Edit: return "Edit window"; case Kind::Mixer: return "Mixer"; case Kind::Other: return "Window"; default: return ""; }
-    }
     static const char* kindCode (Kind k)
     {
         switch (k) { case Kind::Main: return "main"; case Kind::Take: return "take"; case Kind::Edit: return "edit"; case Kind::Mixer: return "mixer"; case Kind::Other: return "other"; default: return "none"; }

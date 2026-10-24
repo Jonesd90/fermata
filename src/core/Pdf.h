@@ -142,7 +142,6 @@ public:
         p += ") Tj ET\n";
     }
     void textRight (float right, float y, const juce::String& s, Font f, float size, Colour c = {}) { text (right - width (s, f, size), y, s, f, size, c); }
-    void textCentred (float centre, float y, const juce::String& s, Font f, float size, Colour c = {}) { text (centre - 0.5f * width (s, f, size), y, s, f, size, c); }
     /** The text cut to fit maxWidth, with "..." when it was cut. */
     static juce::String fit (const juce::String& s, Font f, float size, float maxWidth)
     {

@@ -33,6 +33,7 @@ juce::String Bouncer::fileName (const BounceItem& it, const juce::String& output
 
 BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bool>* cancel)
 {
+    juce::ScopedNoDenormals noDenormals;                               // (as on the audio thread: filters dying away into silence must not slow the render)
     BounceResult res;
     if (prepareError.isNotEmpty()) { res.error = prepareError; return res; }
     if (! settings.folder.createDirectory()) { res.error = "Cannot create the folder " + settings.folder.getFullPathName(); return res; }

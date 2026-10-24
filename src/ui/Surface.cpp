@@ -141,9 +141,9 @@ void SurfaceController::unbind (int action)
 }
 void SurfaceController::resetMap()
 {
-    const auto keepMode = mode; const auto keepPin = pin; const auto keepPorts = want;
+    const auto keepMode = mode; const auto keepPin = pin; const auto keepPorts = want; const bool keepMeters = meters;
     defaults();
-    mode = keepMode; pin = keepPin; want = keepPorts;
+    mode = keepMode; pin = keepPin; want = keepPorts; meters = keepMeters;
     save(); force = true; sendChangeMessage();
 }
 void SurfaceController::setStripAssign (int button, int action)
@@ -179,11 +179,12 @@ void SurfaceController::openPorts()
     const auto ins = juce::MidiInput::getAvailableDevices(), outs = juce::MidiOutput::getAvailableDevices();
     bool changed = false;
     // a port that has gone (EuControl closed, the surface unplugged) is let go of, and looked for again
-    if (in != nullptr)  { bool still = false; for (auto& d : ins)  still = still || d.identifier == in->getDeviceInfo().identifier;  if (! still) { juce::Logger::writeToLog ("Surface: MIDI in '" + in->getName() + "' has gone");  in.reset();  changed = true; } }
+    if (in != nullptr)  { bool still = false; for (auto& d : ins)  still = still || d.identifier == in->getDeviceInfo().identifier;  if (! still) { juce::Logger::writeToLog ("Surface: MIDI in '" + in->getName() + "' has gone");  in.reset();  changed = true; for (auto& t : touched) t = false; } }
     if (out != nullptr) { bool still = false; for (auto& d : outs) still = still || d.identifier == out->getDeviceInfo().identifier; if (! still) { juce::Logger::writeToLog ("Surface: MIDI out '" + out->getName() + "' has gone"); out.reset(); changed = true; for (auto& s : sent) s = {}; } }
     // nothing chosen yet: a port that looks like the S1 (EuControl's "EuMidi" ports) or a Mackie surface is taken (until one is chosen in the panel)
     auto pick = [] (const juce::Array<juce::MidiDeviceInfo>& list, const juce::String& wantId, const juce::String& wantName) -> juce::String
     {
+        if (wantId == kNoPort) return {};                               // "(none)" chosen in the panel: no port, and none looked for
         if (wantId.isNotEmpty())
         {
             for (auto& d : list) if (d.identifier == wantId) return d.identifier;
@@ -227,16 +228,19 @@ void SurfaceController::closePorts()
     out.reset();
     { const juce::ScopedLock sl (lock); pending.clear(); }
     for (auto& s : sent) s = {};
+    for (auto& t : touched) t = false;
     active = false;
 }
 
 juce::String SurfaceController::statusText() const
 {
-    if (want.inId.isEmpty() && want.outId.isEmpty() && in == nullptr && out == nullptr) return "No MIDI ports chosen";
+    const bool inNone = want.inId == kNoPort, outNone = want.outId == kNoPort;
+    if ((want.inId.isEmpty() || inNone) && (want.outId.isEmpty() || outNone) && in == nullptr && out == nullptr) return "No MIDI ports chosen";
     if (in != nullptr && out != nullptr) return "Connected: " + in->getName() + (out->getName() != in->getName() ? " / " + out->getName() : juce::String());
     juce::StringArray missing;
-    if (in == nullptr)  missing.add ("in '" + (want.inName.isNotEmpty() ? want.inName : want.inId) + "'");
-    if (out == nullptr) missing.add ("out '" + (want.outName.isNotEmpty() ? want.outName : want.outId) + "'");
+    if (in == nullptr && ! inNone)   missing.add ("in '" + (want.inName.isNotEmpty() ? want.inName : want.inId) + "'");
+    if (out == nullptr && ! outNone) missing.add ("out '" + (want.outName.isNotEmpty() ? want.outName : want.outId) + "'");
+    if (missing.isEmpty()) return in != nullptr ? "MIDI in only: " + in->getName() : "MIDI out only: " + out->getName();
     return "Waiting for MIDI " + missing.joinIntoString (" and ") + " (is EuControl running?)";
 }
 
@@ -252,10 +256,16 @@ void SurfaceController::handleAsyncUpdate()
 {
     std::vector<juce::MidiMessage> got;
     { const juce::ScopedLock sl (lock); got.swap (pending); }
+    // The strips point into the mixer being controlled. Since the last tick it may have been deleted (a cue mixer, an edit), the project closed or
+    // the CONTROLLER box set to Off: look it up again before anything is moved, and do nothing to the strips if it is not the one shown.
+    const auto id = controlledMixer();
+    auto* mixer = app.hasProject() && id == shownMixer ? app.findMixer (id) : nullptr;
+    if (mixer != nullptr) { chans = channels (*mixer); bank = juce::jlimit (0, juce::jmax (0, (int) chans.size() - mcu::kStrips), bank); }
+    else chans.clear();
     for (auto& m : got)
     {
         log (false, m);
-        handle (mcu::decode (m), m);
+        handle (mcu::decode (m));
     }
 }
 
@@ -275,7 +285,7 @@ void SurfaceController::send (const juce::MidiMessage& m)
 }
 
 // ============================================================================ what the surface does
-void SurfaceController::handle (const mcu::Event& e, const juce::MidiMessage&)
+void SurfaceController::handle (const mcu::Event& e)
 {
     using K = mcu::Event::Kind;
     switch (e.kind)
@@ -500,13 +510,14 @@ void SurfaceController::timerCallback()
     ++ticks;
     const auto now = juce::Time::getMillisecondCounter();
     if ((in == nullptr || out == nullptr || ticks % 60 == 0) && now - lastOpenTry > 1900) openPorts();      // a port that appears (EuControl started) is taken; one that goes is noticed
-    if (out == nullptr) return;
+    if (out == nullptr) { chans.clear(); return; }
     const auto id = controlledMixer();
     auto* m = app.findMixer (id);
     if (m == nullptr || ! app.hasProject())
     {
         if (active) blank();
         shownMixer = juce::Uuid::null();
+        chans.clear();                                                 // (they point into a mixer that may be freed: never kept when nothing is controlled)
         return;
     }
     if (id != shownMixer)
@@ -544,6 +555,8 @@ void SurfaceController::show (bool everything)
     const auto now = juce::Time::getMillisecondCounter();
     if (everything) { for (auto& s : sent) s = {}; sentFlip = sentPan = sentPlug = sentDigits = -1; bannerShown = false; }
     const bool bannerOn = now < bannerUntil;
+    juce::String tops[mcu::kStrips], bottoms[mcu::kStrips];
+    bool topChanged = false, bottomChanged = false;
     for (int i = 0; i < mcu::kStrips; ++i)
     {
         const auto* c = chanAt (i);
@@ -582,16 +595,15 @@ void SurfaceController::show (bool everything)
                 }
             if ((int) on != s.lamp[k]) { send (mcu::lamp (bases[k] + i, on)); s.lamp[k] = (int) on; }
         }
-        // the writing: the name above, the level (or the value just turned) below
-        const auto top = c != nullptr ? mcu::lcdCell (c->name) : juce::String::repeatedString (" ", mcu::kLcdCell);
-        if (top != s.top) { send (mcu::lcd (i * mcu::kLcdCell, top)); s.top = top; }
+        // the writing: the name above, the level (or the value just turned) below - sent below, a line at a time
+        tops[i] = c != nullptr ? mcu::lcdCell (c->name) : juce::String::repeatedString (" ", mcu::kLcdCell);
+        topChanged = topChanged || tops[i] != s.top;
         if (! bannerOn)
         {
-            juce::String bottom;
-            if (c == nullptr) bottom = juce::String::repeatedString (" ", mcu::kLcdCell);
-            else if (now < valueUntil[i]) bottom = mcu::lcdCell (valueText[i]);
-            else bottom = mcu::dbText (c->level().get());
-            if (bottom != s.bottom) { send (mcu::lcd (mcu::kLcdWidth + i * mcu::kLcdCell, bottom)); s.bottom = bottom; }
+            if (c == nullptr) bottoms[i] = juce::String::repeatedString (" ", mcu::kLcdCell);
+            else if (now < valueUntil[i]) bottoms[i] = mcu::lcdCell (valueText[i]);
+            else bottoms[i] = mcu::lcdCell (mcu::dbText (c->level().get()));
+            bottomChanged = bottomChanged || bottoms[i] != s.bottom;
         }
         // the meter (15 times a second)
         if (meters && (ticks & 1) == 0)
@@ -604,6 +616,20 @@ void SurfaceController::show (bool everything)
             }
             if (lv != s.meter) { send (mcu::meter (i, lv)); s.meter = lv; }
         }
+    }
+    // One message for a whole line when anything on it changed (a message per cell: up to 16 every tick while levels move, and each one can hold the
+    // message thread for a millisecond or more - JUCE waits for the driver to finish sending every SysEx); the whole line also clears what a banner left.
+    if (topChanged)
+    {
+        juce::String line; for (auto& t : tops) line += t;
+        send (mcu::lcd (0, line));
+        for (int i = 0; i < mcu::kStrips; ++i) sent[i].top = tops[i];
+    }
+    if (bottomChanged && ! bannerOn)
+    {
+        juce::String line; for (auto& b : bottoms) line += b;
+        send (mcu::lcd (mcu::kLcdWidth, line));
+        for (int i = 0; i < mcu::kStrips; ++i) sent[i].bottom = bottoms[i];
     }
     if (bannerOn && ! bannerShown)                                     // the mixer's name across the bottom line for a moment when the surface moves to another mixer
     {

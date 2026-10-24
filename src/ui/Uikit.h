@@ -322,8 +322,6 @@ inline juce::Image makeFermataFileIcon (int size)
     return img;
 }
 
-/** Peak meter, -60 dB .. 0 dB. Only the top of the bar changes colour: green, then orange from -9 dB, red from -2 dB.
-    The peak marker holds for 10 seconds, unless the peak went above -2 dBFS: then it stays until resetPeak() is called. */
 /** How the mixer's level meters behave (shared by all mixers, remembered between runs): what they show and how fast they move. */
 struct MeterSettings
 {
@@ -331,8 +329,6 @@ struct MeterSettings
     int rise = 1;      // 0 instant, 1 fast (10 ms), 2 medium (50 ms), 3 slow (300 ms): how long the bar takes to climb to a new level
     int fall = 1;      // 0 fast (90 dB/s), 1 medium (25 dB/s), 2 slow (12 dB/s), 3 very slow (6 dB/s)
     int hold = 2;      // index into holdFor
-    static float riseCoef (int i) noexcept { static const float v[] { 1.0f, 0.7f, 0.4f, 0.15f }; return v[juce::jlimit (0, 3, i)]; }          // (the older per-tick form: the main window's meters)
-    static float fallCoef (int i) noexcept { static const float v[] { 0.70f, 0.82f, 0.92f, 0.97f }; return v[juce::jlimit (0, 3, i)]; }
     static float riseMs (int i) noexcept { static const float v[] { 0.0f, 10.0f, 50.0f, 300.0f }; return v[juce::jlimit (0, 3, i)]; }
     static float fallDbPerSec (int i) noexcept { static const float v[] { 90.0f, 25.0f, 12.0f, 6.0f }; return v[juce::jlimit (0, 3, i)]; }
     static juce::uint32 holdFor (int i) noexcept { static const juce::uint32 v[] { 0, 1000, 3000, 10000, 30000, 0xffffffffu }; return v[juce::jlimit (0, 5, i)]; }
@@ -1287,7 +1283,7 @@ public:
 };
 
 /** The little pictures on the buttons of the edit and take windows. Each is drawn from a 24 x 24 grid so it stays sharp at any size. */
-enum class Icon { Start, Rewind, Play, Stop, Forward, End, Record, Trim, Bounce, Pitch, Repair, Reharm, Tracks, Feedback, Mixer, Earlier, Later, Delete, Undo, Automation, Buses,
+enum class Icon { Start, Rewind, Play, Stop, Forward, End, Record, Trim, Bounce, Pitch, Repair, Reharm, Tracks, Feedback, Mixer, Earlier, Later, Delete, Undo, Automation,
                   ExportProc, ImportMulti, Markers, FeedbackMarkers, SlipLeft, SlipRight, Shuffle, InsertFlag, NextAtEnd,
                   Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search, Denoise, Align, TakeSheet, RoomTone, NoiseMode };
 
@@ -1610,15 +1606,6 @@ inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area, j
             P l; l.startNewSubPath (2.5f, 16); l.lineTo (8, 6.5f); l.lineTo (13, 15.5f); l.lineTo (17, 8.5f); l.lineTo (21.5f, 14.5f); stroke (l, 1.8f, Ye);
             for (auto d : { std::pair<float, float> { 2.8f, 16 }, { 8, 6.5f }, { 13, 15.5f }, { 17, 8.5f }, { 21.2f, 14.5f } })
             { g.setColour (juce::Colours::white); g.fillEllipse (d.first - 1.7f, d.second - 1.7f, 3.4f, 3.4f); g.setColour (Ye); g.drawEllipse (d.first - 1.7f, d.second - 1.7f, 3.4f, 3.4f, 1.3f); }
-            break;
-        }
-        case Icon::Buses:
-        {
-            rect (1.8f, 5, 20.4f, 12.5f, 2.4f, Ye);
-            const Colour k (0xff1b1e24);
-            rect (3.6f, 7, 3.6f, 3.6f, 0.5f, k); rect (8.2f, 7, 3.6f, 3.6f, 0.5f, k); rect (12.8f, 7, 3.6f, 3.6f, 0.5f, k); rect (17.4f, 7, 3.0f, 5.8f, 0.5f, k);
-            g.setColour (k.withAlpha (0.35f)); g.fillRect (1.8f, 13.2f, 20.4f, 1.2f);
-            for (float x : { 7.0f, 17.0f }) { g.setColour (Dk); g.fillEllipse (x - 2.2f, 16.0f, 4.4f, 4.4f); g.setColour (W); g.drawEllipse (x - 2.2f, 16.0f, 4.4f, 4.4f, 1.2f); }
             break;
         }
     }

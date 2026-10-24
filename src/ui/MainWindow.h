@@ -267,7 +267,7 @@ public:
     int menuBarWidth() const;
     /** The height the main window needs to show everything at full size. */
     int fullHeight() const;
-    /** How wide the driver line (status) is with this text: DRIVER INPUTS sits just after it. */
+    /** How wide the driver line (status) is with this text: the stage speaker boxes have the room to the right of it. */
     int statusWidthFor (const juce::String& t) const
     {
         int w = 0;                                                       // (two lines: the wider one; a long notice wraps onto the second)

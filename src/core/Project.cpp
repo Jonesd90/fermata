@@ -213,7 +213,8 @@ static void lowCutFromVar (LowCut& lc, const var& v, double sr, int block)
     const bool on = l.isObject() && (bool) l["on"];
     const float hz = l.isObject() && l.hasProperty ("hz") ? (float) (double) l["hz"] : lowcut::kDefaultHz;
     const int slope = l.isObject() && l.hasProperty ("slope") ? (int) l["slope"] : lowcut::kDefaultSlope;
-    lc.hz.set (hz); lc.slope.store (juce::jlimit (0, lowcut::kNumSlopes - 1, slope));
+    lc.hz.set (std::isfinite (hz) ? juce::jlimit (lowcut::kMinHz, (float) lowcut::maxHz (sr > 0.0 ? sr : 48000.0), hz) : lowcut::kDefaultHz);    // (as setDesign keeps it)
+    lc.slope.store (juce::jlimit (0, lowcut::kNumSlopes - 1, slope));
     lc.linear.set (l.isObject() && (bool) l["linear"]);
     lc.prepare (sr, block, 2);
     lc.setOn (on);                                                    // (the filter is designed now, so it is in the plan at once)
@@ -320,6 +321,7 @@ void Project::createDefaultDesign()
 {
     inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); preampDevices.clear(); pitchPipe = PitchPipeDef(); click = ClickDef(); alignEnabled = true; alignSets.clear(); alignActive.clear();
     windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear(); oldWindowFiles.clear();     // (nothing of the project that was open before: its missing files are not this one's)
+    layouts.clear();                                                                                  // (nor its saved Display Organiser layouts)
     setInputCount (8);
     setOutputCount (4);
     addMixer ("Processing mixer");
@@ -411,6 +413,15 @@ String Project::inputTag (int i) const
 }
 
 String Project::driverNamePrefix() const
+{
+    juce::uint64 key = (juce::uint64) inputs.size() * 0x9E3779B97F4A7C15ull;                       // the driver names as they are now (cheap: no copies)
+    for (auto& in : inputs) key = (key ^ (juce::uint64) in.driverName.hashCode64()) * 1099511628211ull;
+    if (prefixKnown && key == prefixKey) return prefixCache;
+    prefixCache = findDriverNamePrefix(); prefixKey = key; prefixKnown = true;
+    return prefixCache;
+}
+
+String Project::findDriverNamePrefix() const
 {
     if (inputs.size() < 2) return {};
     String p = inputs.front().driverName;
@@ -1242,15 +1253,14 @@ var Project::takeWindowToVar (const TakeWindowDef& w) const
     return o;
 }
 
-var Project::toVar (bool editorialOnly, bool withWindows) const
+var Project::toVar (bool withWindows) const
 {
     var root = obj();
     put (root, "format", "Fermata project");
     put (root, "version", 1);
     put (root, "name", name);
 
-    if (! editorialOnly)                                  // (the undo history only looks at the takes, the edits and the mastering: no inputs, tracks, mixers or plug-in states)
-    {
+    {                                                     // the design: inputs, outputs, tracks, buses, mixers and their plug-in states ...
     { var wb = obj(); for (auto& kv : windowBounds) put (wb, kv.first.toRawUTF8(), kv.second); put (root, "windowBounds", wb); }
     { juce::Array<var> la; for (auto& l : layouts) la.add (l.toVar()); put (root, "layouts", la); }
     juce::Array<var> in;
@@ -1309,14 +1319,14 @@ var Project::toVar (bool editorialOnly, bool withWindows) const
     put (root, "ltcInput", ltcInput); put (root, "ltcOutput", ltcOutput); put (root, "ltcOutOn", ltcOutOn); put (root, "ltcOutFormat", ltcOutFormat);
     put (root, "ltcOutStartMode", ltcOutStartMode); put (root, "ltcOutStartSeconds", ltcOutStartSeconds);
     {
-        auto outs = [] (const std::vector<int>& v) { juce::Array<var> a; for (int o : v) a.add (o); return var (a); };
+        auto outList = [] (const std::vector<int>& v) { juce::Array<var> a; for (int o : v) a.add (o); return var (a); };
         var pp = obj();
         put (pp, "refA", pitchPipe.refA); put (pp, "temperament", pitchPipe.temperament); put (pp, "key", pitchPipe.key); put (pp, "chordMode", pitchPipe.chordMode);
-        put (pp, "chordTuning", pitchPipe.chordTuning); put (pp, "levelDb", (double) pitchPipe.levelDb); put (pp, "outputs", outs (pitchPipe.outputs)); put (pp, "lowestC", pitchPipe.lowestC); put (pp, "tone", (double) pitchPipe.tone);
+        put (pp, "chordTuning", pitchPipe.chordTuning); put (pp, "levelDb", (double) pitchPipe.levelDb); put (pp, "outputs", outList (pitchPipe.outputs)); put (pp, "lowestC", pitchPipe.lowestC); put (pp, "tone", (double) pitchPipe.tone);
         put (root, "pitchPipe", pp);
         var ck = obj();
         put (ck, "bpm", click.bpm); put (ck, "beatsPerBar", click.beatsPerBar); put (ck, "beatUnit", click.beatUnit); put (ck, "accent", click.accent);
-        put (ck, "sound", click.sound); put (ck, "levelDb", (double) click.levelDb); put (ck, "outputs", outs (click.outputs));
+        put (ck, "sound", click.sound); put (ck, "levelDb", (double) click.levelDb); put (ck, "outputs", outList (click.outputs));
         put (ck, "quaverTicks", click.quaverTicks); put (ck, "tickDb", (double) click.tickDb);
         put (root, "click", ck);
         put (root, "alignEnabled", alignEnabled);
@@ -1330,7 +1340,7 @@ var Project::toVar (bool editorialOnly, bool withWindows) const
             for (auto& e : edits) exists = exists || e->id == oid;
             if (! exists) continue;                                                       // (a piece that was deleted: its measurements go with it)
             var so = obj(); put (so, "measuredOn", set.measuredOn);
-            var tr = obj();
+            var trs = obj();
             for (auto& [tid, at] : set.tracks)
             {
                 var al = obj(); const auto& ar = at.result;
@@ -1342,9 +1352,9 @@ var Project::toVar (bool editorialOnly, bool withWindows) const
                     if (ar.suggestedStereo) put (al, "panR", (double) ar.suggestedPanR);
                     put (al, "inverted", ar.inverted); put (al, "severity", ar.severity); put (al, "message", ar.message);
                 }
-                tr.getDynamicObject()->setProperty (juce::Identifier (tid), al);
+                trs.getDynamicObject()->setProperty (juce::Identifier (tid), al);
             }
-            put (so, "tracks", tr);
+            put (so, "tracks", trs);
             sets.getDynamicObject()->setProperty (juce::Identifier (owner), so);
         }
         put (root, "alignSets", sets);
@@ -1428,7 +1438,7 @@ bool Project::fromVar (const var& root)
     if (! root.isObject() || (root.getProperty ("format", {}).toString() != "Fermata project" && root.getProperty ("format", {}).toString() != "TakeDAW project"))
         return false;
 
-    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); preampDevices.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone();
     filesMoved = false;
     name = root.getProperty ("name", "Untitled").toString();
     windowBounds.clear();
@@ -1755,6 +1765,7 @@ juce::uint64 Project::undoHash (const TakeWindowDef& w)
     {
         h.add (g.id); h.add (g.number); h.add (g.label); h.add (g.startSeconds); h.add (g.lengthSamples); h.add (g.sampleRate); h.add (g.recordedAt);
         h.add (g.fadeInSeconds); h.add (g.fadeOutSeconds); h.add (g.dud); h.add (g.barIn); h.add (g.barOut); h.add (g.notes);
+        h.add (g.roomTone); h.add (g.roomToneIn); h.add (g.roomToneOut);
         h.add (g.overruns); h.add (g.lostSamples); h.add (g.writeFailed); h.add (g.verified);
         h.count (g.files.size());
         for (auto& f : g.files) { h.add (f.trackId); h.add (f.trackName); h.add (f.file); h.add (f.numChannels); h.add (f.sourceName); h.add (f.sourceName2); }
@@ -1954,6 +1965,7 @@ bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid
         {
             te->fixIn = live->fixIn; te->fixOut = live->fixOut; te->fixTracks = live->fixTracks;
             te->playheadSeconds = live->playheadSeconds; te->insertIndex = live->insertIndex; te->markers = live->markers; te->feedback = live->feedback; te->showFeedback = live->showFeedback; te->showMarkers = live->showMarkers;
+            te->laneRows = live->laneRows;                                // (the automation rows shown: a view setting, like the ones above)
             *live = std::move (*te);
         }
         else { p.edits.push_back (std::move (te)); p.syncEditMixers(); structural = true; }
@@ -1971,6 +1983,7 @@ bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid
         {
             lg->label = tg.label; lg->startSeconds = tg.startSeconds; lg->fadeInSeconds = tg.fadeInSeconds; lg->fadeOutSeconds = tg.fadeOutSeconds;
             lg->dud = tg.dud; lg->barIn = tg.barIn; lg->barOut = tg.barOut; lg->number = tg.number; lg->notes = tg.notes;
+            lg->roomTone = tg.roomTone; lg->roomToneIn = tg.roomToneIn; lg->roomToneOut = tg.roomToneOut;
         }
         else live->groups.push_back (tg);                    // a take that was removed from the window comes back
     }
@@ -2043,7 +2056,7 @@ bool Project::save (juce::String& error, bool quick)
     projectFile.getParentDirectory().createDirectory();
     dirty = false;                                        // (cleared before the snapshot: a change made while the text is being made is kept for the next save)
     quickPluginState = quick;
-    var root = toVar (false, false);                      // (the windows go to their own files: splitWindowFiles adds them to root only if that fails)
+    var root = toVar (false);                      // (the windows go to their own files: splitWindowFiles adds them to root only if that fails)
     quickPluginState = false;
     // The order matters for a save that is interrupted (the program or the computer stops half way): first the window files, then the project file,
     // and only then are the old window files tidied away and the list of files updated. Stopped after any step, the folder still opens: a window
@@ -2159,13 +2172,13 @@ bool Project::load (const juce::File& f, juce::String& error)
 {
     juce::var v;
     reportLoad ("Reading the project file", 0.02);
-    windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear();
     const auto t0 = juce::Time::getMillisecondCounterHiRes(); double tMain = 0.0, tWindows = 0.0, tSetup = 0.0, tHashes = 0.0;
     // A damaged (or missing) project file: the save before it is in <name>.fermata.bak and is used instead
     const int read = filesync::readJsonWithBackup (f, v, [] (const juce::var& x) { return x.isObject(); });
     tMain = juce::Time::getMillisecondCounterHiRes() - t0;
     readingFrom = f.getParentDirectory();
     bool ok = read > 0;
+    if (ok) { windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear(); oldWindowFiles.clear(); }    // (only once the file has been read: a failed Open leaves the open project's files list alone)
     if (read == 2)
         loadNotes.add ("The project file " + f.getFileName() + " could not be read, so the save before it (" + filesync::backupOf (f).getFileName() + ") was used. "
                        "Anything changed after that save is not in the project. The unreadable file was kept as " + filesync::damagedCopyOf (f).getFileName() + ".");
@@ -2304,7 +2317,7 @@ String Project::editFileHash (const EditDef& e, const String& tracksHash, const 
 void Project::refreshWindowFileHashes()
 {
     // after a project is read: what is in memory is what the files hold, so the hashes are set to it and the first save writes only what changes
-    var root = toVar (false, false);
+    var root = toVar (false);
     const auto tracksHash = fingerprintOf (root["tracks"]);
     for (auto& w : takeWindows) { auto it = windowFiles.find (w->id.toString()); if (it != windowFiles.end()) it->second.hash = takeFileHash (*w, tracksHash); }
     for (auto& e : edits)       { auto it = windowFiles.find (e->id.toString()); if (it != windowFiles.end()) it->second.hash = editFileHash (*e, tracksHash, root["mixers"], nullptr); }
@@ -2507,39 +2520,52 @@ bool Project::deleteTakeWindowAndFile (const juce::Uuid& id)
     return false;
 }
 
-int Project::missingAudioCount (bool quick) const
+/** (the quick missing-file checks) Whether a file's folder is there, asked once per folder; and the files of the takes found whole at the last open whose folder
+    is still there, which are not asked about one by one: a Recorded Media folder that was moved or renamed is found out at once, a single file gone from it
+    when it is played. Not when the project has moved since (filesMoved): then every take is looked at again. */
+namespace
 {
-    auto& self = const_cast<Project&> (*this);
-    // (quick) the files of takes found whole at the last open are not asked about one by one - only their FOLDER is (one question per folder, however
-    // many takes it holds): a Recorded Media folder that was moved or renamed is found out at once, a single file gone from it is found out when it is played
-    std::map<String, bool> folderThere;
-    auto folderExists = [&] (const juce::File& f)
+struct QuickAudioCheck
+{
+    std::map<juce::String, bool> folderThere;
+    std::set<juce::String> trusted;
+    bool folderExists (const juce::File& f)
     {
         const auto dir = f.getParentDirectory().getFullPathName();
         auto it = folderThere.find (dir);
         if (it == folderThere.end()) it = folderThere.emplace (dir, f.getParentDirectory().isDirectory()).first;
         return it->second;
-    };
-    std::set<String> trusted;
-    if (quick && ! filesMoved)
-        for (auto& w : takeWindows) for (auto& g : w->groups) if (g.verified && g.lengthSamples > 0) for (auto& tf : g.files) if (folderExists (tf.file)) trusted.insert (tf.file.getFullPathName());
+    }
+    QuickAudioCheck (const std::vector<std::unique_ptr<TakeWindowDef>>& takeWindows, bool quick)
+    {
+        if (quick) for (auto& w : takeWindows) for (auto& g : w->groups) if (g.verified && g.lengthSamples > 0) for (auto& tf : g.files) if (folderExists (tf.file)) trusted.insert (tf.file.getFullPathName());
+    }
+};
+} // namespace
+
+int Project::missingAudioCount (bool quick) const
+{
+    auto& self = const_cast<Project&> (*this);
+    quick = quick && ! filesMoved;
+    QuickAudioCheck qc (takeWindows, quick);
     std::set<String> seen; int n = 0;
     forEachAudioFile (self.takeWindows, self.edits, [&] (juce::File& f)
     {
         const auto path = f.getFullPathName();
-        if (path.isEmpty() || ! seen.insert (path).second || trusted.count (path) > 0) return;
-        if (quick && ! folderExists (f)) { ++n; return; }                            // (its folder is gone: no need to ask about the file)
+        if (path.isEmpty() || ! seen.insert (path).second || qc.trusted.count (path) > 0) return;
+        if (quick && ! qc.folderExists (f)) { ++n; return; }                          // (its folder is gone: no need to ask about the file)
         if (! f.existsAsFile()) ++n;
     });
     return n;
 }
 
-juce::StringArray Project::missingAudioList (int atMost) const
+juce::StringArray Project::missingAudioList (int atMost, bool quick) const
 {
+    QuickAudioCheck qc (takeWindows, quick && ! filesMoved);                       // (quick: the same files left out as missingAudioCount (true) leaves out)
     juce::StringArray out; std::set<String> seen; int more = 0;
     auto add = [&] (const juce::File& f, const String& where)
     {
-        if (f == juce::File() || ! seen.insert (f.getFullPathName()).second || f.existsAsFile()) return;
+        if (f == juce::File() || ! seen.insert (f.getFullPathName()).second || qc.trusted.count (f.getFullPathName()) > 0 || f.existsAsFile()) return;
         if (out.size() < atMost) out.add (f.getFileName() + "   (" + where + ")"); else ++more;
     };
     for (auto& w : takeWindows)

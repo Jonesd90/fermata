@@ -140,6 +140,7 @@ private:
     juce::TextButton pasteButton;
     void pasteHere();
     int statusFlash = 0;
+    int refreshCounter = 0;                                 // (timerCallback: every tenth tick, 3 Hz, the plug-in names and slot rows)
     void updateAuditionButton();
     MixerLookAndFeel mixLook;             // declared before the viewport: it must outlive it
     bool shownDark = false;

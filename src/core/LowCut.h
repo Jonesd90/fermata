@@ -227,7 +227,6 @@ public:
     /** Puts new partition spectra in (the same B and P): the sound in the filter carries on, with the new shape. */
     void setKernel (const Convolver& designed) noexcept { if (designed.P == P && designed.fftN == fftN) std::copy (designed.H.begin(), designed.H.end(), H.begin()); }
     bool sameLayout (int partition, int numPartitions) const noexcept { return B == partition && P == numPartitions; }
-    int partition() const noexcept { return B; }
     int partitions() const noexcept { return P; }
     int extraLatency() const noexcept { return B; }
 

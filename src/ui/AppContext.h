@@ -134,11 +134,11 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     std::function<void (int)> toggleMixerAt;             // set by the application: opens / closes the mixer with this index (0 = the processing mixer)
     std::function<bool (int)> mixerOpenAt;
     // ---- the Stream Deck + XL (see core/RemoteDesk.h) ----
-    /** Windows by name: "bridge", "pitchpipe", "click", "take". State: 0 not open, 1 open and shown, 3 open but minimised. Toggle: opens it, or closes it ("bridge", "pitchpipe", "click"),
-        or minimises / brings back the take window used last ("take"). "minimiseall" minimises every window but the main one; pressed again it brings those back. Set by the application. */
+    /** Windows by name: "bridge", "pitchpipe", "click", "take", and (2.97) "editwin", "takedisplay", "organiser", "media", "mastering". State: 0 not open, 1 open and shown,
+        3 open but minimised. Toggle: opens it, or closes it (a minimised one is brought back; nothing is closed while a menu or message is up), or for "take" minimises / brings
+        back the take window used last (never closes it). "minimiseall" minimises every window but the main one; pressed again it brings those back. Set by the application. */
     std::function<int (const juce::String&)> deskWindowState;
     std::function<void (const juce::String&)> deskWindowToggle;
-    std::function<bool()> deskMinimisedSome;             // "minimiseall" has windows to bring back
     /** The Loop button of the take or edit window used last: -1 there is none, 0 off, 1 on; and the same as pressing it (key L). Set by the application. */
     std::function<int()> deskLoopState;
     std::function<void()> deskLoopToggle;
@@ -154,7 +154,8 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     void applyStageMix() { engine.setStageMix (project.stageGainDb, project.stagePan, project.stagePlaybackDb, project.stageOutputDb); }
     // ---- the control surface (an Avid S1 or any other Mackie Control surface, over MIDI): see Surface.h. Owned by the application. ----
     SurfaceController* surface = nullptr;
-    /** The mixer whose window is in front, or was in front most recently (the first mixer when none has been opened yet); null without a project. Set by the application. */
+    /** The mixer whose window is in front, or was in front most recently (the first mixer when none has been opened yet); null only when there are no mixers
+        (at the start screen it is the blank project's mixer: callers check hasProject() themselves). Set by the application. */
     std::function<juce::Uuid()> frontMixerId;
     /** Sends a key to the take or edit window that was last in front, as if it had been typed there (the surface's zoom keys). False if there is no such window. */
     std::function<bool (const juce::KeyPress&)> keyToWorkWindow;
@@ -198,7 +199,7 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
 
     /** The last pitch correction / repair, so it can be undone (the new audio files stay on the disk; the originals were never touched). */
     int undoHold = 0;      // > 0 while a dialog is trying something out (pitch curve audition): the undo history is not written to meanwhile
-    int saveHold = 0;      // > 0 while a take's files are swapped for preview files (the denoiser): the automatic save waits, so a crash can never leave the project pointing at them
+    int saveHold = 0;      // > 0 while a fix's preview files are in a take or an edit (FixTools.cpp: PreviewApplied): the automatic save waits, so a crash can never leave the project pointing at them
     std::function<void()> fixUndo;
     juce::String fixUndoLabel;
 
@@ -326,7 +327,7 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     bool newProject (const juce::File& projectFile);
     bool openProject (const juce::File& projectFile);
     /** A project file's backup (Name.fermata.bak: the project as it was saved the time before) put back as the project file and opened. The file it
-        replaces is kept beside it as "Name (replaced <date> <time>).fermata"; the take and edit windows' own files are left as they are. */
+        replaces is kept beside it as "Name (replaced <date> <time>).fermata.bak"; the take and edit windows' own files are left as they are. */
     bool openBackupProject (const juce::File& bakFile);
     /** Project > Close: the project's windows close and Fermata goes back to its start panel (New / Open). save: write it first; otherwise nothing more is
         written (what was saved automatically as you worked stays). False if it cannot close now (recording). */

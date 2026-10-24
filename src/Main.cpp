@@ -208,7 +208,6 @@ public:
         // ---- the Stream Deck + XL: windows by name, the Loop button, "minimise all but the main window"
         ctx->deskWindowState = [this] (const juce::String& what) { return deskWindowState (what); };
         ctx->deskWindowToggle = [this] (const juce::String& what) { deskWindowToggle (what); };
-        ctx->deskMinimisedSome = [this] { return deskMinimisedSome(); };
         ctx->deskLoopState = [this]
         {
             const auto key = lastWorkWindowKey();
@@ -397,6 +396,11 @@ public:
         busy::setAreaProvider (nullptr);
         splash.reset();
         remoteServer.reset();
+        // The fix tools' windows (ReTouch, De-click, Noise mode ...) are modal dialogs that JUCE would delete only after this object - and the
+        // AppContext their destructors talk to (stop playback, put back what was not written, the undo hold) - had gone. Delete them first.
+        // (Only DialogWindows: those are always "deleted when dismissed", so nothing else owns them.)
+        for (int i = juce::ModalComponentManager::getInstance()->getNumModalComponents(); --i >= 0;)
+            if (auto* dw = dynamic_cast<juce::DialogWindow*> (juce::ModalComponentManager::getInstance()->getModalComponent (i))) delete dw;
         if (ctx) ctx->surface = nullptr;
         surface.reset();                                                          // (the surface is blanked: faders down, lamps off)
         if (ctx) ctx->shutdown();
@@ -493,6 +497,14 @@ private:
     void closeWindowLater (const juce::String& key)
     {
         juce::MessageManager::callAsync ([this, key] { windows.erase (key); });
+    }
+    /** A key that opens / closes a window (the Stream Deck, the control surface, M, B) closes it - but never while a menu, a message or a call-out is up.
+        Those are modal, one of them may belong to that window, and its answer would then come back to a window that has been deleted (2.98.0: the
+        Stream Deck's keys arrive at any time, also while a menu is open). */
+    void closeFromKey (const juce::String& key)
+    {
+        if (juce::ModalComponentManager::getInstance()->getNumModalComponents() > 0) { ctx->setNotice ("Close the open menu or message first, then press the key again."); return; }
+        closeWindowLater (key);
     }
 
     /** 'stayInFront' (optional): a window the user is working in. An already open window is then left exactly where it is; a NEW window always opens on top. */
@@ -690,7 +702,7 @@ private:
         {
             bool frontmost = it->second->isVisible();                          // only close it if it is the window you were last in; if it is hidden behind others, bring it forward instead
             for (auto& kv : windows) if (kv.second != nullptr && kv.second->isVisible() && kv.second->lastActive > it->second->lastActive) frontmost = false;
-            if (frontmost) closeWindowLater (key); else DockHub::get().show (it->second.get());
+            if (frontmost) closeFromKey (key); else DockHub::get().show (it->second.get());
         }
         else openMixer (id);
     }
@@ -698,7 +710,7 @@ private:
     void toggleBridge()
     {
         const juce::String key = "bridge";
-        if (auto bi = windows.find (key); bi != windows.end()) { if (DockHub::get().contains (bi->second.get())) DockHub::get().show (bi->second.get()); else closeWindowLater (key); return; }
+        if (auto bi = windows.find (key); bi != windows.end()) { if (DockHub::get().contains (bi->second.get())) DockHub::get().show (bi->second.get()); else closeFromKey (key); return; }
         showWindow (key, "Meter bridge", [this] { return new MeterBridgeComponent (*ctx); });
         if (auto it = windows.find (key); it != windows.end())
         {
@@ -727,6 +739,10 @@ private:
     {
         if (what == "editwin")
         {
+            const ToolWindow* best = nullptr; juce::String bestKey;               // the edit window used last, as for the take key
+            for (auto& kv : windows)
+                if (kv.second != nullptr && kv.first.startsWith ("edit:") && (best == nullptr || kv.second->lastActive > best->lastActive)) { best = kv.second.get(); bestKey = kv.first; }
+            if (best != nullptr) return bestKey;
             juce::Uuid id = recentEdit;
             if (ctx->project.findEdit (id) == nullptr) id = ctx->project.edits.empty() ? juce::Uuid::null() : ctx->project.edits.front()->id;
             return id.isNull() ? juce::String() : "edit:" + id.toString();
@@ -753,7 +769,7 @@ private:
             if (auto it = windows.find (what); it != windows.end() && it->second != nullptr)
             {
                 if (DockHub::get().contains (it->second.get())) DockHub::get().show (it->second.get());       // minimised: back
-                else closeWindowLater (what);
+                else closeFromKey (what);
             }
             else if (what == "pitchpipe") ctx->showPitchPipe(); else ctx->showClick();
             return;
@@ -776,7 +792,7 @@ private:
             if (it != windows.end() && it->second != nullptr)
             {
                 if (DockHub::get().contains (it->second.get()) || ! it->second->isVisible()) { DockHub::get().show (it->second.get()); it->second->grabContentFocus(); }   // minimised: back
-                else closeWindowLater (key);                                                                                                                         // shown: close
+                else closeFromKey (key);                                                                                                                             // shown: close
                 return;
             }
             if (what == "editwin") { if (key.isNotEmpty()) openEdit (juce::Uuid (key.fromFirstOccurrenceOf (":", false, false))); }

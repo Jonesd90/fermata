@@ -3635,6 +3635,7 @@ int main()
         expectW ("lost", [&] { g.lostSamples = 200; }, true);
         expectW ("write failed", [&] { g.writeFailed = true; }, true);
         expectW ("verified", [&] { g.verified = true; }, true);
+        expectW ("room tone mark", [&] { g.roomTone = true; g.roomToneIn = 1.0; g.roomToneOut = 2.5; }, true);      // (2.98: it was saved only when something else changed)
         expectW ("file track name", [&] { g.files[0].trackName = "Z"; }, true);
         expectW ("file path", [&] { g.files[0].file = tmp.getChildFile ("other.wav"); }, true);
         expectW ("file channels", [&] { g.files[0].numChannels = 2; }, true);
@@ -4518,7 +4519,7 @@ int main()
         CHECK (rep.summary().contains ("1 file found by its name") && rep.summary().contains ("2 renamed files found") && rep2.summary().contains ("fit several"));
         base.deleteRecursively();
     }
-    SECTION ("2.77 background denoiser: the C++ engine matches the reference, on files, in pieces, and does what the controls say");
+    SECTION ("2.77 background denoiser: the C++ engine matches the reference, in pieces, does what the controls say, and a profile per channel of a file");
     {
         const auto dataDir = juce::File (__FILE__).getParentDirectory().getChildFile ("data").getChildFile ("denoise");
         juce::AudioFormatManager fm; fm.registerBasicFormats();
@@ -4583,7 +4584,8 @@ int main()
             double se = 0, sd = 0; for (size_t i = (size_t) (0.5 * sr); i < (size_t) (2.5 * sr); ++i) { se += (double) tone[i] * tone[i]; const double d = y2[i] - tone[i]; sd += d * d; }
             CHECK (10.0 * std::log10 (se / sd) > 45.0);                                                        // (the output is the tone, not the tone plus noise: the noise was ~40 dB down)
         }
-        // on files: a stereo file, each channel with its own profile; the untouched parts copied, the stretch denoised, 'removed' = input - output
+        // a stereo file: a profile per channel learned from its room tone (each its own level); denoising the stretch with them (each channel its own
+        // profile, as Noise mode does): outside the stretch bit for bit, inside it the noise down by about the residual, the tone kept
         {
             const auto dir = tmp.getChildFile ("denoise"); dir.deleteRecursively(); dir.createDirectory();
             const int n = (int) (4.0 * sr); std::vector<std::vector<float>> st (2, std::vector<float> ((size_t) n));
@@ -4594,63 +4596,24 @@ int main()
                 st[0][(size_t) i] = env * 0.1f * std::sin (2.0f * 3.14159265f * 440.0f * t) + 0.002f * (rnd.nextFloat() * 2.0f - 1.0f);
                 st[1][(size_t) i] = env * 0.1f * std::sin (2.0f * 3.14159265f * 660.0f * t) + 0.0005f * (rnd.nextFloat() * 2.0f - 1.0f);
             }
-            const auto src = dir.getChildFile ("stereo.wav"), dst = dir.getChildFile ("stereo (denoise).wav"), rem = dir.getChildFile ("stereo (removed).wav");
+            const auto src = dir.getChildFile ("stereo.wav");
             CHECK (audioops::writeWav (src, st, sr));
             juce::String err;
             auto profs = audioops::learnDenoise (fm, src, (juce::int64) (0.1 * sr), (juce::int64) (1.2 * sr), p, err);
             CHECK (err.isEmpty() && profs.valid() && profs.channels == 2 && profs.perChannel[0].levelDb() > profs.perChannel[1].levelDb() + 8.0);
-            CHECK (audioops::denoiseFile (fm, src, dst, rem, (juce::int64) (1.0 * sr), (juce::int64) (3.5 * sr), profs, p, {}, err) && err.isEmpty());
-            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (dst)), rr (fm.createReaderFor (rem));
-            CHECK (rd != nullptr && rr != nullptr && rd->numChannels == 2 && rd->lengthInSamples == n && rd->bitsPerSample == 24 && rr->lengthInSamples == n);
-            std::vector<std::vector<float>> o, rmv; audioops::readRange (*rd, 0, n, o); audioops::readRange (*rr, 0, n, rmv);
-            // before 1.0 s: a copy (to 24-bit precision); inside: the noise is down by about the residual; the tone is kept; removed = in - out
-            double dcopy = 0; for (int i = 0; i < (int) (0.9 * sr); ++i) dcopy = juce::jmax (dcopy, (double) std::abs (o[0][(size_t) i] - st[0][(size_t) i]));
-            CHECK (dcopy < 2.0 / 8388608.0);
-            CHECK (rmsDb (st[0], (size_t) (1.05 * sr), (size_t) (1.45 * sr)) - rmsDb (o[0], (size_t) (1.05 * sr), (size_t) (1.45 * sr)) > 9.0);
-            CHECK (std::abs (rmsDb (st[1], (size_t) (1.6 * sr), (size_t) (2.9 * sr)) - rmsDb (o[1], (size_t) (1.6 * sr), (size_t) (2.9 * sr))) < 0.3);
-            double dr = 0; for (int i = (int) (1.1 * sr); i < (int) (3.4 * sr); ++i) dr = juce::jmax (dr, (double) std::abs ((st[0][(size_t) i] - o[0][(size_t) i]) - rmv[0][(size_t) i]));
-            CHECK (dr < 5.0 / 8388608.0);
-            double zr = 0; for (int i = 0; i < (int) (0.9 * sr); ++i) zr = juce::jmax (zr, (double) std::abs (rmv[0][(size_t) i]));
-            CHECK (zr == 0.0);                                                                                 // (digital silence outside the stretch)
-            // the other tracks help: the right channel has the tone buried in its noise (about the noise's own level in its bin, so hard to tell
-            // from noise on its own), the left channel hears it clearly - with the group on, the right keeps more of the tone; a preview run
-            // writes silence before the stretch and ends with it. (A 10 s file: learnDenoise measures the decay over the 5 s after the room tone.)
-            const int n2 = (int) (10.0 * sr);
-            std::vector<std::vector<float>> st2 (2, std::vector<float> ((size_t) n2));
-            juce::Random rnd2 (12);
-            for (int i = 0; i < n2; ++i)
-            {
-                const float t = (float) i / (float) sr, env = t > 1.5f && t < 3.5f ? 1.0f : 0.0f, tone = std::sin (2.0f * 3.14159265f * 1000.0f * t);
-                st2[0][(size_t) i] = env * 0.1f * tone + 0.0005f * (rnd2.nextFloat() * 2.0f - 1.0f);
-                st2[1][(size_t) i] = env * 0.00004f * tone + 0.002f * (rnd2.nextFloat() * 2.0f - 1.0f);
-            }
-            const auto src2 = dir.getChildFile ("pair.wav");
-            CHECK (audioops::writeWav (src2, st2, sr));
-            auto profs2 = audioops::learnDenoise (fm, src2, (juce::int64) (0.1 * sr), (juce::int64) (1.2 * sr), p, err, 10.0);
-            CHECK (err.isEmpty() && profs2.valid() && profs2.decay.size() == 2 && profs2.decay[0].rates.size() == profs2.decay[0].edges.size() - 1);
-            CHECK (audioops::learnDenoise (fm, src, (juce::int64) (0.1 * sr), (juce::int64) (1.2 * sr), p, err, 10.0).decay.empty() && err.isEmpty());   // (a 4 s file: no 5 s stretch to measure)
-            auto toneDb = [&] (const std::vector<float>& v)                                                  // the level at 1 kHz over 1.6 - 3.4 s
-            {
-                double re = 0, im = 0; const int a0 = (int) (1.6 * sr), a1 = (int) (3.4 * sr);
-                for (int i = a0; i < a1; ++i) { const double ph = 2.0 * 3.14159265358979 * 1000.0 * i / sr; re += v[(size_t) i] * std::cos (ph); im -= v[(size_t) i] * std::sin (ph); }
-                return 20.0 * std::log10 (std::sqrt (re * re + im * im) / (a1 - a0) + 1e-20);
-            };
-            std::vector<double> rightTone (3, 0.0);
-            for (int mode = 0; mode <= 2; ++mode)
-            {
-                denoise::Params pg = p; pg.groupMode = mode;
-                audioops::DenoiseRun run; run.a = (juce::int64) (1.0 * sr); run.b = (juce::int64) (3.8 * sr); run.preview = mode == 2; run.removed = false; run.threads = 2;
-                const auto out2 = dir.getChildFile ("pair out " + juce::String (mode) + ".wav");
-                CHECK (audioops::denoiseFiles (fm, { src2 }, { out2 }, {}, { profs2 }, pg, run, {}, err) && err.isEmpty());
-                std::unique_ptr<juce::AudioFormatReader> r2 (fm.createReaderFor (out2));
-                CHECK (r2 != nullptr && r2->numChannels == 2 && r2->lengthInSamples == (mode == 2 ? (juce::int64) (3.8 * sr) : (juce::int64) n2));
-                std::vector<std::vector<float>> o2; audioops::readRange (*r2, 0, r2->lengthInSamples, o2);
-                rightTone[(size_t) mode] = toneDb (o2[1]);
-                CHECK (std::abs (toneDb (o2[0]) - toneDb (st2[0])) < 0.3);                                      // the left keeps its tone whatever the mode
-                if (mode == 2) { double z = 0; for (int i = 0; i < (int) (0.9 * sr); ++i) z = juce::jmax (z, (double) std::abs (o2[0][(size_t) i])); CHECK (z == 0.0); }   // (a preview: silence before the stretch)
-            }
-            CHECK (rightTone[1] > rightTone[0] + 2.0 && rightTone[1] <= toneDb (st2[1]) + 1.0);
-            CHECK (std::abs (rightTone[2] - rightTone[1]) < 1.0);                                              // (the preview has the same gains)
+            CHECK (! audioops::learnDenoise (fm, src, (juce::int64) (0.1 * sr), (juce::int64) (0.4 * sr), p, err).valid() && err.isNotEmpty());   // (under half a second: refused)
+            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (src));
+            std::vector<std::vector<float>> o; CHECK (rd != nullptr && audioops::readRange (*rd, 0, n, o) && o.size() == 2);
+            const auto in = o;                                                                                 // (as read back: 24-bit)
+            FixSpec spec; spec.kind = FixSpec::Kind::Denoise; spec.f0 = 0.0; spec.f1 = 0.5 * sr; spec.dn = p;
+            spec.dnProfiles = std::make_shared<const std::vector<denoise::Profile>> (profs.perChannel);
+            audioops::applyFix (o, sr, (long) (1.0 * sr), (long) (3.5 * sr), spec, 0);
+            bool outsideSame = true;
+            for (int c = 0; c < 2; ++c) for (int i = 0; i < n; ++i) if (i < (int) (1.0 * sr) || i >= (int) (3.5 * sr)) outsideSame = outsideSame && o[(size_t) c][(size_t) i] == in[(size_t) c][(size_t) i];
+            CHECK (outsideSame);
+            CHECK (rmsDb (in[0], (size_t) (1.15 * sr), (size_t) (1.45 * sr)) - rmsDb (o[0], (size_t) (1.15 * sr), (size_t) (1.45 * sr)) > 9.0);
+            CHECK (rmsDb (in[1], (size_t) (1.15 * sr), (size_t) (1.45 * sr)) - rmsDb (o[1], (size_t) (1.15 * sr), (size_t) (1.45 * sr)) > 9.0);   // (its own, quieter profile)
+            CHECK (std::abs (rmsDb (in[1], (size_t) (1.6 * sr), (size_t) (2.9 * sr)) - rmsDb (o[1], (size_t) (1.6 * sr), (size_t) (2.9 * sr))) < 0.3);
             dir.deleteRecursively();
         }
         }
@@ -4675,10 +4638,9 @@ int main()
             CHECK (r2[0] > 15.0 && r2[0] < 21.0);                               // two: their mean (18)
         }
     }
-    SECTION ("2.79 spectral denoise: a profile from boxes on the picture, the rest of the spectrum untouched, feathers in pitch and time, pieces of files");
+    SECTION ("2.79 spectral denoise: a profile from boxes on the picture, the rest of the spectrum untouched, feathers in pitch");
     {
         const double sr = 48000.0; const int n = (int) (6.0 * sr);
-        juce::AudioFormatManager fm; fm.registerBasicFormats();
         // 6 s: steady hiss, a steady 60 Hz rumble (below the part that will be denoised), a 1 kHz tone from 2 to 4 s, and a click at 1.1 s (in the room-tone part: taken out with Alt)
         std::vector<float> x ((size_t) n); juce::Random rnd (31);
         for (int i = 0; i < n; ++i)
@@ -4705,14 +4667,9 @@ int main()
         // the feather in pitch: 0 at the drawn edge rising to 1 half an octave above it, 1 everywhere else inside
         auto feathered = prof; denoise::featherProfile (feathered, 0.5);
         CHECK (feathered.weight[(size_t) binOf (100.0)] == 0.0f && feathered.weight[(size_t) binOf (310.0)] < 0.15f && feathered.weight[(size_t) binOf (360.0)] > 0.2f && feathered.weight[(size_t) binOf (360.0)] < 0.9f && feathered.weight[(size_t) binOf (450.0)] == 1.0f && feathered.weight[(size_t) binOf (5000.0)] == 1.0f);
-        // the whole stretch 0.5 - 5.5 s denoised in memory, with 0.2 s feathers in time: outside it bit for bit the input; the 60 Hz rumble (below the
-        // drawn part) untouched; the hiss above it down; the tone kept; the first sample of the stretch still the input (the feather starts at 0)
-        audioops::DenoiseRun run; run.a = (juce::int64) (0.5 * sr); run.b = (juce::int64) (5.5 * sr); run.featherIn = run.featherOut = (juce::int64) (0.2 * sr); run.threads = 2;
-        std::vector<std::vector<float>> y; juce::String err;
-        CHECK (audioops::denoiseTracks ({ x }, sr, { feathered }, {}, p, run, y, {}, err) && err.isEmpty() && y.size() == 1 && y[0].size() == x.size());
-        bool outsideSame = true;
-        for (int i = 0; i < n; ++i) if (i < run.a || i >= run.b) outsideSame = outsideSame && y[0][(size_t) i] == x[(size_t) i];
-        CHECK (outsideSame && y[0][(size_t) run.a] == x[(size_t) run.a]);
+        // the whole 6 s denoised with that profile: the 60 Hz rumble (below the drawn part) untouched; the hiss above it down; the tone kept
+        std::vector<float> y ((size_t) n, 0.0f);
+        denoise::processSegment (feathered, p, {}, x.data(), n, y.data());
         auto toneDb = [&] (const std::vector<float>& v, double hz, double t0, double t1)
         {
             double re = 0, im = 0; const int a0 = (int) (t0 * sr), a1 = (int) (t1 * sr);
@@ -4724,34 +4681,14 @@ int main()
             double e = 0.0; for (double hz = f0; hz < f1; hz += 50.0) { const double d = toneDb (v, hz, t0, t1); e += std::pow (10.0, d / 10.0); }
             return 10.0 * std::log10 (e + 1e-20);
         };
-        CHECK (std::abs (toneDb (y[0], 60.0, 2.5, 3.5) - toneDb (x, 60.0, 2.5, 3.5)) < 0.1);
-        CHECK (std::abs (toneDb (y[0], 1000.0, 2.5, 3.5) - toneDb (x, 1000.0, 2.5, 3.5)) < 1.0);
-        const double hissBefore = bandDb (x, 2000.0, 8000.0, 4.6, 5.2), hissAfter = bandDb (y[0], 2000.0, 8000.0, 4.6, 5.2);
-        std::printf ("  (spectral denoise: hiss 2 - 8 kHz %.1f -> %.1f dB, 60 Hz %.2f -> %.2f dB)\n", hissBefore, hissAfter, toneDb (x, 60.0, 2.5, 3.5), toneDb (y[0], 60.0, 2.5, 3.5));
+        CHECK (std::abs (toneDb (y, 60.0, 2.5, 3.5) - toneDb (x, 60.0, 2.5, 3.5)) < 0.1);
+        CHECK (std::abs (toneDb (y, 1000.0, 2.5, 3.5) - toneDb (x, 1000.0, 2.5, 3.5)) < 1.0);
+        const double hissBefore = bandDb (x, 2000.0, 8000.0, 4.6, 5.2), hissAfter = bandDb (y, 2000.0, 8000.0, 4.6, 5.2);
+        std::printf ("  (spectral denoise: hiss 2 - 8 kHz %.1f -> %.1f dB, 60 Hz %.2f -> %.2f dB)\n", hissBefore, hissAfter, toneDb (x, 60.0, 2.5, 3.5), toneDb (y, 60.0, 2.5, 3.5));
         CHECK (hissAfter < hissBefore - 8.0);
-        // a bin with weight 0 everywhere is a bit-exact pass: a profile that covers nothing above 24 kHz... simpler: weight 0 for all bins -> y == x inside the stretch too
-        { auto none = prof; std::fill (none.weight.begin(), none.weight.end(), 0.0f); std::vector<std::vector<float>> y0;
-          CHECK (audioops::denoiseTracks ({ x }, sr, { none }, {}, p, run, y0, {}, err) && y0[0] == x); }
-        // a piece of a file (an edit's piece and its handles): only [writeFrom, writeTo) is written, the handles copied, the stretch inside denoised
-        {
-            const auto dir = tmp.getChildFile ("denoise2"); dir.deleteRecursively(); dir.createDirectory();
-            std::vector<std::vector<float>> st { x, x };
-            const auto src = dir.getChildFile ("piece.wav"), dst = dir.getChildFile ("piece (denoise).wav");
-            CHECK (audioops::writeWav (src, st, sr));
-            audioops::DenoiseProfiles dp; dp.sampleRate = sr; dp.channels = 2; dp.perChannel = { feathered, feathered };
-            audioops::DenoiseRun pr; pr.writeFrom = (juce::int64) (1.0 * sr); pr.writeTo = (juce::int64) (5.0 * sr); pr.a = (juce::int64) (1.5 * sr); pr.b = (juce::int64) (4.5 * sr); pr.featherIn = pr.featherOut = (juce::int64) (0.1 * sr); pr.threads = 2;
-            CHECK (audioops::denoiseFiles (fm, { src }, { dst }, {}, { dp }, p, pr, {}, err) && err.isEmpty());
-            std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (dst));
-            CHECK (rd != nullptr && rd->numChannels == 2 && rd->lengthInSamples == pr.writeTo - pr.writeFrom);
-            std::vector<std::vector<float>> o; audioops::readRange (*rd, 0, rd->lengthInSamples, o);
-            double dcopy = 0; for (int i = 0; i < (int) (0.5 * sr); ++i) dcopy = juce::jmax (dcopy, (double) std::abs (o[1][(size_t) i] - x[(size_t) (pr.writeFrom + i)]));
-            CHECK (dcopy < 2.0e-7);                                                                       // the handle: a copy (24-bit)
-            std::vector<float> shifted ((size_t) (pr.writeTo - pr.writeFrom)); for (size_t i = 0; i < shifted.size(); ++i) shifted[i] = o[0][i];
-            CHECK (bandDb (shifted, 2000.0, 8000.0, 3.1, 3.4) < bandDb (x, 2000.0, 8000.0, 4.1, 4.4) - 8.0);  // (3.1 s of the piece = 4.1 s of the file, inside the stretch: hiss down)
-            CHECK (std::abs (bandDb (shifted, 2000.0, 8000.0, 3.6, 3.9) - bandDb (x, 2000.0, 8000.0, 4.6, 4.9)) < 0.5);   // (past the stretch: as it was)
-            CHECK (std::abs (toneDb (shifted, 60.0, 1.5, 2.5) - toneDb (x, 60.0, 2.5, 3.5)) < 0.1);           // the rumble below the drawn part: as it was
-            dir.deleteRecursively();
-        }
+        // a profile with weight 0 for every bin is a bit-exact pass (the output is the input plus the change, and there is none)
+        { auto none = prof; std::fill (none.weight.begin(), none.weight.end(), 0.0f); std::vector<float> y0 ((size_t) n, 0.0f);
+          denoise::processSegment (none, p, {}, x.data(), n, y0.data()); CHECK (y0 == x); }
     }
     SECTION ("2.81 denoise as a fix: a box (time and pitch) with the room-tone profile; the room tone kept with the project");
     {
@@ -6650,6 +6587,16 @@ int main()
             auto* bs = back.mixers.front()->stripFor (ta);
             CHECK (bs->lowCut.on.get() && std::abs (bs->lowCut.hz.get() - 120.0f) < 0.01f && bs->lowCut.slope.load() == lowcut::kBrickwall);
             CHECK (m.busFor (p.buses.front().id)->lowCut.hz.get() == lowcut::kDefaultHz && ! m.busFor (p.buses.front().id)->lowCut.on.get());
+            // (2.98) a damaged file's frequency is kept in range, as the panel keeps it
+            std::function<void (juce::var&)> breakHz = [&] (juce::var& v)
+            {
+                if (auto* o = v.getDynamicObject()) { for (auto& pr : o->getProperties()) { juce::var c = pr.value; if (pr.name.toString() == "lowCut" && c.isObject()) c.getDynamicObject()->setProperty ("hz", -5.0); else breakHz (c); } }
+                else if (auto* a = v.getArray()) for (auto& c : *a) breakHz (c);
+            };
+            auto broken = p.toVar(); breakHz (broken);
+            Project back3; CHECK (back3.fromVar (broken));
+            auto* bs3 = back3.mixers.front()->stripFor (ta);
+            CHECK (std::isfinite (bs3->lowCut.hz.get()) && bs3->lowCut.hz.get() >= lowcut::kMinHz);
         }
     }
 
@@ -7546,6 +7493,10 @@ int main()
         auto gap = [&] { const auto at = peaks(); return at.size() == 2 ? at[1] - at[0] : at.size() == 1 ? 0 : -1; };
         q.alignActive = kid; e.rebuildPlan(); CHECK (gap() == 48);
         q.alignActive = gid; e.rebuildPlan(); CHECK (gap() == 96);
+        // (2.98) the spot's automation is read that much earlier too: the alignment delay comes before every control of the track (its lanes landed early)
+        CHECK (m.stripFor (tb)->autoLatIn.load() == 96 && m.stripFor (tb)->autoLatOut.load() == 96 && m.stripFor (tb)->slots[0].autoLat.load() == 96);
+        CHECK (m.stripFor (tb)->sends.find (ob) != nullptr && m.stripFor (tb)->sends.find (ob)->autoLat.load() == 96);
+        CHECK (m.stripFor (ta)->autoLatOut.load() == 0 && m.busFor (ob)->autoLatIn.load() == 0);                // (the paths themselves are not lined up again: on purpose)
         CHECK (std::abs (q.alignSamplesFor (*q.findTrack (tb), 48000.0) - 96.0) < 1.0e-9 && q.alignSamplesFor (*q.findTrack (ta), 48000.0) == 0.0);
         q.alignEnabled = false; e.rebuildPlan(); CHECK (gap() == 0);                                         // the A / B switch: off
         q.alignEnabled = true; q.alignSets[gid].tracks[tb.toString()].on = false; e.rebuildPlan(); CHECK (gap() == 0);
@@ -7774,7 +7725,7 @@ int main()
         }
     }
 
-    SECTION ("2.94 the Stream Deck + XL: the commands, the preamp keys, gain, pan, monitor, the mixers' main outputs, the stage levels");
+    SECTION ("2.94 the Stream Deck + XL: the commands, the preamp keys, gain, monitor, the mixers' main outputs, the stage levels");
     {
         namespace desk = remote::desk;
         // the new commands are understood, anything else is not
@@ -7783,7 +7734,7 @@ int main()
         CHECK (! remote::isWindowAct ("format") && remote::isWindowAct ("slipr") && remote::isWindowAct ("feedback"));
         { auto c = remote::parseCommand ("{\"cmd\":\"gain\",\"input\":3,\"delta\":-0.5}"); CHECK (c.name == "gain" && c.input == 3 && std::abs (c.delta + 0.5) < 1e-9); }
         { auto c = remote::parseCommand ("{\"cmd\":\"preamp\",\"input\":7,\"what\":\"V48\"}"); CHECK (c.name == "preamp" && c.input == 7 && c.what == "v48"); }
-        { auto c = remote::parseCommand ("{\"cmd\":\"pan\",\"input\":1,\"side\":2,\"delta\":0.02,\"centre\":true}"); CHECK (c.name == "pan" && c.side == 2 && c.centre && std::abs (c.delta - 0.02) < 1e-9); }
+        CHECK (remote::parseCommand ("{\"cmd\":\"pan\",\"input\":1,\"delta\":0.02}").name.isEmpty());          // (2.98: no pan from the Stream Deck any more)
         { auto c = remote::parseCommand ("{\"cmd\":\"desk\",\"on\":false}"); CHECK (c.name == "desk" && ! c.on); }
         CHECK (remote::parseCommand ("{\"cmd\":\"desk\"}").on && remote::parseCommand ("{\"cmd\":\"monitor\"}").input == -1);
         CHECK (remote::parseCommand ("{\"cmd\":\"gain\",\"input\":0,\"delta\":1e9}").delta <= 100.0);
@@ -7802,7 +7753,7 @@ int main()
         };
         Project p; p.setInputCount (6); p.setOutputCount (4); p.tracks.clear(); p.buses.clear();
         auto fake = std::make_shared<FakeDriver>(); p.preampDriver = fake;
-        const auto monoId = p.addTrack ("Vln", TrackFormat::Mono, 0).id;
+        p.addTrack ("Vln", TrackFormat::Mono, 0);
         const auto stId = p.addTrack ("Pair", TrackFormat::Stereo, 2).id;
         p.addBus ("Out", true);
         for (int i = 1; i <= 5; ++i) p.addMixer ("Cue " + juce::String (i));
@@ -7845,16 +7796,6 @@ int main()
         CHECK (desk::monitorCycle (p, 3) == 1 && p.findTrack (stId)->monitor() == Monitor::Session);      // (input 3 is the right channel of the stereo track)
         CHECK (desk::monitorCycle (p, 4) == -1 && desk::monitorCycle (p, 99) == -1);
 
-        // pan: a mono track has one pan, a stereo track a left and a right; centre puts them back
-        auto& mx = *p.mixers.front();
-        CHECK (desk::panStep (p, mx, 0, 0, 0.02f, false) && desk::panStep (p, mx, 0, 0, 0.02f, false) && std::abs (mx.stripFor (monoId)->pan.get() - 0.04f) < 1e-5f);
-        CHECK (desk::panStep (p, mx, 0, 0, 5.0f, false) && mx.stripFor (monoId)->pan.get() == 1.0f);
-        CHECK (desk::panStep (p, mx, 0, 0, 0.0f, true) && mx.stripFor (monoId)->pan.get() == 0.0f);
-        CHECK (desk::panStep (p, mx, 2, 1, 0.1f, false) && std::abs (mx.stripFor (stId)->panL.get() + 0.9f) < 1e-5f && mx.stripFor (stId)->panR.get() == 1.0f);       // side 1: only the left channel
-        CHECK (desk::panStep (p, mx, 3, 2, -0.25f, false) && std::abs (mx.stripFor (stId)->panR.get() - 0.75f) < 1e-5f && std::abs (mx.stripFor (stId)->panL.get() + 0.9f) < 1e-5f);
-        CHECK (desk::panStep (p, mx, 2, 1, 0.0f, true) && mx.stripFor (stId)->panL.get() == -1.0f && mx.stripFor (stId)->panR.get() == 1.0f);
-        CHECK (! desk::panStep (p, mx, 4, 0, 0.1f, false));                              // no track on input 4
-
         // the mixers' main outputs: the first Ext Bus ticked as MAIN, else the first
         const auto busId = p.buses.front().id;
         for (auto& m : p.mixers) CHECK (desk::mainBusOf (p, *m) != nullptr);
@@ -7879,24 +7820,24 @@ int main()
 
         // what is drawn: JSON with short numbers
         p.inputs[0].name = "Violin 1"; p.inputs[0].preamp.gainDb = 23.5f; p.inputs[0].preamp.phantom = true;
-        mx.stripFor (monoId)->pan.set (0.12f);
-        const auto inputs = desk::inputsToVar (p, &mx);
+        const auto inputs = desk::inputsToVar (p);
         CHECK (inputs.getArray() != nullptr && inputs.getArray()->size() == 6);
         { auto i0 = (*inputs.getArray())[0];
           CHECK (i0["n"].toString() == "Violin 1" && (bool) i0["pre"] && std::abs ((double) i0["g"] - 23.5) < 1e-9 && (bool) i0["v48"] && (bool) i0["h48"] && (int) i0["mon"] == 0 && ! (bool) i0["tk"]);
-          CHECK (i0["pan"].getArray() != nullptr && i0["pan"].getArray()->size() == 1); }
-        { auto i2 = (*inputs.getArray())[2]; CHECK (i2["pan"].getArray() != nullptr && i2["pan"].getArray()->size() == 2 && (bool) i2["stp"]); }
-        { auto i5 = (*inputs.getArray())[5]; CHECK (! (bool) i5["pre"] && ! i5.hasProperty ("g") && ! i5.hasProperty ("pan")); }
+          CHECK (! i0.hasProperty ("pan")); }
+        { auto i2 = (*inputs.getArray())[2]; CHECK ((bool) i2["stp"]); }
+        { auto i5 = (*inputs.getArray())[5]; CHECK (! (bool) i5["pre"] && ! i5.hasProperty ("g")); }
         { auto i3 = (*inputs.getArray())[3]; CHECK ((bool) i3["lo"] && ! (bool) i3["h48"] && ! (bool) i3["hpad"]); }
-        p.crMicInputs = { 0 }; CHECK ((bool) (*desk::inputsToVar (p, nullptr).getArray())[0]["tk"]);
-        const auto text = juce::JSON::toString (inputs, true);
-        CHECK (! text.contains ("0.119999") && text.contains ("0.12"));
+        p.crMicInputs = { 0 }; CHECK ((bool) (*desk::inputsToVar (p).getArray())[0]["tk"]);
+        p.inputs[0].preamp.gainDb = 23.12f;
+        const auto text = juce::JSON::toString (desk::inputsToVar (p), true);
+        CHECK (! text.contains ("23.119999") && text.contains ("23.12"));
         const auto mixes = desk::mixersToVar (p);
         CHECK (mixes.getArray() != nullptr && mixes.getArray()->size() == 6 && (bool) (*mixes.getArray())[0]["has"] && (*mixes.getArray())[0]["n"].toString() == p.mixers[0]->name);
         { const auto stage = desk::stageToVar (p); CHECK (stage["mics"].getArray() != nullptr && stage["mics"].getArray()->size() == 1 && (int) (*stage["mics"].getArray())[0]["i"] == 0 && ! (bool) stage["ready"]); }
         CHECK (desk::peakDb (0.0f) == -100 && desk::peakDb (1.0f) == 0 && desk::peakDb (0.5f) == -6 && desk::peakDb (100.0f) == 6);
         Project none;                                                                   // (no mixers, no inputs: nothing to draw, nothing to move)
-        CHECK (desk::mixersToVar (none).getArray()->size() == 6); CHECK (! (bool) (*desk::mixersToVar (none).getArray())[0]["has"]); CHECK (! desk::mixOutStep (none, 0, 1.0f)); CHECK (desk::inputsToVar (none, nullptr).getArray()->size() == (int) none.inputs.size());
+        CHECK (desk::mixersToVar (none).getArray()->size() == 6); CHECK (! (bool) (*desk::mixersToVar (none).getArray())[0]["has"]); CHECK (! desk::mixOutStep (none, 0, 1.0f)); CHECK (desk::inputsToVar (none).getArray()->size() == (int) none.inputs.size());
     }
 
     SECTION ("2.90 the selection box in the spectrogram windows: a side changes only its own axis, only a real corner changes both");
@@ -8109,6 +8050,118 @@ int main()
     }
 
     tmp.deleteRecursively();
+    SECTION ("2.98 the sweep: lane rows survive Undo, the room-tone mark is an undo step, a failed Open keeps the open project, a new project forgets the layouts");
+    {
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear();
+        const auto tA = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        const auto twId = q.takeWindows.front()->id;
+        q.addEdit ("Edit 1", twId);
+        auto* e0 = q.editForWindow (twId);
+        CHECK (e0 != nullptr);
+        if (e0 != nullptr)
+        {
+            q.undoReset();
+            CHECK (e0->addLaneRow (tA, true, true) && e0->addLaneRow (tA, true, true) && e0->laneRowCount (tA) == 3);
+            e0->name = "Renamed for the undo"; q.changed(); q.undoTick (false, true);
+            CHECK (q.undo());
+            e0 = q.editForWindow (twId);
+            CHECK (e0 != nullptr && e0->name != "Renamed for the undo" && e0->laneRowCount (tA) == 3);       // (Undo used to put every node back to one row)
+        }
+        // the room-tone mark is an undo step (and so it is saved: the window's file hash moves)
+        auto* tw0 = q.findTakeWindow (twId);
+        TakeGroup g; g.id = juce::Uuid(); g.number = 1; tw0->groups.push_back (g);
+        q.undoReset();
+        const auto saveBefore = Project::saveHash (*tw0);
+        tw0->groups.back().roomTone = true; tw0->groups.back().roomToneIn = 0.5; q.changed(); q.undoTick (false, true);
+        CHECK (Project::saveHash (*tw0) != saveBefore);
+        CHECK (q.undo() && ! tw0->groups.back().roomTone && tw0->groups.back().roomToneIn < 0.0);
+        CHECK (q.redo() && tw0->groups.back().roomTone && std::abs (tw0->groups.back().roomToneIn - 0.5) < 1e-9);
+
+        // a project file that cannot be read leaves the open project's window files alone (it used to save them again as "Piece 1 (2).fmtake" ...)
+        {
+            auto root = tmp.getChildFile ("failed-open"); root.deleteRecursively(); root.createDirectory();
+            juce::String err;
+            Project a; a.addEdit ("Edit 1", a.takeWindows.front()->id);
+            CHECK (a.saveAs (root.getChildFile ("A/A.fermata"), err));
+            const auto bad = root.getChildFile ("broken.fermata"); bad.replaceWithText ("{ not json");
+            CHECK (! a.load (bad, err));
+            a.changed(); CHECK (a.save (err));
+            int doubled = 0; for (auto& f : root.getChildFile ("A").findChildFiles (juce::File::findFiles, true, "*.fm*")) if (f.getFileName().contains ("(2)")) ++doubled;
+            CHECK (doubled == 0);
+        }
+        // a new project does not inherit the saved Display Organiser layouts of the one before
+        {
+            Project b; LayoutDef l; l.name = "Mine"; b.layouts.push_back (l);
+            b.createDefaultDesign();
+            CHECK (b.layouts.empty());
+        }
+    }
+
+    SECTION ("2.98 the sweep: De-click on a short area at 96 and 192 kHz, and its report; a long Denoise box in pieces");
+    {
+        // a short area (30 ms or less) round an obvious click: mended at every rate (at 96 kHz an area of over 1500 samples used to be handed to the
+        // prediction, which refused it, so nothing at all was done), and the report says so (it used to keep the counts of the De-click before)
+        for (double sr : { 48000.0, 96000.0, 192000.0 })
+            for (double ms : { 10.0, 20.0, 29.0 })
+            {
+                std::vector<float> x ((size_t) sr);
+                for (size_t i = 0; i < x.size(); ++i) x[i] = (float) (0.02 * std::sin (2.0 * 3.14159265358979 * 220.0 * (double) i / sr));
+                const auto clean = x;
+                const long a = (long) (0.5 * sr), n = (long) (ms * 1.0e-3 * sr);
+                for (long i = a + n / 3; i < a + n / 3 + 20; ++i) x[(size_t) i] += 0.3f;
+                SpectralRepair::lastDeclickReport() = SpectralRepair::DeclickReport { 7, 7, 7, 7 };
+                const int r = SpectralRepair::declick (x, a, a + n, 8.0, nullptr, sr, 0);
+                double left = 0.0; for (size_t i = 0; i < x.size(); ++i) left = juce::jmax (left, (double) std::abs (x[i] - clean[i]));
+                const auto rep = SpectralRepair::lastDeclickReport();
+                CHECK (r >= 1 && left < 0.05 && rep.mended + rep.linesMended >= 1 && rep.linesLeft == 0 && rep.mended + rep.linesMended <= r);
+                if (! (r >= 1 && left < 0.05)) std::printf ("  (%.0f Hz, %.0f ms: declick returned %d, %.3f of the click left)\n", sr, ms, r, left);
+            }
+        // a Denoise box over 22 s (longer than one piece: 15 s, with 6 s before and 2 s after): done in pieces it comes out as in one go, the hiss down
+        // all through it (before, across and after the join of the pieces), outside the box bit for bit
+        {
+            const double sr = 48000.0; const int n = (int) (30.0 * sr);
+            std::vector<float> x ((size_t) n); juce::Random rnd (98);
+            for (int i = 0; i < n; ++i) { const float t = (float) i / (float) sr; x[(size_t) i] = 0.003f * (rnd.nextFloat() * 2.0f - 1.0f) + (t > 10.0f && t < 20.0f ? 0.05f * std::sin (2.0f * 3.14159265f * 1000.0f * t) : 0.0f); }
+            denoise::Params p;
+            const auto prof = denoise::learnProfile ({ std::vector<float> (x.begin(), x.begin() + (int) (3.0 * sr)) }, sr, p);
+            FixSpec spec; spec.kind = FixSpec::Kind::Denoise; spec.f0 = 300.0; spec.f1 = 12000.0; spec.dn = p;
+            spec.dnProfiles = std::make_shared<const std::vector<denoise::Profile>> (std::vector<denoise::Profile> { prof });
+            const long a = (long) (4.0 * sr), b = (long) (26.0 * sr);
+            std::vector<std::vector<float>> ch { x };
+            audioops::applyFix (ch, sr, a, b, spec, 0);
+            // in one go, as before 2.98: the same limited profile over the whole stretch with its context ([0, 28 s)), the same 100 ms fades
+            auto lim = prof; lim.weight.assign (lim.psd.size(), 0.0f);
+            for (size_t k = 0; k < lim.weight.size(); ++k) { const double f = (double) k * sr / lim.fftSize; if (f >= spec.f0 && f <= spec.f1) lim.weight[k] = 1.0f; }
+            denoise::featherProfile (lim, 0.25);
+            const long c1 = b + (long) (2.0 * sr);
+            std::vector<float> one ((size_t) c1, 0.0f); denoise::processSegment (lim, p, {}, x.data(), c1, one.data());
+            const long xf = (long) (0.1 * sr);
+            double se = 0.0, sd = 0.0; bool outsideSame = true;
+            for (long i = 0; i < n; ++i)
+            {
+                if (i < a || i >= b) { outsideSame = outsideSame && ch[0][(size_t) i] == x[(size_t) i]; continue; }
+                double w = juce::jmin (1.0, (double) (i - a) / (double) xf, (double) (b - 1 - i) / (double) xf); w = 0.5 - 0.5 * std::cos (w * 3.14159265358979);
+                const double ref = (double) x[(size_t) i] + w * ((double) one[(size_t) i] - (double) x[(size_t) i]);
+                se += ref * ref; sd += (ch[0][(size_t) i] - ref) * (ch[0][(size_t) i] - ref);
+            }
+            const double snr = 10.0 * std::log10 (se / juce::jmax (sd, 1.0e-30));
+            std::printf ("  (a 22 s Denoise box in pieces against one go: %.1f dB apart)\n", snr);
+            CHECK (outsideSame && snr > 60.0);
+            auto hissDb = [&] (const std::vector<float>& v, double t0, double t1)                    // the energy between 2 and 8 kHz (a coarse DFT at 50 Hz steps)
+            {
+                double e = 0.0; const int a0 = (int) (t0 * sr), a1 = (int) (t1 * sr);
+                for (double hz = 2000.0; hz < 8000.0; hz += 50.0)
+                {
+                    double re = 0, im = 0;
+                    for (int i = a0; i < a1; ++i) { const double ph = 2.0 * 3.14159265358979 * hz * i / sr; re += v[(size_t) i] * std::cos (ph); im -= v[(size_t) i] * std::sin (ph); }
+                    e += (re * re + im * im) / ((double) (a1 - a0) * (a1 - a0));
+                }
+                return 10.0 * std::log10 (e + 1.0e-30);
+            };
+            for (double t : { 5.0, 14.6, 15.1, 24.0 }) CHECK (hissDb (ch[0], t, t + 0.3) < hissDb (x, t, t + 0.3) - 8.0);
+        }
+    }
+
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;
 }

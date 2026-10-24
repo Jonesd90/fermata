@@ -46,7 +46,7 @@ inline void saveThumbnail (WaveThumb& t, const juce::File& folder, const juce::F
         juce::FileOutputStream out (tmp.getFile());
         if (! out.openedOk()) return;
         writeHeader (out, kMagicThumb, audio);
-        t.saveTo (out);
+        if (! t.saveTo (out)) return;                             // (nothing is written: the temporary file goes)
     }
     tmp.overwriteTargetFileWithTemporary();
 }

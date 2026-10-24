@@ -407,7 +407,7 @@ inline Analysis analyse (const std::vector<TrackIn>& tracks, juce::int64 length,
             for (auto& g : got) g.pk = detail::peakIn (curves[g.curve], -minLead, maxLag, maxLag);
             // the main channels of one side should agree (one may have found the instrument, another something else the spot hears): the time most
             // of them agree on wins (by clarity), and the others are looked for again near it
-            const int win = juce::jmax (4, (int) std::lround (4.0e-3 * sr));
+            const int agree = juce::jmax (4, (int) std::lround (4.0e-3 * sr));
             for (int group : { -1, 0, 1 })
             {
                 auto inGroup = [group] (const Got& g) { return group < 0 ? g.side < 0.0f : group > 0 ? g.side > 0.0f : g.side == 0.0f; };
@@ -416,13 +416,13 @@ inline Analysis analyse (const std::vector<TrackIn>& tracks, juce::int64 length,
                     if (inGroup (a))
                     {
                         double sc = 0.0;
-                        for (auto& b : got) if (inGroup (b) && std::abs (b.pk.lag - a.pk.lag) <= win) sc += b.pk.sharpness;
+                        for (auto& b : got) if (inGroup (b) && std::abs (b.pk.lag - a.pk.lag) <= agree) sc += b.pk.sharpness;
                         if (sc > bestScore) { bestScore = sc; tau = a.pk.lag; }
                     }
                 if (bestScore < 0.0) continue;
                 for (auto& b : got)
-                    if (inGroup (b) && std::abs (b.pk.lag - tau) > win)
-                        b.pk = detail::peakIn (curves[b.curve], juce::jmax (-minLead, (int) std::floor (tau) - win), (int) std::ceil (tau) + win, maxLag);
+                    if (inGroup (b) && std::abs (b.pk.lag - tau) > agree)
+                        b.pk = detail::peakIn (curves[b.curve], juce::jmax (-minLead, (int) std::floor (tau) - agree), (int) std::ceil (tau) + agree, maxLag);
             }
             // a "spot" that is really farther away than the main pair: on most main channels the music reaches the main pair first, by far the
             // biggest peak, and nothing of note on the spot's side

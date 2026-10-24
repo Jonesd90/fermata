@@ -17,10 +17,10 @@ class PlaybackSession;
     drawn under a note lands on that note. Without it, a fader behind a 50 ms look-ahead moved 50 ms early. */
 struct AutomationPlan
 {
-    /** Either 'target' (fader, pan, send level) or 'slot' + 'paramIndex' (a plug-in parameter, sent when it changes, and again in each of the first 'refresh' blocks of
-        a play, so a plug-in that missed or ignored the first one (it was busy, or still settling as the transport started) is still told where the lane stands). */
     /** A channel a VCA lane controls: it gets the VCA's value read at its OWN lateness (channels under one VCA can be late by different amounts). */
     struct VcaMember { Param* db = nullptr; std::atomic<juce::uint32>* mask = nullptr; const std::atomic<int>* lat = nullptr; };
+    /** Either 'target' (fader, pan, send level) or 'slot' + 'paramIndex' (a plug-in parameter, sent when it changes, and again in each of the first 'refresh' blocks of
+        a play, so a plug-in that missed or ignored the first one (it was busy, or still settling as the transport started) is still told where the lane stands). */
     struct Item { Param* target = nullptr; InsertSlot* slot = nullptr; int paramIndex = 0; int steps = 0; mutable float lastSent = -1.0f; mutable int refresh = 24; AutoLane lane;    // steps: the plug-in parameter is a switch / selector with this many positions (0 = smooth)
                   const std::atomic<int>* lat = nullptr;
                   SendState* send = nullptr;                    // a send-level lane: its send (held in the plan while this plays: begin / end)
@@ -35,9 +35,9 @@ struct AutomationPlan
         True if any send was held (rebuild the plan). */
     bool end() const noexcept;
 };
-/** Builds the plan for an edit (null when automation is off or there is nothing to do). Lanes whose track or mixer is gone are left out;
-    a Pan lane only drives mono tracks. */
-/** The automation of an Edit, aimed at the mixers' controls. A lane that names no mixer drives the Edit's own mixer (onProcessingMixer: the processing mixer instead). */
+/** Builds the automation plan of an Edit, aimed at the mixers' controls: a lane that names no mixer drives the Edit's own mixer (onProcessingMixer: the processing
+    mixer instead). Null when the Edit has no automation, or nothing in it can play (lanes whose track or mixer is gone are left out; a Pan lane only drives
+    mono tracks). Whether the lanes are shown makes no difference: what is written plays. */
 std::shared_ptr<AutomationPlan> automationPlanFor (Project&, const EditDef&, bool onProcessingMixer = false, const juce::Uuid& unassignedMixer = juce::Uuid());
 
 /** One stretch of one file placed on the playback timeline. */
@@ -139,7 +139,7 @@ public:
     /** Closes the readers of the segments that end at or before 'pos' (they are not needed again unless the play loops). */
     static void releaseReadersBefore (std::vector<std::unique_ptr<juce::AudioFormatReader>>& readers, const std::vector<PlaySegment>& segs, juce::int64 pos);
     /** Renders with this session's own readers (the tests). */
-    void renderNow (juce::int64 from, int n, std::vector<juce::AudioBuffer<float>>& out, juce::AudioBuffer<float>& scratch) { renderSegments (readers, segments, from, n, out, scratch, &opener); }
+    void renderNow (juce::int64 from, int n, std::vector<juce::AudioBuffer<float>>& out, juce::AudioBuffer<float>& work) { renderSegments (readers, segments, from, n, out, work, &opener); }
     std::vector<std::unique_ptr<juce::AudioFormatReader>>& getReaders() { return readers; }
     int openReaderCount() const { int n = 0; for (auto& r : readers) if (r != nullptr) ++n; return n; }
     /** The read buffer of each open file: 1 MB, less when many are open at once (96 MB between them all), never under 32 KB. */
