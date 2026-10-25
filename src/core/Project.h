@@ -98,7 +98,7 @@ struct PitchPipeDef
     int    lowestC = 48;                  // the keyboard's lowest key (MIDI: 48 = C3); it shows two octaves from there
     float  tone = 0.35f;                  // 0 = soft ... 1 = bright (a low-pass that follows each note's pitch)
     bool   keyboard = false;              // the Keyboard sound tick box: a simple keyboard note instead of the reed
-    bool   toTalkback = false;            // its To talkback button: also to the talkback pair, through the stage speaker mixer's Click / Pipe level (3.1.0)
+    bool   toTalkback = false;            // its To talkback button: also to the talkback pair, at the stage speaker mixer's Pitch pipe level (3.1.0)
 };
 
 /** The click (its window, from the menu bar): the tempo, the bar, the sound and where it goes. Switched on and off by hand (never saved as on). */
@@ -112,7 +112,7 @@ struct ClickDef
     bool   quaverTicks = false;           // a very quiet hi-hat on every quaver, whatever the sound
     float  tickDb = -20.0f;               // how far below the beat those ticks sit
     std::vector<int> outputs;
-    bool   toTalkback = false;            // its To talkback button: also to the talkback pair, through the stage speaker mixer's Click / Pipe level (3.1.0)
+    bool   toTalkback = false;            // its To talkback button: also to the talkback pair, at the stage speaker mixer's Click level (3.1.0)
 };
 
 /** An Int Bus (fed by audio tracks / other Int Buses, goes to tracks and buses) or an Ext Bus
@@ -153,7 +153,7 @@ public:
     /** The stage speaker mixer (main window, top right): what the TB pair carries. Indexed by driver input (grown as needed); 0 dB and centre = the old behaviour. */
     std::vector<float> stageGainDb, stagePan;
     float stagePlaybackDb = 0.0f, stageOutputDb = 0.0f;
-    float stageAuxDb = 0.0f;       // the Click / Pipe box: the click and the pitch pipe, when their To talkback button is on (3.1.0)
+    float stageClickDb = 0.0f, stagePipeDb = 0.0f;     // the Click and Pitch pipe boxes: those two, when their To talkback button is on (3.1.0; one box each since 3.1.1)
     float stageGainOf (int input) const { return input >= 0 && input < (int) stageGainDb.size() ? stageGainDb[(size_t) input] : 0.0f; }
     float stagePanOf (int input) const  { return input >= 0 && input < (int) stagePan.size() ? stagePan[(size_t) input] : 0.0f; }
     bool isCrMic (int input) const { return std::find (crMicInputs.begin(), crMicInputs.end(), input) != crMicInputs.end(); }

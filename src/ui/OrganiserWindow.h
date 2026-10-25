@@ -91,6 +91,7 @@ private:
     void paintListBoxItem (int row, juce::Graphics&, int w, int h, bool selected) override;
     void listBoxItemClicked (int row, const juce::MouseEvent&) override;
     void listBoxItemDoubleClicked (int row, const juce::MouseEvent&) override;
+    void returnKeyPressed (int) override { arrange(); }        // Enter with the keyboard in the list: Arrange (3.0.1: the list used to swallow it)
     void selectedRowsChanged (int) override;
     void timerCallback() override;
     void changeListenerCallback (juce::ChangeBroadcaster*) override;

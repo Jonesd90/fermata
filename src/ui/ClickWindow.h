@@ -89,7 +89,7 @@ public:
         addAndMakeVisible (soundInfo);
 
         addAndMakeVisible (outputs);
-        setUpTalkbackButton (tbButton, "the click");
+        setUpTalkbackButton (tbButton, "the click", "Click");
         tbButton.setToggleState (def().toTalkback, juce::dontSendNotification);
         tbButton.onClick = [this]
         {
@@ -116,7 +116,7 @@ public:
                       "Quavers: tick the box for a very quiet hi-hat on every quaver (eighth note), whichever sound you chose - 8 to the bar in 4/4. The slider "
                       "sets how far below the beat it sits.\n\n"
                       "To talkback (beside Plays to): the click also goes to the talkback speakers, with the talkback mic and Playback. Its level there is the "
-                      "Click/Pipe box at the top right of the main window.");
+                      "Click box at the top right of the main window.");
         addAndMakeVisible (info);
         update();
         startTimerHz (30);

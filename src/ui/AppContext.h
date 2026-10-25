@@ -155,7 +155,7 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     void remoteArmToggle();
     void remoteWaveColour() { setWaveColour (! waveColour); }
     /** The levels of the stage speaker panel were changed from outside (the Stream Deck): the engine takes them. */
-    void applyStageMix() { engine.setStageMix (project.stageGainDb, project.stagePan, project.stagePlaybackDb, project.stageOutputDb, project.stageAuxDb); }
+    void applyStageMix() { engine.setStageMix (project.stageGainDb, project.stagePan, project.stagePlaybackDb, project.stageOutputDb, project.stageClickDb, project.stagePipeDb); }
     // ---- the control surface (an Avid S1 or any other Mackie Control surface, over MIDI): see Surface.h. Owned by the application. ----
     SurfaceController* surface = nullptr;
     /** The mixer whose window is in front, or was in front most recently (the first mixer when none has been opened yet); null only when there are no mixers

@@ -988,8 +988,7 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
             const float target = (crOn.load (std::memory_order_relaxed) && anySel) ? 1.0f : 0.0f;
             const float g0 = crGain;
             const float pbT = stagePb.load (std::memory_order_relaxed), outT = stageOut.load (std::memory_order_relaxed);
-            const float auxT = stageAux.load (std::memory_order_relaxed);
-            const float* auxMix = aux.talkbackMix (numSamples);               // the click / pitch pipe whose To talkback button is on (mono), or nullptr
+            const float* auxMix = aux.talkbackMix (numSamples);               // the click / pitch pipe whose To talkback button is on, at their levels (mono), or nullptr
             const float invN = 1.0f / (float) juce::jmax (1, numSamples);
             for (int o = 0; o < numOut && o < kMaxInputs; ++o)
             {
@@ -1010,8 +1009,8 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
                 }
                 if (auxMix != nullptr)                                           // the click and the pitch pipe (made here, never a microphone): the same on both sides
                 {
-                    if (mask & 1) addRamp (auxMix, stagePrevAux, auxT);
-                    if (mask & 2) addRamp (auxMix, stagePrevAux, auxT);
+                    if (mask & 1) juce::FloatVectorOperations::add (L, auxMix, numSamples);
+                    if (mask & 2) juce::FloatVectorOperations::add (L, auxMix, numSamples);
                 }
                 if (target > 0.0f || crGain > 0.0f)
                     for (int ci = 0; ci < numIn && ci < kMaxInputs; ++ci)        // every selected input is added (the fade is the same for all)
@@ -1034,7 +1033,7 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
                 }
             }
             for (int ci = 0; ci < kMaxInputs; ++ci) { stagePrevL[ci] = stageL[(size_t) ci].load (std::memory_order_relaxed); stagePrevR[ci] = stageR[(size_t) ci].load (std::memory_order_relaxed); }
-            stagePrevPb = pbT; stagePrevAux = auxT; stagePrevOut = outT;
+            stagePrevPb = pbT; stagePrevOut = outT;
             crGain = target;
         }
         else crGain = 0.0f;

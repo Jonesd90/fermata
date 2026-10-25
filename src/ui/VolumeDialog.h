@@ -166,7 +166,7 @@ inline void showVolumeChange (AppContext& app, const juce::Uuid& editId, const j
     holder->w = o.launchAsync();
 }
 
-/** A volume change over a stretch of time (the area between marks 1 and 2) for the tracks that are marked (all of them, or just those chosen with Alt + drag).
+/** A volume change over a stretch of time (the area between marks 1 and 2) for the tracks that are marked (all of them, or just those chosen with Ctrl + Alt + drag).
     Each track has a fader from +30 dB (top) through 0 (no change, middle) down to -inf (bottom). The level glides to the new value over the fade time at the start of the area and
     glides back to where it was at the end of it. */
 class RangeVolumePanel : public juce::Component

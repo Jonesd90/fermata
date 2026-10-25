@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.1.1
+**The click and the pitch pipe have a talkback dial each.** The Click/Pipe box at the top right of the main window is now two boxes, **Click** and **Pitch pipe**, between Playback and Output. Each sets that sound's level in the talkback speakers, independently. A project saved with 3.1.0's single box gives its level to both.
+
 ## 3.1.0
 **The click and the pitch pipe can go to the talkback speakers.**
 - **To talkback**, a new button beside Plays to in the Click and Pitch pipe windows. Lit (orange, like the TB keys), the sound also goes to the talkback output: the same TB output the talkback mic and Playback go to. Click it again and it stops. It has nothing to do with Plays to, which carries on as before.

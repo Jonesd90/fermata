@@ -7075,7 +7075,7 @@ int main()
         CHECK (e.auxSounds().clickGoesTo (3) && ! e.auxSounds().clickGoesTo (0) && e.auxSounds().pipeGoesTo (2));
     }
 
-    SECTION ("3.1.0 To talkback: the click and the pitch pipe reach the talkback pair only with their button on, through the Click / Pipe box and the Output fader");
+    SECTION ("3.1.0 To talkback: the click and the pitch pipe reach the talkback pair only with their button on, each through its own box (3.1.1) and the Output fader");
     {
         Project q;
         q.setInputCount (2); q.setOutputCount (4);
@@ -7105,10 +7105,12 @@ int main()
         aux.setClickToTalkback (true);
         const auto on = peaks (window);
         CHECK (on[2] > 0.1f && std::abs (on[2] - on[3]) < 1e-6f && std::abs (on[0] - off[0]) < 1e-4f);   // on: both sides of the pair; Plays to unchanged
-        CHECK (std::abs (on[2] - on[0]) < 1e-4f);                               // at 0 dB in the Click / Pipe box: the level its window gives it
+        CHECK (std::abs (on[2] - on[0]) < 1e-4f);                               // at 0 dB in the Click box: the level its window gives it
         e.setStageMix ({}, {}, 0.0f, 0.0f, -6.0f);
         const auto half = peaks (window);
-        CHECK (half[2] > on[2] * 0.45f && half[2] < on[2] * 0.56f && std::abs (half[0] - on[0]) < 1e-4f);   // the Click / Pipe box: -6 dB is about half, in the talkback pair only
+        CHECK (half[2] > on[2] * 0.45f && half[2] < on[2] * 0.56f && std::abs (half[0] - on[0]) < 1e-4f);   // the Click box: -6 dB is about half, in the talkback pair only
+        e.setStageMix ({}, {}, 0.0f, 0.0f, 0.0f, -60.0f);
+        CHECK (std::abs (peaks (window)[2] - on[2]) < 1e-4f);                   // the Pitch pipe box does not touch the click
         e.setStageMix ({}, {}, 0.0f, -60.0f, 0.0f);
         CHECK (peaks (window)[2] < 1e-6f);                                      // the Output fader comes after it
         e.setStageMix ({}, {}, 0.0f, 0.0f, -60.0f);
@@ -7122,7 +7124,13 @@ int main()
         aux.pipe.setSlot (0, 261.63, true);
         { const auto p0 = peaks (40); CHECK (p0[0] == 0.0f && p0[2] == 0.0f); }
         aux.setPipeToTalkback (true);
-        { const auto p1 = peaks (40); CHECK (p1[2] > 0.01f && p1[3] > 0.01f && p1[0] == 0.0f && p1[1] == 0.0f); }
+        const auto p1 = peaks (40);
+        CHECK (p1[2] > 0.01f && p1[3] > 0.01f && p1[0] == 0.0f && p1[1] == 0.0f);
+        e.setStageMix ({}, {}, 0.0f, 0.0f, -60.0f, 0.0f);
+        { const auto p2 = peaks (40); CHECK (p2[2] > p1[2] * 0.8f); }          // the Click box does not touch the pitch pipe (a held note: about the same peak)
+        e.setStageMix ({}, {}, 0.0f, 0.0f, 0.0f, -60.0f);
+        CHECK (peaks (40)[2] < 1e-6f);                                          // its own box all the way down: off in the talkback speakers
+        e.setStageMix ({}, {}, 0.0f, 0.0f, 0.0f, 0.0f);
         // switching the button on fades the talkback copy in over one block, sample by sample (no click): with Plays to on output 0 as well, output 0 is the
         // pipe itself and output 2 must be exactly it times (k + 1) / 64
         aux.setPipeOutputs ({ 0 }); aux.setPipeToTalkback (false); peaks (8);
@@ -7139,11 +7147,17 @@ int main()
         aux.setPipeOutputs ({});
         aux.pipe.allOff(); aux.setPipeToTalkback (false);
         // kept with the project
-        Project a; a.pitchPipe.toTalkback = true; a.click.toTalkback = true; a.stageAuxDb = -7.5f;
+        Project a; a.pitchPipe.toTalkback = true; a.click.toTalkback = true; a.stageClickDb = -7.5f; a.stagePipeDb = -3.0f;
         Project b; CHECK (b.fromVar (a.toVar()));
-        CHECK (b.pitchPipe.toTalkback && b.click.toTalkback && std::abs (b.stageAuxDb + 7.5f) < 1e-4f);
+        CHECK (b.pitchPipe.toTalkback && b.click.toTalkback && std::abs (b.stageClickDb + 7.5f) < 1e-4f && std::abs (b.stagePipeDb + 3.0f) < 1e-4f);
         Project c; CHECK (c.fromVar (Project().toVar()));
-        CHECK (! c.pitchPipe.toTalkback && ! c.click.toTalkback && c.stageAuxDb == 0.0f);      // (older projects: off, 0 dB)
+        CHECK (! c.pitchPipe.toTalkback && ! c.click.toTalkback && c.stageClickDb == 0.0f && c.stagePipeDb == 0.0f);      // (older projects: off, 0 dB)
+        {   // a project saved by 3.1.0 had one box for both: its level goes to both boxes
+            auto v = Project().toVar();
+            if (auto* o = v.getDynamicObject()) { o->removeProperty ("stageClickDb"); o->removeProperty ("stagePipeDb"); o->setProperty ("stageAuxDb", -4.0); }
+            Project d; CHECK (d.fromVar (v));
+            CHECK (std::abs (d.stageClickDb + 4.0f) < 1e-4f && std::abs (d.stagePipeDb + 4.0f) < 1e-4f);
+        }
     }
 
     SECTION ("2.90 the pitch pipe's pitch is locked from the start of a note to the end of its fade-out, a held note retuned glides");

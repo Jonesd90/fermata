@@ -59,7 +59,7 @@ public:
         freq.setValue ((double) lc.hz.get(), juce::dontSendNotification);
         freq.setDoubleClickReturnValue (true, (double) lowcut::kDefaultHz);
         freq.onValueChange = [this] { pending = true; refreshText(); repaint(); startTimer (60); };
-        freq.setTooltip ("The cut: -3 dB here (the wall: -6 dB), everything below falls away at the slope. Double-click: 80 Hz. Click the value to type it.");
+        freq.setTooltip ("The cut: -3 dB here (the wall: -6 dB), everything below falls away at the slope. Double-click it (or Alt + click) for 80 Hz; double-click the value to type one.");
         addAndMakeVisible (freq);
         lcui::field (freqValue, 11.0f, true);
         freqClick = std::make_unique<valueentry::ReadoutClick> (freqValue, true, [this] { askHz(); });

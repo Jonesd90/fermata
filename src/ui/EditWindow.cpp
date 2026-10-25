@@ -700,7 +700,7 @@ public:
             {
                 g.setColour (juce::Colour (0x22ffa21f));
                 if (e->fixTracks.empty()) g.fillRect (xOf (e->fixIn), kRulerH, xOf (e->fixOut) - xOf (e->fixIn), rowsEnd - kRulerH);
-                else                                                                          // Alt + drag: only the rows of the chosen tracks
+                else                                                                          // Ctrl + Alt + drag: only the rows of the chosen tracks
                 {
                     g.fillRect (xOf (e->fixIn), kRulerH, xOf (e->fixOut) - xOf (e->fixIn), kLaneH);
                     for (size_t i = 0; i < tracks.size(); ++i)
@@ -1854,7 +1854,7 @@ private:
         const bool isOver = ed.isOverdub (rid), hasGains = ! piece->gains.empty();
         juce::PopupMenu m;
         m.addSectionHeader (piece->takeName + (isOver ? "  (overdub)" : ""));
-        // the area between marks 1 and 2 for all tracks or the ones chosen with Alt + drag
+        // the area between marks 1 and 2 for all tracks or the ones chosen with Ctrl + Alt + drag
         juce::int64 rangeFrom = 0, rangeTo = 0;
         if (ed.fixIn >= 0 && ed.fixOut > ed.fixIn) { rangeFrom = (juce::int64) std::llround (ed.fixIn * rate); rangeTo = (juce::int64) std::llround (ed.fixOut * rate); }
         const bool haveRange = rangeTo > rangeFrom && ! isOver;
@@ -2142,7 +2142,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     automationButton.setClickingTogglesState (true);
     automationButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffc28a00));
     automationButton.setTooltip ("Automation: shows the automation rows - draw fader, pan, gain, send and plug-in moves on every track, Int Bus, Ext Bus and VCA (the buses and VCAs are listed under the tracks). "
-                                 "Click to add a point, drag to move it, right-click / Shift-click to delete. The label on the left of a row chooses what it shows; the + box adds another row under a track or bus "
+                                 "Click to add a point, drag to move it, right-click / Shift-click / Ctrl-click to delete (hold Alt while dragging for fine moves). The label on the left of a row chooses what it shows; the + box adds another row under a track or bus "
                                  "and the - box takes one away. What is drawn plays (and is part of Bounce Out) whether the rows are shown or not. The points stay on the same music when the edit changes. Restart playback to hear changes.");
     automationButton.setToggleState (edit() != nullptr && edit()->automationOn, juce::dontSendNotification);
     automationButton.onClick = [this] { if (auto* e = edit()) { e->automationOn = automationButton.getToggleState(); app.project.changed(); timeline->updateSize(); timeline->repaint(); } };       // (the rows change: the buses and VCAs come under the tracks, or go)

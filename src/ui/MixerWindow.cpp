@@ -387,7 +387,7 @@ public:
         {
             auto* b = cells.add (new SlotCell (*this, i));
             b->setTooltip ("Insert slot. Click the name to open the plug-in (an empty slot opens the list), click the dot for the menu (load, bypass, remove). "
-                           "Drag the name onto another slot, in any mixer, to move the plug-in with its settings; hold Alt to drop an exact copy instead (all its settings).");
+                           "Drag the name onto another slot, in any mixer, to move the plug-in with its settings; hold Alt (or Shift) to drop an exact copy instead (all its settings).");
             addAndMakeVisible (b);
         }
         refresh();

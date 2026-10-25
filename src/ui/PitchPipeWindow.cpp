@@ -163,7 +163,7 @@ PitchPipeComponent::PitchPipeComponent (AppContext& a)
     addAndMakeVisible (keys);
 
     addAndMakeVisible (outputs);
-    setUpTalkbackButton (tbButton, "the pitch pipe");
+    setUpTalkbackButton (tbButton, "the pitch pipe", "Pitch pipe");
     tbButton.setToggleState (def().toTalkback, juce::dontSendNotification);
     tbButton.onClick = [this]
     {
@@ -197,7 +197,7 @@ PitchPipeComponent::PitchPipeComponent (AppContext& a)
     info.setText ("The pitch pipe plays a soft reed note - like a real pitch pipe - on the outputs ticked under Plays to: the stage speakers for the performers, "
                   "or your control-room speakers to check a note yourself while they record, without them hearing it. Nothing it plays is recorded.\n\n"
                   "To talkback (beside Plays to): it also goes to the talkback speakers, with the talkback mic and Playback. Its level there is the "
-                  "Click/Pipe box at the top right of the main window.\n\n"
+                  "Pitch pipe box at the top right of the main window.\n\n"
                   "Click a key and hold it: it sounds while you hold it (a quick click still gives a short note); slide along the keys for one note after another. "
                   "The keyboard shows two octaves; the Octave buttons move it.\n\n"
                   "Chord: tick it, click the keys of the chord (they light up), then hold Play. Pure major / pure minor chord tunes the chord pure on its root: "

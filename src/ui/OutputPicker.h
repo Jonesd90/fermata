@@ -141,14 +141,14 @@ private:
     juce::String sig;
 };
 /** The To talkback button of the click and the pitch pipe (3.1.0): lit = the sound also goes to the talkback pair (the TB output that the talkback mic
-    and Playback go to), through the Click / Pipe box of the main window's stage speaker mixer - whatever Plays to says. */
-inline void setUpTalkbackButton (juce::TextButton& b, const juce::String& sound)
+    and Playback go to), at its own box of the main window's stage speaker mixer ('box': "Click" / "Pitch pipe") - whatever Plays to says. */
+inline void setUpTalkbackButton (juce::TextButton& b, const juce::String& sound, const juce::String& box)
 {
     b.setClickingTogglesState (true);
     b.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffff8a2e));          // (the orange of the main window's TB keys)
     b.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
     b.setWantsKeyboardFocus (false);
     b.setTooltip ("To talkback: " + sound + " also goes to the talkback speakers - the TB output that the talkback mic and Playback go to - as well as to the "
-                  "outputs under Plays to. Its level there is the Click/Pipe box at the top right of the main window.");
+                  "outputs under Plays to. Its level there is the " + box + " box at the top right of the main window.");
 }
 } // namespace td

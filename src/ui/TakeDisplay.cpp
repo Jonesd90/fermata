@@ -5,7 +5,7 @@ namespace td
 {
 namespace
 {
-const juce::Colour kBack { 0xff0b0d10 }, kGreen { 0xff1f7a46 }, kRed { 0xffc0302b }, kDim { 0xff9ba5b4 }, kWhite { 0xfff4f6f8 };
+const juce::Colour kBack { 0xff0b0d10 }, kGreen { 0xff1f7a46 }, kRed { 0xffc0302b }, kDim { 0xff9ba5b4 }, kWhite { 0xfff4f6f8 }, kNone { 0xff3a4049 };
 
 juce::Font fontOf (float h, bool bold) { return juce::Font (bold ? juce::FontOptions (h, juce::Font::bold) : juce::FontOptions (h)); }
 
@@ -86,15 +86,17 @@ void TakeDisplayView::paint (juce::Graphics& g)
     const auto& s = app.takeDisplay;
     loadLogoIfNeeded();
 
-    // ---- which take
+    // ---- which take (no take window open: no piece, and a dash on a grey panel - 3.0.1, the number of a closed window stayed up)
     int number = 1;
     const bool recording = app.takeBoxInfo (number);
+    const bool none = ! recording && number <= 0;
     juce::String piece, takeName;
     {
         const TakeWindowDef* w = nullptr;
         const TakeGroup* grp = nullptr;
         if (recording) for (auto& t : app.project.takeWindows) if ((grp = t->findGroup (app.engine.currentTakeId())) != nullptr) { w = t.get(); break; }
-        if (w == nullptr) { w = app.project.findTakeWindow (app.recordTarget); if (w == nullptr && ! app.project.takeWindows.empty()) w = app.project.takeWindows.front().get(); }
+        if (w == nullptr && ! recording) w = app.project.findTakeWindow (app.counterTakeWindow());              // (the take window the number is from)
+        if (w == nullptr && recording) w = app.project.findTakeWindow (app.recordTarget);
         if (w != nullptr) piece = w->name;
         if (grp != nullptr && grp->label.isNotEmpty()) takeName = grp->label;
     }
@@ -145,11 +147,11 @@ void TakeDisplayView::paint (juce::Graphics& g)
     drawFitted (g, piece + (takeName.isNotEmpty() ? "   -   " + takeName : juce::String()), title, true, kWhite, juce::Justification::centred);
     mid.removeFromTop (mid.getHeight() * 0.03f);
     auto panel = mid.withSizeKeepingCentre (juce::jmin (mid.getWidth(), mid.getHeight() * 1.9f), mid.getHeight());
-    g.setColour (recording ? kRed : kGreen);
+    g.setColour (recording ? kRed : none ? kNone : kGreen);
     g.fillRoundedRectangle (panel, panel.getHeight() * 0.06f);
     auto inner = panel.reduced (panel.getHeight() * 0.05f);
-    drawFitted (g, recording ? "THIS TAKE" : "NEXT TAKE", inner.removeFromTop (inner.getHeight() * 0.18f), true, juce::Colours::white.withAlpha (0.92f), juce::Justification::centred);
-    drawFitted (g, juce::String (number), inner, true, juce::Colours::white, juce::Justification::centred);
+    drawFitted (g, recording ? "THIS TAKE" : "NEXT TAKE", inner.removeFromTop (inner.getHeight() * 0.18f), true, juce::Colours::white.withAlpha (none ? 0.6f : 0.92f), juce::Justification::centred);
+    drawFitted (g, none ? juce::String::charToString (0x2013) : juce::String (number), inner, true, juce::Colours::white.withAlpha (none ? 0.8f : 1.0f), juce::Justification::centred);
 }
 
 // ------------------------------------------------------------------ one screen

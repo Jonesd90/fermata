@@ -24,6 +24,7 @@
 #include "ui/AlignWindow.h"
 #include "ui/CpuCoresPanel.h"
 #include "ui/PluginManager.h"
+#include "ui/HotKeysWindow.h"
 #if JUCE_WINDOWS
  #include <shlobj.h>
 #endif
@@ -155,6 +156,8 @@ public:
             const auto c = juce::CharacterFunctions::toLowerCase (k.getTextCharacter());
             if (c == 'm') { toggleProcessingMixer(); return true; }
             if (c == 'b') { toggleBridge(); return true; }
+            if (c == 'u') { deskWindowToggle ("pitchpipe"); return true; }      // 3.0.1: U = the pitch pipe, I = the click: opens it, or closes it (a minimised one comes back), as the Stream Deck's keys do
+            if (c == 'i') { deskWindowToggle ("click"); return true; }
             return false;
         };
         ctx->toggleMixerAt = [this] (int i) { toggleMixerAt (i); };
@@ -205,6 +208,7 @@ public:
         ctx->showSurfacePanel = [this] { showWindow ("surface", "Mixer controller", [this] { return new SurfacePanel (*ctx); }); };
         ctx->showPitchPipe = [this] { showWindow ("pitchpipe", "Pitch pipe", [this] { return new PitchPipeComponent (*ctx); }); };
         ctx->showClick = [this] { showWindow ("click", "Click", [this] { return new ClickComponent (*ctx); }); };
+        ctx->showHotKeys = [this] { showWindow ("hotkeys", "HotKeys", [] { return new HotKeysComponent(); }); };
         // ---- the Stream Deck + XL: windows by name, the Loop button, "minimise all but the main window"
         ctx->deskWindowState = [this] (const juce::String& what) { return deskWindowState (what); };
         ctx->deskWindowToggle = [this] (const juce::String& what) { deskWindowToggle (what); };
@@ -555,7 +559,7 @@ private:
         if (auto* host = dynamic_cast<CornerStripHost*> (content)) host->content->setWantsKeyboardFocus (true);
         w->setIcon (makeFermataIcon (256));
         w->isTransportWindow = key.startsWith ("take:") || key.startsWith ("edit:");
-        w->forwardKeys = key.startsWith ("mixer:") || key.startsWith ("scope:") || key == "bridge" || key == "media" || key == "takedisplay" || key == "organiser" || key == "pitchpipe" || key == "click" || key == "align";
+        w->forwardKeys = key.startsWith ("mixer:") || key.startsWith ("scope:") || key == "bridge" || key == "media" || key == "takedisplay" || key == "organiser" || key == "pitchpipe" || key == "click" || key == "align" || key == "hotkeys";
         juce::Rectangle<int> mixerRemembered;                                         // a mixer's size when it was last closed (put back by fitWindowToStrips)
         {   // where it was left last time (kept in the project), or else centred; never wider than the screen, nor taller
             const auto& displays = juce::Desktop::getInstance().getDisplays();

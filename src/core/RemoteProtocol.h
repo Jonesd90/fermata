@@ -32,7 +32,7 @@ constexpr int kMixerSlots = 6;           // the dials: the processing mixer and 
 struct State
 {
     bool recording = false;
-    int  takeNumber = 1;               // recording: the number of this take; otherwise the number of the next take
+    int  takeNumber = 1;               // recording: the number of this take; otherwise the number of the next take, 0 when no take window is open (3.0.1; plug-in 1.8.1 draws a dash)
     bool playing = false;
     bool talkbackReady = false;        // a CR mic and a TB output are set up
     bool playbackReady = false;        // a TB output is set up (enough for the Playback speaker key: it does not need the CR mic)

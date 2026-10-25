@@ -7,9 +7,9 @@
 namespace td
 {
 /** The stage speaker mixer, top right of the main window. It mixes what the TB (talkback) pair carries: one small square box for every talkback mic input (a level knob
-    and a pan knob), one for the Playback (the processing mixer's main output), one for the click and the pitch pipe (Click / Pipe: heard here only when their window's
-    To talkback button is on - 3.1.0) and the Output box (what is actually sent to the TB L / TB R outputs). It only exists while at least one input is a talkback mic
-    or a TB pair is chosen. Double-click a knob to type a value; Ctrl + click puts it back to 0 dB / centre. */
+    and a pan knob), one for the Playback (the processing mixer's main output), one each for the Click and the Pitch pipe (heard here only when their window's
+    To talkback button is on - 3.1.0; one box for both in 3.1.0, two since 3.1.1) and the Output box (what is actually sent to the TB L / TB R outputs). It only
+    exists while at least one input is a talkback mic or a TB pair is chosen. Double-click a knob to type a value; Ctrl + click puts it back to 0 dB / centre. */
 class StageSpeakerPanel : public juce::Component, private juce::Timer
 {
 public:
@@ -27,8 +27,8 @@ public:
     /** True when there is anything to mix (a CR input or a TB pair). */
     bool wanted() const { return ! app.project.crMicInputs.empty() || ! app.project.tbOutputs.empty(); }
     int wantedWidth() const { return (int) strips.size() * (kStripW + 2) + kGap + 8; }
-    /** The place the main window always keeps for these boxes (one talkback mic, Playback, Click / Pipe and Output), shown or not. */
-    static int reservedWidth() { return 4 * (kStripW + 2) + kGap + 8; }
+    /** The place the main window always keeps for these boxes (one talkback mic, Playback, Click, Pitch pipe and Output), shown or not. */
+    static int reservedWidth() { return 5 * (kStripW + 2) + kGap + 8; }
 
     /** Called whenever the project changes: rebuilds the strips if the CR inputs, the TB pairs or the names changed. True when it did (the layout
         around the panel may then have to change too). */
@@ -55,13 +55,18 @@ public:
         pb->fader.setValue (p.stagePlaybackDb, juce::dontSendNotification);
         pb->onChange = [this] (float db, float) { app.project.stagePlaybackDb = db; push(); };
         strips.add (pb); holder.addAndMakeVisible (pb);
-        auto* aux = new Strip ("Click/Pipe", "click and pitch pipe", false);
-        aux->kind = 3;
-        aux->fader.setTooltip ("Click / Pipe: the click and the pitch pipe in the talkback speakers - only while the To talkback button in their window is on (their Plays to outputs "
-                               "are separate). Drag up / down, double-click to type a level (Ctrl + click for 0 dB); all the way down is off.");
-        aux->fader.setValue (p.stageAuxDb, juce::dontSendNotification);
-        aux->onChange = [this] (float db, float) { app.project.stageAuxDb = db; push(); };
-        strips.add (aux); holder.addAndMakeVisible (aux);
+        auto addSound = [this] (const juce::String& title, int kind, float db, std::function<void (float)> set)         // the Click box and the Pitch pipe box
+        {
+            auto* s = new Strip (title, title.toLowerCase(), false);
+            s->kind = kind;
+            s->fader.setTooltip (title + ": its level in the talkback speakers - only while the To talkback button in its window is on (its Plays to outputs are separate). "
+                                 "Drag up / down, double-click to type a level (Ctrl + click for 0 dB); all the way down is off.");
+            s->fader.setValue (db, juce::dontSendNotification);
+            s->onChange = [this, set] (float v, float) { set (v); push(); };
+            strips.add (s); holder.addAndMakeVisible (s);
+        };
+        addSound ("Click", 3, p.stageClickDb, [this] (float v) { app.project.stageClickDb = v; });
+        addSound ("Pitch pipe", 4, p.stagePipeDb, [this] (float v) { app.project.stagePipeDb = v; });
         auto* out = new Strip ("Output", outputName(), false);
         out->fader.setTooltip ("Final level into the talkback speakers (" + outputName() + "). The small light at the top right of this box goes red when they reach full scale (peak).");
         out->fader.setValue (p.stageOutputDb, juce::dontSendNotification);
@@ -106,7 +111,7 @@ private:
         for (auto* s : strips)
         {
             if (s->fader.isMouseButtonDown()) continue;
-            const float want = s->kind == 0 ? p.stageGainOf (s->input) : s->kind == 1 ? p.stagePlaybackDb : s->kind == 3 ? p.stageAuxDb : p.stageOutputDb;
+            const float want = s->kind == 0 ? p.stageGainOf (s->input) : s->kind == 1 ? p.stagePlaybackDb : s->kind == 3 ? p.stageClickDb : s->kind == 4 ? p.stagePipeDb : p.stageOutputDb;
             if (std::abs ((float) s->fader.getValue() - want) > 0.04f) { s->fader.setValue (want, juce::dontSendNotification); s->repaint(); }
         }
     }
@@ -171,7 +176,7 @@ private:
             }
         }
         juce::String title, subtitle; bool withPan = true, isOutput = false, peakOn = false;
-        int kind = 0, input = -1;                                    // what it shows: 0 a talkback mic (input), 1 the Playback, 2 the Output, 3 the click and pitch pipe
+        int kind = 0, input = -1;                                    // what it shows: 0 a talkback mic (input), 1 the Playback, 2 the Output, 3 the Click, 4 the Pitch pipe
         desk::RingPot fader, pan; juce::Rectangle<int> dbArea, panText;
         std::function<void (float, float)> onChange;
     };
@@ -200,7 +205,7 @@ private:
     void push()
     {
         app.project.markDirty();
-        app.engine.setStageMix (app.project.stageGainDb, app.project.stagePan, app.project.stagePlaybackDb, app.project.stageOutputDb, app.project.stageAuxDb);
+        app.engine.setStageMix (app.project.stageGainDb, app.project.stagePan, app.project.stagePlaybackDb, app.project.stageOutputDb, app.project.stageClickDb, app.project.stagePipeDb);
     }
 
     AppContext& app;

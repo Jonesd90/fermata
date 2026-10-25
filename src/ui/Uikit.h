@@ -693,7 +693,7 @@ public:
 };
 
 /** A floating window that removes itself when closed. */
-/** Keys that work in every window (M = processing mixer, B = meter bridge). Set by the application. */
+/** Keys that work in every window (M = processing mixer, B = meter bridge, U = pitch pipe, I = click). Set by the application. */
 inline std::function<bool (const juce::KeyPress&)>& globalKeyHook() { static std::function<bool (const juce::KeyPress&)> f; return f; }
 /** Space and R belong to recording everywhere in the program (AppContext watches the keys themselves, so no window or button can swallow them):
     while a take is recording, or while the Space that just stopped one is still held, a window's own Space does nothing. Set by AppContext. */
@@ -1132,7 +1132,8 @@ private:
     bool topAligned = false;
 };
 
-/** The square "Next Take 4" / "This Take 4" box: green while idle, red while recording. Shown in the take window and on the main page. */
+/** The square "Next Take 4" / "This Take 4" box: green while idle, red while recording. Shown in the take window and on the main page.
+    A number of 0 (or less) while idle = no take window is open: a grey box with a dash (3.0.1). */
 class NextTakeBox : public juce::Component
 {
 public:
@@ -1146,21 +1147,23 @@ public:
     void setCompact (bool c) { compact = c; repaint(); }
     void paint (juce::Graphics& g) override
     {
+        const bool none = ! recording && number <= 0;
+        const auto text = none ? juce::String::charToString (0x2013) : juce::String (number);          // (an en dash: no take window open)
         auto r = getLocalBounds().toFloat().reduced (0.5f);
-        g.setColour (recording ? juce::Colour (0xffc62828) : juce::Colour (0xff1f8f4e)); g.fillRoundedRectangle (r, compact ? 4.0f : 5.0f);
-        g.setColour (juce::Colours::white.withAlpha (0.55f)); g.drawRoundedRectangle (r, compact ? 4.0f : 5.0f, 1.0f);
-        g.setColour (juce::Colours::white);
+        g.setColour (recording ? juce::Colour (0xffc62828) : none ? juce::Colour (0xff5c636e) : juce::Colour (0xff1f8f4e)); g.fillRoundedRectangle (r, compact ? 4.0f : 5.0f);
+        g.setColour (juce::Colours::white.withAlpha (none ? 0.35f : 0.55f)); g.drawRoundedRectangle (r, compact ? 4.0f : 5.0f, 1.0f);
+        g.setColour (juce::Colours::white.withAlpha (none ? 0.85f : 1.0f));
         if (compact)
         {
             g.setFont (juce::FontOptions ((float) getHeight() * 0.62f, juce::Font::bold));
-            g.drawText (juce::String (number), getLocalBounds(), juce::Justification::centred, false);
+            g.drawText (text, getLocalBounds(), juce::Justification::centred, false);
             return;
         }
         auto top = getLocalBounds().removeFromTop (juce::jmax (14, getHeight() / 3));
         g.setFont (juce::FontOptions ((float) top.getHeight() * 0.62f, juce::Font::bold));
         g.drawText (recording ? "This Take" : "Next Take", top.withTrimmedTop (3), juce::Justification::centred, false);
         g.setFont (juce::FontOptions ((float) getHeight() * 0.50f, juce::Font::bold));
-        g.drawText (juce::String (number), getLocalBounds().withTrimmedTop (top.getHeight()), juce::Justification::centred, false);
+        g.drawText (text, getLocalBounds().withTrimmedTop (top.getHeight()), juce::Justification::centred, false);
     }
 private:
     bool recording = false, compact = false; int number = 1;

@@ -244,6 +244,7 @@ OrganiserComponent::OrganiserComponent (AppContext& a) : app (a)
     snapshotButton.onClick = [this] { saveFromScreen(); };
     deleteButton.setTooltip ("Removes the chosen layout from the project (the program's own layouts cannot be removed)");
     deleteButton.onClick = [this] { deleteLayout(); };
+    for (auto* b : { &arrangeButton, &saveButton, &snapshotButton, &deleteButton }) b->setWantsKeyboardFocus (false);   // (a clicked button kept the keyboard, so Enter pressed it again instead of Arranging)
     for (auto* b : { &arrangeButton, &saveButton, &snapshotButton, &deleteButton }) addAndMakeVisible (b);
 
     status.setFont (juce::FontOptions (12.5f)); status.setColour (juce::Label::textColourId, theme::dimText);

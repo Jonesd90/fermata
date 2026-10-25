@@ -206,9 +206,9 @@ public:
         tbAny.store (any);
     }
     /** The stage speaker mixer (what the TB pair carries): a gain (dB) and a pan (-1 left .. +1 right) for each CR input, one gain for the playback,
-        one for the click and the pitch pipe (when their To talkback button is on: 3.1.0) and one for the whole output. Centre pan is full level on both
-        sides, 0 dB everywhere is the old behaviour. -60 dB means off. Message thread. */
-    void setStageMix (const std::vector<float>& inputDb, const std::vector<float>& inputPan, float playbackDb, float outputDb, float auxDb = 0.0f) noexcept
+        one each for the click and the pitch pipe (when their To talkback button is on: 3.1.0; two boxes since 3.1.1) and one for the whole output.
+        Centre pan is full level on both sides, 0 dB everywhere is the old behaviour. -60 dB means off. Message thread. */
+    void setStageMix (const std::vector<float>& inputDb, const std::vector<float>& inputPan, float playbackDb, float outputDb, float clickDb = 0.0f, float pipeDb = 0.0f) noexcept
     {
         auto lin = [] (float db) { return db <= -59.9f ? 0.0f : juce::Decibels::decibelsToGain (db); };
         for (int i = 0; i < kMaxInputs; ++i)
@@ -219,7 +219,7 @@ public:
             stageR[(size_t) i].store (g * juce::jmin (1.0f, 1.0f + p), std::memory_order_relaxed);
         }
         stagePb.store (lin (playbackDb), std::memory_order_relaxed);
-        stageAux.store (lin (auxDb), std::memory_order_relaxed);
+        aux.setTalkbackLevels (lin (pipeDb), lin (clickDb));                // (the click and the pitch pipe glide to their levels in AuxSounds::talkbackMix)
         stageOut.store (lin (outputDb), std::memory_order_relaxed);
     }
     /** The loudest sample (absolute) sent to the stage speakers since the last call; then it starts again. Message thread (the red PEAK light). */
@@ -451,9 +451,9 @@ private:
     std::array<std::atomic<int>, kMaxInputs> tbMask {};      // per output: bit 1 = it carries the left of a talkback pair, bit 2 = the right
     std::atomic<bool> tbAny { false };
     std::array<std::atomic<float>, kMaxInputs> stageL {}, stageR {};     // the stage speaker mixer: each CR input's level into the left / right of a TB pair
-    std::atomic<float> stagePb { 1.0f }, stageAux { 1.0f }, stageOut { 1.0f };
+    std::atomic<float> stagePb { 1.0f }, stageOut { 1.0f };
     std::atomic<float> stagePeakSeen { 0.0f };                                                           // audio thread: loudest sample sent to a TB output since the last look
-    float stagePrevL[kMaxInputs] {}, stagePrevR[kMaxInputs] {}, stagePrevPb = 1.0f, stagePrevAux = 1.0f, stagePrevOut = 1.0f;     // audio thread: last block's values (so a fader move glides)
+    float stagePrevL[kMaxInputs] {}, stagePrevR[kMaxInputs] {}, stagePrevPb = 1.0f, stagePrevOut = 1.0f;     // audio thread: last block's values (so a fader move glides)
     std::atomic<bool> crOn { false }, tbPlay { false };
     float crGain = 0.0f;                            // audio thread: the CR mic's own fade (no click when it opens or closes)
     std::vector<float> tbTap;                       // audio thread: the playback-only main output of the processing mixer, left then right

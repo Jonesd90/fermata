@@ -606,10 +606,12 @@ public:
     bool pipeGoesTo (int ch) const noexcept  { return juce::isPositiveAndBelow (ch, kMaxInputs) && pipeTo[(size_t) ch].load (std::memory_order_relaxed); }
     bool clickGoesTo (int ch) const noexcept { return juce::isPositiveAndBelow (ch, kMaxInputs) && clickTo[(size_t) ch].load (std::memory_order_relaxed); }
 
-    /** Each source's To talkback button (its window): it also goes to the talkback pair, through the stage speaker mixer's Click / Pipe level - whatever
-        Plays to says (3.1.0). Message thread. */
+    /** Each source's To talkback button (its window): it also goes to the talkback pair - whatever Plays to says (3.1.0) - at its own level there, the
+        stage speaker mixer's Click and Pitch pipe boxes (3.1.1: two boxes, not one). Message thread. */
     void setPipeToTalkback (bool on) noexcept  { pipeTb.store (on, std::memory_order_relaxed); }
     void setClickToTalkback (bool on) noexcept { clickTb.store (on, std::memory_order_relaxed); }
+    /** The two levels in the talkback pair (linear gains: the Pitch pipe box and the Click box). Message thread. */
+    void setTalkbackLevels (float pipeGain, float clickGain) noexcept { pipeTbGain.store (pipeGain, std::memory_order_relaxed); clickTbGain.store (clickGain, std::memory_order_relaxed); }
     bool pipeToTalkback() const noexcept  { return pipeTb.load (std::memory_order_relaxed); }
     bool clickToTalkback() const noexcept { return clickTb.load (std::memory_order_relaxed); }
 
@@ -620,11 +622,12 @@ public:
         pipeMade  = made > 0 && pipe.render (bufPipe.data(), n);
         clickMade = made > 0 && click.render (bufClick.data(), n);
     }
-    /** Audio thread, after render(): what the talkback pair gets this block - the sources whose To talkback button is on, mixed (mono) - or nullptr when
-        that is silence. A button switched on or off fades in or out over the block, so it never clicks. */
+    /** Audio thread, after render(): what the talkback pair gets this block - the sources whose To talkback button is on, each at its own level, mixed
+        (mono) - or nullptr when that is silence. A button switched on or off, or a level moved, glides over the block, so it never clicks. */
     const float* talkbackMix (int n) noexcept
     {
-        const float pT = pipeTb.load (std::memory_order_relaxed) ? 1.0f : 0.0f, cT = clickTb.load (std::memory_order_relaxed) ? 1.0f : 0.0f;
+        const float pT = pipeTb.load (std::memory_order_relaxed) ? pipeTbGain.load (std::memory_order_relaxed) : 0.0f;
+        const float cT = clickTb.load (std::memory_order_relaxed) ? clickTbGain.load (std::memory_order_relaxed) : 0.0f;
         const bool usePipe = pipeMade && (pT > 0.0f || tbPrevPipe > 0.0f), useClick = clickMade && (cT > 0.0f || tbPrevClick > 0.0f);
         const float p0 = tbPrevPipe, c0 = tbPrevClick;
         tbPrevPipe = pT; tbPrevClick = cT;
@@ -663,8 +666,9 @@ private:
     }
     std::array<std::atomic<bool>, kMaxInputs> pipeTo {}, clickTo {};
     std::atomic<bool> pipeTb { false }, clickTb { false };
+    std::atomic<float> pipeTbGain { 1.0f }, clickTbGain { 1.0f };
     std::vector<float> bufPipe, bufClick, bufTb;
     int made = 0; bool pipeMade = false, clickMade = false;          // audio thread: what render() made this block
-    float tbPrevPipe = 0.0f, tbPrevClick = 0.0f;                      // audio thread: last block's To talkback states (a switch fades over a block)
+    float tbPrevPipe = 0.0f, tbPrevClick = 0.0f;                      // audio thread: last block's talkback gains (button x level: a change glides over a block)
 };
 } // namespace td

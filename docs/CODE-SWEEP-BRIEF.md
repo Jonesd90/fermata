@@ -59,6 +59,7 @@ Two rules came out of it - keep to them in anything you write:
 6. **Before every zip:** `tools/sandbox-check.sh <JUCE checkout>` (core build, all tests, stress test) and `tools/check-windows-code.sh <JUCE>` must pass; every `src/ui` and `src/core` file must compile. Write a section for the build in `docs/DEVELOPMENT-NOTES.md`.
 7. **Keep the style:** comments in plain English that say why; no renaming sprees or reformatting; diffs a person could review.
 8. **Ask** before anything risky or ambiguous (file-format changes, removing anything, behaviour you are not sure was intended).
+9. **Keys:** a key you add, change or remove anywhere is changed in the HotKeys list too (`src/ui/HotKeysWindow.h`, shown by Project > HotKeys), in the same build.
 
 ## Decisions already made by the person (do not undo)
 
@@ -66,6 +67,7 @@ Two rules came out of it - keep to them in anything you write:
 - Plug-in crash isolation stays as it is (but a user save must capture every plug-in's actual state).
 - No preamp "Cut" feature anywhere.
 - Play never stops at mark 2; only Loop sends playback back to mark 1.
+- No assignable key commands: the keys stay as they are, and Project > HotKeys lists them (3.0.1).
 - Markers, listeners' comment flags and the edit window's visual guide are never moved by ripple edits.
 - Stereo only for now (surround plug-in processing later).
 

@@ -700,6 +700,14 @@ A full review of the audio thread and the recording path (read line by line; the
 
 **Tests ("2.89 ..." sections):** the tunings (seven temperaments on a key, A at the reference, pure major / minor chords), the pipe's voice (exact pitch, the swell, released notes die away, a chord never clips), the click (sample-exact beats, the accent, four sounds), the engine adding both to their outputs only, after the mixers, the analysis (spaced main pair, a centre and a left spot, pan-aware delays, a hall pair, the flags, two main pairs in line / not, bleed from an instrument near the main pair, a stereo spot pair's two suggestions, what cannot be measured), per-piece sets in the engine and their save / load, BWF chunks read back and crash repair keeping them, a bounce with its piece's alignment, the PDF writer, the take sheet. Render hooks FERMATA_RENDER=pitchpipe (FERMATA_PP_CHORD=1: chord mode with C E G lit) / click / align (roles set, Analyse pressed). The demo project (scratchpad rend/mkproj.cpp) has a fourth take, a run-through made from a simulated hall - eight sources, the mics at their places with cardioid / omni patterns, a Schroeder reverb per mic - on which the window measures the organ, harp, choir and soloists' spots within 0.1 ms of the geometry.
 
+## 3.1.1: a Click box and a Pitch pipe box instead of one Click / Pipe box
+
+- **Engine.** The two levels now live in `AuxSounds`: `setTalkbackLevels (pipeGain, clickGain)`, set from `AudioEngine::setStageMix (..., clickDb, pipeDb)`, whose 5th and 6th parameters replace 3.1.0's one `auxDb`. `talkbackMix` glides each source from last block's gain (button x level) to this block's, so a button and a level are smoothed the same way. The engine adds the result unscaled, before the Output fader. `stageAux` and `stagePrevAux` are gone.
+- **Project.** `stageClickDb` and `stagePipeDb` (saved under those names) replace `stageAuxDb`. A 3.1.0 project's `stageAuxDb` is loaded into both.
+- **Main window.** `StageSpeakerPanel` has the strip kinds 3 (Click) and 4 (Pitch pipe), made by one `addSound` helper. `reservedWidth` is five boxes.
+- **Windows.** `setUpTalkbackButton (button, sound, box)` names the right box in the tooltip, and both help texts name their own box.
+- **Tests.** core_test checks that each box sets only its own sound, and that a 3.1.0 project's single level reaches both boxes.
+
 ## 3.1.0: the click and the pitch pipe To talkback, with a Click / Pipe box in the stage speaker mixer
 
 **Engine.** `AuxSounds` (`PitchPipe.h`) is split into `render (n)` (the pitch pipe and click make this block once, before the outputs are filled), `talkbackMix (n)` and `addToOutputs (out, numOut, n)` (Plays to, as before). `process()` stays as render + addToOutputs.
