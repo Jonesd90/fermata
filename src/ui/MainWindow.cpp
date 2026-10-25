@@ -344,7 +344,7 @@ public:
         fedBy.setInterceptsMouseClicks (false, false);
         for (auto* c : std::initializer_list<juce::Component*> { &driver, &alias, &meter, &fedBy }) addAndMakeVisible (c);
         tbButton.setLed (juce::Colour (0xffff8a2e));
-        tbButton.setTooltip ("TB: make this output and the next one a stereo talkback pair (to the studio). Any outputs, any number of pairs; on the last output it is mono. Only the talkback mic and recorded playback can ever reach it - never live microphones. Click again to turn the pair off.");
+        tbButton.setTooltip ("TB: make this output and the next one a stereo talkback pair (to the studio). Any outputs, any number of pairs; on the last output it is mono. Only the talkback mic, recorded playback, and the click and pitch pipe (when their To talkback button is on) can ever reach it - never live microphones. Click again to turn the pair off.");
         tbButton.onClick = [this] { if (! updating) app.setTbPair (tbFirst(), ! isTbNow()); };
         addAndMakeVisible (tbButton);
         refreshFromModel();
@@ -497,9 +497,9 @@ MainComponent::MainComponent (AppContext& a) : app (a), controllerBox (a)
     organiserButton.onClick = [this] { if (app.showOrganiser) app.showOrganiser(); };
     organiserButton.setTooltip ("Arrange Fermata's windows on this screen: choose a shape and a window for each part (or a saved layout), then Arrange");
     pitchPipeButton.onClick = [this] { if (app.showPitchPipe) app.showPitchPipe(); };
-    pitchPipeButton.setTooltip ("Pitch pipe: a keyboard that plays a note or a chord on the outputs you choose (the stage speakers, or your control-room speakers alone), in seven tunings at any A");
+    pitchPipeButton.setTooltip ("Pitch pipe: a keyboard that plays a note or a chord on the outputs you choose (the stage speakers, or your control-room speakers alone), in seven tunings at any A (key U opens and closes it)");
     clickButton.onClick = [this] { if (app.showClick) app.showClick(); };
-    clickButton.setTooltip ("Click: a metronome on the outputs you choose, switched on and off by hand (lit while it runs)");
+    clickButton.setTooltip ("Click: a metronome on the outputs you choose, switched on and off by hand (lit while it runs; key I opens and closes the window)");
     clickButton.setClickingTogglesState (false);
     clickButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff1f7a46));
     sessionButton.setClickingTogglesState (false);
@@ -985,6 +985,8 @@ void MainComponent::showProjectMenu()
     m.addSeparator();
     m.addItem (14, "Mixer controller (Avid S1 / Mackie Control)...");
     m.addSeparator();
+    m.addItem (16, "HotKeys...");                                         // every key and what it does
+    m.addSeparator();
     auto picked = std::make_shared<int> (-1);
     {
         juce::PopupMenu style;                                                   // the look of the whole program: the desk, or the illuminated manuscript
@@ -998,6 +1000,7 @@ void MainComponent::showProjectMenu()
         if (r == 20 || r == 21) { pickStyle (r - 20); return; }
         if (r == 12) { chooseBackupFolder(); return; }
         if (r == 14) { if (app.showSurfacePanel) app.showSurfacePanel(); return; }
+        if (r == 16) { if (app.showHotKeys) app.showHotKeys(); return; }
         if (r == 15) { exportTakeSheet (app, juce::Uuid::null()); return; }
         if (r == 13)
         {

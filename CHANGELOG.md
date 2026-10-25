@@ -6,6 +6,13 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.1.0
+**The click and the pitch pipe can go to the talkback speakers.**
+- **To talkback**, a new button beside Plays to in the Click and Pitch pipe windows. Lit (orange, like the TB keys), the sound also goes to the talkback output: the same TB output the talkback mic and Playback go to. Click it again and it stops. It has nothing to do with Plays to, which carries on as before.
+- **Click/Pipe**, a new box among the talkback boxes at the top right of the main window, between Playback and Output. Its knob sets how loud the click and the pitch pipe are in the talkback speakers, so the talk mic, Playback and the click or pipe can all be balanced there. The Output knob then sets the whole lot, as before. Double-click the knob to type a level, or Ctrl + click for 0 dB.
+- The buttons and the knob are kept with the project. Switching a button on or off fades over a few milliseconds, so it never clicks.
+- If no talkback output is chosen, switching the button on says so in the status line.
+
 ## 3.0.2
 **R does nothing when no take window is open.** Before, it recorded into the take window you used last even after you had closed it, out of sight. Now it only records into a take window that is open: the one the take counter shows, which is the one you used last. With none open, the status line says to open one. The Stream Deck's Record key and the controller's Record button follow the same rule. R in ReTouch and Noise mode still does the ReTouch, and R in the edit window still butts the pieces together.
 

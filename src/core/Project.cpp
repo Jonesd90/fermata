@@ -322,7 +322,7 @@ Project::Project() { createDefaultDesign(); }
 
 void Project::createDefaultDesign()
 {
-    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); preampDevices.clear(); pitchPipe = PitchPipeDef(); click = ClickDef(); alignEnabled = true; alignSets.clear(); alignActive.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageAuxDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); preampDevices.clear(); pitchPipe = PitchPipeDef(); click = ClickDef(); alignEnabled = true; alignSets.clear(); alignActive.clear();
     windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear(); oldWindowFiles.clear();     // (nothing of the project that was open before: its missing files are not this one's)
     layouts.clear();                                                                                  // (nor its saved Display Organiser layouts)
     setInputCount (8);
@@ -1479,7 +1479,7 @@ var Project::toVar (bool withWindows) const
     {
         juce::Array<juce::var> sg, sp; for (float v : stageGainDb) sg.add ((double) v); for (float v : stagePan) sp.add ((double) v);
         put (root, "stageGainDb", juce::var (sg)); put (root, "stagePan", juce::var (sp));
-        put (root, "stagePlaybackDb", (double) stagePlaybackDb); put (root, "stageOutputDb", (double) stageOutputDb);
+        put (root, "stagePlaybackDb", (double) stagePlaybackDb); put (root, "stageOutputDb", (double) stageOutputDb); put (root, "stageAuxDb", (double) stageAuxDb);
     }
     put (root, "altMixer", altMixer.toString());
     put (root, "ltcInput", ltcInput); put (root, "ltcOutput", ltcOutput); put (root, "ltcOutOn", ltcOutOn); put (root, "ltcOutFormat", ltcOutFormat);
@@ -1488,12 +1488,12 @@ var Project::toVar (bool withWindows) const
         auto outList = [] (const std::vector<int>& v) { juce::Array<var> a; for (int o : v) a.add (o); return var (a); };
         var pp = obj();
         put (pp, "refA", pitchPipe.refA); put (pp, "temperament", pitchPipe.temperament); put (pp, "key", pitchPipe.key); put (pp, "chordMode", pitchPipe.chordMode);
-        put (pp, "chordTuning", pitchPipe.chordTuning); put (pp, "levelDb", (double) pitchPipe.levelDb); put (pp, "outputs", outList (pitchPipe.outputs)); put (pp, "lowestC", pitchPipe.lowestC); put (pp, "tone", (double) pitchPipe.tone); put (pp, "keyboard", pitchPipe.keyboard);
+        put (pp, "chordTuning", pitchPipe.chordTuning); put (pp, "levelDb", (double) pitchPipe.levelDb); put (pp, "outputs", outList (pitchPipe.outputs)); put (pp, "lowestC", pitchPipe.lowestC); put (pp, "tone", (double) pitchPipe.tone); put (pp, "keyboard", pitchPipe.keyboard); put (pp, "toTalkback", pitchPipe.toTalkback);
         put (root, "pitchPipe", pp);
         var ck = obj();
         put (ck, "bpm", click.bpm); put (ck, "beatsPerBar", click.beatsPerBar); put (ck, "beatUnit", click.beatUnit); put (ck, "accent", click.accent);
         put (ck, "sound", click.sound); put (ck, "levelDb", (double) click.levelDb); put (ck, "outputs", outList (click.outputs));
-        put (ck, "quaverTicks", click.quaverTicks); put (ck, "tickDb", (double) click.tickDb);
+        put (ck, "quaverTicks", click.quaverTicks); put (ck, "tickDb", (double) click.tickDb); put (ck, "toTalkback", click.toTalkback);
         put (root, "click", ck);
         put (root, "alignEnabled", alignEnabled);
         put (root, "alignActive", alignActive);
@@ -1604,7 +1604,7 @@ bool Project::fromVar (const var& root)
     if (! root.isObject() || (root.getProperty ("format", {}).toString() != "Fermata project" && root.getProperty ("format", {}).toString() != "TakeDAW project"))
         return false;
 
-    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone();
+    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageAuxDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone();
     filesMoved = false;
     name = root.getProperty ("name", "Untitled").toString();
     windowBounds.clear();
@@ -1666,6 +1666,7 @@ bool Project::fromVar (const var& root)
     if (auto* sg = root["stageGainDb"].getArray()) for (auto& v : *sg) stageGainDb.push_back ((float) (double) v);
     if (auto* sp = root["stagePan"].getArray())    for (auto& v : *sp) stagePan.push_back ((float) (double) v);
     stagePlaybackDb = (float) (double) root.getProperty ("stagePlaybackDb", 0.0); stageOutputDb = (float) (double) root.getProperty ("stageOutputDb", 0.0);
+    stageAuxDb = (float) juce::jlimit (-60.0, 10.0, (double) root.getProperty ("stageAuxDb", 0.0));
     crMicInputs.erase (std::remove_if (crMicInputs.begin(), crMicInputs.end(), [this] (int i) { return i < 0 || i >= (int) inputs.size(); }), crMicInputs.end());
     tbOutputs.erase (std::remove_if (tbOutputs.begin(), tbOutputs.end(), [this] (int o) { return o < 0 || o >= (int) outputs.size(); }), tbOutputs.end());
     std::sort (tbOutputs.begin(), tbOutputs.end()); tbOutputs.erase (std::unique (tbOutputs.begin(), tbOutputs.end()), tbOutputs.end());
@@ -1683,6 +1684,7 @@ bool Project::fromVar (const var& root)
             pitchPipe.lowestC = juce::jlimit (24, 84, (int) pp.getProperty ("lowestC", 48));
             pitchPipe.tone = (float) juce::jlimit (0.0, 1.0, (double) pp.getProperty ("tone", 0.35));
             pitchPipe.keyboard = (bool) pp.getProperty ("keyboard", false);
+            pitchPipe.toTalkback = (bool) pp.getProperty ("toTalkback", false);
         }
         alignEnabled = (bool) root.getProperty ("alignEnabled", true);
         alignActive = root.getProperty ("alignActive", "").toString();
@@ -1718,6 +1720,7 @@ bool Project::fromVar (const var& root)
             click.accent = (bool) ck.getProperty ("accent", true); click.sound = juce::jlimit (0, 4, (int) ck.getProperty ("sound", 2));       // (0 .. 4: Click, Woodblock, Soft, Low pulse, Drum kit)
             click.levelDb = (float) juce::jlimit (-60.0, 0.0, (double) ck.getProperty ("levelDb", -14.0)); click.outputs = outs (ck["outputs"]);
             click.quaverTicks = (bool) ck.getProperty ("quaverTicks", false); click.tickDb = (float) juce::jlimit (-60.0, 0.0, (double) ck.getProperty ("tickDb", -20.0));
+            click.toTalkback = (bool) ck.getProperty ("toTalkback", false);
         }
     }
     altMixer = root["altMixer"].toString().isEmpty() ? juce::Uuid::null() : juce::Uuid (root["altMixer"].toString());

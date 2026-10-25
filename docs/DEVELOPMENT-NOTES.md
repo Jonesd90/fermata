@@ -700,6 +700,28 @@ A full review of the audio thread and the recording path (read line by line; the
 
 **Tests ("2.89 ..." sections):** the tunings (seven temperaments on a key, A at the reference, pure major / minor chords), the pipe's voice (exact pitch, the swell, released notes die away, a chord never clips), the click (sample-exact beats, the accent, four sounds), the engine adding both to their outputs only, after the mixers, the analysis (spaced main pair, a centre and a left spot, pan-aware delays, a hall pair, the flags, two main pairs in line / not, bleed from an instrument near the main pair, a stereo spot pair's two suggestions, what cannot be measured), per-piece sets in the engine and their save / load, BWF chunks read back and crash repair keeping them, a bounce with its piece's alignment, the PDF writer, the take sheet. Render hooks FERMATA_RENDER=pitchpipe (FERMATA_PP_CHORD=1: chord mode with C E G lit) / click / align (roles set, Analyse pressed). The demo project (scratchpad rend/mkproj.cpp) has a fourth take, a run-through made from a simulated hall - eight sources, the mics at their places with cardioid / omni patterns, a Schroeder reverb per mic - on which the window measures the organ, harp, choir and soloists' spots within 0.1 ms of the geometry.
 
+## 3.1.0: the click and the pitch pipe To talkback, with a Click / Pipe box in the stage speaker mixer
+
+**Engine.** `AuxSounds` (`PitchPipe.h`) is split into `render (n)` (the pitch pipe and click make this block once, before the outputs are filled), `talkbackMix (n)` and `addToOutputs (out, numOut, n)` (Plays to, as before). `process()` stays as render + addToOutputs.
+- `talkbackMix` returns the mono sum of the sources whose To talkback flag is on (`setPipeToTalkback` / `setClickToTalkback`, atomics), or nullptr when that is silence. A flag switched on or off ramps 0 to 1 (or back) over the block, so it never clicks.
+- `AudioEngine::process` calls `aux.render` just before the talkback block. In it, `auxMix` is added to each TB output, once per side it serves (mask & 1, mask & 2, like Playback's tapL / tapR), through the new `stageAux` gain (ramped with `stagePrevAux`) and before the Output fader and the peak light. `aux.addToOutputs` stays where `aux.process` was, after LTC.
+- The talkback rule still holds: the TB outputs carry only the talkback mic, recorded playback, and now these two synthesised sounds; never a live microphone.
+
+**Gains and project.** `setStageMix (..., float auxDb = 0.0f)` gives the Click / Pipe box its gain (-60 dB = off). `Project::stageAuxDb` holds it (saved as `stageAuxDb`, clamped -60 .. +10 on load). `PitchPipeDef::toTalkback` and `ClickDef::toTalkback` hold the buttons (saved in `pitchPipe` / `click`). Older projects load with both off at 0 dB. `AppContext::applyAux` passes the flags on; `applyStageMix`, the start-up call and `StageSpeakerPanel::push` pass `stageAuxDb`.
+
+**UI.**
+- `StageSpeakerPanel` has a fourth kind of strip (`kind` 3, "Click/Pipe", level only) between Playback and Output; `syncFromProject` follows it. The air before Playback is now found by `kind == 1`, not by position. `reservedWidth` is four boxes.
+- The Click and Pitch pipe windows have `tbButton`, set up by `setUpTalkbackButton` (`OutputPicker.h`: toggling, TB orange `0xffff8a2e`, tooltip). It sits at the right of the Plays to row (the picker gets 140 px less), follows the project in each window's timer, and puts a notice up when it is switched on with no TB output chosen. Both windows' help texts, the Click/Pipe tooltip and the main window's TB tooltip say what it does.
+
+**Tests.** core_test "3.1.0 To talkback":
+- **Button off:** the TB pair is silent while Plays to sounds.
+- **Button on:** both sides carry the click at the level its window gives it, and Plays to is unchanged.
+- **Click / Pipe box:** -6 dB halves it in TB only; -60 dB is off there and nowhere else.
+- **Output fader:** it comes after the Click / Pipe box.
+- **Pitch pipe:** with Plays to empty, it is heard only in the TB pair, and only with its button on.
+- **Fade-in:** exact, sample by sample, against the pipe's own signal.
+- **Project:** the settings round-trip, and older projects come back off at 0 dB.
+
 ## 3.0.2: R records only into an open take window; the ReHarmoniSer asks before closing
 
 **R.** `pollTransportKeys` and `remoteRecord` (the Stream Deck's Record and the controller's RecordTake) now take their take window from `counterTakeWindow()`: the take window used last if it is open, then the one recorded into last if open, then the first open one. That is the window the take counters show, so the counter and R can never disagree. With none open they do nothing but `noTakeWindowNotice()`: "Make a take window first ..." when the project has none, "No take window is open: open one ..." otherwise. Before, R went `lastTakeWindowId` (which falls back to `recentTake`, possibly closed), then `recordTarget`, then the first take window, and Record went `recordTarget`, then the first, all regardless of whether the window was open. A minimised take window counts as open, as it does for the counter. The windows that own R (`ownsRKeyProperty`: `JobDialogBase` - ReTouch / Noise mode / Pitch / ReHarmoniSer and the other tool dialogs - the edit window, ReTimEr, plug-in windows) are unchanged: their own R jobs never reached this path. The take window's own REC / R records into itself, as before.

@@ -185,6 +185,7 @@ void AppContext::applyAux()
     const auto& ck = project.click;
     aux.setPipeOutputs (pp.outputs); aux.pipe.setLevelDb (pp.levelDb); aux.pipe.setTone (pp.tone); aux.pipe.setKeyboard (pp.keyboard);
     aux.setClickOutputs (ck.outputs); aux.click.setLevelDb (ck.levelDb);
+    aux.setPipeToTalkback (pp.toTalkback); aux.setClickToTalkback (ck.toTalkback);          // (their To talkback buttons: through the stage speaker mixer's Click / Pipe box)
     aux.click.setTempo (ck.bpm); aux.click.setBeatsPerBar (ck.beatsPerBar); aux.click.setAccent (ck.accent); aux.click.setSound (ck.sound);
     aux.click.setBeatUnit (ck.beatUnit); aux.click.setQuaverTicks (ck.quaverTicks); aux.click.setTickDb (ck.tickDb);
     if (! hasProject()) { aux.click.setRunning (false); aux.pipe.allOff(); }
@@ -219,7 +220,7 @@ void AppContext::applyTalkback()
     applyLtc();
     applyAux();
     engine.setTalkbackRouting (project.crMicInputs, project.tbOutputs);
-    engine.setStageMix (project.stageGainDb, project.stagePan, project.stagePlaybackDb, project.stageOutputDb);
+    engine.setStageMix (project.stageGainDb, project.stagePan, project.stagePlaybackDb, project.stageOutputDb, project.stageAuxDb);
     engine.setCrMic (crMicOpen());
     engine.setTalkbackPlayback (tbPlaybackOn());
     // (the coloured borders that used to flash round the screen are gone: Pre-Rec, C-R and P-B are shown as squares in the menu bar)

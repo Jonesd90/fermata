@@ -83,7 +83,7 @@ private:
     juce::ToggleButton chordToggle { "Chord: choose the notes, then hold Play" };
     juce::ToggleButton keyboardToggle { "Keyboard sound" };
     HoldButton playButton { "Play" };
-    juce::TextButton clearButton { "Clear" }, octDown { "< Octave" }, octUp { "Octave >" };
+    juce::TextButton clearButton { "Clear" }, octDown { "< Octave" }, octUp { "Octave >" }, tbButton { "To talkback" };
     PianoKeys keys;
     OutputPicker outputs;
     juce::Slider level, tone;

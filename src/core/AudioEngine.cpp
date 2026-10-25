@@ -973,6 +973,10 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
             }
     }
 
+    // the pitch pipe and the click: this block of both is made now, so the talkback pair below can carry them (To talkback); they go onto their own
+    // outputs (Plays to) further down, where they always did
+    aux.render (numSamples);
+
     // The talkback outputs (any number of pairs). Whatever the mixers' routing put on them is thrown away: they only ever carry what is allowed below.
     {
         bool anyTb = false;
@@ -984,6 +988,8 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
             const float target = (crOn.load (std::memory_order_relaxed) && anySel) ? 1.0f : 0.0f;
             const float g0 = crGain;
             const float pbT = stagePb.load (std::memory_order_relaxed), outT = stageOut.load (std::memory_order_relaxed);
+            const float auxT = stageAux.load (std::memory_order_relaxed);
+            const float* auxMix = aux.talkbackMix (numSamples);               // the click / pitch pipe whose To talkback button is on (mono), or nullptr
             const float invN = 1.0f / (float) juce::jmax (1, numSamples);
             for (int o = 0; o < numOut && o < kMaxInputs; ++o)
             {
@@ -1001,6 +1007,11 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
                 {
                     if (mask & 1) addRamp (tapL, stagePrevPb, pbT);
                     if (mask & 2) addRamp (tapR, stagePrevPb, pbT);
+                }
+                if (auxMix != nullptr)                                           // the click and the pitch pipe (made here, never a microphone): the same on both sides
+                {
+                    if (mask & 1) addRamp (auxMix, stagePrevAux, auxT);
+                    if (mask & 2) addRamp (auxMix, stagePrevAux, auxT);
                 }
                 if (target > 0.0f || crGain > 0.0f)
                     for (int ci = 0; ci < numIn && ci < kMaxInputs; ++ci)        // every selected input is added (the fade is the same for all)
@@ -1023,7 +1034,7 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
                 }
             }
             for (int ci = 0; ci < kMaxInputs; ++ci) { stagePrevL[ci] = stageL[(size_t) ci].load (std::memory_order_relaxed); stagePrevR[ci] = stageR[(size_t) ci].load (std::memory_order_relaxed); }
-            stagePrevPb = pbT; stagePrevOut = outT;
+            stagePrevPb = pbT; stagePrevAux = auxT; stagePrevOut = outT;
             crGain = target;
         }
         else crGain = 0.0f;
@@ -1042,8 +1053,8 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
         else { if (ltcGen.isRunning()) ltcGen.stop(); ltcOutRunning.store (false, std::memory_order_relaxed); }
     }
 
-    // the pitch pipe and the click, on the outputs chosen for them (after everything else: heard, never recorded)
-    aux.process (out, numOut, numSamples);
+    // the pitch pipe and the click, on the outputs chosen for them (after everything else: heard, never recorded; made above, before the talkback pair)
+    aux.addToOutputs (out, numOut, numSamples);
 
     // output meters
     for (int c = 0; c < numOut && c < kMaxInputs; ++c)

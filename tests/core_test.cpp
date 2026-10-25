@@ -1617,6 +1617,8 @@ int main()
         auto v = juce::JSON::parse (json);
         CHECK ((bool) v["recording"] && (int) v["takeNumber"] == 7 && v["sessionText"].toString() == "01:00:00" && v["colours"]["cr"].toString() == "#a83cff");
         CHECK ((int) v["deskProtocol"] == 1);                      // (the Stream Deck + XL plug-in tells "open a project" from "needs a newer Fermata" by this)
+        remote::State none; none.takeNumber = 0;                   // 3.0.1: no take window open - the plug-in (1.8.1) draws a dash for 0
+        CHECK ((int) juce::JSON::parse (none.toJson())["takeNumber"] == 0 && ! (bool) juce::JSON::parse (none.toJson())["recording"]);
     }
 
     SECTION ("talkback: the TB pair can only carry the CR mic and recorded audio");
@@ -7071,6 +7073,77 @@ int main()
         CHECK (pk[0] == 0.0f && pk[1] > 0.1f && pk[3] > 0.1f && pk[2] > 0.01f);
         e.auxSounds().click.setRunning (false); e.auxSounds().pipe.allOff();
         CHECK (e.auxSounds().clickGoesTo (3) && ! e.auxSounds().clickGoesTo (0) && e.auxSounds().pipeGoesTo (2));
+    }
+
+    SECTION ("3.1.0 To talkback: the click and the pitch pipe reach the talkback pair only with their button on, through the Click / Pipe box and the Output fader");
+    {
+        Project q;
+        q.setInputCount (2); q.setOutputCount (4);
+        q.tracks.clear(); q.retireAllMixers(); q.addMixer ("M");
+        AudioEngine e (q);
+        e.prepare (48000.0, 64);
+        e.setTalkbackRouting (std::vector<int>(), 2);                          // the talkback pair = outputs 2-3, no talkback mic
+        auto& aux = e.auxSounds();
+        aux.setClickOutputs ({ 0 }); aux.setPipeOutputs ({});                  // Plays to: the click on output 0, the pipe nowhere
+        aux.click.setSound (ClickTrack::Woodblock); aux.click.setAccent (false); aux.click.setTempo (300.0); aux.click.setLevelDb (-6.0f);
+        aux.click.setRunning (true);
+        auto peaks = [&e] (int blocks)                                          // a few blocks for the fades to settle, then the loudest sample of each output
+        {
+            std::array<float, 4> pk {};
+            for (int b = 0; b < 4 + blocks; ++b)
+            {
+                std::vector<float> i0 (64, 0.0f), i1 (64, 0.0f), o[4] = { std::vector<float> (64), std::vector<float> (64), std::vector<float> (64), std::vector<float> (64) };
+                const float* in[2] = { i0.data(), i1.data() }; float* out[4] = { o[0].data(), o[1].data(), o[2].data(), o[3].data() };
+                e.process (in, 2, out, 4, 64);
+                if (b >= 4) for (int c = 0; c < 4; ++c) for (float x : o[c]) pk[(size_t) c] = juce::jmax (pk[(size_t) c], std::abs (x));
+            }
+            return pk;
+        };
+        const int window = 260;                                                 // 347 ms: at least one whole hit at 300 beats a minute
+        const auto off = peaks (window);
+        CHECK (off[0] > 0.1f && off[2] == 0.0f && off[3] == 0.0f);              // the button off: Plays to only; the talkback pair stays silent
+        aux.setClickToTalkback (true);
+        const auto on = peaks (window);
+        CHECK (on[2] > 0.1f && std::abs (on[2] - on[3]) < 1e-6f && std::abs (on[0] - off[0]) < 1e-4f);   // on: both sides of the pair; Plays to unchanged
+        CHECK (std::abs (on[2] - on[0]) < 1e-4f);                               // at 0 dB in the Click / Pipe box: the level its window gives it
+        e.setStageMix ({}, {}, 0.0f, 0.0f, -6.0f);
+        const auto half = peaks (window);
+        CHECK (half[2] > on[2] * 0.45f && half[2] < on[2] * 0.56f && std::abs (half[0] - on[0]) < 1e-4f);   // the Click / Pipe box: -6 dB is about half, in the talkback pair only
+        e.setStageMix ({}, {}, 0.0f, -60.0f, 0.0f);
+        CHECK (peaks (window)[2] < 1e-6f);                                      // the Output fader comes after it
+        e.setStageMix ({}, {}, 0.0f, 0.0f, -60.0f);
+        { const auto down = peaks (window); CHECK (down[2] < 1e-6f && down[0] > 0.1f); }    // the box all the way down: off in the talkback speakers, nowhere else
+        e.setStageMix ({}, {}, 0.0f, 0.0f, 0.0f);
+        aux.setClickToTalkback (false);
+        CHECK (peaks (window)[2] == 0.0f);                                      // off again: silent (after the one-block fade)
+        aux.click.setRunning (false);
+        peaks (200);                                                            // (a hit already sounding finishes: a woodblock rings for 180 ms)
+        // the pitch pipe the same way: playing nowhere (Plays to empty), it is heard in the talkback pair only with its button on
+        aux.pipe.setSlot (0, 261.63, true);
+        { const auto p0 = peaks (40); CHECK (p0[0] == 0.0f && p0[2] == 0.0f); }
+        aux.setPipeToTalkback (true);
+        { const auto p1 = peaks (40); CHECK (p1[2] > 0.01f && p1[3] > 0.01f && p1[0] == 0.0f && p1[1] == 0.0f); }
+        // switching the button on fades the talkback copy in over one block, sample by sample (no click): with Plays to on output 0 as well, output 0 is the
+        // pipe itself and output 2 must be exactly it times (k + 1) / 64
+        aux.setPipeOutputs ({ 0 }); aux.setPipeToTalkback (false); peaks (8);
+        {
+            aux.setPipeToTalkback (true);
+            std::vector<float> i0 (64, 0.0f), i1 (64, 0.0f), o[4] = { std::vector<float> (64), std::vector<float> (64), std::vector<float> (64), std::vector<float> (64) };
+            const float* in[2] = { i0.data(), i1.data() }; float* out[4] = { o[0].data(), o[1].data(), o[2].data(), o[3].data() };
+            e.process (in, 2, out, 4, 64);
+            int checked = 0, wrong = 0;
+            for (int k = 0; k < 64; ++k)
+                if (std::abs (o[0][(size_t) k]) > 0.005f) { ++checked; if (std::abs (o[2][(size_t) k] - o[0][(size_t) k] * (float) (k + 1) / 64.0f) > 1.0e-5f) ++wrong; }
+            CHECK (checked > 16 && wrong == 0);
+        }
+        aux.setPipeOutputs ({});
+        aux.pipe.allOff(); aux.setPipeToTalkback (false);
+        // kept with the project
+        Project a; a.pitchPipe.toTalkback = true; a.click.toTalkback = true; a.stageAuxDb = -7.5f;
+        Project b; CHECK (b.fromVar (a.toVar()));
+        CHECK (b.pitchPipe.toTalkback && b.click.toTalkback && std::abs (b.stageAuxDb + 7.5f) < 1e-4f);
+        Project c; CHECK (c.fromVar (Project().toVar()));
+        CHECK (! c.pitchPipe.toTalkback && ! c.click.toTalkback && c.stageAuxDb == 0.0f);      // (older projects: off, 0 dB)
     }
 
     SECTION ("2.90 the pitch pipe's pitch is locked from the start of a note to the end of its fade-out, a held note retuned glides");

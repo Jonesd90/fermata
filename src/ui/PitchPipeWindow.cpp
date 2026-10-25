@@ -163,6 +163,14 @@ PitchPipeComponent::PitchPipeComponent (AppContext& a)
     addAndMakeVisible (keys);
 
     addAndMakeVisible (outputs);
+    setUpTalkbackButton (tbButton, "the pitch pipe");
+    tbButton.setToggleState (def().toTalkback, juce::dontSendNotification);
+    tbButton.onClick = [this]
+    {
+        def().toTalkback = tbButton.getToggleState(); settingsChanged (true);
+        if (def().toTalkback && app.project.tbOutputs.empty()) app.setNotice ("To talkback is on, but no talkback output is chosen: press TB under one of the main window's outputs.");
+    };
+    addAndMakeVisible (tbButton);
     level.setSliderStyle (juce::Slider::LinearHorizontal);
     level.setTextBoxStyle (juce::Slider::TextBoxRight, false, 64, 22);
     level.setRange (-40.0, 0.0, 0.5);
@@ -188,6 +196,8 @@ PitchPipeComponent::PitchPipeComponent (AppContext& a)
 
     info.setText ("The pitch pipe plays a soft reed note - like a real pitch pipe - on the outputs ticked under Plays to: the stage speakers for the performers, "
                   "or your control-room speakers to check a note yourself while they record, without them hearing it. Nothing it plays is recorded.\n\n"
+                  "To talkback (beside Plays to): it also goes to the talkback speakers, with the talkback mic and Playback. Its level there is the "
+                  "Click/Pipe box at the top right of the main window.\n\n"
                   "Click a key and hold it: it sounds while you hold it (a quick click still gives a short note); slide along the keys for one note after another. "
                   "The keyboard shows two octaves; the Octave buttons move it.\n\n"
                   "Chord: tick it, click the keys of the chord (they light up), then hold Play. Pure major / pure minor chord tunes the chord pure on its root: "
@@ -341,6 +351,7 @@ void PitchPipeComponent::timerCallback()
     if (keyBox.getSelectedId() != d.key + 1) keyBox.setSelectedId (d.key + 1, juce::dontSendNotification);
     if (keys.lowest != d.lowestC) { keys.lowest = d.lowestC; keys.repaint(); }
     if (keyboardToggle.getToggleState() != d.keyboard) keyboardToggle.setToggleState (d.keyboard, juce::dontSendNotification);
+    if (tbButton.getToggleState() != d.toTalkback) tbButton.setToggleState (d.toTalkback, juce::dontSendNotification);
 }
 
 void PitchPipeComponent::paint (juce::Graphics& g)
@@ -386,9 +397,11 @@ void PitchPipeComponent::resized()
     }
     r.removeFromBottom (14);
     {
-        const int outH = outputs.heightFor (r.getWidth() - 80);
+        const int outH = juce::jmax (26, outputs.heightFor (r.getWidth() - 80 - 140));
         auto row = r.removeFromBottom (outH);
-        outCap.setBounds (row.removeFromLeft (80).withHeight (24)); outputs.setBounds (row);
+        outCap.setBounds (row.removeFromLeft (80).withHeight (24));
+        tbButton.setBounds (row.removeFromRight (126).withHeight (26)); row.removeFromRight (14);               // To talkback, beside Plays to (and separate from it)
+        outputs.setBounds (row);
     }
     r.removeFromBottom (14);
     rule2 = r.getBottom() - 1;

@@ -89,6 +89,14 @@ public:
         addAndMakeVisible (soundInfo);
 
         addAndMakeVisible (outputs);
+        setUpTalkbackButton (tbButton, "the click");
+        tbButton.setToggleState (def().toTalkback, juce::dontSendNotification);
+        tbButton.onClick = [this]
+        {
+            def().toTalkback = tbButton.getToggleState(); changed();
+            if (def().toTalkback && app.project.tbOutputs.empty()) app.setNotice ("To talkback is on, but no talkback output is chosen: press TB under one of the main window's outputs.");
+        };
+        addAndMakeVisible (tbButton);
         level.setSliderStyle (juce::Slider::LinearHorizontal);
         level.setTextBoxStyle (juce::Slider::TextBoxRight, false, 64, 22);
         level.setRange (-40.0, 0.0, 0.5);
@@ -106,7 +114,9 @@ public:
                       "tuning), Low pulse (a low thud, felt as much as heard) and Drum kit (a kick on the first beat, a snare in the middle of the bar - beat 3 "
                       "of 4 - and a hi-hat on the others). Changes are heard at once, even while it runs.\n\n"
                       "Quavers: tick the box for a very quiet hi-hat on every quaver (eighth note), whichever sound you chose - 8 to the bar in 4/4. The slider "
-                      "sets how far below the beat it sits.");
+                      "sets how far below the beat it sits.\n\n"
+                      "To talkback (beside Plays to): the click also goes to the talkback speakers, with the talkback mic and Playback. Its level there is the "
+                      "Click/Pipe box at the top right of the main window.");
         addAndMakeVisible (info);
         update();
         startTimerHz (30);
@@ -169,10 +179,12 @@ public:
         }
         soundInfo.setBounds (r.removeFromTop (40).withTrimmedLeft (70));
         r.removeFromTop (8);
-        const int outH = outputs.heightFor (r.getWidth() - 70);
+        const int outH = juce::jmax (26, outputs.heightFor (r.getWidth() - 70 - 140));
         {
             auto row = r.removeFromTop (outH);
-            outCap.setBounds (row.removeFromLeft (70).withHeight (24)); outputs.setBounds (row);
+            outCap.setBounds (row.removeFromLeft (70).withHeight (24));
+            tbButton.setBounds (row.removeFromRight (126).withHeight (26)); row.removeFromRight (14);           // To talkback, beside Plays to (and separate from it)
+            outputs.setBounds (row);
         }
         r.removeFromTop (8);
         {
@@ -216,12 +228,13 @@ private:
         if (c != lastCount) { lastCount = c; shownBeat = ck.beatInBar(); lastBeatAt = juce::Time::getMillisecondCounter(); repaint (lights.expanded (4)); }
         else if (juce::Time::getMillisecondCounter() - lastBeatAt < 200) repaint (lights.expanded (4));
         if (startButton.getButtonText() != (ck.running() ? "Stop" : "Start")) update();
+        if (tbButton.getToggleState() != def().toTalkback) tbButton.setToggleState (def().toTalkback, juce::dontSendNotification);    // (a project load ...)
         if (std::abs (tempo.getValue() - def().bpm) > 1.0e-6) tempo.setValue (def().bpm, juce::dontSendNotification);
     }
 
     AppContext& app;
     juce::Label tempoCap, barCap, quaverCap, soundCap, outCap, levelCap, slash, soundInfo, status;
-    juce::TextButton startButton { "Start" }, tapButton { "Tap" };
+    juce::TextButton startButton { "Start" }, tapButton { "Tap" }, tbButton { "To talkback" };
     juce::Slider tempo, level, tickLevel;
     juce::ComboBox beatsBox, unitBox;
     juce::ToggleButton accentToggle { "Accent the first beat of the bar" }, quaverToggle { "Quiet hi-hat on every quaver" };

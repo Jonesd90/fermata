@@ -598,7 +598,7 @@ public:
     void prepare (double sampleRate, int maxBlock)
     {
         pipe.prepare (sampleRate); click.prepare (sampleRate);
-        bufPipe.assign ((size_t) juce::jmax (1, maxBlock), 0.0f); bufClick.assign ((size_t) juce::jmax (1, maxBlock), 0.0f);
+        bufPipe.assign ((size_t) juce::jmax (1, maxBlock), 0.0f); bufClick.assign ((size_t) juce::jmax (1, maxBlock), 0.0f); bufTb.assign ((size_t) juce::jmax (1, maxBlock), 0.0f);
     }
     /** The outputs (0-based driver output channels) each source goes to. */
     void setPipeOutputs (const std::vector<int>& outs) noexcept  { setMask (pipeTo, outs); }
@@ -606,17 +606,53 @@ public:
     bool pipeGoesTo (int ch) const noexcept  { return juce::isPositiveAndBelow (ch, kMaxInputs) && pipeTo[(size_t) ch].load (std::memory_order_relaxed); }
     bool clickGoesTo (int ch) const noexcept { return juce::isPositiveAndBelow (ch, kMaxInputs) && clickTo[(size_t) ch].load (std::memory_order_relaxed); }
 
-    /** Audio thread: adds both sources to the outputs. */
-    void process (float* const* out, int numOut, int n) noexcept
+    /** Each source's To talkback button (its window): it also goes to the talkback pair, through the stage speaker mixer's Click / Pipe level - whatever
+        Plays to says (3.1.0). Message thread. */
+    void setPipeToTalkback (bool on) noexcept  { pipeTb.store (on, std::memory_order_relaxed); }
+    void setClickToTalkback (bool on) noexcept { clickTb.store (on, std::memory_order_relaxed); }
+    bool pipeToTalkback() const noexcept  { return pipeTb.load (std::memory_order_relaxed); }
+    bool clickToTalkback() const noexcept { return clickTb.load (std::memory_order_relaxed); }
+
+    /** Audio thread, once a block, before the outputs are filled: makes this block of both sources (talkbackMix and addToOutputs then use it). */
+    void render (int n) noexcept
     {
-        if (n > (int) bufPipe.size()) return;
-        if (pipe.render (bufPipe.data(), n))
+        made = n > 0 && n <= (int) bufPipe.size() ? n : 0;                  // (a block longer than prepared for: silence, as always)
+        pipeMade  = made > 0 && pipe.render (bufPipe.data(), n);
+        clickMade = made > 0 && click.render (bufClick.data(), n);
+    }
+    /** Audio thread, after render(): what the talkback pair gets this block - the sources whose To talkback button is on, mixed (mono) - or nullptr when
+        that is silence. A button switched on or off fades in or out over the block, so it never clicks. */
+    const float* talkbackMix (int n) noexcept
+    {
+        const float pT = pipeTb.load (std::memory_order_relaxed) ? 1.0f : 0.0f, cT = clickTb.load (std::memory_order_relaxed) ? 1.0f : 0.0f;
+        const bool usePipe = pipeMade && (pT > 0.0f || tbPrevPipe > 0.0f), useClick = clickMade && (cT > 0.0f || tbPrevClick > 0.0f);
+        const float p0 = tbPrevPipe, c0 = tbPrevClick;
+        tbPrevPipe = pT; tbPrevClick = cT;
+        if ((! usePipe && ! useClick) || made != n) return nullptr;
+        juce::FloatVectorOperations::clear (bufTb.data(), n);
+        auto addRamp = [this, n] (const float* src, float a0, float a1)
+        {
+            if (a0 == a1) { juce::FloatVectorOperations::addWithMultiply (bufTb.data(), src, a0, n); return; }
+            const float st = (a1 - a0) / (float) n;
+            for (int i = 0; i < n; ++i) bufTb[(size_t) i] += src[i] * (a0 + st * (float) (i + 1));
+        };
+        if (usePipe)  addRamp (bufPipe.data(), p0, pT);
+        if (useClick) addRamp (bufClick.data(), c0, cT);
+        return bufTb.data();
+    }
+    /** Audio thread, after everything else: adds the block render() made to the outputs chosen for each source (Plays to). */
+    void addToOutputs (float* const* out, int numOut, int n) noexcept
+    {
+        if (made != n) return;
+        if (pipeMade)
             for (int c = 0; c < numOut && c < kMaxInputs; ++c)
                 if (out[c] != nullptr && pipeTo[(size_t) c].load (std::memory_order_relaxed)) juce::FloatVectorOperations::add (out[c], bufPipe.data(), n);
-        if (click.render (bufClick.data(), n))
+        if (clickMade)
             for (int c = 0; c < numOut && c < kMaxInputs; ++c)
                 if (out[c] != nullptr && clickTo[(size_t) c].load (std::memory_order_relaxed)) juce::FloatVectorOperations::add (out[c], bufClick.data(), n);
     }
+    /** Audio thread: both sources onto their outputs in one go (render, then addToOutputs) - for anything that has no talkback pair to feed. */
+    void process (float* const* out, int numOut, int n) noexcept { render (n); addToOutputs (out, numOut, n); }
 
 private:
     static void setMask (std::array<std::atomic<bool>, kMaxInputs>& m, const std::vector<int>& outs) noexcept
@@ -626,6 +662,9 @@ private:
         for (int c = 0; c < kMaxInputs; ++c) m[(size_t) c].store (want[c], std::memory_order_relaxed);
     }
     std::array<std::atomic<bool>, kMaxInputs> pipeTo {}, clickTo {};
-    std::vector<float> bufPipe, bufClick;
+    std::atomic<bool> pipeTb { false }, clickTb { false };
+    std::vector<float> bufPipe, bufClick, bufTb;
+    int made = 0; bool pipeMade = false, clickMade = false;          // audio thread: what render() made this block
+    float tbPrevPipe = 0.0f, tbPrevClick = 0.0f;                      // audio thread: last block's To talkback states (a switch fades over a block)
 };
 } // namespace td
