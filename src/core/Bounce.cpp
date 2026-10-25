@@ -2,6 +2,7 @@
 #include "Playback.h"
 #include "Dither.h"
 #include <set>
+#include "AudioFormats.h"
 
 namespace td
 {
@@ -39,7 +40,7 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
     if (! settings.folder.createDirectory()) { res.error = "Cannot create the folder " + settings.folder.getFullPathName(); return res; }
 
     juce::AudioFormatManager formats;
-    formats.registerBasicFormats();
+    td::registerAudioFormats (formats);
     // the files are opened as the render reaches them and closed once it has passed them (see PlaybackSession::renderSegments); a file that cannot be
     // read, or is at another sample rate, stops the render with its name
     std::vector<std::unique_ptr<juce::AudioFormatReader>> readers;

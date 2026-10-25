@@ -6,6 +6,7 @@
 #include "WaveStore.h"
 #include <set>
 #include <thread>
+#include "../core/AudioFormats.h"
 
 namespace td
 {
@@ -413,7 +414,7 @@ private:
         juce::Component::SafePointer<RetimerPanel> self (this);
         job->start ([snapshot, q, folder, ltc, result] (AudioJob& j) -> juce::String
         {
-            juce::AudioFormatManager fm; fm.registerBasicFormats();
+            juce::AudioFormatManager fm; td::registerAudioFormats (fm);
             std::map<juce::String, juce::int64> lengths;
             auto fileLen = [&] (const juce::File& f) -> juce::int64
             {

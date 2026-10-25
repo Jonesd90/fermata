@@ -73,6 +73,10 @@ int main()
         a.send ("hello\r\n  \ndesk\npart"); juce::Thread::sleep (30); a.send ("ial\n");
         CHECK (waitFor ([&] { const juce::ScopedLock sl (gotLock); return received.size() >= 3; }));
         { const juce::ScopedLock sl (gotLock); CHECK (received.size() == 3 && received[0] == "hello" && received[1] == "desk" && received[2] == "partial"); }
+        // 3.0.0: bytes that are not UTF-8 (a character cut off, a Latin-1 byte) are read as the Windows code page, never as UTF-8 unchecked
+        a.send ("caf\xe9\nB \xe2\x9c\n");
+        CHECK (waitFor ([&] { const juce::ScopedLock sl (gotLock); return received.size() >= 5; }));
+        { const juce::ScopedLock sl (gotLock); CHECK (received.size() == 5 && received[3] == "caf" + juce::String::charToString (0xE9)); }
         CHECK (waitFor ([&] { return hub.connections (true) == 1; }));
 
         SECTION ("lines out: to everyone, or only to those that asked for the desk messages; newlines inside a message never split it");

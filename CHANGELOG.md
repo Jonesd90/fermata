@@ -6,6 +6,21 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.0.0
+**The testing tools' sweep: every part of Fermata that reads something from outside was given damaged and random input, tens of thousands of times over, and checked with the memory, thread and undefined-behaviour checkers.** Nothing works differently; these are the problems they found, fixed.
+- **A damaged WAV file never crashes Fermata.** A file whose header claims a length the file cannot hold (an RF64 file whose 64-bit size is nonsense - a damaged card or drive) is now read as the length the file really holds. Before, playing, drawing or importing it could crash the program.
+- **Recordings mended on opening: RF64 files under 4 GB are mended too.** Some recorders write RF64 whatever the length; such a file left unfinished was given sizes that players ignore, so it still showed as empty. Its own 64-bit sizes are now put right (the audio is never touched, as before).
+- **Listeners' comment files** saved by a spreadsheet in the Windows character set (é, ½, curly quotes ...) are read correctly. Before, such a character could make the import read past the end of the text and crash. **A long list now reads at once**: 40,000 comments took hours, now a tenth of a second; a stray quote mark no longer stalls a big file.
+- **Track names from field recorders' files** (iXML), **messages from a Merging device** and **lines from the Stream Deck's control port** that are not in UTF-8 are read in the Windows character set instead of crashing; an iXML name with an é in it is no longer lost.
+- **A Merging device message about a channel Fermata does not have** (a changed device, a message that went astray) is ignored instead of crashing the program; so is a damaged Mastering renders list.
+- **A damaged AAF file** whose index loops back on itself is refused at once ("The AAF file is damaged"). Before, it could fill the memory until the program died.
+- A few more impossible numbers are refused cleanly instead of being calculated with: a channel number no device has in ANEMAN's answer, a track number in a field recorder's file, a typed timecode with hours in the hundreds of thousands.
+
+**The mixer's fader caps sit on their marks**
+- A fader at 0.0 dB showed its cap at about -4 on the scale, and one at +4.9 dB looked nearer 0: the cap travelled a little less than the scale beside it, so it was drawn up to 12 pixels low near the top and up to 12 pixels high near the bottom (at -inf it sat above the inf mark). The line across the cap is now exactly at the level the reading below shows, all the way from +12 to -inf. The levels themselves were always right - only the cap was drawn in the wrong place - and the cap still moves exactly as far as the mouse.
+
+**For whoever works on the code next:** `tools/tool-checks.sh` runs all the tool checks again, `tests/fuzz_readers.cpp` is the damaged-input test, the 3.0.0 section of `docs/DEVELOPMENT-NOTES.md` has every result, and `docs/CODE-SWEEP-BRIEF.md` is the brief for the deep sweep (Fable 5.1).
+
 ## 2.103.0
 **ReTimEr: slow the music down or speed it up, without changing its pitch** (edit window: the button with the red spring, after ReHarmoniSer)
 - **A whole piece:** click a piece and press ReTimEr. The piece - from the edit point before it to the edit point after it (any fix joins and snips inside it go along) - is retimed evenly, together with **20 s of its take on either side**, so its edit points can still be trimmed afterwards. The pieces after it move along.

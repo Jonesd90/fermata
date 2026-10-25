@@ -2,6 +2,7 @@
 #include <thread>
 #include <map>
 #include <algorithm>
+#include "TextBytes.h"
 
 namespace td
 {
@@ -135,7 +136,7 @@ int WebSocketClient::receive (juce::String& out, int timeoutMs)
         {
             if (opcode != 0) message.reset();
             message.append (payload.getData(), payload.getSize());
-            if (fin) { out = juce::String::fromUTF8 (static_cast<const char*> (message.getData()), (int) message.getSize()); return 1; }
+            if (fin) { out = textFromBytes (message.getData(), message.getSize()); return 1; }     // (never taken as UTF-8 unchecked: see TextBytes.h)
             inMessage = true; wait = 5000;
         }
     }
@@ -191,7 +192,10 @@ HwPreamp RavennaDevice::readChannel (const juce::var& module, int index, bool is
 {
     HwPreamp h;
     h.moduleId = (int) module["id"]; h.index = index; h.name = module["name"].toString();
-    const auto ch = module["custom"]["ins"]["channels"][index];
+    // (checked: a var's [] with a number crashes on anything but a list that long - and a device message can replace the list with a shorter one
+    //  before the channel list is made again. 3.0.0)
+    const auto* chans = module["custom"]["ins"]["channels"].getArray();
+    const auto ch = chans != nullptr ? (*chans)[index] : juce::var();
     h.m48V = boolOf (ch["m48V"]); h.pad = boolOf (ch["pad"]); h.lowCut = boolOf (ch["lowCut"]); h.phase = boolOf (ch["phase"]); h.cut = boolOf (ch["cut"]); h.lift = boolOf (ch["lift"]); h.zIn = boolOf (ch["z_in"]);
     h.line = (int) ch["inputMode"] == 1;
     h.micGain = (int) ch["micGain"]; h.lineGain = (int) ch["lineGain"];
@@ -229,7 +233,11 @@ bool RavennaDevice::applyPath (juce::var& module, const juce::String& rel, const
         {
             const int j = rel.indexOfChar (i, ']'); if (j < 0) return false;
             idx = rel.substring (i + 1, j).getIntValue(); key = {}; i = j + 1;
-            cur = cur[idx];
+            // (a var's [] with a number does not check that it is a list or that the number is in it: a path for a channel this module does not
+            // have - a device that changed, a message that went astray - crashed the program. 3.0.0 fuzz test)
+            auto* list = cur.getArray();
+            if (list == nullptr || ! juce::isPositiveAndBelow (idx, list->size())) return false;
+            cur = list->getReference (idx);
         }
         else return false;
     }
@@ -661,16 +669,18 @@ AnemanPlan planFromAneman (const juce::var& devices, const juce::var& connection
     {
         if ((int) c["Output"]["DeviceId"] != asioId) continue;
         const int src = (int) c["Input"]["DeviceId"]; if (src == asioId) continue;
+        const int inputId = (int) c["Input"]["InputId"], outputId = (int) c["Output"]["OutputId"];
+        if (! juce::isPositiveAndBelow (inputId, 10000) || ! juce::isPositiveAndBelow (outputId, 10000)) continue;    // (a channel number no device has: a damaged answer - adding to it overflowed. 3.0.0 fuzz test)
         const auto* d = findDev (src); if (d == nullptr) continue;
         int base = 0, ch = -1;
         if (auto* groups = (*d)["IOGroups"].getArray())
             for (auto& g : *groups)
             {
                 if (! isPreampGroup (g)) continue;
-                if ((int) g["Id"] == (int) c["Input"]["IOGroupId"]) { ch = base + (int) c["Input"]["InputId"]; break; }
+                if ((int) g["Id"] == (int) c["Input"]["IOGroupId"]) { ch = base + inputId; break; }
                 base += g["Inputs"].getArray()->size();
             }
-        if (ch >= 0) patched[src][ch] = (int) c["Output"]["OutputId"];
+        if (ch >= 0) patched[src][ch] = outputId;
     }
 
     struct Found { PreampDeviceCfg cfg; int count = 0; };
@@ -707,6 +717,7 @@ AnemanPlan planFromAneman (const juce::var& devices, const juce::var& connection
     for (auto& c : *conns)
     {
         if ((int) c["Input"]["DeviceId"] != asioId) continue;
+        if (! juce::isPositiveAndBelow ((int) c["Input"]["InputId"], 10000) || ! juce::isPositiveAndBelow ((int) c["Output"]["OutputId"], 10000)) continue;
         const auto* d = findDev ((int) c["Output"]["DeviceId"]); if (d == nullptr) continue;
         juce::String grp;
         if (auto* groups = (*d)["IOGroups"].getArray()) for (auto& g : *groups) if ((int) g["Id"] == (int) c["Output"]["IOGroupId"]) grp = g["Name"].toString();

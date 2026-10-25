@@ -7,6 +7,7 @@ namespace reviewpage
 namespace
 {
 #include "ReviewPageTemplate.inc"
+#include "AudioFormats.h"
 
 juce::String htmlEscape (const juce::String& s) { return s.replace ("&", "&amp;").replace ("<", "&lt;").replace (">", "&gt;").replace ("\"", "&quot;"); }
 
@@ -41,7 +42,7 @@ int peakColumnsFor (double d) { return juce::jlimit (3000, 40000, (int) std::cei
 std::vector<int> computePeaks (const juce::File& file, float gain, int columns, const std::atomic<bool>* cancel)
 {
     std::vector<int> out ((size_t) columns * 2, 0);
-    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    juce::AudioFormatManager fm; td::registerAudioFormats (fm);
     std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (file));
     if (r == nullptr || r->lengthInSamples <= 0) return out;
     const juce::int64 n = r->lengthInSamples;

@@ -3,6 +3,7 @@
 #include <map>
 #include <set>
 #include <regex>
+#include "TextBytes.h"
 
 namespace td
 {
@@ -36,14 +37,17 @@ juce::StringArray readIXmlTrackNames (const juce::File& f, int channels)
         if (std::memcmp (id, "iXML", 4) == 0 && size < 4u * 1024u * 1024u)
         {
             juce::MemoryBlock mb; in->readIntoMemoryBlock (mb, (juce::int64) size);
-            auto xml = juce::XmlDocument::parse (juce::String::fromUTF8 ((const char*) mb.getData(), (int) mb.getSize()));
+            // (textFromBytes: bytes that are not valid UTF-8 are read as the Windows code page instead of being taken as UTF-8 anyway, which made
+            // the XML reader read past the end of the text - 3.0.0 fuzz test)
+            auto xml = juce::XmlDocument::parse (textFromBytes (mb.getData(), mb.getSize()));
             if (xml != nullptr)
                 if (auto* tl = xml->getChildByName ("TRACK_LIST"))
                 {
                     for (int c = 0; c < channels; ++c) names.add ({});
                     for (auto* t : tl->getChildWithTagNameIterator ("TRACK"))
                     {
-                        const int idx = t->getChildElementAllSubText ("INTERLEAVE_INDEX", "0").getIntValue() - 1;
+                        const int number = t->getChildElementAllSubText ("INTERLEAVE_INDEX", "0").getIntValue();
+                        const int idx = number > 0 ? number - 1 : -1;        // (1-based; "-2147483648" minus one overflowed: 3.0.0 fuzz test)
                         const auto nm = t->getChildElementAllSubText ("NAME", {}).trim();
                         if (juce::isPositiveAndBelow (idx, channels) && nm.isNotEmpty()) names.set (idx, nm);
                     }

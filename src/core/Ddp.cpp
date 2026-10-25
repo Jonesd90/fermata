@@ -1,6 +1,8 @@
 #include <limits>
 #include "Ddp.h"
 #include <map>
+#include "AudioFormats.h"
+#include "TextBytes.h"
 
 namespace td
 {
@@ -60,7 +62,7 @@ juce::String streamProgram (const PqLayout& L, const std::vector<juce::File>& fi
                             const std::function<bool (const juce::int16*, int)>& sink, std::atomic<float>* progress, const std::atomic<bool>* cancel)
 {
     if (files.size() != L.tracks.size()) return "The number of audio files does not match the number of tracks.";
-    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    juce::AudioFormatManager fm; td::registerAudioFormats (fm);
     const double totalSectors = juce::jmax (1, L.leadOut - fromSector);
     juce::int64 skip = (juce::int64) fromSector * kSamplesPerSector;
     int doneSectors = 0;
@@ -458,7 +460,7 @@ bool verifyFileset (const juce::File& folder, juce::String& report)
     juce::String pqName, imageName, textName;
     for (size_t r = 0; r + kDdpMsLen <= ms.getSize(); r += (size_t) kDdpMsLen)
     {
-        const auto rec = juce::String::fromUTF8 (static_cast<const char*> (ms.getData()) + r, kDdpMsLen);
+        const auto rec = textFromBytes (static_cast<const char*> (ms.getData()) + r, (size_t) kDdpMsLen);
         const auto kind = rec.substring (0, 6), name = rec.substring (74, 128).trim();
         const int size = rec.substring (14, 22).getIntValue();
         if (kind == "VVVMD0") { imageSectors = size; imageName = name; }
@@ -475,7 +477,7 @@ bool verifyFileset (const juce::File& folder, juce::String& report)
         else
             for (int r = 0; r < pqBytes / kPqLen; ++r)
             {
-                const auto rec = juce::String::fromUTF8 (static_cast<const char*> (pq.getData()) + r * kPqLen, kPqLen);
+                const auto rec = textFromBytes (static_cast<const char*> (pq.getData()) + r * kPqLen, (size_t) kPqLen);
                 if (rec.substring (0, 4) != "VVVS") { problems.add ("PQ record " + juce::String (r + 1) + " is damaged."); continue; }
                 const auto trk = rec.substring (4, 6), idx = rec.substring (6, 8); const int sec = sectorFromDigits (rec.substring (10, 16));
                 if (trk == "AA") { leadOut = sec; continue; }

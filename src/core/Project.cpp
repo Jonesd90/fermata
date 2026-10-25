@@ -6,6 +6,7 @@
 #include <cstring>
 #include <set>
 #include <tuple>
+#include "AudioFormats.h"
 
 namespace td
 {
@@ -2956,7 +2957,7 @@ Project::RelinkReport Project::relinkAudio (const juce::File& searchFolder, cons
 
     juce::StringArray trackNames;
     for (auto& n : names) if (n.trim().isNotEmpty()) trackNames.add (n);
-    juce::AudioFormatManager formats; formats.registerBasicFormats();
+    juce::AudioFormatManager formats; td::registerAudioFormats (formats);
     const auto results = relink::find (wanted, searchFolder, formats, progress, inUse, trackNames);
     std::map<String, juce::File> replace;
     for (size_t k = 0; k < wanted.size(); ++k)

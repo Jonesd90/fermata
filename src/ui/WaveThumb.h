@@ -4,6 +4,7 @@
 #include <atomic>
 #include <memory>
 #include <vector>
+#include "../core/AudioFormats.h"
 
 namespace td
 {
@@ -134,7 +135,7 @@ private:
     }
     static void readFile (juce::WeakReference<WaveThumb> weak, std::shared_ptr<Data> data, juce::File f)
     {
-        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        juce::AudioFormatManager fm; td::registerAudioFormats (fm);
         std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (f));
         if (r == nullptr) { data->failed = true; data->done = data->points; tell (weak); return; }
         const int block = kSamplesPerPoint * 512;                                  // 131072 samples a time

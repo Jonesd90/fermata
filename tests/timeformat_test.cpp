@@ -1,6 +1,7 @@
 // Headless test of the time readout's writing and reading of positions (src/core/TimeFormat.h).
 #include "../src/core/TimeFormat.h"
 #include <cstdio>
+#include <limits>
 
 using namespace td;
 using namespace td::timefmt;
@@ -56,6 +57,8 @@ int main()
         CHECK (format (f, 38.9).text == "3 734 400");
         CHECK (format (f, -1.0).text == "-96 000");
         CHECK (format (fmt (Mode::samples, 1, 0.0, 44100.0), 10.0).text == "441 000");
+        // 3.0.0: the lowest number there is (a typed "-1e30" lands there): grouped without overflowing
+        CHECK (detail::grouped (std::numeric_limits<long long>::min()) == "-9 223 372 036 854 775 808");
     }
 
     SECTION ("Timecode");
@@ -132,6 +135,7 @@ int main()
         CHECK (std::fabs (p (f, "00:00:01:13") - 1.52) < 1e-9);
         CHECK (p (f, "00:00:01:25") == -9999.0);                             // frame 25 does not exist at 25 fps
         CHECK (p (f, "00:60:00:00") == -9999.0);
+        CHECK (p (f, "99999999999999999999:00:00:00") == -9999.0);           // 3.0.0: an hours figure no timecode has (it overflowed the frame count)
         CHECK (p (f, "1:30") == 90.0);                                       // a short time is still minutes : seconds
         auto fo = fmt (Mode::timecode, 1, 3600.0);
         CHECK (std::fabs (p (fo, "01:00:10:00") - 10.0) < 1e-9);             // the start timecode is taken off

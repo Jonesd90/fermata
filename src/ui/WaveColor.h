@@ -9,6 +9,7 @@
 #include <mutex>
 #include <set>
 #include <vector>
+#include "../core/AudioFormats.h"
 
 namespace td
 {
@@ -44,7 +45,7 @@ struct WaveColorData
 class WaveColorCache
 {
 public:
-    WaveColorCache() : pool (1) { formats.registerBasicFormats(); }
+    WaveColorCache() : pool (1) { td::registerAudioFormats (formats); }
     ~WaveColorCache() { *alive = false; pool.removeAllJobs (true, 20000); }
 
     std::function<void()> onReady;

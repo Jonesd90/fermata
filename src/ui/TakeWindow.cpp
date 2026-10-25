@@ -7,6 +7,7 @@
 #include "ColourPicker.h"
 #include "MarkerStrip.h"
 #include "TakeSheetExport.h"
+#include "../core/AudioFormats.h"
 
 namespace td
 {
@@ -106,7 +107,7 @@ public:
     TakeTimeline (AppContext& a, const juce::Uuid& wid, juce::Viewport& vp)
         : app (a), windowId (wid), viewport (vp)
     {
-        formatManager.registerBasicFormats();
+        td::registerAudioFormats (formatManager);
         setWantsKeyboardFocus (true);
         startTimerHz (30);
         app.project.addChangeListener (this);

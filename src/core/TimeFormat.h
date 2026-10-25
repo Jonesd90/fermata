@@ -68,7 +68,8 @@ inline Text clockText (long long totalMs, bool negative, int minutesDigits)   //
 /** 1234567 -> "1 234 567". */
 inline juce::String grouped (long long n)
 {
-    auto digits = juce::String (n < 0 ? -n : n);
+    const auto magnitude = n < 0 ? 0ull - (unsigned long long) n : (unsigned long long) n;     // (-n of the lowest number overflows: 3.0.0 fuzz test)
+    auto digits = juce::String ((juce::uint64) magnitude);
     juce::String out;
     for (int i = 0; i < digits.length(); ++i)
     {
@@ -186,6 +187,7 @@ inline std::optional<double> parse (const Format& f, juce::String text)
     if (f.mode == Mode::timecode && n.size() == 4 && text.indexOfChar ('.') < 0)
     {
         const double fps = f.fps(); const int nominal = f.nominal();
+        if (n[0] >= 100000.0 || n[1] >= 60.0 || n[2] >= 60.0 || n[3] >= (double) nominal) return std::nullopt;      // (checked before they become whole numbers: a huge hours figure overflowed the frame count - 3.0.0 fuzz test)
         const long long h = (long long) n[0], m = (long long) n[1], s = (long long) n[2], fr = (long long) n[3];
         if (m > 59 || s > 59 || fr >= nominal) return std::nullopt;
         long long frames = ((h * 60 + m) * 60 + s) * nominal + fr;

@@ -17,6 +17,7 @@
 #include <map>
 #include <set>
 #include <limits>
+#include "../core/AudioFormats.h"
 
 namespace td { namespace fixtools
 {
@@ -407,7 +408,7 @@ bool isAudioFile (const juce::File& f) { return f.hasFileExtension ("wav;wave;bw
 static juce::AudioFormatManager& formats()
 {
     static juce::AudioFormatManager fm; static bool done = false;
-    if (! done) { fm.registerBasicFormats(); done = true; }
+    if (! done) { td::registerAudioFormats (fm); done = true; }
     return fm;
 }
 
@@ -2956,7 +2957,7 @@ static void openImportDialog (AppContext& app, const juce::Uuid& wid, const juce
     auto* appPtr = &app;
     const bool launched = juce::Thread::launch ([sh, ticker, appPtr, wid, eid, safeParent]
     {
-        juce::AudioFormatManager fm; fm.registerBasicFormats();            // (its own, so nothing is shared with the message thread)
+        juce::AudioFormatManager fm; td::registerAudioFormats (fm);            // (its own, so nothing is shared with the message thread)
         sh->sources = inspectFiles (fm, sh->files, sh->problems, [sh] (int d, int) { sh->done = d; return ! sh->cancel.load(); });
         juce::MessageManager::callAsync ([sh, ticker, appPtr, wid, eid, safeParent]
         {

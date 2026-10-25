@@ -10,6 +10,8 @@
 #include "VolumeDialog.h"
 #include "MarkerStrip.h"
 #include "FeedbackUi.h"
+#include "../core/AudioFormats.h"
+#include "../core/TextBytes.h"
 
 namespace td
 {
@@ -34,7 +36,7 @@ public:
     EditTimeline (AppContext& a, const juce::Uuid& eid, juce::Viewport& vp)
         : app (a), editId (eid), viewport (vp)
     {
-        formatManager.registerBasicFormats();
+        td::registerAudioFormats (formatManager);
         setWantsKeyboardFocus (true);
         startTimerHz (30);
         app.project.addChangeListener (this);
@@ -2424,7 +2426,7 @@ void EditWindowComponent::importFeedback()
         for (auto& f : files)                                                    // JSON (our own listening copy) has plain seconds; a marker list has timecode with frames
         {
             juce::FileInputStream in (f); char c[64] = {}; const int n = in.failedToOpen() ? 0 : in.read (c, 63);
-            const juce::String head = juce::String::fromUTF8 (c, n).trimStart().trimCharactersAtStart (juce::String::charToString (0xFEFF)).trimStart();
+            const juce::String head = textFromBytes (c, (size_t) n).trimStart().trimCharactersAtStart (juce::String::charToString (0xFEFF)).trimStart();
             if (! head.startsWithChar ('{') && ! head.startsWithChar ('[')) needFps = true;
         }
         double fps = 25.0;

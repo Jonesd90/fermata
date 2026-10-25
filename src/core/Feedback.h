@@ -1,8 +1,10 @@
 #pragma once
 #include "Common.h"
 #include <algorithm>
+#include <unordered_map>
 #include <cmath>
 #include <vector>
+#include "TextBytes.h"
 
 namespace td
 {
@@ -84,25 +86,38 @@ inline std::vector<std::vector<juce::String>> splitTable (const juce::String& te
     const auto firstLine = text.upToFirstOccurrenceOf ("\n", false, false);
     const int nTab = firstLine.retainCharacters ("\t").length(), nComma = firstLine.retainCharacters (",").length(), nSemi = firstLine.retainCharacters (";").length();
     const juce::juce_wchar delim = (nTab >= nComma && nTab >= nSemi && nTab > 0) ? '\t' : (nSemi > nComma ? ';' : ',');
-    std::vector<juce::String> row; juce::String field; bool quoted = false, wasQuoted = false;
-    auto endField = [&] { row.push_back (wasQuoted ? field : field.trim()); field.clear(); wasQuoted = false; };
+    // The characters are taken out once and each field is gathered as characters: text[i] walks the text from its start every time, and adding
+    // to a juce::String one character at a time copies it every time, so a long list (or one stray quote that made the rest of it one field) took
+    // minutes. (3.0.0)
+    std::vector<juce::juce_wchar> chars; chars.reserve ((size_t) text.getNumBytesAsUTF8());
+    for (auto p = text.getCharPointer(); ! p.isEmpty();) chars.push_back (p.getAndAdvance());
+    std::vector<juce::String> row; std::vector<juce::juce_wchar> field; bool quoted = false, wasQuoted = false;
+    auto fieldText = [&field]
+    {
+        field.push_back (0);
+        juce::String t (juce::CharPointer_UTF32 (reinterpret_cast<const juce::CharPointer_UTF32::CharType*> (field.data())));
+        field.pop_back();
+        return t;
+    };
+    auto fieldBlank = [&field] { for (auto ch : field) if (! juce::CharacterFunctions::isWhitespace (ch)) return false; return true; };
+    auto endField = [&] { row.push_back (wasQuoted ? fieldText() : fieldText().trim()); field.clear(); wasQuoted = false; };
     auto endRow = [&] { endField(); bool blank = true; for (auto& f : row) if (f.isNotEmpty()) blank = false; if (! blank) rows.push_back (row); row.clear(); };
-    const int n = text.length();
+    const int n = (int) chars.size();
     for (int i = 0; i < n; ++i)
     {
-        const auto c = text[i];
+        const auto c = chars[(size_t) i];
         if (quoted)
         {
-            if (c == '"') { if (i + 1 < n && text[i + 1] == '"') { field += "\""; ++i; } else quoted = false; }
-            else field += juce::String::charToString (c);
+            if (c == '"') { if (i + 1 < n && chars[(size_t) i + 1] == '"') { field.push_back ('"'); ++i; } else quoted = false; }
+            else field.push_back (c);
         }
-        else if (c == '"' && field.trim().isEmpty()) { quoted = true; wasQuoted = true; field.clear(); }
+        else if (c == '"' && fieldBlank()) { quoted = true; wasQuoted = true; field.clear(); }
         else if (c == delim) endField();
-        else if (c == '\r') { if (i + 1 < n && text[i + 1] == '\n') ++i; endRow(); }
+        else if (c == '\r') { if (i + 1 < n && chars[(size_t) i + 1] == '\n') ++i; endRow(); }
         else if (c == '\n') endRow();
-        else field += juce::String::charToString (c);
+        else field.push_back (c);
     }
-    if (field.isNotEmpty() || ! row.empty()) endRow();
+    if (! field.empty() || ! row.empty()) endRow();
     return rows;
 }
 
@@ -217,15 +232,10 @@ inline juce::String parse (const void* data, size_t size, double frameRate, cons
 {
     out = {};
     if (size == 0) return "The file is empty.";
-    const auto* b = static_cast<const unsigned char*> (data);
-    juce::String text;
-    if (size >= 2 && b[0] == 0xFF && b[1] == 0xFE)       { for (size_t i = 2; i + 1 < size; i += 2) text += juce::String::charToString ((juce::juce_wchar) (b[i] | (b[i + 1] << 8))); }
-    else if (size >= 2 && b[0] == 0xFE && b[1] == 0xFF)  { for (size_t i = 2; i + 1 < size; i += 2) text += juce::String::charToString ((juce::juce_wchar) ((b[i] << 8) | b[i + 1])); }
-    else
-    {
-        size_t skip = (size >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF) ? 3 : 0;
-        text = juce::String::fromUTF8 (static_cast<const char*> (data) + skip, (int) (size - skip));
-    }
+    if (size > (size_t) 256 * 1024 * 1024) return "The file is too big to be a list of comments.";
+    // UTF-16 with its mark, UTF-8 with or without one - and when the bytes are not UTF-8 at all, the Windows code page a spreadsheet saves in
+    // (see TextBytes.h: bytes that are not UTF-8 used to be taken as UTF-8 anyway, and the text then read past its own end - 3.0.0 fuzz test)
+    juce::String text = textFromBytes (data, size);
     text = text.trim();
     if (text.startsWithChar ('{') || text.startsWithChar ('['))
     {
@@ -240,11 +250,16 @@ inline juce::String parse (const void* data, size_t size, double frameRate, cons
 inline int merge (std::vector<FeedbackNote>& into, const std::vector<FeedbackNote>& incoming, int* updated = nullptr)
 {
     int added = 0, upd = 0;
+    // each key's first place in the list, looked up rather than searched for (walking the list for every note made a long list take seconds: 3.0.0)
+    struct KeyHash { size_t operator() (const juce::String& k) const noexcept { return (size_t) k.hashCode64(); } };
+    std::unordered_map<juce::String, size_t, KeyHash> at;
+    at.reserve (into.size() + incoming.size());
+    for (size_t i = 0; i < into.size(); ++i) at.emplace (into[i].key, i);
     for (auto& n : incoming)
     {
-        auto it = std::find_if (into.begin(), into.end(), [&] (const FeedbackNote& o) { return o.key == n.key; });
-        if (it == into.end()) { into.push_back (n); ++added; }
-        else { const bool d = it->done; if (it->text != n.text || it->bar != n.bar || it->who != n.who) ++upd; *it = n; it->done = d || n.done; }
+        const auto found = at.find (n.key);
+        if (found == at.end()) { at.emplace (n.key, into.size()); into.push_back (n); ++added; }
+        else { auto& o = into[found->second]; const bool d = o.done; if (o.text != n.text || o.bar != n.bar || o.who != n.who) ++upd; o = n; o.done = d || n.done; }
     }
     std::stable_sort (into.begin(), into.end(), [] (const FeedbackNote& a, const FeedbackNote& b) { return a.seconds < b.seconds; });
     if (updated) *updated = upd;

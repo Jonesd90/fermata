@@ -5,6 +5,7 @@
 #include "Dither.h"
 #include "ReviewPage.h"
 #include "Loudness.h"
+#include "AudioFormats.h"
 
 namespace td
 {
@@ -301,7 +302,7 @@ juce::String LoudnessCheck::text() const
 
 juce::String MasterExportJob::finalise (const juce::File& src, const juce::File& dest, double rate, float gain, const MasterJobItem& item, float& peakOut, MasterFormat fmt)
 {
-    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    juce::AudioFormatManager fm; td::registerAudioFormats (fm);
     std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (src));
     if (r == nullptr) return "Cannot read " + src.getFileName();
     const auto& o = spec.out;
@@ -440,7 +441,7 @@ MasterExportResult MasterExportJob::executeInner()
 
     // ---- 2. sample rate, and the peak of every file
     stage = 1; sub = 0.0f;
-    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    juce::AudioFormatManager fm; td::registerAudioFormats (fm);
     std::vector<juce::File> proc; std::vector<float> peaks ((size_t) n, 0.0f); std::vector<double> rates ((size_t) n, 0.0);
     R.frames.assign ((size_t) n, 0);
     for (int i = 0; i < n; ++i)

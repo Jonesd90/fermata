@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "TextBytes.h"
 
 namespace td::remote
 {
@@ -93,7 +94,8 @@ public:
                 size_t from = 0, nl;
                 while ((nl = in.find ('\n', from)) != std::string::npos)
                 {
-                    const auto line = juce::String::fromUTF8 (in.data() + from, (int) (nl - from)).trim();
+                    // (a line that is not valid UTF-8 is never taken as UTF-8 unchecked - the text would read past its end: see TextBytes.h)
+                    const auto line = textFromBytes (in.data() + from, (size_t) (nl - from)).trim();
                     from = nl + 1;
                     if (line.isNotEmpty() && hub.onLine != nullptr) hub.onLine (*this, line);
                 }

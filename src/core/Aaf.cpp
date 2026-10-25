@@ -53,14 +53,17 @@ struct Cfb
         std::vector<std::uint32_t> difat;
         for (int i = 0; i < 109; ++i) difat.push_back (rd32 (d + 76 + 4 * i));
         std::uint32_t s = firstDif;
-        for (std::uint32_t k = 0; k < nDif && s < 0xFFFFFFFAu; ++k)
+        // (a damaged index can say it has billions of parts, or point back at itself: never more parts than the file has sectors - each adds 127
+        // entries, and without this a looping chain filled the memory until the program died. 3.0.0)
+        const std::uint32_t sectors = (std::uint32_t) juce::jmin<size_t> (size / ss, 0xFFFFFFF0u);
+        for (std::uint32_t k = 0; k < nDif && k < sectors && s < 0xFFFFFFFAu; ++k)
         {
             const size_t off = ((size_t) s + 1) * ss;
             if (off + ss > size) return "The AAF file is damaged (index).";
             for (std::uint32_t j = 0; j + 1 < ss / 4; ++j) difat.push_back (rd32 (d + off + 4 * j));
             s = rd32 (d + off + ss - 4);
         }
-        for (std::uint32_t i = 0; i < nFat && i < difat.size(); ++i)
+        for (std::uint32_t i = 0; i < nFat && i < difat.size() && fat.size() <= (size_t) sectors; ++i)     // (the file's sectors are all the sector index needs to cover)
         {
             const size_t off = ((size_t) difat[i] + 1) * ss;
             if (off + ss > size) continue;

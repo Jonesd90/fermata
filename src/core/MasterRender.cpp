@@ -3,6 +3,7 @@
 #include "Playback.h"
 #include <map>
 #include <set>
+#include "AudioFormats.h"
 
 namespace td
 {
@@ -178,9 +179,10 @@ std::map<juce::String, MasterRenders::Entry> MasterRenders::load() const
             Entry e;
             e.active = (int) kv.value["active"]; e.pinned = (bool) kv.value["pinned"]; e.stale = (bool) kv.value["stale"];
             if (e.active < 0 || e.active > 1) e.active = -1;
+            const auto* slots = kv.value["slots"].getArray();     // (checked: a var's [] with a number crashes on anything but a list long enough)
             for (int i = 0; i < 2; ++i)
             {
-                const auto sv = kv.value["slots"][i];
+                const auto sv = slots != nullptr ? (*slots)[i] : juce::var();
                 e.s[i].fp = sv["fp"].toString(); e.s[i].rate = (double) sv["rate"]; e.s[i].frames = (juce::int64) sv["frames"];
             }
             m[kv.name.toString()] = e;
@@ -352,7 +354,7 @@ juce::String MasterRenderBatch::run (std::atomic<float>* progress, const std::at
     juce::ScopedNoDenormals noDenormals;                               // (as on the audio thread)
     if (prepareError.isNotEmpty()) return prepareError;
     MasterRenders store (folder);
-    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    juce::AudioFormatManager fm; td::registerAudioFormats (fm);
     juce::String problem;
     for (auto& g : groups)
     {

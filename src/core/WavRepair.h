@@ -38,7 +38,7 @@ inline Result inspect (const juce::File& f, bool repair, bool extendToFileEnd = 
     if (len < 44 || in.read (hdr, 12) != 12 || std::memcmp (hdr + 8, "WAVE", 4) != 0) return r;
     const bool isRf64 = std::memcmp (hdr, "RF64", 4) == 0;
     if (! isRf64 && std::memcmp (hdr, "RIFF", 4) != 0) return r;
-    juce::int64 pos = 12, dataOffset = -1, junkOffset = -1, ds64Offset = -1; juce::uint32 declared = 0, junkSize = 0; int blockAlign = 0;
+    juce::int64 pos = 12, dataOffset = -1, junkOffset = -1, ds64Offset = -1; juce::uint32 declared = 0, junkSize = 0, ds64Size = 0; int blockAlign = 0;
     juce::int64 ds64Data = -1;
     while (pos + 8 <= len)
     {
@@ -57,7 +57,7 @@ inline Result inspect (const juce::File& f, bool repair, bool extendToFileEnd = 
         {
             unsigned char d[28];
             if (in.read (d, 28) != 28) break;
-            ds64Offset = pos; ds64Data = (juce::int64) ((juce::uint64) rd32 (d + 8) | ((juce::uint64) rd32 (d + 12) << 32));
+            ds64Offset = pos; ds64Size = size; ds64Data = (juce::int64) ((juce::uint64) rd32 (d + 8) | ((juce::uint64) rd32 (d + 12) << 32));
         }
         else if (std::memcmp (ch, "data", 4) == 0) { dataOffset = pos + 8; declared = size; break; }
         pos += 8 + (juce::int64) size + (size & 1);
@@ -65,9 +65,13 @@ inline Result inspect (const juce::File& f, bool repair, bool extendToFileEnd = 
     if (dataOffset < 0 || blockAlign <= 0 || r.channels <= 0) return r;
     const juce::int64 avail = len - dataOffset;
     juce::int64 good = isRf64 && declared == 0xffffffffu && ds64Data >= 0 ? ds64Data : (juce::int64) declared;
-    const bool stale = extendToFileEnd && good > 0 && good + blockAlign <= avail;       // (a pad byte at the end is not audio)
-    const bool broken = good == 0 || (declared == 0xffffffffu && ! isRf64) || good > avail || stale;
-    if (broken) good = avail;
+    const bool stale = extendToFileEnd && good > 0 && good <= avail - blockAlign;       // (a pad byte at the end is not audio; written so that a nonsense 64-bit size cannot overflow: 3.0.0)
+    // An RF64 file whose 32-bit data size is a real number but whose 64-bit one says something else: the 32-bit one is right (it is only meant to be
+    // read when it is 0xffffffff), but most readers - JUCE's among them - go by the 64-bit one regardless, so the two are made to agree.
+    const bool ds64Disagrees = isRf64 && ds64Offset == 12 && declared != 0xffffffffu && ds64Data != (juce::int64) declared;
+    const bool sizeWrong = good == 0 || (declared == 0xffffffffu && ! isRf64) || good > avail || stale;
+    const bool broken = sizeWrong || ds64Disagrees;
+    if (sizeWrong) good = avail;                                        // (the sizes only disagreeing: the 32-bit one stands)
     good -= good % blockAlign;                                          // never half a frame
     r.ok = true; r.wasBroken = broken && good > 0; r.frames = good / blockAlign;
     const bool needsRf64 = good >= 0xffffffffLL || len - 8 >= 0xffffffffLL;
@@ -76,8 +80,19 @@ inline Result inspect (const juce::File& f, bool repair, bool extendToFileEnd = 
     {
         juce::FileOutputStream out (f);
         if (out.failedToOpen()) { r.ok = false; return r; }
-        if (! needsRf64)
+        if (isRf64 && ds64Offset == 12 && ds64Size >= 28)
         {
+            // Already RF64 (a recording that had passed 4 GB, or a recorder that writes RF64 whatever the size): readers go by its 64-bit sizes, so
+            // those are what is put right, and the 32-bit ones say "see the 64-bit ones". The chunk keeps its size and any table it has. (Until 3.0
+            // a small RF64 file was given 32-bit sizes only, which readers ignore: the file still read as empty, or - with a nonsense 64-bit size -
+            // could crash the reader.)
+            out.setPosition (4);              wr32 (out, 0xffffffffu);
+            out.setPosition (20);             wr64 (out, len - 8); wr64 (out, good); wr64 (out, good / blockAlign);
+            out.setPosition (dataOffset - 4); wr32 (out, 0xffffffffu);
+        }
+        else if (! needsRf64)
+        {
+            if (isRf64) { out.setPosition (0); out.write ("RIFF", 4); }      // marked RF64 but without the 64-bit sizes: under 4 GB a plain header says it all
             out.setPosition (4);              wr32 (out, (juce::uint32) (len - 8));
             out.setPosition (dataOffset - 4); wr32 (out, (juce::uint32) good);
         }

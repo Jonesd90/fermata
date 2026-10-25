@@ -1,4 +1,5 @@
 #include "MasteringWindow.h"
+#include "../core/AudioFormats.h"
 
 namespace td
 {
@@ -829,7 +830,7 @@ static std::vector<float> computeEnvelope (std::vector<EditRegion> regions, juce
 {
     std::vector<float> out ((size_t) bins, 0.0f);
     if (total <= 0 || rate <= 0.0) return out;
-    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    juce::AudioFormatManager fm; td::registerAudioFormats (fm);
     std::map<juce::String, std::unique_ptr<juce::AudioFormatReader>> readers;
     const double binLen = (double) total / (double) bins;
     for (auto& r : regions)

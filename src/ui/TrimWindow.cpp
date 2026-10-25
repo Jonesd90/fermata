@@ -1,4 +1,5 @@
 #include "TrimWindow.h"
+#include "../core/AudioFormats.h"
 
 namespace td
 {
@@ -427,7 +428,7 @@ private:
 // ============================================================================
 TrimComponent::TrimComponent (AppContext& a, const juce::Uuid& eid, const juce::Uuid& rid, bool atEnd) : app (a), editId (eid), regionBId (rid), endEdge (atEnd)
 {
-    formats.registerBasicFormats();
+    td::registerAudioFormats (formats);
     waves.reset (new TrimWaves (*this));
     waves->extraZoom = app.trimWaveZoom;
     addAndMakeVisible (*waves);

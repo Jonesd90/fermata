@@ -1,6 +1,7 @@
 #include "AlignWindow.h"
 #include "FermataLookAndFeel.h"
 #include "../core/AudioOps.h"
+#include "../core/AudioFormats.h"
 
 namespace td
 {
@@ -19,7 +20,7 @@ juce::String metres (double ms) { return juce::String (std::abs (ms) * 0.343, 1)
 struct AlignComponent::Job : public juce::Thread
 {
     Job (Source s, std::vector<timealign::TrackIn> t, std::vector<juce::Uuid> i)
-        : juce::Thread ("Align spot mics"), src (std::move (s)), tins (std::move (t)), ids (std::move (i)) { formats.registerBasicFormats(); }
+        : juce::Thread ("Align spot mics"), src (std::move (s)), tins (std::move (t)), ids (std::move (i)) { td::registerAudioFormats (formats); }
     ~Job() override { stopThread (4000); }
 
     void run() override

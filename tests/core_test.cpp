@@ -37,6 +37,8 @@
 #include "../src/core/WavRepair.h"
 #include "../src/core/SaveWriter.h"
 #include "../src/core/Retime.h"
+#include "../src/core/AudioFormats.h"
+#include "../src/core/TextBytes.h"
 #include <cstdio>
 #include <thread>
 
@@ -6813,8 +6815,10 @@ int main()
             juce::uint8 want[4]; const juce::uint8 l[] = { 0x10, 0x20, 0x30, 0x40 }; mcu::handshakeResponse (l, want);
             CHECK (r[12] == want[0] && r[13] == want[1] && r[14] == want[2] && r[15] == want[3] && (want[0] | want[1] | want[2] | want[3]) < 0x80);
             const juce::uint8 ok[] = { 0x00, 0x00, 0x66, 0x14, 0x03, 'S', 'E', 'R', 'I', 'A', 'L', '1' };
-            ev = mcu::decode (juce::MidiMessage::createSysExMessage (ok, 12));
-            CHECK (ev.kind == mcu::Event::Kind::Handshake && ! ev.hasReply);
+            // (a fresh Event: moving one into 'ev' would lose the long SysEx reply it holds - JUCE's MidiMessage move-assignment does not free
+            //  it, which the 3.0.0 leak check reported. The program never re-assigns an Event: Surface.cpp hands each one straight on.)
+            const auto ev2 = mcu::decode (juce::MidiMessage::createSysExMessage (ok, 12));
+            CHECK (ev2.kind == mcu::Event::Kind::Handshake && ! ev2.hasReply);
         }
         // encoding what Fermata sends
         {
@@ -9046,6 +9050,182 @@ int main()
             for (size_t i = 0; i < a2[0].size(); ++i) diff = juce::jmax (diff, (double) std::abs (a2[0][i] - b2[0][i]));
             CHECK (diff < 2.0e-3);
             CHECK (p.note.contains ("hands back") && std::abs (e2.regions[2].startSample - sec (15.6)) <= sec (0.03));   // it handed back in the breath
+        }
+    }
+
+    SECTION ("3.0.0 tool pass: damaged and foreign input from outside is read safely and quickly (what the fuzz test found)");
+    {
+        // ---- text from outside: real UTF-8 is UTF-8; anything else is the Windows code page, with nothing swallowed and nothing read past the end
+        {
+            auto t = [] (const char* s) { return textFromBytes (s, std::strlen (s)); };
+            CHECK (t ("Caf\xc3\xa9") == juce::String (juce::CharPointer_UTF8 ("Caf\xc3\xa9")));
+            CHECK (t ("Caf\xe9 </NAME>") == "Caf" + juce::String::charToString (0xE9) + " </NAME>");               // (JUCE's own check let this through as UTF-8)
+            CHECK (t ("B \xe2\x9c") == "B " + juce::String::charToString (0xE2) + juce::String::charToString (0x0153));   // cut off at the end
+            CHECK (t ("\xc0\xaf").length() == 2 && t ("\xed\xa0\x80").length() == 3);                            // overlong form, surrogate: not UTF-8
+            CHECK (t ("\xf0\x9f\x8e\xbb").length() == 1 && t ("\xf0\x9f\x8e\xbb")[0] == 0x1F3BB);
+            CHECK (t ("\xef\xbb\xbfX") == "X" && t ("\x80") == juce::String::charToString (0x20AC));
+            const unsigned char u16[] = { 0xFF, 0xFE, 'h', 0, 0xE9, 0 };
+            CHECK (textFromBytes (u16, sizeof (u16)) == "h" + juce::String::charToString (0xE9));
+            CHECK (textFromBytes (nullptr, 3).isEmpty() && t ("").isEmpty());
+        }
+        // ---- comments files: bytes that are not UTF-8 (a spreadsheet saved in the Windows code page) are read as that code page, never past the end
+        {
+            const char ansi[] = "Text\tStart\tWho\r\nCaf\xe9 noise\t00:00:01:00\tAnna\r\nOver \xbd a bar late\t00:00:02:00\tBo\r\n";
+            feedback::Parsed out;
+            const auto err = feedback::parse (ansi, sizeof (ansi) - 1, 25.0, "ansi", out);
+            CHECK (err.isEmpty() && out.notes.size() == 2);
+            if (out.notes.size() == 2) CHECK (out.notes[0].text == juce::String (juce::CharPointer_UTF8 ("Caf\xc3\xa9 noise")) && out.notes[1].who == "Bo");
+            const char cut[] = "Text\tStart\r\nA\t00:00:01:00\r\nB \xe2\x9c";            // a UTF-8 character cut off at the end of the file
+            feedback::Parsed out2;
+            (void) feedback::parse (cut, sizeof (cut) - 1, 25.0, "cut", out2);
+            CHECK (out2.notes.size() >= 1);
+            const unsigned char utf16[] = { 0xFF, 0xFE, 'T', 0, 'e', 0, 'x', 0, 't', 0, '\t', 0, 'S', 0, 't', 0, 'a', 0, 'r', 0, 't', 0, '\n', 0, 0xE9, 0, '\t', 0, '1', 0, '\n', 0 };
+            feedback::Parsed out3;
+            CHECK (feedback::parse (utf16, sizeof (utf16), 25.0, "u16", out3).isEmpty() && out3.notes.size() == 1
+                   && out3.notes[0].text == juce::String::charToString (0xE9) && std::abs (out3.notes[0].seconds - 1.0) < 1.0e-9);
+        }
+        // ---- a long list is read quickly (each character was found by walking the text from its start), and so is one with a stray quote
+        {
+            juce::MemoryOutputStream mo;
+            mo << "Start\tText\tWho\n";
+            for (int i = 0; i < 40000; ++i) mo << "00:" << juce::String ((i / 60) % 60).paddedLeft ('0', 2) << ":" << juce::String (i % 60).paddedLeft ('0', 2) << ":00\tComment number " << i << "\tAnna\n";
+            const auto t0 = juce::Time::getMillisecondCounterHiRes();
+            feedback::Parsed out;
+            const auto err = feedback::parse (mo.getData(), mo.getDataSize(), 25.0, "big", out);
+            std::vector<FeedbackNote> into;
+            const int added = feedback::merge (into, out.notes), again = feedback::merge (into, out.notes);      // (and merged into the edit's list: a search per note took seconds)
+            const auto ms = juce::Time::getMillisecondCounterHiRes() - t0;
+            CHECK (err.isEmpty() && out.notes.size() == 40000 && ms < 20000.0);                    // (it took hours: a generous bound, for slow test builds)
+            CHECK (added == 40000 && again == 0 && into.size() == 40000);
+            juce::MemoryOutputStream mq;
+            mq << "Start\tText\n00:00:01:00\t\"A stray quote that never closes\n";
+            for (int i = 0; i < 40000; ++i) mq << "more text that is now inside one field " << i << "\n";
+            const auto t1 = juce::Time::getMillisecondCounterHiRes();
+            feedback::Parsed outq;
+            (void) feedback::parse (mq.getData(), mq.getDataSize(), 25.0, "quote", outq);
+            CHECK (juce::Time::getMillisecondCounterHiRes() - t1 < 20000.0);
+            std::printf ("   (40,000 comments read and merged in %.0f ms)\n", ms);
+        }
+        // ---- iXML track names in a field recorder's file: text that is not UTF-8, or is cut off, is read without reading past it
+        {
+            auto bwf = [&] (const juce::File& f, const std::string& ixml)
+            {
+                juce::MemoryOutputStream o;
+                o.write ("RIFF", 4); o.writeInt (0); o.write ("WAVE", 4);
+                o.write ("fmt ", 4); o.writeInt (16); o.writeShort (1); o.writeShort (4); o.writeInt (48000); o.writeInt (48000 * 8); o.writeShort (8); o.writeShort (16);
+                o.write ("iXML", 4); o.writeInt ((int) ixml.size()); o.write (ixml.data(), ixml.size()); if (ixml.size() & 1) o.writeByte (0);
+                o.write ("data", 4); o.writeInt (800); for (int i = 0; i < 800; ++i) o.writeByte ((char) i);
+                f.replaceWithData (o.getData(), o.getDataSize());
+            };
+            const auto f = tmp.getChildFile ("ixml.wav");
+            bwf (f, "<BWFXML><TRACK_LIST><TRACK><INTERLEAVE_INDEX>1</INTERLEAVE_INDEX><NAME>Boom</NAME></TRACK>"
+                    "<TRACK><INTERLEAVE_INDEX>2</INTERLEAVE_INDEX><NAME>Lav \xe9</NAME></TRACK></TRACK_LIST></BWFXML>");
+            const auto names = readIXmlTrackNames (f, 4);
+            CHECK (names.size() == 4 && names[0] == "Boom" && names[1] == "Lav " + juce::String::charToString (0xE9));
+            bwf (f, "<BWFXML><TRACK_LIST><TRACK><INTERLEAVE_INDEX>1</INTERLEAVE_INDEX><NAME>A\xe2\x9c");
+            (void) readIXmlTrackNames (f, 4);                                         // (cut off in the middle of a character: no names, no harm)
+            bwf (f, "<BWFXML><TRACK_LIST><TRACK><INTERLEAVE_INDEX>-2147483648</INTERLEAVE_INDEX><NAME>X</NAME></TRACK>"
+                    "<TRACK><INTERLEAVE_INDEX>2</INTERLEAVE_INDEX><NAME>Y</NAME></TRACK></TRACK_LIST></BWFXML>");
+            const auto n2 = readIXmlTrackNames (f, 4);                                 // (the lowest number there is: one less overflowed)
+            CHECK (n2.size() == 4 && n2[0].isEmpty() && n2[1] == "Y");
+        }
+        // ---- the Merging device's change messages: a path to a list or a channel the module does not have is refused, not followed
+        {
+            auto m = juce::JSON::parse (R"({"id":5,"custom":{"ins":{"channels":[{"m48V":false,"micGain":0},{"micGain":10}],"label":"x"}}})");
+            CHECK (! RavennaDevice::applyPath (m, ".custom.ins.channels[2]", juce::JSON::parse (R"({"m48V":true})")));
+            CHECK (! RavennaDevice::applyPath (m, ".custom.ins.channels[-1].micGain", juce::var (3)));
+            CHECK (! RavennaDevice::applyPath (m, ".custom.ins.label[0]", juce::var (3)));
+            CHECK (! RavennaDevice::applyPath (m, ".custom.outs.channels[0]", juce::var (3)));
+            CHECK (! RavennaDevice::applyPath (m, ".custom.ins.channels[99999999999]", juce::var (3)));
+            CHECK (RavennaDevice::applyPath (m, ".custom.ins.channels[1]", juce::JSON::parse (R"({"m48V":true})")) && (bool) m["custom"]["ins"]["channels"][1]["m48V"]);
+            // a channel read after a message made the list shorter (the channel list is made again later): an empty channel, not a crash
+            CHECK (RavennaDevice::readChannel (m, 1).micGain == 10 && RavennaDevice::readChannel (m, 7).micGain == 0 && RavennaDevice::readChannel (m, -1).micGain == 0);
+            CHECK (RavennaDevice::applyPath (m, ".custom.ins.channels", juce::var()) && RavennaDevice::readChannel (m, 0).micGain == 0);
+            // ANEMAN's answer with a channel number no device has (the highest int: adding the group's start to it overflowed): that patch is left out
+            const auto dir = juce::File (__FILE__).getParentDirectory().getChildFile ("data");
+            auto devs = juce::JSON::parse (dir.getChildFile ("aneman_devices.json"));
+            auto conns = juce::JSON::parse (dir.getChildFile ("aneman_connections.json")).clone();
+            const auto whole = planFromAneman (devs, conns);
+            if (auto* cs = conns.getArray(); cs != nullptr && ! cs->isEmpty())
+                for (auto& c : *cs) if (auto* in = c["Input"].getDynamicObject()) in->setProperty ("InputId", 2147483647);
+            const auto damaged = planFromAneman (devs, conns);
+            CHECK (whole.ok && damaged.devices.empty() && ! damaged.ok);
+        }
+        // ---- WAV files: an RF64 file's 64-bit sizes are what readers go by, so mending puts those right; a nonsense size never reaches a reader
+        {
+            juce::AudioFormatManager fm; registerAudioFormats (fm);
+            auto rf64 = [&] (const juce::File& f, juce::uint32 dataField, bool withDs64, juce::uint64 ds64Size, int frames)
+            {
+                juce::MemoryOutputStream o;
+                const juce::int64 total = 12 + (withDs64 ? 36 : 0) + 24 + 8 + frames * 6;
+                o.write ("RF64", 4); o.writeInt (-1); o.write ("WAVE", 4);
+                if (withDs64) { o.write ("ds64", 4); o.writeInt (28); o.writeInt64 (total - 8); o.writeInt64 ((juce::int64) ds64Size); o.writeInt64 ((juce::int64) (ds64Size / 6)); o.writeInt (0); }
+                o.write ("fmt ", 4); o.writeInt (16); o.writeShort (1); o.writeShort (2); o.writeInt (48000); o.writeInt (48000 * 6); o.writeShort (6); o.writeShort (24);
+                o.write ("data", 4); o.writeInt ((int) dataField);
+                for (int i = 0; i < frames * 6; ++i) o.writeByte ((char) (i * 7 + 1));
+                f.replaceWithData (o.getData(), o.getDataSize());
+            };
+            auto lengthRead = [&] (const juce::File& f) -> juce::int64
+            {
+                std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (f));
+                if (r == nullptr) return -2;
+                juce::AudioBuffer<float> b ((int) r->numChannels, 512);
+                r->read (&b, 0, 512, 0, true, true);                                  // (with a negative length this wrote outside the buffer)
+                return r->lengthInSamples;
+            };
+            const auto f = tmp.getChildFile ("rf64.wav");
+            // a small RF64 file left by a recorder that always writes RF64, stopped before its sizes were written
+            rf64 (f, 0xffffffffu, true, 0, 1000);
+            CHECK (lengthRead (f) == 0);
+            auto r1 = wavrepair::inspect (f, true, false);
+            CHECK (r1.ok && r1.wasBroken && r1.frames == 1000 && lengthRead (f) == 1000);
+            CHECK (! wavrepair::inspect (f, false, false).wasBroken);
+            // a nonsense 64-bit size (the top bit set: a negative length): the reader keeps within the file, and mending puts it right
+            rf64 (f, 0xffffffffu, true, 0xffffff0000000000ull, 1000);
+            const auto len2 = lengthRead (f);
+            CHECK (len2 >= 0 && len2 <= 1000);
+            auto r2 = wavrepair::inspect (f, true, false);
+            CHECK (r2.ok && r2.wasBroken && r2.frames == 1000 && lengthRead (f) == 1000);
+            // the largest 64-bit size there is, on a file that was being recorded: no arithmetic overflow on the way to mending it (the fuzz test's UBSan caught one)
+            rf64 (f, 0xffffffffu, true, 0x7fffffffffffffffull, 1000);
+            auto r5 = wavrepair::inspect (f, true, true);
+            CHECK (r5.ok && r5.wasBroken && r5.frames == 1000 && lengthRead (f) == 1000);
+            // the two sizes disagree (as a small RF64 file mended before 3.0 was left): the 32-bit one stands, and the 64-bit one is made to agree
+            rf64 (f, 600 * 6, true, 0, 1000);
+            auto r3 = wavrepair::inspect (f, true, false);
+            CHECK (r3.ok && r3.wasBroken && r3.frames == 600 && lengthRead (f) == 600);
+            // marked RF64 but without the 64-bit sizes, under 4 GB: it becomes a plain WAV that every reader understands
+            rf64 (f, 0, false, 0, 1000);
+            auto r4 = wavrepair::inspect (f, true, false);
+            CHECK (r4.ok && r4.wasBroken && r4.frames == 1000 && lengthRead (f) == 1000);
+            { juce::FileInputStream in (f); char m4[4] = {}; in.read (m4, 4); CHECK (std::memcmp (m4, "RIFF", 4) == 0); }
+            // and a whole file is read exactly as before
+            juce::File whole = tmp.getChildFile ("whole.wav");
+            {
+                juce::AudioBuffer<float> b (2, 4800); b.clear(); b.setSample (0, 100, 0.5f);
+                auto w = audioops::makeWavWriter (whole, 48000.0, 2, false);
+                CHECK (w != nullptr && w->writeFromAudioSampleBuffer (b, 0, 4800));
+            }
+            CHECK (lengthRead (whole) == 4800);
+        }
+        // ---- an AAF whose index of sectors loops back on itself and says it has billions of parts: refused at once (it filled the memory)
+        {
+            juce::MemoryOutputStream o;
+            const juce::uint8 magic[8] = { 0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1 };
+            o.write (magic, 8); o.writeRepeatedByte (0, 16); o.writeShort (0x3E); o.writeShort (3); o.writeShort ((short) 0xFFFE); o.writeShort (9); o.writeShort (6);
+            o.writeRepeatedByte (0, 10);                                              // (reserved, and the directory sector count of version 3)
+            o.writeInt (1); o.writeInt (-2); o.writeInt (0); o.writeInt (4096); o.writeInt (-2); o.writeInt (0);
+            o.writeInt (0); o.writeInt (-1);                                          // the extra index starts at sector 0 and has 4294967295 parts
+            for (int i = 0; i < 109; ++i) o.writeInt (-1);
+            for (int i = 0; i < 127; ++i) o.writeInt (-1);
+            o.writeInt (0);                                                           // sector 0's "next part" is sector 0 again
+            for (int s = 0; s < 3; ++s) o.writeRepeatedByte (0xFF, 512);
+            const auto f = tmp.getChildFile ("loop.aaf");
+            f.replaceWithData (o.getData(), o.getDataSize());
+            CHECK (o.getDataSize() == 512 * 5);
+            const auto t0 = juce::Time::getMillisecondCounterHiRes();
+            const auto r = readAaf (f);
+            CHECK (r.error.isNotEmpty() && juce::Time::getMillisecondCounterHiRes() - t0 < 2000.0);
         }
     }
 

@@ -98,7 +98,11 @@ public:
     juce::Slider::SliderLayout getSliderLayout (juce::Slider& s) override
     {
         auto l = juce::LookAndFeel_V4::getSliderLayout (s);
-        if (isFader (s)) l.sliderBounds = l.sliderBounds.reduced (0, kCapHalf);   // room for the cap at both ends of the travel
+        // Room for the cap at both ends of the travel - exactly the cap's half, from the slider's own edges, as the strip's scale and meters are
+        // laid out (FaderBlock::resized in MixerWindow.cpp: travelTop / travelBottom). JUCE's layout has already taken a thumb radius of its own (12 px) off each
+        // end: taking kCapHalf off on top of that made the cap travel 24 px less than the scale, so it sat up to 12 px off its marks - below them
+        // near the top (0 dB looked like -4), above them near the bottom. (3.0.0) The faders have no text box, so the whole slider is travel.
+        if (isFader (s)) l.sliderBounds = s.getLocalBounds().reduced (0, kCapHalf);
         return l;
     }
 

@@ -1,0 +1,8 @@
+# Undefined behaviour inside JUCE itself (not Fermata's code, and never edited here), harmless in practice: used by tools/tool-checks.sh.
+# Found by the 3.0.0 tool pass: the JSON reader's sum overflows on a whole number of 20 digits or more; BigInteger (int) negates the lowest int
+# (a WAV's channel mask with its top bit set); the bundled FLAC and Ogg Vorbis codecs shift negative numbers and read one past a 17-entry table
+# in libvorbis psy.c, as their own projects know. Memory errors are never suppressed: AddressSanitizer still stops at any of those, in JUCE too.
+signed-integer-overflow:*/modules/juce_*
+shift-base:*/modules/juce_*
+shift-exponent:*/modules/juce_*
+bounds:*/libvorbis-*/lib/psy.c

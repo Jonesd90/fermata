@@ -35,6 +35,7 @@
  #pragma GCC diagnostic ignored "-Wdouble-promotion"
 #endif
 #include "../../third_party/signalsmith-stretch/signalsmith-stretch.h"
+#include "AudioFormats.h"
 
 namespace td { namespace retime { namespace
 {
@@ -632,7 +633,7 @@ juce::String renderStreams (const Plan& p, const std::function<bool()>& cancelle
     auto stop = [&] { return failed.load() || (cancelled && cancelled()); };
     auto worker = [&]
     {
-        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        juce::AudioFormatManager fm; td::registerAudioFormats (fm);
         for (;;)
         {
             const int i = next++;

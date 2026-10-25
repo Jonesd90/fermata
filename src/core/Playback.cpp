@@ -2,6 +2,7 @@
 #include "CoreReservation.h"
 #include <set>
 #include <algorithm>
+#include "AudioFormats.h"
 
 namespace td
 {
@@ -11,7 +12,7 @@ PlaybackSession::PlaybackSession (std::vector<int> counts, std::vector<PlaySegme
       startPos (startPosition), endPos (endPosition), renderPos (startPosition), loopEnd (endPosition), loopLen (endPosition - startPosition),
       continueTo (endPosition), sampleRate (sr), maxBlock (juce::jmax (16, block))
 {
-    formats.registerBasicFormats();
+    td::registerAudioFormats (formats);
     const int maxCh = kMaxTrackChannels;
     scratch.setSize (maxCh, 16384);
     for (int c : channelCounts)
