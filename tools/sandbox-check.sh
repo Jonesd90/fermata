@@ -29,6 +29,7 @@ $CXX -c "$HERE/src/core/ReviewPage.cpp" -o "$OUT/ReviewPage.o"
 $CXX -c "$HERE/src/core/MasterRender.cpp" -o "$OUT/MasterRender.o"
 $CXX -c "$HERE/src/core/Ravenna.cpp" -o "$OUT/Ravenna.o"
 $CXX -c "$HERE/src/core/CoreReservation.cpp" -o "$OUT/CoreReservation.o"
+$CXX -c "$HERE/src/core/Retime.cpp" -o "$OUT/Retime.o"
 $CXX -c "$HERE/tests/core_test.cpp" -o "$OUT/core_test.o"
 $CXX "$OUT"/*.o -o "$OUT/core_test" -lpthread -ldl -lrt
 "$OUT/core_test"

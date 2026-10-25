@@ -2172,6 +2172,8 @@ bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid
                     }
             te->fixIn = live->fixIn; te->fixOut = live->fixOut; te->fixTracks = live->fixTracks;
             te->playheadSeconds = live->playheadSeconds; te->insertIndex = live->insertIndex; te->markers = live->markers; te->feedback = live->feedback; te->showFeedback = live->showFeedback; te->showMarkers = live->showMarkers;
+            if (live->insertIndex >= 0 && live->insertIndex < (int) live->regions.size())      // the insert point stays in front of the same piece (2.103: undoing a retime or a snip
+                if (const int k = te->indexOf (live->regions[(size_t) live->insertIndex].id); k >= 0) te->insertIndex = k;     //  changes how many pieces there are before it)
             te->laneRows = live->laneRows;                                // (the automation rows shown: a view setting, like the ones above)
             te->showGuide = live->showGuide;                              // (the Guide button: a view; the guide itself is part of undo)
             *live = std::move (*te);

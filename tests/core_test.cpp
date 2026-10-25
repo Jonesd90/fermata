@@ -36,6 +36,7 @@
 #include "../src/core/BoxEdges.h"
 #include "../src/core/WavRepair.h"
 #include "../src/core/SaveWriter.h"
+#include "../src/core/Retime.h"
 #include <cstdio>
 #include <thread>
 
@@ -8512,6 +8513,7 @@ int main()
             q.findEdit (edId)->name = "Second"; q.changed();
             saver.write (q.prepareSave (true), [&] (BackgroundSaver::Result& r) { CHECK (r.ok); order.push_back (2); });
             CHECK (saver.waitUntilIdle (10000) && ! saver.isBusy());
+            for (int k = 0; k < 400 && wakes.load() < 2; ++k) juce::Thread::sleep (5);       // (the saver wakes the program just after it is idle: on a busy machine a moment later)
             CHECK (saver.drain() == 2);
             CHECK (order == std::vector<int> ({ 1, 2 }) && wakes.load() == 2 && saver.written() == 2);
             CHECK (saver.drain() == 0);
@@ -8657,6 +8659,394 @@ int main()
         Project r; juce::String le; CHECK (r.load (q.projectFile, le));
         CHECK (r.loadNotes.isEmpty());                                                     // every window file the project lists is there
         CHECK (r.findTakeWindow (aId) != nullptr && r.findTakeWindow (aId)->name == "R" && r.findTakeWindow (bId) != nullptr && r.findTakeWindow (bId)->name == "P");
+    }
+
+    SECTION ("2.103 ReTimEr: the time map (glides, inverse, length) and the stretch it asks for");
+    {
+        using retime::TimeMap;
+        const double sr = 48000.0;
+        for (int k = 0; k < 4; ++k)
+        {
+            TimeMap m { 10 * sr, 30 * sr, 1.0, 0.0, 0.0, k == 3 };
+            const double L = 20 * sr, target = (k == 2 ? 18.5 : 21.0) * sr, rIn = (k == 0 ? 0.0 : 2.0) * sr, rOut = (k == 0 ? 0.0 : k == 1 ? 5.0 : 3.0) * sr;
+            m.rIn = k == 3 ? 0.0 : rIn; m.rOut = k == 3 ? 0.0 : rOut;
+            m.S = k == 3 ? target / L : TimeMap::solve (L, target, m.rIn, m.rOut);
+            CHECK (std::abs (m.newLength() - target) < 1.0e-6 * sr);                     // the part lasts exactly what was asked
+            double worst = 0.0, prev = -1.0e18; bool rising = true;
+            for (double t = 0; t < 45 * sr; t += 997.3)
+            {
+                const double u = m.map (t);
+                worst = juce::jmax (worst, std::abs (m.unmap (u) - t));
+                rising = rising && u > prev; prev = u;
+            }
+            CHECK (worst < 1.0e-4 && rising);                                              // the inverse is the inverse; time never goes backwards
+            if (! m.uniform)
+            {
+                for (double edge : { m.t0, m.t0 + m.rIn, m.t1 - m.rOut, m.t1 }) CHECK (std::abs (m.map (edge - 0.001) - m.map (edge + 0.001)) < 0.01);      // no jumps
+                CHECK (m.map (5 * sr) == 5 * sr && std::abs (m.map (40 * sr) - (40 * sr + m.delta())) < 1.0e-6);
+                if (m.rIn > 0.0) CHECK (std::abs (m.rate (m.t0 + 1.0) - 1.0) < 1.0e-6 && std::abs (m.rate (m.t1 - 1.0) - 1.0) < 1.0e-6);   // the glides start and end at the normal speed
+            }
+        }
+        CHECK (TimeMap::solve (20.0, 10.0, 20.0, 20.0) <= 0.0);                            // (impossible: no held part)
+
+        // the stretch: exact length, in order; untouched before the part; the microphones keep their time difference; transients land where the map says
+        const int C = 3; const juce::int64 N = (juce::int64) (14 * sr);
+        std::vector<std::vector<float>> src ((size_t) C, std::vector<float> ((size_t) N + 96000, 0.0f));
+        std::mt19937 rng (5); std::normal_distribution<float> nd (0.0f, 0.01f);
+        double ph[3] = { 0, 0, 0 };
+        for (size_t i = 0; i < src[0].size(); ++i)
+        {
+            double v = 0.0;
+            for (int h = 0; h < 3; ++h) { ph[h] += juce::MathConstants<double>::twoPi * (196.0 * (h + 1) * (1.0 + 0.003 * std::sin (0.0002 * (double) i))) / sr; v += 0.2 * std::sin (ph[h]) / (h + 1); }
+            src[0][i] = (float) v + nd (rng); src[2][i] = nd (rng) * 4.0f;
+        }
+        std::vector<juce::int64> clicks;
+        for (juce::int64 t = 30000; t < N - 48000; t += 60000) { clicks.push_back (t); for (int q2 = 0; q2 < 32; ++q2) src[0][(size_t) (t + q2)] += 0.7f * std::exp (-q2 / 6.0f) * (q2 % 2 ? -1.0f : 1.0f); }
+        for (size_t i = 37; i < src[0].size(); ++i) src[1][i] = src[0][i - 37];          // a spot mic 37 samples behind the main pair
+        auto read = [&] (juce::int64 start, int n, std::vector<std::vector<float>>& out)
+        {
+            for (int c = 0; c < C; ++c) for (int q2 = 0; q2 < n; ++q2) { const auto t = start + q2; out[(size_t) c][(size_t) q2] = t >= 0 && t < (juce::int64) src[(size_t) c].size() ? src[(size_t) c][(size_t) t] : 0.0f; }
+        };
+        const TimeMap m { 4 * sr, 10 * sr, 1.15, 1.0 * sr, 1.5 * sr, false };
+        const juce::int64 outB = (juce::int64) std::llround (m.map ((double) N));
+        auto run = [&] (std::vector<std::vector<float>>& out)
+        {
+            out.assign ((size_t) C, std::vector<float> ((size_t) outB, 0.0f));
+            juce::int64 next = 0; bool inOrder = true;
+            const auto err = retime::stretch (C, sr, m, 0, outB, read, [&] (const std::vector<std::vector<float>>& blk, int n, juce::int64 at)
+            {
+                inOrder = inOrder && at == next; next = at + n;
+                for (int c = 0; c < C; ++c) std::copy (blk[(size_t) c].begin(), blk[(size_t) c].begin() + n, out[(size_t) c].begin() + at);
+                return true;
+            });
+            return err.isEmpty() && inOrder && next == outB;
+        };
+        std::vector<std::vector<float>> out1, out2;
+        CHECK (run (out1) && run (out2));
+        CHECK (out1 == out2);                                                              // the same audio always comes out the same
+        double diff = 0.0;
+        for (juce::int64 i = (juce::int64) (0.5 * sr); i < (juce::int64) (3.9 * sr); ++i) diff = juce::jmax (diff, (double) std::abs (out1[0][(size_t) i] - src[0][(size_t) i]));
+        CHECK (diff < 1.0e-3);                                                             // before mark 1 it is the original, so the crossfade there is clean
+        auto corrAt = [&] (size_t from, size_t n, int lag)
+        {
+            double ab = 0, aa = 0, bb = 0;
+            for (size_t i = from; i < from + n; ++i) { ab += out1[0][i] * out1[1][i + (size_t) lag]; aa += out1[0][i] * out1[0][i]; bb += out1[1][i + (size_t) lag] * out1[1][i + (size_t) lag]; }
+            return ab / std::sqrt (aa * bb + 1.0e-30);
+        };
+        int bestLag = 0; double best = -2.0;
+        for (int lag = 0; lag < 80; ++lag) { const double c = corrAt ((size_t) m.map (7 * sr), (size_t) sr, lag); if (c > best) { best = c; bestLag = lag; } }
+        CHECK (bestLag == 37 && best > 0.99);                                              // the spot mic is still 37 samples behind: the image does not smear
+        double worstMs = 0.0;
+        for (auto t : clicks)
+        {
+            const double want = m.map ((double) t + 6.0);
+            double num = 0, den = 0;
+            for (juce::int64 i = (juce::int64) want - 2400; i < (juce::int64) want + 2400; ++i) { const double e2 = (double) out1[0][(size_t) i] * out1[0][(size_t) i]; num += e2 * (double) i; den += e2; }
+            worstMs = juce::jmax (worstMs, std::abs (num / den - want) / sr * 1000.0);
+        }
+        CHECK (worstMs < 1.5);                                                             // every click where the map puts it (to within a millisecond or so)
+    }
+
+    SECTION ("2.103 ReTimEr: the plan - where it is cut, what is made again, what moves, what stays");
+    {
+        using namespace retime;
+        const double sr = 48000.0;
+        auto sec = [sr] (double s) { return (juce::int64) std::llround (s * sr); };
+        const auto dir = tmp.getChildFile ("retime_plan"); dir.deleteRecursively(); dir.createDirectory();
+        const juce::Uuid tMain, tSpot, tLtc;
+        auto piece = [&] (const juce::String& name, double start, double srcIn, double len)
+        {
+            EditRegion r; r.id = juce::Uuid(); r.windowId = juce::Uuid(); r.takeId = juce::Uuid(); r.takeName = name; r.sampleRate = sr;
+            r.startSample = sec (start); r.srcIn = sec (srcIn); r.srcOut = sec (srcIn + len); r.sourceLength = sec (60);
+            for (auto t : { std::make_pair (tMain, juce::String ("ORTF")), std::make_pair (tSpot, juce::String ("SPOT1")), std::make_pair (tLtc, juce::String ("LTC")) })
+            { RegionFile f; f.trackId = t.first; f.trackName = t.second; f.file = dir.getChildFile (name + " - " + t.second + ".wav"); f.numChannels = t.first == tMain ? 2 : 1; r.files.push_back (f); }
+            return r;
+        };
+        auto editOf = [&] (std::vector<EditRegion> rs)
+        {
+            EditDef e; e.sampleRate = sr; e.regions = std::move (rs);
+            for (int k = 1; k < (int) e.regions.size(); ++k) e.setDefaultJoinFades (k);
+            e.hardenEnds(); e.clampAll();
+            return e;
+        };
+        const FileLength len60 = [sec] (const juce::File&) { return sec (60); };
+        const IsLtc isLtc = [tLtc] (const juce::Uuid& t) { return t == tLtc; };
+        auto marks = [&] (double a, double b, double S, double rIn = 0.0, double rOut = 0.0) { Request q; q.from = sec (a); q.to = sec (b); q.S = S; q.rampIn = rIn; q.rampOut = rOut; return q; };
+
+        // marks inside one take, its next edit point near: cut at mark 1, the take retimed on to its end, the next take moved along
+        {
+            auto e = editOf ({ piece ("A", 0, 5, 10), piece ("B", 10, 20, 20), piece ("C", 30, 2, 10) });
+            const auto bId = e.regions[1].id, bTake = e.regions[1].takeId, cId = e.regions[2].id;
+            const auto p = makePlan (e, marks (12, 20, 1.1), dir, len60, isLtc);
+            CHECK (p.ok() && p.t0 == sec (12) && p.t1 == sec (20) && p.delta == sec (0.8));
+            CHECK (p.regions.size() == 4 && p.streams.size() == 1 && p.retimed.size() == 1);
+            if (p.regions.size() == 4 && p.streams.size() == 1)
+            {
+                const auto& L = p.regions[1]; const auto& R = p.regions[2];
+                CHECK (L.id == bId && L.startSample == sec (10) && L.endSample() == sec (12) && L.fixOut && L.outStart == -kFixFade && L.outEnd == 0.0 && L.outCurveValue() == FadeCurve::Linear);
+                CHECK (R.startSample == sec (12) && R.endSample() == sec (30.8) && R.fixIn && R.inStart == -kFixFade && R.inEnd == 0.0 && R.curve == FadeCurve::Linear);
+                CHECK (R.takeId != bTake && R.takeName == "B (retimed 110.0%)" && ! R.fixOut);     // its samples are its own now, not the take's
+                CHECK (R.files.size() == 2);                                                      // the LTC is not stretched: a retimed piece has none
+                const auto& s = p.streams[0];
+                CHECK (s.tracks.size() == 2 && s.channels() == 3 && s.a == sec (12) - sec (kFixFade) - sec (0.1) && s.outA == s.a);
+                CHECK (s.b == sec (30) + sec (EditDef::kDefaultHalfFade) + sec (kHandleInner));    // its far end meets take C: 5 s of handle for that edit point
+                for (auto& f : R.files) CHECK (f.fileStart == 0 && f.file.getParentDirectory() == dir && ! f.file.exists());
+                CHECK (R.srcIn == R.startSample - s.outA && R.sourceLength == s.outB - s.outA);
+                CHECK (p.regions[3].id == cId && p.regions[3].startSample == sec (30.8) && p.regions[0].startSample == 0);
+                CHECK (p.note.contains ("runs on"));
+            }
+        }
+        // ... its next edit point far: it hands back at the quietest moment of the next 3 s, through an equal-power crossfade
+        {
+            auto e = editOf ({ piece ("A", 0, 5, 10), piece ("B", 10, 0, 50), piece ("C", 60, 2, 10) });
+            const auto p = makePlan (e, marks (12, 20, 1.1), dir, len60, isLtc, [sec] (const EditRegion&, juce::int64 lo, juce::int64) { return lo + sec (1); });
+            CHECK (p.ok() && p.regions.size() == 5 && p.streams.size() == 1);
+            if (p.regions.size() == 5)
+            {
+                const auto& N = p.regions[2]; const auto& R = p.regions[3];
+                CHECK (N.endSample() == sec (21.8) && N.fixOut && N.outStart == 0.0 && N.outEnd == kOutFade && N.outCurveValue() == FadeCurve::EqualPower);
+                CHECK (R.startSample == sec (21.8) && R.srcIn == sec (11) && R.fixIn && R.inStart == 0.0 && R.inEnd == kOutFade && R.curve == FadeCurve::EqualPower);
+                CHECK (p.regions[4].startSample == sec (60.8) && p.note.contains ("hands back"));
+                CHECK (p.streams[0].b == sec (21) + sec (kOutFade) + sec (0.1));                   // (only as far as the hand-back's crossfade needs)
+            }
+        }
+        // mark 1 on an edit point's crossfade: it goes onto the edit point, and the take before it is not touched
+        {
+            auto e = editOf ({ piece ("A", 0, 5, 10), piece ("B", 10, 20, 20), piece ("C", 30, 2, 10) });
+            juce::String note;
+            CHECK (snapSpan (e, sec (9.99), sec (20), &note).first == sec (10) && note.contains ("Mark 1"));
+            const auto p = makePlan (e, marks (9.99, 20, 1.1), dir, len60, isLtc);
+            CHECK (p.ok() && p.t0 == sec (10) && p.regions.size() == 3 && p.regions[0].id == e.regions[0].id && p.regions[0].endSample() == sec (10));
+            CHECK (p.regions[1].startSample == sec (10) && p.regions[1].inStart == e.regions[1].inStart && ! p.regions[1].fixIn);   // the edit point and its crossfade as they were
+            if (! p.streams.empty()) CHECK (p.streams[0].a == e.regions[1].fadeInBegin() - sec (kHandleInner));                  // a handle, so that edit point can still be trimmed
+        }
+        // a whole piece: evenly, its handles too (20 s, as far as the take goes), the rest moved along; faster works the same way
+        {
+            auto e = editOf ({ piece ("A", 0, 5, 10), piece ("B", 10, 20, 20), piece ("C", 30, 2, 10) });
+            Request q; q.wholePiece = true; q.piece = e.regions[1].id; q.S = 0.9;
+            const auto p = makePlan (e, q, dir, len60, isLtc);
+            CHECK (p.ok() && p.delta == -sec (2) && p.regions.size() == 3 && p.streams.size() == 1);
+            if (p.ok() && p.streams.size() == 1)
+            {
+                const auto& s = p.streams[0];
+                CHECK (s.audio.uniform && s.a == -sec (10) && s.b == sec (50));                     // (only 20 s of the take before the piece; 20 s after it)
+                CHECK (s.outA == -sec (8) && s.outB == sec (46));                                   // (no stray sample from rounding)
+                CHECK (p.regions[1].startSample == sec (10) && p.regions[1].endSample() == sec (28) && p.regions[1].srcIn == sec (18) && p.regions[2].startSample == sec (28));
+                CHECK (p.regions[1].inStart == e.regions[1].inStart && p.regions[1].outEnd == e.regions[1].outEnd);   // both edit points keep their crossfades
+            }
+        }
+        // a fix join inside: the two sides are made again TOGETHER (read through the fix's own crossfade), so no copy of the same sound meets another
+        {
+            auto e = editOf ({ piece ("A", 0, 5, 10), piece ("B", 10, 20, 20), piece ("C", 30, 2, 10) });
+            const int k = e.splitRegion (1, sec (5));
+            e.regions[(size_t) k - 1].fixOut = true; e.regions[(size_t) k].fixIn = true;
+            e.regions[(size_t) k - 1].setOutCurve (FadeCurve::Linear); e.regions[(size_t) k].setInCurve (FadeCurve::Linear);
+            const auto p = makePlan (e, marks (12, 20, 1.1), dir, len60, isLtc);
+            CHECK (p.ok() && p.streams.size() == 1 && p.regions.size() == 4);
+            if (p.ok() && ! p.streams.empty())
+            {
+                CHECK (p.streams[0].tracks[0].sources.size() == 2);
+                const auto& s0 = p.streams[0].tracks[0].sources[0]; const auto& s1 = p.streams[0].tracks[0].sources[1];
+                CHECK (! s0.fadeIn && s0.fadeOut && s1.fadeIn && ! s1.fadeOut);
+                CHECK (std::abs (s0.gainAt (sec (15)) + s1.gainAt (sec (15)) - 1.0f) < 1.0e-4f && s0.gainAt (sec (14)) == 1.0f && s1.gainAt (sec (14)) == 0.0f);
+                CHECK (p.regions[2].startSample == sec (12) && p.regions[2].endSample() == sec (30.8));
+            }
+            // mark 2 exactly on the fix join: the take is retimed on through it (never a retimed and an untouched copy of the same take crossfaded)
+            const auto pe = makePlan (e, marks (12, 15, 1.1), dir, len60, isLtc);
+            CHECK (pe.ok() && pe.streams.size() == 1 && pe.regions.size() == 4);
+            if (pe.ok() && pe.streams.size() == 1) CHECK (pe.streams[0].tracks[0].sources.size() == 2 && pe.regions[2].endSample() == sec (30) + pe.delta);
+            // a whole piece from one side of a fix join is the whole take's piece, edit point to edit point
+            Request q; q.wholePiece = true; q.piece = e.regions[(size_t) k].id; q.S = 1.05;
+            const auto pw = makePlan (e, q, dir, len60, isLtc);
+            CHECK (pw.ok() && pw.t0 == sec (10) && pw.t1 == sec (30) && pw.streams.size() == 1);
+        }
+        // volume changes, automation and overdubs go with their music; marks 1 - 2 end up round the retimed part
+        {
+            auto e = editOf ({ piece ("A", 0, 5, 10), piece ("B", 10, 20, 20), piece ("C", 30, 2, 10) });
+            e.regions[1].setGainChange (sec (3), 1.0, { -6.0f, -3.0f, 0.0f });
+            auto o1 = piece ("O1", 0, 0, 1); auto o2 = piece ("O2", 0, 0, 1);
+            e.addOverdub (o1, sec (14)); e.addOverdub (o2, sec (33));
+            auto& lane = e.addLane (tMain, autoparam::fader, juce::Uuid::null());
+            for (double t : { 5.0, 16.0, 35.0 }) e.addPoint (lane, sec (t), -3.0f);
+            const auto lanes0 = e.lanes;
+            const auto p = makePlan (e, marks (12, 20, 1.1), dir, len60, isLtc);
+            CHECK (p.ok() && p.streams.size() == 2 && p.overdubs.size() == 2);
+            if (p.ok() && p.regions.size() == 4 && p.overdubs.size() == 2)
+            {
+                const auto& R = p.regions[2];
+                const GainChange* g = nullptr;
+                for (auto& gc : R.gains) if (gc.at == sec (1.1)) g = &gc;                        // (the change 1 s into the cut piece, now 1.1 s in)
+                CHECK (g != nullptr);
+                if (g != nullptr)
+                {
+                    CHECK (std::abs (g->ramp - 1.1) < 1.0e-6);
+                    CHECK (g->db.size() == 2 && g->db[0] == -6.0f && g->db[1] == -3.0f);          // (lined up with its files, the LTC's left out)
+                }
+                CHECK (std::abs (R.levelDbAt (0, sec (3)) - (-6.0f)) < 0.01f && std::abs (R.levelDbAt (0, sec (0.5))) < 0.01f);
+                CHECK (p.overdubs[0].startSample == sec (14.2) && p.overdubs[0].takeName.contains ("retimed") && p.overdubs[1].startSample == sec (33.8));
+            }
+            auto e2 = e;
+            e2.fixIn = 12.0; e2.fixOut = 20.0; e2.insertIndex = 2;                                      // (the insert point in front of C)
+            applyPlan (e2, p);
+            CHECK (e2.regions.size() == 4 && e2.fixIn == 12.0 && e2.fixOut == 20.0);              // marks 1 - 2 stay what was marked (so Undo gives exactly that back)
+            CHECK (e2.insertIndex == 3 && e2.regions[3].id == e.regions[2].id);                  // still in front of C (a piece more before it now)
+            if (! e2.lanes.empty() && e2.lanes[0].pts.size() == 3)
+            {
+                const auto& pts = e2.lanes[0].pts;
+                CHECK (pts[0].time == sec (5) && pts[1].time == sec (16.4) && pts[2].time == sec (35.8));
+                for (auto& pt : pts) CHECK (! pt.region.isNull() && ! pt.floating);
+                auto e3 = e2; e3.resolveAutomation();                                             // (and they stay there)
+                for (size_t i = 0; i < pts.size(); ++i) CHECK (e3.lanes[0].pts[i].time == pts[i].time);
+            }
+            else CHECK (false);
+            CHECK (e.lanes[0].pts[1].time == lanes0[0].pts[1].time);                               // (the plan itself changes nothing)
+        }
+        // a fix join inside, the later piece at a level of its own: the level glides over the join, as it plays now (no step at the join)
+        {
+            auto e = editOf ({ piece ("A", 0, 5, 10), piece ("B", 10, 20, 20), piece ("C", 30, 2, 10) });
+            const int k = e.splitRegion (1, sec (5));
+            e.regions[(size_t) k - 1].fixOut = true; e.regions[(size_t) k].fixIn = true;
+            e.regions[(size_t) k - 1].setOutCurve (FadeCurve::Linear); e.regions[(size_t) k].setInCurve (FadeCurve::Linear);
+            e.regions[(size_t) k].setPieceLevelDb (-6.0f);
+            const auto p = makePlan (e, marks (12, 20, 1.1), dir, len60, isLtc);
+            CHECK (p.ok() && p.regions.size() == 4);
+            if (p.ok() && p.regions.size() == 4)
+            {
+                const auto& R = p.regions[2];
+                const auto join = p.newSampleAt (sec (15)) - R.startSample;
+                float worstStep = 0.0f, prev = R.levelDbAt (0, join - sec (0.05));
+                for (juce::int64 rel = join - sec (0.05); rel < join + sec (0.05); rel += 8)
+                { const float v = R.levelDbAt (0, rel); worstStep = juce::jmax (worstStep, std::abs (v - prev)); prev = v; }
+                CHECK (worstStep < 0.2f);                                                            // smooth (a step was 3.8 dB)
+                CHECK (std::abs (R.levelDbAt (0, join + sec (0.1)) + 6.0f) < 0.01f && std::abs (R.levelDbAt (0, join - sec (0.1))) < 0.01f);
+            }
+        }
+        // a piece waiting for corrected audio is never cut or made again - also beyond the marks (the run-on, the hand-back, a fix join before mark 1)
+        {
+            auto waitingEdit = [&] (double wFrom, double wTo, double bLen)
+            {
+                auto e = editOf ({ piece ("A", 0, 5, 10), piece ("B", 10, 0, bLen), piece ("C", 10 + bLen, 2, 10) });
+                const int k1 = e.splitRegion (1, sec (wFrom - 10)); const int k2 = e.splitRegion (k1, sec (wTo - wFrom));
+                for (int j : { k1, k2 }) { e.regions[(size_t) j - 1].fixOut = true; e.regions[(size_t) j].fixIn = true; }
+                auto& w = e.regions[(size_t) k1]; w.waiting.files = { dir.getChildFile ("w.wav") }; w.waiting.from = w.srcIn; w.waiting.to = w.srcOut;
+                return e;
+            };
+            CHECK (makePlan (waitingEdit (32, 34, 30), marks (12, 20, 1.1), dir, len60, isLtc).error.contains ("waiting"));     // the run-on would reach it
+            CHECK (makePlan (waitingEdit (21, 23, 50), marks (12, 20.9, 1.1), dir, len60, isLtc,
+                             [sec] (const EditRegion&, juce::int64 lo, juce::int64) { return lo; }).error.contains ("waiting"));  // the hand-back would cut it
+            CHECK (makePlan (waitingEdit (13, 15, 30), marks (15.04, 20, 1.1), dir, len60, isLtc).error.contains ("waiting"));  // mark 1 just after it: the take-over goes in front of its join
+            CHECK (makePlan (waitingEdit (24, 26, 50), marks (12, 18, 1.1), dir, len60, isLtc, [sec] (const EditRegion&, juce::int64 lo, juce::int64) { return lo; }).ok());   // further off: fine
+        }
+        // what it will not do
+        {
+            auto e = editOf ({ piece ("A", 0, 5, 10), piece ("B", 10, 20, 20), piece ("C", 30, 2, 10) });
+            CHECK (! makePlan (e, marks (12, 20, 2.5), dir, len60, isLtc).ok());                   // too big a change
+            CHECK (! makePlan (e, marks (45, 50, 1.1), dir, len60, isLtc).ok());                   // nothing there
+            e.regions[1].waiting.files = { dir.getChildFile ("w.wav") }; e.regions[1].waiting.from = 0; e.regions[1].waiting.to = 10;
+            CHECK (makePlan (e, marks (12, 20, 1.1), dir, len60, isLtc).error.contains ("waiting"));
+            CHECK (! makePlan (e, marks (12, 20, 1.1), dir, [] (const juce::File&) { return (juce::int64) -1; }, isLtc).ok());   // a file that cannot be read
+        }
+    }
+
+    SECTION ("2.103 undo keeps the insert point in front of the same piece when the number of pieces before it changes");
+    {
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear();
+        const auto tr = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        auto& tw = q.addTakeWindow ("P"); const auto twId = tw.id;
+        auto& ed = q.addEdit ("E", twId); const auto edId = ed.id;
+        for (int i = 0; i < 3; ++i)
+        {
+            EditRegion r; r.id = juce::Uuid(); r.windowId = twId; r.takeId = juce::Uuid(); r.takeName = "00" + juce::String (i + 1); r.sampleRate = 48000.0;
+            r.srcIn = 0; r.srcOut = 48000 * 5; r.sourceLength = 48000 * 10;
+            RegionFile f; f.trackId = tr; f.trackName = "A"; f.file = tmp.getChildFile ("ip" + juce::String (i) + ".wav"); r.files.push_back (f);
+            ed.insertRegion (r);
+        }
+        const auto cId = ed.regions[2].id;
+        ed.insertIndex = 2;                                                                    // in front of the third piece
+        q.undoReset();
+        auto* e = q.findEdit (edId);
+        e->splitRegion (0, 48000 * 2); e->insertIndex = 3;                                    // a piece more before it (as a retime's cut does; applyPlan keeps it in front of the same piece)
+        q.changed(); q.undoTick (false, true);
+        CHECK (q.undo());
+        e = q.findEdit (edId);
+        CHECK (e->regions.size() == 3 && e->insertIndex == 2 && e->regions[2].id == cId);
+        CHECK (q.redo());
+        e = q.findEdit (edId);
+        CHECK (e->regions.size() == 4 && e->insertIndex == 3 && e->regions[3].id == cId);
+    }
+
+    SECTION ("2.103 ReTimEr: end to end - the new files, where the music lands in them, cancelling leaves nothing");
+    {
+        using namespace retime;
+        const double sr = 48000.0;
+        auto sec = [sr] (double s) { return (juce::int64) std::llround (s * sr); };
+        const auto dir = tmp.getChildFile ("retime_e2e"); dir.deleteRecursively(); dir.createDirectory();
+        // a take: a stereo pair and a mono spot, 70 s of a quiet chord with a click every 2.5 s - and a breath of silence at 16.0 - 16.4 s
+        auto writeTake = [&] (const juce::File& f, int channels, int delay)
+        {
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::OutputStream> os (f.createOutputStream().release());
+            auto w = wav.createWriterFor (os, juce::AudioFormatWriterOptions().withSampleRate (sr).withNumChannels (channels).withBitsPerSample (24));
+            juce::AudioBuffer<float> b (channels, sec (70));
+            for (int c = 0; c < channels; ++c)
+                for (int i = 0; i < b.getNumSamples(); ++i)
+                {
+                    const int j = i - delay - 3 * c;
+                    double v = 0.02 * std::sin (juce::MathConstants<double>::twoPi * 220.0 * j / sr) + 0.015 * std::sin (juce::MathConstants<double>::twoPi * 330.0 * j / sr);
+                    if (j >= sec (16.0) && j < sec (16.4)) v = 0.0;
+                    if (j >= 0 && j % sec (2.5) < 24) v += 0.6 * std::exp (-(j % sec (2.5)) / 5.0);
+                    b.setSample (c, i, (float) v);
+                }
+            w->writeFromAudioSampleBuffer (b, 0, b.getNumSamples());
+            w.reset();
+            return f;
+        };
+        const juce::Uuid tPair, tSpot;
+        EditRegion r; r.id = juce::Uuid(); r.takeId = juce::Uuid(); r.takeName = "Take 7"; r.sampleRate = sr; r.srcIn = sec (1); r.srcOut = sec (69); r.sourceLength = sec (70); r.startSample = 0;
+        { RegionFile f; f.trackId = tPair; f.trackName = "ORTF"; f.numChannels = 2; f.file = writeTake (dir.getChildFile ("Take 7 - ORTF.wav"), 2, 0); r.files.push_back (f); }
+        { RegionFile f; f.trackId = tSpot; f.trackName = "SPOT1"; f.numChannels = 1; f.file = writeTake (dir.getChildFile ("Take 7 - SPOT1.wav"), 1, 40); r.files.push_back (f); }
+        EditDef e; e.sampleRate = sr; e.insertRegion (r);
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        const FileLength fileLen = [&fm] (const juce::File& f) { auto rd = audioops::openReader (fm, f); return rd != nullptr ? rd->lengthInSamples : (juce::int64) -1; };
+        CHECK (std::abs (quietestMoment (fm, e.regions[0], sec (14.0), sec (17.0), {}) - sec (15.0)) <= sec (0.02));   // the breath (15.0 s on the edit's timeline: the piece starts 1 s into the take)
+        Request q; q.from = sec (8); q.to = sec (14); q.rampIn = 1.0; q.rampOut = 1.5; q.S = TimeMap::solve ((double) sec (6), (double) sec (6.6), sec (1.0), sec (1.5));
+        auto quiet = [&fm] (const EditRegion& rr, juce::int64 a, juce::int64 b) { return quietestMoment (fm, rr, a, b, {}); };
+        const auto p = makePlan (e, q, dir, fileLen, {}, quiet);
+        CHECK (p.ok() && p.delta == sec (0.6) && p.streams.size() == 1);
+        // cancelled: nothing is left behind
+        CHECK (renderStreams (p, [] { return true; }, {}) == "Cancelled.");
+        for (auto& t : p.streams[0].tracks) CHECK (! t.dest.exists());
+        std::atomic<float> lastProgress { 0.0f };
+        const auto err = renderStreams (p, {}, [&] (float f) { lastProgress = f; }, 2);
+        CHECK (err.isEmpty() && lastProgress.load() > 0.99f);
+        if (err.isEmpty() && p.ok())
+        {
+            const auto& s = p.streams[0];
+            for (auto& t : s.tracks)
+            {
+                auto rd = audioops::openReader (fm, t.dest);
+                CHECK (rd != nullptr && rd->lengthInSamples == s.outB - s.outA && (int) rd->numChannels == t.numChannels);
+            }
+            auto e2 = e; applyPlan (e2, p);
+            CHECK (e2.regions.size() == 3 && e2.lengthSamples() == e.lengthSamples() + p.delta);
+            // inside the part: the click the take has at 11.5 s of the edit (12.5 s in the take) is in the new file where the map puts it
+            auto rd = audioops::openReader (fm, s.tracks[0].dest);
+            std::vector<std::vector<float>> ch;
+            const double want = p.map.map ((double) sec (11.5)) + 1.0;
+            audioops::readRange (*rd, (juce::int64) want - sec (0.05) - s.outA, sec (0.1), ch);
+            double num = 0, den = 0;
+            for (size_t i = 1; i < ch[0].size(); ++i) { const double d3 = (double) ch[0][i] - ch[0][i - 1], e3 = d3 * d3; num += e3 * (double) i; den += e3; }
+            CHECK (den > 0.0 && std::abs ((double) ((juce::int64) want - sec (0.05) - s.outA) + num / den - (want - (double) s.outA)) < sr * 0.0015);
+            // before mark 1 the new file is the take itself (so the crossfade into it is seamless)
+            auto orig = audioops::openReader (fm, r.files[0].file);
+            std::vector<std::vector<float>> a2, b2;
+            audioops::readRange (*orig, sec (1) + sec (7.9), sec (0.08), a2);
+            audioops::readRange (*rd, sec (7.9) - s.outA, sec (0.08), b2);
+            double diff = 0.0;
+            for (size_t i = 0; i < a2[0].size(); ++i) diff = juce::jmax (diff, (double) std::abs (a2[0][i] - b2[0][i]));
+            CHECK (diff < 2.0e-3);
+            CHECK (p.note.contains ("hands back") && std::abs (e2.regions[2].startSample - sec (15.6)) <= sec (0.03));   // it handed back in the breath
+        }
     }
 
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

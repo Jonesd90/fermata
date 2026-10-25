@@ -1286,7 +1286,7 @@ public:
 /** The little pictures on the buttons of the edit and take windows. Each is drawn from a 24 x 24 grid so it stays sharp at any size. */
 enum class Icon { Start, Rewind, Play, Stop, Forward, End, Record, Trim, Bounce, Pitch, Repair, Reharm, Tracks, Feedback, Mixer, Earlier, Later, Delete, Undo, Automation,
                   ExportProc, ImportMulti, Markers, FeedbackMarkers, SlipLeft, SlipRight, Shuffle, InsertFlag, NextAtEnd,
-                  Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search, Denoise, Align, TakeSheet, RoomTone, NoiseMode };
+                  Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search, Denoise, Align, TakeSheet, RoomTone, NoiseMode, ReTimEr };
 
 inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area, juce::Colour ink = theme::text)
 {
@@ -1488,6 +1488,20 @@ inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area, j
             }
             g.setColour (Rd); g.drawEllipse (2.6f, 2.6f, 18.8f, 18.8f, 2.0f);
             seg (5.4f, 5.4f, 18.6f, 18.6f, 2.0f, Rd);
+            break;
+        }
+        case Icon::ReTimEr:
+        {
+            // a coiled spring pulled out between two bars (the music given more time, or less), |<- ->| under it
+            seg (2.5f, 5, 2.5f, 15, 2.0f, W); seg (21.5f, 5, 21.5f, 15, 2.0f, W);
+            P s; s.startNewSubPath (2.5f, 10); s.lineTo (5.0f, 10);
+            float x = 5.0f; bool up = true;
+            while (x < 18.5f) { x += 1.8f; s.lineTo (x, up ? 6.0f : 14.0f); up = ! up; }
+            s.lineTo (19.0f, 10); s.lineTo (21.5f, 10); stroke (s, 1.4f, Rd);
+            const float y = 19.5f;
+            seg (2.2f, y - 2.4f, 2.2f, y + 2.4f, 1.3f, W); seg (21.8f, y - 2.4f, 21.8f, y + 2.4f, 1.3f, W);
+            seg (4.0f, y, 9.0f, y, 1.4f, W); tri (3.4f, y, 6.2f, y - 2.0f, 6.2f, y + 2.0f, W);
+            seg (15.0f, y, 20.0f, y, 1.4f, W); tri (20.6f, y, 17.8f, y - 2.0f, 17.8f, y + 2.0f, W);
             break;
         }
         case Icon::Search:
