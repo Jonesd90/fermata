@@ -700,6 +700,61 @@ A full review of the audio thread and the recording path (read line by line; the
 
 **Tests ("2.89 ..." sections):** the tunings (seven temperaments on a key, A at the reference, pure major / minor chords), the pipe's voice (exact pitch, the swell, released notes die away, a chord never clips), the click (sample-exact beats, the accent, four sounds), the engine adding both to their outputs only, after the mixers, the analysis (spaced main pair, a centre and a left spot, pan-aware delays, a hall pair, the flags, two main pairs in line / not, bleed from an instrument near the main pair, a stereo spot pair's two suggestions, what cannot be measured), per-piece sets in the engine and their save / load, BWF chunks read back and crash repair keeping them, a bounce with its piece's alignment, the PDF writer, the take sheet. Render hooks FERMATA_RENDER=pitchpipe (FERMATA_PP_CHORD=1: chord mode with C E G lit) / click / align (roles set, Analyse pressed). The demo project (scratchpad rend/mkproj.cpp) has a fourth take, a run-through made from a simulated hall - eight sources, the mics at their places with cardioid / omni patterns, a Schroeder reverb per mic - on which the window measures the organ, harp, choir and soloists' spots within 0.1 ms of the geometry.
 
+## 3.0.2: R records only into an open take window; the ReHarmoniSer asks before closing
+
+**R.** `pollTransportKeys` and `remoteRecord` (the Stream Deck's Record and the controller's RecordTake) now take their take window from `counterTakeWindow()`: the take window used last if it is open, then the one recorded into last if open, then the first open one. That is the window the take counters show, so the counter and R can never disagree. With none open they do nothing but `noTakeWindowNotice()`: "Make a take window first ..." when the project has none, "No take window is open: open one ..." otherwise. Before, R went `lastTakeWindowId` (which falls back to `recentTake`, possibly closed), then `recordTarget`, then the first take window, and Record went `recordTarget`, then the first, all regardless of whether the window was open. A minimised take window counts as open, as it does for the counter. The windows that own R (`ownsRKeyProperty`: `JobDialogBase` - ReTouch / Noise mode / Pitch / ReHarmoniSer and the other tool dialogs - the edit window, ReTimEr, plug-in windows) are unchanged: their own R jobs never reached this path. The take window's own REC / R records into itself, as before.
+
+**ReHarmoniSer close.** `ReHarmoniserDialog::mayClose()`, as `RepairDialog::mayClose`: if the corrections were not written back (`isWrittenBack`, which is `st->accepted`) and Corrected Notes has entries (`editor.editList()`, the switched-off ones too), it asks with `confirmAsync` ("Throw it/them away") and returns false; the answer closes it with `closeMe()` (`closeDialogOf`, which does not ask again). Wired three ways:
+- the editor's Cancel (`host.cancel`) asks first;
+- the plain window is now launched with `launchDialog (..., mayClose)`, so Escape and the X go through `GuardedDialogWindow` (it used to be JUCE's dialog, Escape = close at once);
+- the OUT / IN stream windows keep their own rules (Escape does nothing, the X closes the pair, as for every tool), but their Cancel asks too.
+
+HotKeys: the R line and the ReHarmoniSer Esc line are changed with it.
+
+## 3.0.1: the take counters speak only of an open take window; U and I; Project > HotKeys
+
+`AppContext::counterTakeWindow()` (new) names the take window the counters outside the take windows are about. In order: `lastTakeWindowId()` (the take window R records into) if that window is open, then `recordTarget` if open, then the first open take window in project order. When none is open it returns null. "Open" means `windowIsOpen ("take:" + id)`, where `Main.cpp` looks in `windows`, so a take window minimised to the dock still counts. With no `windowIsOpen` set (a harness) every take window counts as open.
+
+`takeBoxInfo` uses it when not recording, and gives `number = 0` when no take window is open. Before, it used `recordTarget` and fell back to the first take window, whether or not that window was open, so a closed window's number stayed up. While recording it is unchanged: the take being recorded.
+
+The callers:
+- `NextTakeBox` (`Uikit.h`): `number <= 0` while idle draws an en dash (`charToString (0x2013)`; the sources stay ASCII) on grey `0xff5c636e`. The main window's menu-bar box shows it; the take window's own box still shows `d->nextNumber` (1 or more in any project Fermata wrote: it starts at 1 and only grows).
+- `TakeDisplayView::paint`: the piece comes from `counterTakeWindow()`, so no take window open means no piece. The panel is drawn in `kNone` (`0xff3a4049`) with a dash, and the captions are dimmed.
+- `RemoteControlServer::collect`: `takeNumber` is 0 (`RemoteProtocol.h` says so). Stream Deck plug-in 1.8.1 (`render.js` `noTake`, `takelabel`, `takenumber`; `renderdial.js` `take`) draws grey `#3a4049` with a dash for `!recording && !(takeNumber > 0)`. An older Fermata never sends 0, so 1.8.1 changes nothing there; the 1.8.0 plug-in draws "0". `test/run.js` checks the keys and the dial in both scenarios, plus unit checks on the three renderers.
+
+Not changed: the R key and the Stream Deck's Record still record into the last take window when none is open (`pollTransportKeys`, `remoteRecord`), and the counter then turns red with the take's number.
+
+**U and I** (`Main.cpp`, `globalKeyHook`): `deskWindowToggle ("pitchpipe")` and `deskWindowToggle ("click")`, the path the Stream Deck + XL's keys already used. It opens the window, or closes it with `closeFromKey` (never while a menu or message is up), or brings a docked one back. No window used U or I before: the letters in use are R, P, D, L, C, T, H, A, Z, G, N, O, plus M and B everywhere. FixTools' "In stream" button has I as its key, but only inside its own modal message, which has the keyboard. The keys go up through `ToolWindow::keyPressed`, so a text box with the keyboard still types them. The Pitch pipe and Click tooltips in the menu bar name the keys. Checked in the render harness by pressing U, U, I, I with XTest: each window opened and then left the desktop. (Xvfb has no compositor, so the screenshots keep the closed window's pixels until something repaints there.)
+
+**Project > HotKeys** (`src/ui/HotKeysWindow.h`, header-only, included by `Main.cpp`; window key `hotkeys`; `AppContext::showHotKeys`; `forwardKeys` like the mixer):
+- **The list.** `hotkeys::lines()` holds `{ section, keys, what }`. In `keys`, `+` joins a combination, `or` separates keys that do the same job, and `/` separates a pair whose jobs the description gives in the same order. `click`, `drag`, `double-click`, `right-click` and `wheel` are the mouse. An empty `keys` is a note written across the line.
+- **The drawing.** `HotKeysList` draws headings with an accent line and alternate row shades. Keycaps are filled with `theme::button` and lettered with `theme::inkOn (theme::button)`, so they read in both UI styles. Descriptions are wrapped with `TextLayout`. A combination is never split across lines.
+- **Find.** Every typed word must appear in the section, the keys or the description.
+- **The window.** `HotKeysComponent` adds the Find box (Esc clears it, Enter goes back to the list), a count, and **Copy the list** (`hotkeys::asText`, plain text with a padded key column). The list keeps the keyboard, so Up, Down, Page Up, Page Down, Home and End scroll it and every other key goes on as from the mixer. The top row leaves room for the window's pin and sun / moon buttons.
+
+**How the list was made.** It is an inventory of every key handler, each line checked against the code:
+- **Keys:** every `keyPressed` (TakeWindow, EditWindow, TrimWindow, FixTools x5, RetimerWindow, MasteringWindow, OrganiserWindow, TakeDisplay, PluginHost, ReHarmoniserEditor, the `ToolWindow` frame and the main window in `Main.cpp`), plus `AppContext::pollTransportKeys` (Space and R) and the global hook (M, B, U, I, Ctrl+Z, Ctrl+Y).
+- **Boxes and dialogs:** the text boxes with their own Enter / Esc / Tab (the main window's names, a take's bars and notes box, the value boxes, the marker names), the AlertWindow button keys, including JUCE's automatic first-letter keys from `LookAndFeel_V2::createAlertWindow` (Fermata does not override it), and the dialogs that close on Esc.
+- **The mouse:** every gesture with a modifier, double-click, right-click, wheel or press-and-hold, from `e.mods` / `getNumberOfClicks` / `setDoubleClickReturnValue` (Alt + click is JUCE's default single-click reset, so it is listed with the double-clicks).
+
+Two helpers read the tool windows and the mouse code. Their findings were spot-checked line by line, and the full list was rendered in both UI styles from a snapshot of the whole `HotKeysList`.
+
+**Fixed while at it:**
+- `OrganiserComponent::returnKeyPressed` arranges. Its four buttons no longer take the keyboard, so Enter = Arrange holds after a click.
+- Ten FixTools messages (and the comments around them) said "Alt + drag" for choosing tracks: it is Ctrl + Alt + drag (`markAlt` = Alt with Ctrl); Alt + drag alone is the lasso.
+- `LowCutPanel` tip: the value takes a double-click (`ReadoutClick` with `needsDoubleClick`).
+- The automation tip adds Ctrl + click and Alt fine moves (`draggedValue`, `fine`).
+- The insert slot tip adds Shift (`isCopyDrag`).
+- The pitch curve texts say Preview for the R button.
+
+**Found and left as they are** (the person was asked about the first):
+- **ReHarmoniSer Esc** closes the window at once and throws away corrections not written back, with no question (Spectral Repair and Noise mode ask first: `GuardedDialogWindow` / `mayClose`).
+- **ReHarmoniSer Space** has no `spaceIsForRecording()` check: the press that stops a recording also starts its playback.
+- **Drop-downs keep the keyboard** after a click in Mastering and ReHarmoniSer, so the arrows change them instead of zooming.
+- **M, B, U, I and Ctrl+Z / Ctrl+Y do not reach** the modal tool dialogs (`launchDialog`), the stream windows, plug-in windows or the Take Display screens. Only `ToolWindow` and the main window run the global hook. The list's first note says so.
+
+**Rule from now on:** a key added, changed or removed anywhere is changed in `hotkeys::lines()` in the same build. The sweep brief's ground rules say so too.
+
 ## 3.0.0: the tool pass (sanitizers, the readers' fuzz test, static analysis) and what it found; the mixer's fader caps
 
 Every check where the tools, not reasoning, find the problems, run over the whole program before the deep sweep (`docs/CODE-SWEEP-BRIEF.md`, for a Fable 5.1 session). `tools/tool-checks.sh <JUCE> <mode> [out]` runs each again (asan, tsan, fuzz, warnings, tidy, query, valgrind, coverage, all). Two core test programs must never run at the same time: both use the temp folder `fermata_test` (a first ThreadSanitizer run showed four "failures" that were exactly that).

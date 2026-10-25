@@ -944,10 +944,21 @@ bool AppContext::takeBoxInfo (int& number)
             if (auto* g = w->findGroup (engine.currentTakeId())) { number = g->number; return true; }
         return true;
     }
-    auto* w = project.findTakeWindow (recordTarget);
-    if (w == nullptr && ! project.takeWindows.empty()) w = project.takeWindows.front().get();
-    if (w != nullptr) number = w->nextNumber;
+    const auto* w = project.findTakeWindow (counterTakeWindow());
+    number = w != nullptr ? w->nextNumber : 0;                               // (0: no take window is open - the counters show a dash, not the number of a window that was closed)
     return false;
+}
+
+juce::Uuid AppContext::counterTakeWindow()
+{
+    auto open = [this] (const juce::Uuid& id)
+    {
+        return ! id.isNull() && project.findTakeWindow (id) != nullptr && (! windowIsOpen || windowIsOpen ("take:" + id.toString()));     // (no window list at all - a test - counts as open)
+    };
+    if (lastTakeWindowId) if (const auto id = lastTakeWindowId(); open (id)) return id;
+    if (open (recordTarget)) return recordTarget;
+    for (auto& w : project.takeWindows) if (open (w->id)) return w->id;
+    return juce::Uuid::null();
 }
 
 void AppContext::remoteTalk (bool down)
@@ -959,10 +970,15 @@ void AppContext::remoteTalk (bool down)
 void AppContext::remoteRecord()
 {
     if (engine.isRecording()) { toggleRecord (juce::Uuid::null()); return; }
-    auto id = recordTarget;
-    if (project.findTakeWindow (id) == nullptr) id = project.takeWindows.empty() ? juce::Uuid::null() : project.takeWindows.front()->id;
-    if (id.isNull()) { setNotice ("Make a take window first (Takes menu), then Record works from the Stream Deck."); return; }
+    const auto id = counterTakeWindow();                                     // the take window the counters show: an open one (3.0.2: never one that was closed)
+    if (id.isNull()) { setNotice (noTakeWindowNotice ("Record")); return; }
     toggleRecord (id);
+}
+
+juce::String AppContext::noTakeWindowNotice (const juce::String& what) const
+{
+    if (project.takeWindows.empty()) return "Make a take window first (Take Window in the menu bar), then " + what + " records into it.";
+    return "No take window is open: open one (Take Window in the menu bar), then " + what + " records into it.";
 }
 
 int AppContext::armState() const
@@ -1036,10 +1052,8 @@ void AppContext::pollTransportKeys()
     }
     if (rPressed && ! engine.isRecording() && ! rKeyHasOwnJobHere())
     {
-        auto id = lastTakeWindowId ? lastTakeWindowId() : juce::Uuid::null();     // the take window in front, or the one that was in front last
-        if (project.findTakeWindow (id) == nullptr) id = recordTarget;
-        if (project.findTakeWindow (id) == nullptr) id = project.takeWindows.empty() ? juce::Uuid::null() : project.takeWindows.front()->id;
-        if (id.isNull()) { setNotice ("Make a take window first (Takes menu), then R records from any window."); return; }
+        const auto id = counterTakeWindow();          // the take window in front, or the one in front last - if it is open (3.0.2: with none open, R does nothing)
+        if (id.isNull()) { setNotice (noTakeWindowNotice ("R")); return; }
         toggleRecord (id);
     }
 }

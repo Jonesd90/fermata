@@ -6,6 +6,32 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.0.2
+**R does nothing when no take window is open.** Before, it recorded into the take window you used last even after you had closed it, out of sight. Now it only records into a take window that is open: the one the take counter shows, which is the one you used last. With none open, the status line says to open one. The Stream Deck's Record key and the controller's Record button follow the same rule. R in ReTouch and Noise mode still does the ReTouch, and R in the edit window still butts the pieces together.
+
+**The ReHarmoniSer asks before throwing away corrected notes.** Esc, the X or Cancel with corrected notes that have not been written back now asks "Close the window and throw them away?" (**Throw them away** or **Cancel**), as Spectral Repair and Noise mode do. Before, Esc closed the window at once and the corrections were gone. Write back to clip keeps them, as before.
+
+## 3.0.1
+**Project > HotKeys: every key in Fermata, and what it does.**
+- A new window lists every key and key combination, window by window, in about 200 lines. It covers everywhere, the main window, take window, edit window, Trim window, mixer, the repair and pitch tools, ReHarmoniSer, ReTimEr, Mastering, the Display Organiser, the Take Display, plug-in windows and the Project Designer. It includes Enter, the Shift / Ctrl / Alt combinations, and what the mouse does with those keys held (and the double-clicks and right-clicks). The keys are drawn as keys.
+- Type in the Find box to narrow it down ("zoom", "mark", "F2" ...). **Copy the list** puts it all on the clipboard as text, to paste into a document or print.
+- The keys keep working while the list is open: they go on to the take or edit window you used last, as from the mixer.
+- **Display Organiser: Enter arranges the windows** now also after you click a layout in the list or one of its buttons. Before, the list swallowed Enter, and a clicked button kept the keyboard and pressed itself again.
+- **Hints that described the wrong gesture are put right.** Found while making the list:
+  - The messages that said "the tracks you marked with Alt + drag" now say Ctrl + Alt + drag (Alt + drag is the lasso).
+  - The low-cut slider's tip says a double-click types the value.
+  - The automation tip adds Ctrl + click (delete a point) and Alt (finer moves).
+  - The insert slot's tip says Shift copies too.
+  - The pitch curve's texts call the R button Preview, as it reads.
+
+**Two new keys: U opens and closes the Pitch pipe, I the Click.** Like M and B, they work from the main window and every window on the desk (a minimised one comes back). The menu bar buttons' tooltips say so.
+
+**The take counter goes blank when no take window is open.**
+- The "Next Take" number in the main window's menu bar, on the Take Display and on the Stream Deck now belongs to a take window that is open. Close the last take window and the counter turns grey and shows a dash (the Take Display drops the piece's name too); open one and its next take number comes back. Before, the number of a window you had closed stayed up, as if it were still open.
+- With several take windows open, the counter shows the one R records into: the take window you used last.
+- The take window's own Next Take box is unchanged. So is the R key: with no take window open it still records into the take window used last.
+- **Stream Deck plug-in 1.8.1** draws the dash on grey for the Take label and Take number keys and the Take dial. The 1.8.0 plug-in keeps working, and shows a 0 there instead.
+
 ## 3.0.0
 **The testing tools' sweep: every part of Fermata that reads something from outside was given damaged and random input, tens of thousands of times over, and checked with the memory, thread and undefined-behaviour checkers.** Nothing works differently; these are the problems they found, fixed.
 - **A damaged WAV file never crashes Fermata.** A file whose header claims a length the file cannot hold (an RF64 file whose 64-bit size is nonsense - a damaged card or drive) is now read as the length the file really holds. Before, playing, drawing or importing it could crash the program.

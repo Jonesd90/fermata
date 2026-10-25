@@ -121,7 +121,9 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     bool remoteCrDown = false;
     void remoteTalk (bool down);                         // the Talk key went down / up
     void remotePlayback() { if (! project.tbOutputs.empty()) tbWanted = ! tbWanted; }
-    void remoteRecord();                                 // start (green) / stop (red) a take in the take window used last
+    void remoteRecord();                                 // start (green) / stop (red) a take in the take window used last (only an open one: counterTakeWindow)
+    /** What R or Record says when there is no open take window to record into (none made yet, or all of them closed). */
+    juce::String noTakeWindowNotice (const juce::String& what) const;
     /** Space and R, watched straight from the keyboard 60 times a second (like the talkback keys) so that they work from every window of the program,
         whichever window or button has the keyboard: Space stops the recording, R starts one (in the take window used last). Not while a text box is
         being typed in, not with Shift / Ctrl / Alt held, not in a window whose R has its own job (the edit window, the process windows), and only
@@ -166,6 +168,7 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     std::function<bool (const juce::Uuid& mixerId, const juce::Uuid& trackId)> isStripSelectedInMixer;
     std::function<void()> showSurfacePanel;              // the "Mixer controller" window (MIDI ports, what the buttons do, the MIDI monitor)
     std::function<void()> showPitchPipe, showClick;      // the Pitch pipe and Click windows (menu bar)
+    std::function<void()> showHotKeys;                   // Project > HotKeys: every key and what it does (3.0.1)
     /** The Align window (spot-mic time alignment), measuring on a take window (isEdit false) or an edit. */
     std::function<void (bool isEdit, const juce::Uuid& id)> showAlign;
     /** Gives the engine the pitch pipe's and the click's settings from the project (outputs, level, tempo ...). */
@@ -218,8 +221,13 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     struct DiscAlign { double end = 0.0; juce::String owner; };
     std::vector<DiscAlign> discAlign;                // while a disc plays through the mixers: where each piece ends on the disc and the spot delays it has
     juce::Uuid discToken;
-    /** For the "Next Take / This Take" box: true while recording (number = the take being recorded), otherwise number = the next take of the most recently used take window. */
+    /** For the "Next Take / This Take" box: true while recording (number = the take being recorded), otherwise number = the next take of the take window
+        counterTakeWindow() names - or 0 when no take window is open (the boxes, the Take Display and the Stream Deck then show a dash). */
     bool takeBoxInfo (int& number);
+    /** The take window the take counters outside the take windows speak of, and the one R, the Stream Deck's Record and the controller's Record record
+        into: the take window used last if it is open, else the one recorded into last if that is open, else the first open one. Null when no take window
+        is open (3.0.1: a closed window's number stayed up; 3.0.2: R recorded into a closed window). */
+    juce::Uuid counterTakeWindow();
 
     // ---- playback (everything plays through the mixers) ----
     struct PlayInfo
