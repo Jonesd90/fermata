@@ -46,7 +46,9 @@ AppContext::AppContext()
     project.onNewWindow = [this] { juce::MessageManager::callAsync ([this] { if (saveHold == 0 && project.dirty.load() && project.projectFile != juce::File() && ! engine.isRecording()) saveNow (true); }); };      // a new edit / take window / mixer gets its file at once
     watcher.fn = [this]
     {
+        tickRecordMonitor();
         if (engine.playbackFinished()) stopPlayback (true);                  // tidy up when a play-through reaches its end
+        else if (! engine.isPlaying() && playInfo.kind != PlayInfo::Kind::None) stopPlayback (true);     // the engine stopped on its own (the device restarted: AudioEngine::prepare): the windows are told the same way (3.1.5)
         engine.servicePreRoll();                                             // Pre-Rec's memory, made in the background, goes in place
         if (const auto done = engine.reapFinishedTakes(); ! done.empty())     // a stopped take's files are finished on the disk: draw their real waveforms
         {
@@ -380,8 +382,15 @@ void AppContext::syncWithDevice()
         setup.inputChannels = allIn; setup.outputChannels = allOut;
         juce::Logger::writeToLog ("Enabling all " + juce::String (ins.size()) + " inputs and " + juce::String (outs.size()) + " outputs of the driver");
         auto err = devices.setAudioDeviceSetup (setup, true);
-        if (err.isNotEmpty()) juce::Logger::writeToLog ("Could not enable all channels: " + err);
-        return;     // the device restarts, which calls us again
+        if (err.isEmpty()) return;     // the device restarts, which calls us again
+        juce::Logger::writeToLog ("Could not enable all channels: " + err);
+        if (channelsErrorShownFor != dev->getName())             // said once per device (this runs again at every device restart), not only logged
+        {
+            channelsErrorShownFor = dev->getName();
+            showError ("Audio device", "Not all of the driver's channels could be switched on, so some inputs or outputs may be missing:\n\n" + err
+                                       + "\n\nThe device is used with the channels the driver allows. The log has the details.");
+        }
+        // (no restart is coming: the project's lists are brought up to date with this device's channels here - they used to keep the previous device's: 3.1.5)
     }
     project.syncWithDevice (ins, outs);
 }
@@ -426,9 +435,145 @@ void AppContext::autosaveIfIdle()
     saveNow (true);
 }
 
+// ---- the recording monitor (3.2.0) ------------------------------------------------------------------------------------------------------------
+void AppContext::tickRecordMonitor()
+{
+    auto& m = recordMonitor;
+    auto clockNow = [] { return juce::Time::getCurrentTime().formatted ("%H:%M:%S"); };
+    auto event = [&] (const juce::String& text, bool bad)
+    {
+        if (m.events.size() >= RecordMonitor::kMaxEvents) m.events.erase (m.events.begin());
+        m.events.push_back ({ clockNow(), text, bad });
+    };
+    const bool rec = engine.isRecording();
+    if (rec && ! m.recording)                                                  // a take has just started: the monitor starts afresh for it
+    {
+        takeMatch.recordingStarted();                                          // (any take analysis stops: the disk is the recording's)
+        m = RecordMonitor();
+        m.recording = true; m.everRecorded = true; m.startedMs = juce::Time::getMillisecondCounter();
+        for (auto& w : project.takeWindows)
+            if (auto* g = w->findGroup (engine.currentTakeId())) { m.windowId = w->id; m.takeId = g->id; m.takeName = w->labelFor (*g) + " " + juce::String (g->number) + " - " + w->name; }
+        if (m.takeName.isEmpty()) m.takeName = "Take";
+        event ("Recording started: " + m.takeName + (engine.getBackupFolder() != juce::File() ? "  (second drive on)" : "  (no second drive)"), false);
+    }
+    // the main drive: overruns, lost time, a file that stopped taking data
+    if (rec)
+    {
+        const int ov = engine.overruns();
+        if (ov > m.overruns)
+        {
+            m.lostSamples = engine.samplesLost();
+            event ("DISK OVERRUN: " + juce::String (ov) + (ov == 1 ? " block" : " blocks") + " did not reach the disk buffer in time, " + lostText (m.lostSamples, engine.getSampleRate()) + " of audio lost (silence in its place)", true);
+            m.overruns = ov;
+        }
+        if (const auto problem = engine.recordingProblem(); problem.isNotEmpty() && ! m.writeFailed)
+        {
+            m.writeFailed = true;
+            event ("FILE STOPPED TAKING DATA: " + problem, true);
+        }
+        // the device: stopped, or running but delivering nothing (see MainWindow's status line for the same test)
+        const bool down = ! engine.isRunning(), quiet = engine.isRunning() && quietSeconds >= 2;
+        if (down && ! m.deviceDown) { ++m.deviceStops; event ("AUDIO DEVICE STOPPED: no sound is reaching the take", true); }
+        if (quiet && ! m.deviceQuiet) event ("AUDIO DEVICE NOT DELIVERING: running, but no sound has arrived for two seconds (the driver has stalled?)", true);
+        if (! down && m.deviceDown) event ("The audio device is running again", false);
+        m.deviceDown = down; m.deviceQuiet = quiet;
+        m.worstLagSeconds = juce::jmax (m.worstLagSeconds, engine.backupWorstLagSeconds());
+    }
+    // the second recording drive: a copy thrown away (or kept as it is) is said here, as the main window used to say it (3.1.3 wording kept)
+    const auto problems = engine.takeBackupProblems();
+    for (auto& pr : problems)
+    {
+        juce::Logger::writeToLog ("Second recording drive: " + pr);
+        const bool kept = pr.contains ("was kept as it is");
+        if (kept) m.copyKept = true; else ++m.copiesBinned;
+        event ("Second drive: " + pr, ! kept);
+    }
+    if (! problems.isEmpty())
+        setNotice ("Second drive: " + problems[0] + (problems.size() > 1 ? "  (and " + juce::String (problems.size() - 1) + " more files of this take)" : juce::String()) + ".");
+    // the device stopped and started again during a take, or came back at another rate (the take ended): said once, and kept in the list
+    if (const auto note = engine.takeDeviceNote(); note.isNotEmpty())
+    {
+        setNotice (note);
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Recording", note);
+        event (note, true);
+    }
+    if (! rec && m.recording)                                                  // the take has stopped: its outcome stays on the lamps until the next one
+    {
+        m.recording = false;
+        if (! m.takeId.isNull()) takeMatch.takeFinished (m.takeId);            // its fingerprint, for "the same place in another take" (3.4.0)
+        double secs = 0.0;
+        if (auto* w = project.findTakeWindow (m.windowId)) if (auto* g = w->findGroup (m.takeId); g != nullptr && g->sampleRate > 0.0) secs = (double) g->lengthSamples / g->sampleRate;
+        event ("Recording stopped" + (secs > 0.0 ? " after " + juce::String (secs, 1) + " s" : juce::String())
+               + (m.overruns == 0 && ! m.writeFailed && m.deviceStops == 0 && m.copiesBinned == 0 ? ": no problems" : ""), false);
+    }
+}
+
+AppContext::Lamp AppContext::mainDriveLamp() const
+{
+    Lamp l;
+    const auto& m = recordMonitor;
+    const auto folder = engine.isRecording() ? engine.recordingFolder() : project.audioFolder();
+    const double gb = folder != juce::File() ? (double) folder.getBytesFreeOnVolume() / 1.0e9 : -1.0;
+    const juce::String free = gb < 0.0 ? juce::String() : gb >= 1000.0 ? juce::String (gb / 1024.0, 1) + " TB free" : juce::String (juce::roundToInt (gb)) + " GB free";
+    if (m.writeFailed) { l.level = 2; l.word = "FAILED"; l.detail = "A file stopped taking data: the recording drive is full, or has gone. " + free; return l; }
+    if (m.overruns > 0) { l.level = m.recording ? 2 : 1; l.word = juce::String (m.overruns) + (m.overruns == 1 ? " OVERRUN" : " OVERRUNS"); l.detail = lostText (m.lostSamples, engine.getSampleRate()) + " of audio lost to the disk (silence in its place). " + free; return l; }
+    if (m.recording)
+    {
+        juce::String left;
+        if (const double bps = engine.recordingBytesPerSecond(); bps > 0.0 && gb >= 0.0)
+        {
+            const int mins = (int) (gb * 1.0e9 / bps / 60.0);
+            left = mins >= 60 ? juce::String (mins / 60) + " h " + juce::String (mins % 60).paddedLeft ('0', 2) + " min left" : juce::String (mins) + " min left";
+            if (mins < 5) { l.level = 2; l.word = "DISK FULL SOON"; l.detail = left + " at this rate. " + free; return l; }
+            if (mins < 15) { l.level = 1; l.word = left.toUpperCase(); l.detail = "The drive fills up in " + left + " at this rate. " + free; return l; }
+        }
+        l.level = 0; l.word = "OK"; l.detail = "Every file is taking data. " + (left.isNotEmpty() ? left + ". " : juce::String()) + free; return l;
+    }
+    l.level = m.everRecorded ? 0 : -1; l.word = m.everRecorded ? "OK" : "IDLE";
+    l.detail = (m.everRecorded ? "The last take recorded without a problem on the main drive. " : "Not recording. ") + free + (gb >= 0.0 && gb < 10.0 ? " - nearly full" : "");
+    if (gb >= 0.0 && gb < 10.0) l.level = 1;
+    return l;
+}
+
+AppContext::Lamp AppContext::secondDriveLamp() const
+{
+    Lamp l;
+    const auto& m = recordMonitor;
+    if (engine.getBackupFolder() == juce::File()) { l.level = -1; l.word = "OFF"; l.detail = "No second recording drive is set (Project menu)."; return l; }
+    if (m.copiesBinned > 0) { l.level = 2; l.word = juce::String (m.copiesBinned) + (m.copiesBinned == 1 ? " COPY LOST" : " COPIES LOST"); l.detail = "The second drive could not keep up, or could not be written: that many files of this take have no copy. The main recording is not affected."; return l; }
+    if (m.copyKept) { l.level = 1; l.word = "COPY KEPT"; l.detail = "The main recording could not be read back at the end: the second drive's copy was kept as it is (see the event)."; return l; }
+    if (m.recording)
+    {
+        const double lag = engine.backupWorstLagSeconds();
+        if (lag > 5.0) { l.level = 1; l.word = juce::String (lag, 0) + " S BEHIND"; l.detail = "The second drive is " + juce::String (lag, 1) + " s behind the recording (thrown away at 20 s)."; return l; }
+        l.level = 0; l.word = engine.backupCopiesGoing() > 0 ? "COPYING" : "OK"; l.detail = "Every file of the take is being copied to " + engine.getBackupFolder().getFullPathName() + (lag > 0.5 ? ", " + juce::String (lag, 1) + " s behind" : ", keeping up") + "."; return l;
+    }
+    if (engine.backupCopiesGoing() > 0) { l.level = 0; l.word = "FINISHING"; l.detail = "The last take's copies are being finished on the second drive."; return l; }
+    l.level = m.everRecorded ? 0 : -1; l.word = m.everRecorded ? "OK" : "READY";
+    l.detail = juce::String (m.everRecorded ? "The last take's files were all copied to " : "Copies will go to ") + engine.getBackupFolder().getFullPathName() + (m.worstLagSeconds > 0.5 ? " (at worst " + juce::String (m.worstLagSeconds, 1) + " s behind)" : juce::String()) + ".";
+    return l;
+}
+
+AppContext::Lamp AppContext::deviceLamp() const
+{
+    Lamp l;
+    const auto& m = recordMonitor;
+    auto* dev = devices.getCurrentAudioDevice();
+    if (dev == nullptr) { l.level = 2; l.word = "NO DEVICE"; l.detail = "No audio device is open: Audio settings."; return l; }
+    const juce::String name = dev->getName() + ", " + juce::String (dev->getCurrentSampleRate(), 0) + " Hz, buffer " + juce::String (dev->getCurrentBufferSizeSamples());
+    if (! engine.isRunning()) { l.level = 2; l.word = "STOPPED"; l.detail = "The audio device has stopped: no sound is reaching Fermata. " + name; return l; }
+    if (quietSeconds >= 2) { l.level = 2; l.word = "NOT DELIVERING"; l.detail = "The device says it is running but has delivered no sound for " + juce::String (quietSeconds) + " s (the driver has stalled?). " + name; return l; }
+    if (m.recording && m.deviceStops > 0) { l.level = 1; l.word = juce::String (m.deviceStops) + (m.deviceStops == 1 ? " RESTART" : " RESTARTS"); l.detail = "The device stopped and started again during this take: the sound while it was down is missing. " + name; return l; }
+    if (! m.recording && m.everRecorded && m.deviceStops > 0) { l.level = 1; l.word = "RESTARTED"; l.detail = "The device stopped and started again during the last take. " + name; return l; }
+    l.level = 0; l.word = juce::String (dev->getCurrentSampleRate() / 1000.0, dev->getCurrentSampleRate() == std::floor (dev->getCurrentSampleRate() / 1000.0) * 1000.0 ? 0 : 1) + " KHZ";
+    l.detail = "Running: " + name + (lastLoad.late > 0 ? ". " + juce::String (lastLoad.late) + " late blocks in the last second" : juce::String()) + ".";
+    return l;
+}
+
 void AppContext::tickLoad()
 {
     lastLoad = engine.takeLoadStats();
+    quietSeconds = engine.isRunning() && lastLoad.blocks == 0 ? quietSeconds + 1 : 0;      // (the main window's status line says so while recording: 3.1.5)
     if (! engine.isRunning() || lastLoad.blocks == 0) { minuteSeconds = 0; minuteLoad = {}; return; }
     // gather the minute: the average is weighted by blocks, the peaks are the highest
     const int nb = minuteLoad.blocks + lastLoad.blocks;
@@ -457,6 +602,30 @@ void AppContext::tickLoad()
     }
 }
 
+void AppContext::armFixUndo (const juce::String& label, std::function<void()> fn, bool isEdit, const juce::Uuid& id, const juce::Uuid& takeGroup)
+{
+    fixUndoLabel = label; fixUndo = std::move (fn); fixUndoIsEdit = isEdit; fixUndoId = id; fixUndoGroup = takeGroup; fixUndoHash = 0;
+    // the edit as it stands once the handler that made the fix has finished with it (its last changes come after this call)
+    juce::MessageManager::callAsync ([this, alive = saverAlive, isEdit, id, takeGroup] { if (*alive && fixUndo && fixUndoId == id) fixUndoHash = fixUndoHashNow (isEdit, id, takeGroup); });
+}
+
+juce::uint64 AppContext::fixUndoHashNow (bool isEdit, const juce::Uuid& id, const juce::Uuid& takeGroup)
+{
+    if (isEdit) { if (auto* e = project.findEdit (id)) return Project::undoHash (*e); return 0; }
+    auto* w = project.findTakeWindow (id);
+    if (w == nullptr) return 0;
+    if (takeGroup.isNull()) return Project::undoHash (*w);
+    auto* g = w->findGroup (takeGroup);                                 // a take's fix: only that take counts (another take recorded since is no change to it)
+    if (g == nullptr) return 0;
+    TakeWindowDef one; one.groups.push_back (*g);
+    return Project::undoHash (one);
+}
+
+bool AppContext::fixUndoStillValid()
+{
+    return fixUndo != nullptr && fixUndoHash != 0 && fixUndoHashNow (fixUndoIsEdit, fixUndoId, fixUndoGroup) == fixUndoHash;
+}
+
 void AppContext::undoStep()
 {
     const auto live = engine.isRecording() ? engine.currentTakeId() : juce::Uuid::null();
@@ -473,17 +642,18 @@ void AppContext::redoStep()
     if (refreshTitles) refreshTitles();
 }
 
-void AppContext::saveNow (bool quick)
+bool AppContext::saveNow (bool quick, juce::String* errorOut)
 {
-    if (quick && saveHold > 0) return;                   // (a preview's files are in a take's file list: the project file must not say so; the save comes once they are out)
-    if (project.projectFile == juce::File()) return;
+    if (quick && saveHold > 0) return true;              // (a preview's files are in a take's file list: the project file must not say so; the save comes once they are out)
+    if (project.projectFile == juce::File()) return true;
     lastAutosaveMs = juce::Time::getMillisecondCounter();
     if (saver != nullptr) saver->drain();                // (what the saver has finished is taken in first: a failed save is written again)
+    bool ok = true;
     if (quick && saver != nullptr && ! wholeSaveNext)
     {
         // an automatic save: the snapshot here, the writing on the saver's thread - one at a time, so that a save which fails is known about
         // (and its windows written again) before the next snapshot is taken: one asked for meanwhile is taken once the one being written is done
-        if (saver->isBusy()) { quickSaveWanted = true; return; }
+        if (saver->isBusy()) { quickSaveWanted = true; return true; }
         BusyLabel busy ("taking the snapshot for an automatic save");
         if (auto job = project.prepareSave (true))
         {
@@ -499,14 +669,21 @@ void AppContext::saveNow (bool quick)
         BusyLabel busy ("saving the project");
         juce::String err;
         const auto t0 = juce::Time::getMillisecondCounterHiRes();
-        const bool ok = project.save (err, quick);       // (waits for the saver first: Project::settleBackgroundSaves)
+        ok = project.save (err, quick);                  // (waits for the saver first: Project::settleBackgroundSaves)
         const auto ms = juce::Time::getMillisecondCounterHiRes() - t0;
         if (ms > 250.0) juce::Logger::writeToLog ("Saved the project in " + juce::String (juce::roundToInt (ms)) + " ms (written there and then)");
         if (ok) { wholeSaveNext = false; lastFailedJob.reset(); }
-        else showSaveError (err, quick);
+        else
+        {
+            // every save that fails is in the log (a message box that the person is not there to see, or that cannot be shown while the program closes, is not enough)
+            juce::Logger::writeToLog ((quick ? juce::String ("Automatic save failed (written there and then): ") : juce::String ("Could not save the project: ")) + err);
+            if (errorOut != nullptr) *errorOut = err;
+            else showSaveError (err, quick);
+        }
     }
     props.getUserSettings()->setValue ("lastProject", project.projectFile.getFullPathName());
     props.saveIfNeeded();
+    return ok;
 }
 
 void AppContext::waitForSaves()
@@ -573,7 +750,9 @@ void AppContext::showSaveError (const juce::String& err, bool automatic)
 void AppContext::afterProjectReplaced()
 {
     ++saveGeneration;                                  // (what a save handed over before this did is not this project's)
+    takeMatch.projectReplaced();                       // (the takes' fingerprints were the old project's; the new one's are found by its sweep)
     wholeSaveNext = false; quickSaveWanted = false; lastFailedJob.reset();
+    fixUndo = nullptr; fixUndoLabel.clear(); fixUndoHash = 0;      // (the last fix was in the project that was open before: 3.1.4)
     lastAutosaveMs = juce::Time::getMillisecondCounter();
     syncWithDevice();
     engine.rebuildPlan();
@@ -700,7 +879,9 @@ bool AppContext::newProject (const juce::File& file)
     stopPlayback();
     engine.auxSounds().click.setRunning (false); engine.auxSounds().pipe.allOff();     // (the click and the pitch pipe belong to the old project's outputs)
     plugins.closeAllEditors();                       // (the old project's plug-ins go with it)
-    saveNow();
+    // the project that is open is saved first; if that fails nothing is changed (its unsaved changes would be lost with it: the person saves it
+    // elsewhere, frees the drive, or closes it without saving first)
+    if (juce::String serr; ! saveNow (false, &serr)) { showError ("New project", "The project that is open could not be saved first, so nothing was changed.\n\n" + serr); return false; }
     auto insertFactory = project.insertFactory;
     project.createDefaultDesign();
     project.addDefaultMainBus();                     // an Ext Bus "Main" on outputs 1-2, so a new project is heard at once
@@ -747,7 +928,8 @@ bool AppContext::openProject (const juce::File& file)
     stopPlayback();
     plugins.closeAllEditors();                       // (the old project's plug-ins go with it)
     if (project.projectFile != juce::File()) busy::step ("Saving " + project.name + " first");
-    saveNow();
+    // (as in newProject: a project that cannot be saved stays open, nothing is changed)
+    if (juce::String serr; ! saveNow (false, &serr)) { showError ("Open project", "The project that is open could not be saved first, so nothing was changed.\n\n" + serr); return false; }
     juce::String err;
     // While the project is read: say which window is being read, and which plug-in is being loaded (a plug-in can take a few seconds to start).
     const auto realFactory = project.insertFactory;
@@ -757,10 +939,11 @@ bool AppContext::openProject (const juce::File& file)
         ~Restore() { p.insertFactory = f; p.loadProgress = nullptr; }
     } restore { project, realFactory };
     project.loadProgress = [] (const juce::String& what, double progress) { busy::step (what, progress); };
+    auto notStarted = std::make_shared<juce::StringArray>();         // the plug-ins that could not be started, with the reason: told once the project is open
     if (realFactory)
     {
         auto count = std::make_shared<int> (0);
-        project.insertFactory = [this, realFactory, count] (const juce::String& desc, const juce::String& state) -> std::unique_ptr<InsertProcessor>
+        project.insertFactory = [this, realFactory, count, notStarted] (const juce::String& desc, const juce::String& state) -> std::unique_ptr<InsertProcessor>
         {
             juce::String nm, pluginFile;
             if (auto xml = juce::XmlDocument::parse (desc)) { nm = xml->getStringAttribute ("name"); pluginFile = xml->getStringAttribute ("file"); }
@@ -770,7 +953,9 @@ bool AppContext::openProject (const juce::File& file)
                 return nullptr;
             }
             busy::step ("Starting plug-in " + juce::String (++*count) + (nm.isNotEmpty() ? ":  " + nm : juce::String()), -1.0);
-            return realFactory (desc, state);
+            auto p = realFactory (desc, state);
+            if (p == nullptr) notStarted->add ((nm.isNotEmpty() ? nm : juce::String ("A plug-in")) + ":  " + plugins.lastFactoryError);
+            return p;
         };
     }
     const auto tOpen0 = juce::Time::getMillisecondCounterHiRes();
@@ -783,6 +968,15 @@ bool AppContext::openProject (const juce::File& file)
         juce::String text = "Not everything could be read as it was saved. Nothing was deleted. Where a file is missing, put it back in the project folder and open the project again; where a .bak was used, the file had gone wrong and the save before it was taken instead.\n\n";
         for (auto& l : project.loadNotes) text << "   " << l << "\n";
         juce::MessageManager::callAsync ([text] { juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Project files").withMessage (text).withButton ("OK"), nullptr); });
+    }
+    if (! notStarted->isEmpty())                       // (said once, after the windows are up; the ignored ones are not in this list - they were chosen)
+    {
+        juce::String text = juce::String (notStarted->size()) + (notStarted->size() == 1 ? " plug-in could not be started" : " plug-ins could not be started")
+                            + ", so the mix plays without " + (notStarted->size() == 1 ? "it" : "them") + " for now:\n\n";
+        for (auto& l : *notStarted) text << "   " << l << "\n";
+        text << "\nThe slots keep " << (notStarted->size() == 1 ? "it" : "them") << " with all the settings (shown as \"not loaded\"): they are saved with the project as before and come back "
+                "the next time the project opens with the plug-in working. Choosing another plug-in for such a slot replaces it. The log has the details.";
+        juce::MessageManager::callAsync ([text] { juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Plug-ins").withMessage (text).withButton ("OK"), nullptr); });
     }
     const auto mended = project.repairInterruptedRecordings();      // the program or the computer stopped while recording: keep everything that was recorded
     const auto tChecked = juce::Time::getMillisecondCounterHiRes();
@@ -850,7 +1044,10 @@ bool AppContext::closeProject (bool save)
     stopPlayback();
     engine.auxSounds().click.setRunning (false); engine.auxSounds().pipe.allOff();
     plugins.closeAllEditors();
-    if (save) saveNow();
+    if (save)                                        // "Save and close": a save that fails keeps the project open (closing would lose what it could not write)
+    {
+        if (juce::String serr; ! saveNow (false, &serr)) { showError ("Close project", "The project could not be saved, so it stays open.\n\n" + serr); return false; }
+    }
     else { waitForSaves(); retryFailedSave(); }      // (the automatic saves are kept: one being written finishes first, one that failed is written again)
     props.saveIfNeeded();
     project.projectFile = juce::File();              // from here on nothing is written to it (the windows closing below may still mark changes)
@@ -1549,7 +1746,7 @@ void AppContext::shutdown()
     project.preampDriver = std::make_shared<NullPreampDriver>();
     plugins.closeAllEditors();
     closingProgram = true;
-    if (! skipFinalSave) saveNow();
+    if (! skipFinalSave) { juce::String err; saveNow (false, &err); }     // (a failure is in the log; no message box can be shown while the program closes - Save and quit asks before it gets here)
     else { waitForSaves(); retryFailedSave(); }      // "Quit without saving" keeps what was saved automatically: so it must really be on the disk
     if (auto* s = props.getUserSettings())
         if (auto xml = devices.createStateXml()) { s->setValue ("audioDevice", xml.get()); }

@@ -908,12 +908,7 @@ void MainComponent::timerCallback()
                 diskBox.setTooltip (tip + (warn ? ": nearly full!" : ""));
             }
             else diskBox.setText ("-");
-            // the second recording drive: say so if a copy could not be made
-            const auto problems = app.engine.takeBackupProblems();
-            for (auto& pr : problems) juce::Logger::writeToLog ("Second recording drive: " + pr);
-            if (! problems.isEmpty())
-                app.setNotice ("Second drive: " + problems[0] + (problems.size() > 1 ? "  (and " + juce::String (problems.size() - 1) + " more files of this take)" : juce::String())
-                               + ". The main recording is not affected.");
+            // (the second recording drive's problems, and the device's notes, are gathered by AppContext::tickRecordMonitor since 3.2.0: the notices come from there)
         }
         if (projectBox.wantedWidth() != before || diskBox.wantedWidth() != lastDiskW) { lastDiskW = diskBox.wantedWidth(); resized(); }
     }
@@ -936,27 +931,31 @@ void MainComponent::timerCallback()
             if (! problemNoticed) { problemNoticed = true; app.setNotice ("RECORDING PROBLEM: " + problem + ". Stop, free space or change drive, then record again."); juce::Logger::writeToLog ("Recording: " + problem); }
         }
         else if (! rec) problemNoticed = false;
+        // the device itself has stopped, or is "running" but has delivered nothing for two seconds (a hung driver): the take is getting no sound. It
+        // used to look like any other take - the clock simply stood still (3.1.5)
+        if (rec && (! app.engine.isRunning() || app.quietSeconds >= 2))
+            s = juce::String (app.engine.isRunning() ? "AUDIO DEVICE NOT DELIVERING - no sound is reaching the take (the driver has stalled?)" : "AUDIO DEVICE STOPPED - no sound is reaching the take") + "   " + s;
         if (auto* x = dynamic_cast<juce::AudioIODevice*> (dev); x != nullptr && dev->getXRunCount() > 0)
             nums += "   xruns: " + juce::String (dev->getXRunCount());
         if (app.lastLoad.blocks > 0)                                    // the load meter: how much of each block's time the audio thread needs
             nums += "   DSP " + juce::String (juce::roundToInt (app.lastLoad.average)) + "% (peak " + juce::String (juce::roundToInt (app.lastLoad.peak)) + "%)"
                  + (app.lastLoad.late > 0 ? "  LATE BLOCKS: " + juce::String (app.lastLoad.late) : juce::String());
     }
-    else s = "No audio device - open Audio settings";
-    if (rec && ! s.startsWith ("DISK") && ! s.startsWith ("RECORDING HAS")) s = "RECORDING  -  " + s;
+    else s = rec ? "AUDIO DEVICE STOPPED - no sound is reaching the take" : "No audio device - open Audio settings";
+    if (rec && ! s.startsWith ("DISK") && ! s.startsWith ("RECORDING HAS") && ! s.startsWith ("AUDIO DEVICE")) s = "RECORDING  -  " + s;
     if (app.crMicOpen() || app.tbPlaybackOn())
         s = juce::String (app.crMicOpen() ? "CR MIC OPEN  " : "") + (app.tbPlaybackOn() ? "TB PLAYBACK ON  " : "") + "-  " + s;
     else if (! app.talkbackReady() && (app.crWanted || app.tbWanted))
         s = "Talkback key pressed, but no CR input / TB outputs are chosen (CR button on an input, TB button on an output)  -  " + s;
     const bool noticeOn = juce::Time::getMillisecondCounter() < app.noticeUntil;
-    const bool alarmLine = s.startsWith ("DISK") || s.startsWith ("No audio") || s.startsWith ("RECORDING HAS");
+    const bool alarmLine = s.startsWith ("DISK") || s.startsWith ("No audio") || s.startsWith ("RECORDING HAS") || s.startsWith ("AUDIO DEVICE");
     if (noticeOn) s = app.notice;                                       // (a notice has both lines: it wraps)
     else if (nums.isNotEmpty()) s << "\n" << nums;
     statusLabel.setText (s, juce::dontSendNotification);
     if (const int w = statusWidthFor (s); w != lastStatusTextW) { lastStatusTextW = w; resized(); }                                   // (the stage speaker boxes start after the driver line)
     if (noticeOn) statusLabel.setColour (juce::Label::textColourId, juce::Colour (0xff3ee0c0)); else
     statusLabel.setColour (juce::Label::textColourId, rec ? juce::Colour (0xffff5555) : alarmLine ? theme::warn : desk::pal().cream.withAlpha (0.8f));
-    if (rec && (s.startsWith ("DISK") || s.startsWith ("RECORDING HAS"))) statusLabel.setColour (juce::Label::textColourId, ((now2 / 500) & 1) ? juce::Colour (0xffff5555) : juce::Colours::white);     // (flashes)
+    if (rec && (s.startsWith ("DISK") || s.startsWith ("RECORDING HAS") || s.startsWith ("AUDIO DEVICE"))) statusLabel.setColour (juce::Label::textColourId, ((now2 / 500) & 1) ? juce::Colour (0xffff5555) : juce::Colours::white);     // (flashes)
 }
 
 void MainComponent::showProjectMenu()
@@ -982,6 +981,7 @@ void MainComponent::showProjectMenu()
         m.addItem (12, bf == juce::File() ? juce::String ("Second recording drive...") : "Second recording drive: " + bf.getFullPathName() + "   (change...)");
         if (bf != juce::File()) m.addItem (13, "Stop recording to the second drive");
     }
+    m.addItem (17, "Recording monitor (drives, device, dropouts)...");         // 3.2.0: the floating window with the three lamps and the take's events
     m.addSeparator();
     m.addItem (14, "Mixer controller (Avid S1 / Mackie Control)...");
     m.addSeparator();
@@ -1001,6 +1001,7 @@ void MainComponent::showProjectMenu()
         if (r == 12) { chooseBackupFolder(); return; }
         if (r == 14) { if (app.showSurfacePanel) app.showSurfacePanel(); return; }
         if (r == 16) { if (app.showHotKeys) app.showHotKeys(); return; }
+        if (r == 17) { if (app.showRecordMonitor) app.showRecordMonitor(); return; }
         if (r == 15) { exportTakeSheet (app, juce::Uuid::null()); return; }
         if (r == 13)
         {

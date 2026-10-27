@@ -16,7 +16,6 @@ struct Palette
     juce::Colour window, strip, stripEdge, key, keyEdge, keyOn, ink, cream, disp, dispEdge, ringOff, menu, menuEdge, cyan, knobEdge;
 };
 
-inline const char* themeName (int i) { static const char* n[] { "Blue", "Red", "Orange", "Yellow", "Green", "Purple" }; return n[juce::jlimit (0, 5, i)]; }
 constexpr int kThemes = 6;
 
 inline juce::Colour tint (juce::Colour c, int theme) { return theme::deskTint (c, theme); }

@@ -1,50 +1,19 @@
 #pragma once
 #include <juce_core/juce_core.h>
 
-// The Windows part is compiled on Windows only. FERMATA_FILESYNC_WINDOWS_STUBS lets the development check (tools/check-windows-code.sh) compile it
-// against stand-in headers.
-#if JUCE_WINDOWS || defined (FERMATA_FILESYNC_WINDOWS_STUBS)
- #ifndef NOMINMAX
-  #define NOMINMAX
- #endif
- #ifndef WIN32_LEAN_AND_MEAN
-  #define WIN32_LEAN_AND_MEAN 1      // (without it windows.h pulls in the RPC headers, and those #define small, hyper ... as types)
- #endif
- #include <windows.h>
- // windows.h leaves macros behind that are ordinary words in the rest of Fermata ("auto near = ...", "int small"): a file that includes this
- // header must not break on them. (JUCE itself drops min / max the same way.)
- #undef small
- #undef hyper
- #undef near
- #undef far
- #undef pascal
- #undef min
- #undef max
-#else
- #include <fcntl.h>
- #include <unistd.h>
-#endif
-
 namespace td::filesync
 {
 /** Asks the drive to take the file's bytes now. The system otherwise keeps what was just written in memory for a while and writes it when it
     pleases, so a power cut right after a save could leave the file empty or half written although the program had been told it was saved.
-    Best effort: returns false if the file could not be opened (a drive that will not do it is still written). */
+    Best effort: returns false if the file could not be opened (a drive that will not do it is still written). (3.1.3: through JUCE's stream, whose
+    flush() is FlushFileBuffers on Windows and fsync elsewhere, so this header no longer pulls windows.h into every file that includes it.) */
 inline bool syncToDisk (const juce::File& f)
 {
-   #if JUCE_WINDOWS || defined (FERMATA_FILESYNC_WINDOWS_STUBS)
-    HANDLE h = CreateFileW (f.getFullPathName().toWideCharPointer(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    const bool ok = FlushFileBuffers (h) != 0;
-    CloseHandle (h);
-    return ok;
-   #else
-    const int fd = ::open (f.getFullPathName().toRawUTF8(), O_WRONLY);
-    if (fd < 0) return false;
-    const bool ok = ::fsync (fd) == 0;
-    ::close (fd);
-    return ok;
-   #endif
+    if (! f.existsAsFile()) return false;
+    juce::FileOutputStream out (f);                          // (opened for writing, nothing written: flush() only asks the drive to take what it has)
+    if (out.failedToOpen()) return false;
+    out.flush();
+    return out.getStatus().wasOk();
 }
 
 /** Where the previous version of a saved file is kept: <name>.bak beside it. */
@@ -53,17 +22,55 @@ inline juce::File backupOf (const juce::File& f) { return f.getSiblingFile (f.ge
 /** Where a file that could not be read is put aside when its backup is used instead: <name>.damaged beside it. */
 inline juce::File damagedCopyOf (const juce::File& f) { return f.getSiblingFile (f.getFileName() + ".damaged"); }
 
+/** Writes 'bytes' to a new file 'f' and checks that all of it got there: every write's result, the stream's state after the flush, and the size of the
+    file on the disk against what was written. (3.1.3. JUCE's File::replaceWithText / replaceWithData do not look at the result of their write, and a
+    FileOutputStream only writes its last buffer in its destructor, where nothing can report a failure: on a full drive they left a short file and
+    said it had gone well. Every file Fermata writes whole goes through here, or through replaceTextSafely below.) */
+namespace detail
+{
+/** 'put' writes the file's contents to the stream and returns false if any write was refused; the file must then be exactly as long as the stream says.
+    A file that failed is left as it is (short) for the caller to deal with: the temporary files this is used on are removed by their owners, and a file
+    written in place is reported, never quietly removed. */
+template <typename Put> bool writeChecked (const juce::File& f, Put&& put, juce::String* error)
+{
+    auto fail = [&] (const juce::String& why) { if (error != nullptr) *error = "Could not write " + f.getFullPathName() + ": " + why; return false; };
+    juce::int64 written = 0;
+    {
+        juce::FileOutputStream out (f);
+        if (out.failedToOpen()) return fail (out.getStatus().getErrorMessage().isNotEmpty() ? out.getStatus().getErrorMessage() : juce::String ("the file could not be made"));
+        if (! out.setPosition (0) || ! out.truncate().wasOk()) return fail ("the file could not be started afresh");
+        const bool ok = put (out);
+        out.flush();
+        written = out.getPosition();
+        if (! ok || out.getStatus().failed()) return fail (out.getStatus().getErrorMessage().isNotEmpty() ? out.getStatus().getErrorMessage() : juce::String ("the drive did not take all of it (is it full?)"));
+    }
+    if (f.getSize() != written) return fail ("the drive took only part of it (is it full?)");
+    return true;
+}
+}
+
+inline bool writeDataChecked (const juce::File& f, const void* bytes, size_t size, juce::String* error = nullptr)
+{
+    return detail::writeChecked (f, [&] (juce::FileOutputStream& out) { return size == 0 || out.write (bytes, size); }, error);
+}
+
+/** The text form of writeDataChecked: UTF-8, with Windows line breaks, as JUCE's File::replaceWithText wrote it (so the files come out byte for byte as before). */
+inline bool writeTextChecked (const juce::File& f, const juce::String& text, juce::String* error = nullptr)
+{
+    return detail::writeChecked (f, [&] (juce::FileOutputStream& out) { return out.writeText (text, false, false, "\r\n"); }, error);
+}
+
 /** Writes text to a file so that what is on the disk is always a complete file: either the old one or the new one, never half of either.
-    The text goes to a temporary file beside the target, the drive is asked to take it (syncToDisk), and only then does it take the target's place.
-    With keepBackup the file that was there before becomes <name>.bak, so a save that is interrupted (or a file that goes wrong later) still
-    leaves the version from the save before it. */
+    The text goes to a temporary file beside the target (checked: writeTextChecked), the drive is asked to take it (syncToDisk), and only then
+    does it take the target's place. With keepBackup the file that was there before becomes <name>.bak, so a save that is interrupted (or a file
+    that goes wrong later) still leaves the version from the save before it. */
 inline bool replaceTextSafely (const juce::File& target, const juce::String& text, bool keepBackup, juce::String* error = nullptr)
 {
     target.getParentDirectory().createDirectory();
     juce::TemporaryFile tmp (target);
-    if (! tmp.getFile().replaceWithText (text))
+    if (! writeTextChecked (tmp.getFile(), text, error))
     {
-        if (error != nullptr) *error = "Could not write " + target.getFullPathName();
+        if (error != nullptr && error->isEmpty()) *error = "Could not write " + target.getFullPathName();
         return false;
     }
     syncToDisk (tmp.getFile());

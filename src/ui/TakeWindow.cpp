@@ -1536,8 +1536,9 @@ private:
                         showError ("Rename", "Some files could not be renamed (a file with that name may already exist).");
                     if (auto* g2 = w2->findGroup (gid))
                         for (auto& e : safe->app.project.edits)
-                            for (auto& reg : e->regions)
-                                if (reg.takeId == gid) reg.takeName = w2->displayName (*g2);
+                            for (auto* list : { &e->regions, &e->overdubs })                       // (the overdub pieces too: 3.1.4)
+                                for (auto& reg : *list)
+                                    if (reg.takeId == gid) reg.takeName = w2->displayName (*g2);
                     safe->app.project.changed();
                 }
             delete aw;
@@ -1736,8 +1737,10 @@ struct ScrollRepaintViewport : public juce::Viewport
     void visibleAreaChanged (const juce::Rectangle<int>&) override { if (auto* c = getViewedComponent()) c->repaint(); }
 };
 
-TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) : app (a), windowId (wid)
+TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) : app (a), windowId (wid), recordLamps (a), barMap (a)
 {
+    addAndMakeVisible (recordLamps);
+    addChildComponent (barMap); barMap.windowId = wid; barMap.onBarClicked = [this] (int bar) { goToBar (bar); };
     auto* vp = new ScrollRepaintViewport();
     timeline.reset (new TakeTimeline (app, windowId, *vp));
     vp->setViewedComponent (timeline.get(), false);
@@ -1825,7 +1828,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     importButton.setTooltip ("Bring in the takes of a session recorded in another program (multichannel / polyphonic WAV, or one mono / stereo file per track). "
                              "You can also drag the files, or their folder, onto this window.");
     importButton.onClick = [this] { fixtools::showImportMenu (app, windowId, &importButton); };
-    barSearchButton.setTooltip ("Search for bar: type a bar number and every take here that contains it (from its IN Bar to its OUT Bar, set by right-clicking a take) is framed in blue-green, so you can see which takes have that bar. Click again to clear.");
+    barSearchButton.setTooltip ("Search for bar: type a bar number and every take here that contains it (from its IN Bar to its OUT Bar, set by right-clicking a take) is framed in blue-green, so you can see which takes have that bar. Click again to clear. The bar-coverage map under the head shows every bar at once: click a bar there.");
     barSearchButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff19a08a));
     barSearchButton.onClick = [this] { toggleBarSearch(); };
     pitchButton.setTooltip ("Two tabs. Pitch curve: draw a line of pitch against time over the part marked with mark 1 and mark 2 (+100 cents at the top, -100 at the bottom), for a note that drifts flat or sharp; audition it, then accept or revert. Pitch process: shifts the marked part on every track of the take by semitones and / or cents.");
@@ -1993,10 +1996,17 @@ void TakeWindowComponent::resized()
     // under the head is the timeline's now. A recording problem is shown in the same place while there is one.
     {
         const auto sb = sendBox.getBoundsInParent() + nameBlock.getPosition();
-        const auto row = juce::Rectangle<int> (takeBox.getX(), sb.getY(), juce::jmax (100, clock.getRight() - takeBox.getX()), sb.getHeight());
+        auto row = juce::Rectangle<int> (takeBox.getX(), sb.getY(), juce::jmax (100, clock.getRight() - takeBox.getX()), sb.getHeight());
+        // the recording monitor's three lamps at the right end of the row (3.2.0): always there, so the state of the drives and the device is a glance away
+        const int lampsW = juce::jmin (RecordLamps::idealWidth (row.getHeight()), row.getWidth() / 2);
+        recordLamps.setBounds (row.removeFromRight (lampsW));
+        row.removeFromRight (8);
         markLabel.setBounds (row); statusLabel.setBounds (row);
     }
     r.removeFromTop (headH + 4);
+    // the bar-coverage map (3.4.0): a strip under the head while any take has bars entered
+    barMap.setVisible (barMap.hasBars());
+    if (barMap.isVisible()) { barMap.setBounds (r.removeFromTop (BarCoverageStrip::kHeight)); r.removeFromTop (3); }
     if (viewportOwner != nullptr) { viewportOwner->setBounds (r); if (timeline != nullptr) timeline->applyHeightLevel(); }
 }
 
@@ -2248,6 +2258,7 @@ bool TakeWindowComponent::keyPressed (const juce::KeyPress& k)
     if (c == 'd' && ! k.getModifiers().isAnyModifierKeyDown()) { timeline->toggleDud(); return true; }
     if (c == 'l' && ! k.getModifiers().isAnyModifierKeyDown()) { loopToggle.setToggleState (! loopToggle.getToggleState(), juce::dontSendNotification); loopChanged(); return true; }
     if (c == 'c' && ! k.getModifiers().isAnyModifierKeyDown()) { timeline->centreOnPlayhead(); return true; }
+    if (c == 'j' && ! k.getModifiers().isCtrlDown() && ! k.getModifiers().isCommandDown() && ! k.getModifiers().isAltDown()) { jumpToSamePlace (! k.getModifiers().isShiftDown()); return true; }     // J / Shift + J: the same place in the next / previous take (3.4.0)
     if (c == '.' || c == '>')           { app.changeWaveZoom (1.4f);        return true; }     // . bigger waveforms
     if (c == ',' || c == '<')           { app.changeWaveZoom (1.0f / 1.4f); return true; }     // , smaller
     if (isShiftFour (k))                { toEdit (true, true); return true; }                   // Shift + 4: the same, but an INSERT (the rest of the edit moves later)
@@ -2278,6 +2289,7 @@ void TakeWindowComponent::changeListenerCallback (juce::ChangeBroadcaster*)
 {
     const auto t0 = paintprof::enabled() ? juce::Time::getMillisecondCounterHiRes() : 0.0;
     fillSendBox(); repaint();
+    if (barMap.isVisible() != barMap.hasBars()) resized(); else barMap.repaint();     // (the bar map comes and goes with the takes' bars)
     if (paintprof::enabled()) paintprof::paintDone ("take window change", juce::Time::getMillisecondCounterHiRes() - t0);
 }
 
@@ -2304,6 +2316,7 @@ void TakeWindowComponent::timerCallback()
         if (hereRec)
         {
             if (const auto problem = app.engine.recordingProblem(); problem.isNotEmpty()) st = "RECORDING HAS STOPPED REACHING THE DISK - " + problem;
+            else if (! app.engine.isRunning() || app.quietSeconds >= 2) st = "AUDIO DEVICE STOPPED - no sound is reaching the take";       // (3.1.5: the main window's status line says the same)
             else if (app.engine.overruns() > 0) st = "DISK OVERRUN - " + lostText (app.engine.samplesLost(), app.engine.getSampleRate()) + " of audio lost (silence in its place)";
         }
         statusLabel.setText (st, juce::dontSendNotification);
@@ -2335,6 +2348,7 @@ namespace td
 void TakeWindowComponent::setBarSearch (int bar)
 {
     searchBar = bar;
+    barMap.searchBar = bar; barMap.repaint();
     if (timeline != nullptr) { timeline->barHighlight = bar; timeline->repaint(); }
     if (bar <= 0) { barSearchButton.setIcon (Icon::Search, "Search for bar"); barSearchButton.setToggleState (false, juce::dontSendNotification); return; }
     int n = 0;
@@ -2343,6 +2357,73 @@ void TakeWindowComponent::setBarSearch (int bar)
     barSearchButton.setIcon (Icon::Search, "Bar " + juce::String (bar) + ": " + juce::String (n) + (n == 1 ? " take" : " takes") + " (click to clear)");
     app.setNotice ("Bar " + juce::String (bar) + ": " + juce::String (n) + (n == 1 ? " take has it" : " takes have it") + " (framed in blue-green). Click the magnifying glass again to clear.");
     barSearchButton.setToggleState (true, juce::dontSendNotification);
+}
+
+void TakeWindowComponent::goToBar (int bar)
+{
+    auto* w = def();
+    if (w == nullptr || bar <= 0) return;
+    setBarSearch (bar);
+    // the take to go to: the playhead's take if it has the bar, else the first take that has it (duds last)
+    const TakeGroup* target = nullptr;
+    if (auto* cur = w->takeAt (w->playheadSeconds); cur != nullptr && barsContain (cur->barIn, cur->barOut, bar)) target = cur;
+    if (target == nullptr) for (auto& g : w->groups) if (! g.dud && barsContain (g.barIn, g.barOut, bar)) { target = &g; break; }
+    if (target == nullptr) for (auto& g : w->groups) if (barsContain (g.barIn, g.barOut, bar)) { target = &g; break; }
+    if (target == nullptr) return;
+    // where the bar is in the take: spread evenly over the take's bar range (the matching will place it exactly later)
+    const int bars = juce::jmax (target->barIn, target->barOut) - target->barIn + 1;
+    const double at = target->lengthSeconds() * (double) (bar - target->barIn) / (double) juce::jmax (1, bars);
+    goTo (target->startSeconds + at);
+}
+
+void TakeWindowComponent::jumpToSamePlace (bool forward)
+{
+    auto* w = def();
+    if (w == nullptr) return;
+    if (app.engine.isRecording()) { app.setNotice ("Stop recording first."); return; }
+    const double now = transportNow();
+    const TakeGroup* cur = w->takeAt (now);
+    if (cur == nullptr) { app.setNotice ("Put the playhead in a take first: J finds the same place in the next take, Shift + J in the one before."); return; }
+    const double inTake = now - cur->startSeconds;
+    auto fpA = app.takeMatch.fingerprintFor (cur->id);
+    if (fpA == nullptr)
+    {
+        const auto st = app.takeMatch.statusOf (cur->id);
+        app.setNotice (st.state == TakeMatchService::State::Analysing ? "This take is still being analysed (" + juce::String (juce::roundToInt (st.progress * 100.0f)) + " %): try again in a moment."
+                     : st.state == TakeMatchService::State::NoAudio || st.state == TakeMatchService::State::Failed ? "This take cannot be matched: " + st.why + "."
+                     : "This take is waiting to be analysed: try again in a moment.");
+        return;
+    }
+    // the other takes in timeline order, from the next (or the one before) outwards; duds are passed over
+    std::vector<const TakeGroup*> order;
+    for (auto& g : w->groups) order.push_back (&g);
+    std::sort (order.begin(), order.end(), [] (const TakeGroup* x, const TakeGroup* y) { return x->startSeconds < y->startSeconds; });
+    size_t at = 0;
+    for (size_t i = 0; i < order.size(); ++i) if (order[i] == cur) at = i;
+    juce::StringArray skipped; int waiting = 0;
+    for (size_t step = 1; step < order.size(); ++step)
+    {
+        const long idx = forward ? (long) at + (long) step : (long) at - (long) step;
+        if (idx < 0 || idx >= (long) order.size()) break;
+        const auto* cand = order[(size_t) idx];
+        if (cand->dud) continue;
+        auto fpB = app.takeMatch.fingerprintFor (cand->id);
+        if (fpB == nullptr) { ++waiting; continue; }
+        auto al = app.takeMatch.alignmentFor (cur->id, cand->id);
+        if (al == nullptr) { ++waiting; continue; }
+        const auto m = takematch::locate (*al, inTake);
+        if (m.found)
+        {
+            goTo (cand->startSeconds + m.seconds);
+            app.setNotice (w->displayName (*cand) + ": the same place as in " + w->displayName (*cur) + " (match " + juce::String (juce::roundToInt (m.confidence * 100.0)) + " %)"
+                           + (skipped.isEmpty() ? juce::String() : "; passed over " + skipped.joinIntoString (", ")));
+            return;
+        }
+        skipped.add (w->displayName (*cand) + " (" + m.why + ")");
+    }
+    if (skipped.isEmpty() && waiting == 0) app.setNotice (forward ? "No take after this one to jump to." : "No take before this one to jump to.");
+    else app.setNotice ("No " + juce::String (forward ? "later" : "earlier") + " take has this place" + (waiting > 0 ? " yet (" + juce::String (waiting) + (waiting == 1 ? " take is" : " takes are") + " still being analysed)" : juce::String())
+                        + (skipped.isEmpty() ? juce::String (".") : ": " + skipped.joinIntoString ("; ") + "."));
 }
 
 void TakeWindowComponent::toggleBarSearch()

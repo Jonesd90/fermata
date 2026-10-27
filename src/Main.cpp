@@ -17,6 +17,10 @@
 #include "ui/Splash.h"
 #include "ui/BusyWindow.h"
 #include "ui/RemoteControl.h"
+#include "ui/RecordMonitor.h"
+#include "ui/VideoExportWindow.h"
+#include "ui/AafExportWindow.h"
+#include "ui/VersionsWindow.h"
 #include "ui/Surface.h"
 #include "ui/SurfacePanel.h"
 #include "ui/PitchPipeWindow.h"
@@ -138,6 +142,9 @@ public:
         ctx->showDesign = [this] { openDesign(); };
         ctx->showBridge = [this] { toggleBridge(); };
         ctx->showBounce = [this] (const BounceContext& c) { openBounce (c); };
+        ctx->showVideoExport = [this] (const juce::Uuid& editId, juce::Component* parent) { td::showVideoExport (*ctx, editId, parent); };
+        ctx->showAafExport = [this] (const juce::Uuid& editId, juce::Component* parent) { td::showAafExport (*ctx, editId, parent); };
+        ctx->showVersions = [this] (const juce::Uuid& editId, juce::Component* parent) { td::showVersions (*ctx, editId, parent); };
         ctx->windowIsOpen = [this] (const juce::String& key) { return windows.find (key) != windows.end(); };
         focusKeeper = std::make_unique<ToolWindow::FocusKeeper>();              // the keys never go dead after a text box lets go of the keyboard
         globalKeyHook() = [this] (const juce::KeyPress& k)
@@ -209,6 +216,7 @@ public:
         ctx->showPitchPipe = [this] { showWindow ("pitchpipe", "Pitch pipe", [this] { return new PitchPipeComponent (*ctx); }); };
         ctx->showClick = [this] { showWindow ("click", "Click", [this] { return new ClickComponent (*ctx); }); };
         ctx->showHotKeys = [this] { showWindow ("hotkeys", "HotKeys", [] { return new HotKeysComponent(); }); };
+        ctx->showRecordMonitor = [this] { showRecordMonitor(); };
         // ---- the Stream Deck + XL: windows by name, the Loop button, "minimise all but the main window"
         ctx->deskWindowState = [this] (const juce::String& what) { return deskWindowState (what); };
         ctx->deskWindowToggle = [this] (const juce::String& what) { deskWindowToggle (what); };
@@ -437,9 +445,26 @@ public:
                                       [this] (int result)
                                       {
                                           quitAsking = false;
-                                          if (result == 1) { if (ctx) ctx->saveNow(); quit(); }               // Save and quit
+                                          if (result == 1) saveAndQuit();                                          // Save and quit
                                           else if (result == 2) { if (ctx) ctx->skipFinalSave = true; quit(); }   // Quit without saving
                                           // anything else (Cancel): carry on working
+                                      });
+    }
+    /** "Save and quit": the program quits only once the project is on the disk. A save that fails used to go unseen (the message box came after
+        quit(), so it was never shown): now Fermata stays open and asks - stay, or quit without this last save (what was saved automatically before is untouched). */
+    void saveAndQuit()
+    {
+        juce::String err;
+        if (ctx == nullptr || ctx->saveNow (false, &err)) { quit(); return; }
+        quitAsking = true;
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Could not save project")
+                                          .withMessage ("The project could not be saved:\n\n" + err + "\n\nFermata stays open so nothing is lost: free the drive and save again (Project > Save, or Save as... to another drive), "
+                                                        "or quit without this last save. What was saved automatically before is on the disk as it was.")
+                                          .withButton ("Stay").withButton ("Quit without saving"),
+                                      [this] (int r)
+                                      {
+                                          quitAsking = false;
+                                          if (r == 2) { if (ctx) ctx->skipFinalSave = true; quit(); }
                                       });
     }
     bool quitAsking = false;
@@ -745,6 +770,19 @@ private:
             if (ctx->project.windowBounds.find (key) == ctx->project.windowBounds.end()) { it->second->setSize (1100, 420); it->second->setTopLeftPosition (20, 20); }
         }
     }
+    /** The Recording monitor (3.2.0): the three lamps and the take's events, floating above every window like the meter bridge. */
+    void showRecordMonitor()
+    {
+        const juce::String key = "recmon";
+        if (auto it = windows.find (key); it != windows.end()) { DockHub::get().show (it->second.get()); return; }
+        showWindow (key, "Recording monitor", [this] { return new RecordMonitorComponent (*ctx); });
+        if (auto it = windows.find (key); it != windows.end())
+        {
+            it->second->setAlwaysOnTop (true);
+            recMonTop = std::make_unique<StayOnTop> (*it->second);
+            if (ctx->project.windowBounds.find (key) == ctx->project.windowBounds.end()) it->second->setTopLeftPosition (40, 60);
+        }
+    }
     // ---- the Stream Deck + XL's window keys
     /** Minimising: the window is hidden and shows as a title bar along the bottom of the main window (what its own minimise button does). */
     static void minimiseToDock (juce::DocumentWindow* w)
@@ -898,12 +936,13 @@ private:
         showWindow ("design", "Project Designer", [this] { return new DesignComponent (*ctx); });
     }
     /** Audio settings: the device chooser plus Apply and Close buttons. */
-    struct AudioSettingsPanel : public juce::Component
+    struct AudioSettingsPanel : public juce::Component, private juce::Timer
     {
         AudioSettingsPanel (AppContext& c, std::function<void()> closeFn)
             : app (c), selector (c.devices, 0, 256, 0, 256, false, false, false, false)
         {
             addAndMakeVisible (selector);
+            startTimer (500);                                           // (the chooser is switched off while a take records: see timerCallback)
             addAndMakeVisible (apply); addAndMakeVisible (close); addAndMakeVisible (note); addAndMakeVisible (scan); addAndMakeVisible (cpuCores); addAndMakeVisible (pluginList);
             pluginList.setTooltip ("Every plug-in Fermata has found: ignore the ones you never want (they are not scanned, loaded or offered), and try again the ones left out after a crash");
             pluginList.onClick = [this] { showPluginManager (app); };
@@ -927,7 +966,19 @@ private:
             cpuCores.onClick = [this] { showCpuCoresPanel (app); };
             apply.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1f7a46));
             setSize (680, 560);
+            timerCallback();                                            // (opened while a take records: locked from the start)
         }
+        /** The device chooser applies a change the moment it is made (JUCE's AudioDeviceSelectorComponent): a new rate or buffer size restarts the device,
+            and a device restarted under a take ends it (see AudioEngine::audioDeviceAboutToStart). So while a take records the chooser is switched off. */
+        void timerCallback() override
+        {
+            const bool rec = app.engine.isRecording();
+            if (rec == lockedForRecording) return;
+            lockedForRecording = rec;
+            selector.setEnabled (! rec); apply.setEnabled (! rec);
+            note.setText (rec ? "Recording: the audio device cannot be changed until the take has stopped." : "Choose the driver and settings above, then press Apply.", juce::dontSendNotification);
+        }
+        bool lockedForRecording = false;
         void resized() override
         {
             auto r = getLocalBounds().reduced (8);
@@ -1011,6 +1062,7 @@ private:
     std::unique_ptr<ToolWindow::FocusKeeper> focusKeeper;
     std::map<juce::String, std::unique_ptr<ToolWindow>> windows;
     std::unique_ptr<StayOnTop> bridgeTop;                    // keeps the meter bridge in front of everything (see StayOnTop)
+    std::unique_ptr<StayOnTop> recMonTop;                    // the same for the Recording monitor (3.2.0)
 };
 
 START_JUCE_APPLICATION (FermataApplication)

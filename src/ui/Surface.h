@@ -142,8 +142,21 @@ private:
     AppContext& app;
     Target mode = Target::Follow; juce::Uuid pin;
     Ports want;
-    std::unique_ptr<juce::MidiInput> in; std::unique_ptr<juce::MidiOutput> out;
+    std::unique_ptr<juce::MidiInput> in; std::shared_ptr<juce::MidiOutput> out;      // (out is shared with the sender thread, which may be writing to it as it is let go of)
     juce::CriticalSection lock; std::vector<juce::MidiMessage> pending;
+    /** MIDI out from its own thread (3.1.5). JUCE's Windows output waits for the driver to take a SysEx with no time limit, and up to 50 ms per short
+        message, so a virtual port whose program has hung (EuControl closing, say) would hold the message thread - the whole program - with it. The
+        message thread only queues (send); this thread writes to the port. The queue is capped: a port that never takes a message does not grow the memory. */
+    struct Sender : juce::Thread
+    {
+        Sender() : juce::Thread ("MIDI out to the surface") {}
+        ~Sender() override;
+        void run() override;
+        void push (const juce::MidiMessage&);
+        void setPort (std::shared_ptr<juce::MidiOutput>);                // what was queued for the old port is dropped
+        bool flush (int maxMs);                                           // waits until the queue has been written (true) or maxMs has passed (false)
+        juce::CriticalSection qLock; std::vector<juce::MidiMessage> queue; std::shared_ptr<juce::MidiOutput> port; std::atomic<bool> writing { false };
+    } sender;
     std::map<int, int> map;                                           // note number -> Action
     int stripMap[surface::NumStripButtons] = { surface::SaLowCut, surface::SaSolo, surface::SaMute, surface::SaSelect, surface::SaDialHome };
     bool meters = true;

@@ -61,7 +61,6 @@ public:
     }
     /** The true peak (4 x oversampled) in dBTP; -100 for silence. */
     double truePeakDb() const { return peak > 1.0e-10 ? 20.0 * std::log10 (peak) : -100.0; }
-    double truePeakLinear() const { return peak; }
     /** How many 400 ms blocks have been measured. */
     int blockCount() const { return (int) blocks.size(); }
 

@@ -3,6 +3,7 @@
 #include <map>
 #include "AudioFormats.h"
 #include "TextBytes.h"
+#include "FileSync.h"
 
 namespace td
 {
@@ -339,8 +340,7 @@ juce::String writeFileset (const juce::File& folder, const DdpDisc& d, const PqL
 
     auto writeBlock = [&] (const char* name, const juce::MemoryBlock& b) -> bool
     {
-        auto f = folder.getChildFile (name);
-        return f.replaceWithData (b.getData(), b.getSize());
+        return filesync::writeDataChecked (folder.getChildFile (name), b.getData(), b.getSize());      // (checked: a full drive is an error, not a short file - 3.1.3)
     };
     if (! writeBlock ("DDPID", buildDdpId (d))) return "Cannot write DDPID.";
     if (! writeBlock (kPqName, pq)) return "Cannot write PQDESCR.";
@@ -363,6 +363,7 @@ juce::String writeFileset (const juce::File& folder, const DdpDisc& d, const PqL
         }, progress, cancel);
         if (e.isNotEmpty()) { out.flush(); folder.getChildFile (kImageName).deleteFile(); return e; }
         out.flush();
+        if (out.getStatus().failed()) { folder.getChildFile (kImageName).deleteFile(); return "Cannot write IMAGE.DAT: " + out.getStatus().getErrorMessage(); }     // (3.1.3: the drive is full, or gone)
     }
 
     // CHECKSUM.MD5: the usual md5sum format
@@ -373,7 +374,7 @@ juce::String writeFileset (const juce::File& folder, const DdpDisc& d, const PqL
             auto f = folder.getChildFile (n);
             if (f.existsAsFile()) sums << md5OfFile (f) << " *" << n << "\n";
         }
-        if (! folder.getChildFile ("CHECKSUM.MD5").replaceWithText (sums)) return "Cannot write CHECKSUM.MD5.";
+        if (! filesync::writeTextChecked (folder.getChildFile ("CHECKSUM.MD5"), sums)) return "Cannot write CHECKSUM.MD5.";
     }
     if (zipFile != juce::File())
     {
@@ -443,7 +444,8 @@ juce::String writeWavAndCue (const juce::File& wavFile, const juce::File& cueFil
     out.setPosition (4); w32 ((juce::uint32) (36 + bytes));
     out.setPosition (40); w32 ((juce::uint32) bytes);
     out.flush();
-    if (! cueFile.replaceWithText (cueSheetText (wavFile.getFileName(), d, L), false, false, "\r\n")) return "Cannot write " + cueFile.getFullPathName();
+    if (out.getStatus().failed() || wavFile.getSize() != 44 + bytes) { wavFile.deleteFile(); return "Cannot write " + wavFile.getFullPathName() + ": the drive did not take all of it (is it full?)"; }     // (3.1.3)
+    if (! filesync::writeTextChecked (cueFile, cueSheetText (wavFile.getFileName(), d, L))) return "Cannot write " + cueFile.getFullPathName();
     return {};
 }
 

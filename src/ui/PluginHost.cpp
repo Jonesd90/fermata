@@ -227,11 +227,12 @@ void PluginHost::forgetCrashNote (const juce::String& file)
 
 void PluginHost::saveLists()
 {
+    // (settings, not project data: a list that cannot be written only means a scan again next time, or an ignored plug-in offered again - but it is said in the log)
     listFile.getParentDirectory().createDirectory();
-    if (auto xml = known.createXml()) xml->writeTo (listFile);
+    if (auto xml = known.createXml()) if (! xml->writeTo (listFile)) juce::Logger::writeToLog ("Could not write the list of known plug-ins: " + listFile.getFullPathName());
     juce::StringArray lines;
     for (int i = 0; i < ignored.size(); ++i) lines.add (ignored[i] + "\t" + ignoredNames[i]);
-    ignoredFile.replaceWithText (lines.joinIntoString ("\n"));
+    if (! ignoredFile.replaceWithText (lines.joinIntoString ("\n"))) juce::Logger::writeToLog ("Could not write the list of ignored plug-ins: " + ignoredFile.getFullPathName());
 }
 
 std::vector<PluginHost::FileEntry> PluginHost::listFiles() const
@@ -337,7 +338,7 @@ void PluginHost::run()
     }
     for (auto& f : known.getBlacklistedFiles())
         if (! blacklistedBefore.contains (f)) juce::Logger::writeToLog ("Plug-in scan: " + f + " crashed the program during an earlier scan and is now left out (Audio settings > Plug-ins... > Try again)");
-    if (auto xml = known.createXml()) xml->writeTo (listFile);
+    if (auto xml = known.createXml()) if (! xml->writeTo (listFile)) juce::Logger::writeToLog ("Plug-in scan: could not write the list of known plug-ins to " + listFile.getFullPathName() + " (the scan runs again next time)");
     {
         const juce::ScopedLock sl (statusLock);
         status = "Found " + juce::String (known.getNumTypes()) + " plug-ins";
@@ -362,13 +363,24 @@ InsertFactory PluginHost::makeFactory (std::function<double()> sampleRate, std::
 {
     return [this, sampleRate, blockSize] (const juce::String& desc, const juce::String& state) -> std::unique_ptr<InsertProcessor>
     {
+        // (a plug-in that cannot be started used to go without a word: the slot stayed empty and nothing said why. Now the reason is logged and kept)
+        lastFactoryError.clear();
         auto xml = juce::XmlDocument::parse (desc);
-        if (xml == nullptr) return nullptr;
         juce::PluginDescription d;
-        if (! d.loadFromXml (*xml)) return nullptr;
+        if (xml == nullptr || ! d.loadFromXml (*xml))
+        {
+            lastFactoryError = "its description in the project could not be read";
+            juce::Logger::writeToLog ("Plug-in not loaded: " + lastFactoryError);
+            return nullptr;
+        }
         juce::String err;
         auto p = create (d, sampleRate(), blockSize(), err);
-        if (p == nullptr) return nullptr;
+        if (p == nullptr)
+        {
+            lastFactoryError = err.isNotEmpty() ? err : juce::String ("the plug-in gave no reason");
+            juce::Logger::writeToLog ("Plug-in not loaded: " + d.name + " (" + d.fileOrIdentifier + "): " + lastFactoryError);
+            return nullptr;
+        }
         juce::MemoryBlock mb;
         if (state.isNotEmpty() && mb.fromBase64Encoding (state))
         {

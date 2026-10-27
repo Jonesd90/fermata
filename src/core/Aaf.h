@@ -34,7 +34,6 @@ struct AafPiece
     double       startSeconds = 0.0, lengthSeconds = 0.0;      // where it sits in the AAF's timeline (the timeline's first sound = 0)
     std::vector<AafRegion> regions;        // in timeline order
     std::vector<juce::String> trackNames;  // the tracks used, top to bottom
-    int          fileCount() const { int n = 0; for (auto& r : regions) n += (int) r.files.size(); return n; }
 };
 
 struct AafResult

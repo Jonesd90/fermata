@@ -77,6 +77,8 @@ public:
     /** Message thread: the copies that were thrown away since the last call (the second drive could not keep up, or could not be written). */
     juce::StringArray takeBackupProblems()                 { return backupCopier.takeBinned(); }
     int backupCopiesGoing() const                          { return backupCopier.busy(); }
+    /** Seconds of audio the slowest second-drive copy is behind the recording right now (0: caught up or none going). */
+    double backupWorstLagSeconds() const noexcept          { return backupCopier.worstLagSeconds(); }
 
     // --- the mixers of a block run side by side on helper threads (see MixerWorkers) ---
     /** Message thread: how many helper threads (0 = all the mixers run one after another on the audio thread). Only while the audio device is
@@ -98,6 +100,9 @@ public:
     juce::int64 samplesLost() const;
     /** Empty while the recording is fine. Otherwise what is wrong with it: a file stopped taking data (the drive is full, or gone). Any thread. */
     juce::String recordingProblem() const;
+    /** Message thread: what the audio device did to a take (it stopped and started again during it; it came back at another sample rate, which
+        ends the take), said once - the text is returned and cleared. Empty: nothing to say. See audioDeviceAboutToStart. */
+    juce::String takeDeviceNote()                     { auto n = deviceNote; deviceNote.clear(); return n; }
     /** How fast the current recording grows on the disk (bytes per second, all its files together); 0 when not recording. */
     double recordingBytesPerSecond() const noexcept   { return recBytesPerSecond.load (std::memory_order_relaxed); }
     /** The folder the current recording's files are in (message thread; a null File when not recording). */
@@ -424,6 +429,8 @@ private:
     std::unique_ptr<Retirer> retirer;
     std::atomic<juce::uint64> blockCounter { 0 };
     std::atomic<bool> running { false };
+    juce::String deviceNote;                                   // message thread: see takeDeviceNote
+    void deviceRestartedWhileRecording (double newRate);       // message thread: the take goes on, or ends if the rate changed (see audioDeviceAboutToStart)
     std::atomic<juce::int64> samplePosition { 0 };
     std::atomic<float> inputPeak[kMaxInputs];
     std::atomic<float> outputPeak[kMaxInputs];

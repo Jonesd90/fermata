@@ -4,6 +4,7 @@
 #include <map>
 #include <set>
 #include "AudioFormats.h"
+#include "FileSync.h"
 
 namespace td
 {
@@ -210,7 +211,9 @@ void MasterRenders::save (const std::map<juce::String, Entry>& m) const
     auto* root = new juce::DynamicObject();
     root->setProperty ("edits", juce::var (edits));
     dir.createDirectory();
-    dir.getChildFile ("renders.json").replaceWithText (juce::JSON::toString (juce::var (root), false));
+    juce::String err;
+    if (! filesync::replaceTextSafely (dir.getChildFile ("renders.json"), juce::JSON::toString (juce::var (root), false), false, &err))
+        juce::Logger::writeToLog ("Mastering renders: " + err);          // (3.1.3: checked; a list that could not be written leaves the old one, and the renders are checked against their files anyway)
 }
 
 MasterRenders::Info MasterRenders::check (const juce::Uuid& id, const juce::String& fp)

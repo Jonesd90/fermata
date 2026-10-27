@@ -6,6 +6,7 @@
 #include "ReviewPage.h"
 #include "Loudness.h"
 #include "AudioFormats.h"
+#include "FileSync.h"
 
 namespace td
 {
@@ -99,7 +100,8 @@ bool addFlacTags (const juce::File& flac, const MasterTags& t, int trackNo)
     const juce::uint8 hdr[4] = { 0x84, (juce::uint8) (vc.getSize() >> 16), (juce::uint8) (vc.getSize() >> 8), (juce::uint8) vc.getSize() };   // VORBIS_COMMENT, last
     out.append (hdr, 4); out.append (vc.getData(), vc.getSize());
     out.append (static_cast<const char*> (data.getData()) + pos, data.getSize() - pos);
-    return flac.replaceWithData (out.getData(), out.getSize());
+    juce::TemporaryFile tmp (flac);                                           // (checked, and the untagged file stays if the tagged one cannot be written: 3.1.3)
+    return filesync::writeDataChecked (tmp.getFile(), out.getData(), out.getSize()) && tmp.overwriteTargetFileWithTemporary();
 }
 
 // ----------------------------------------------------------------------------- building the lists
@@ -345,8 +347,9 @@ juce::String MasterExportJob::finalise (const juce::File& src, const juce::File&
     }
     target.getParentDirectory().createDirectory();
     target.deleteFile();
-    std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (target);
-    if (static_cast<juce::FileOutputStream*> (stream.get())->failedToOpen()) return "Cannot write " + target.getFullPathName();
+    audioops::CheckedAudioFile checked (target);                   // (the file itself is kept, so what the writer's destructor flushes can be checked too: 3.1.3)
+    if (checked.failedToOpen()) return "Cannot write " + target.getFullPathName();
+    auto stream = checked.stream();
     auto opts = juce::AudioFormatWriterOptions().withSampleRate (rate).withNumChannels (2).withBitsPerSample (bits);
     if (floatOut) opts = opts.withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
     if (fmt == MasterFormat::Ogg) opts = opts.withQualityOptionIndex (juce::jlimit (0, 10, o.oggQuality));
@@ -375,12 +378,17 @@ juce::String MasterExportJob::finalise (const juce::File& src, const juce::File&
                 d[i] = x;
             }
         }
-        dout.write (buf, 0, n);
+        if (! dout.write (buf, 0, n)) { w.reset(); target.deleteFile(); return "Could not write " + target.getFileName() + ": the drive did not take it (is it full?)"; }     // (3.1.3)
         sub = (float) ((double) (pos + n) / (double) juce::jmax ((juce::int64) 1, r->lengthInSamples));
     }
-    w.reset();
+    const auto frames = r->lengthInSamples;
+    w.reset(); r.reset();
+    // every byte reached the disk, and the file holds every sample (a full drive can leave it short with every write having said it went well: 3.1.3)
+    if (const auto e = checked.finish(); e.isNotEmpty()) { target.deleteFile(); return e; }
+    if (const auto e = audioops::checkWrittenLength (&fm, target, frames); e.isNotEmpty()) { target.deleteFile(); return e; }
     peakOut = peak;
-    if (fmt == MasterFormat::Flac) addFlacTags (target, t, item.trackNo);
+    if (fmt == MasterFormat::Flac && ! addFlacTags (target, t, item.trackNo)) { target.deleteFile(); return "Could not write the tags into " + target.getFileName() + " (is the drive full?)"; }
+    if (fmt == MasterFormat::Flac) { if (const auto e = audioops::checkWrittenLength (&fm, target, frames); e.isNotEmpty()) { target.deleteFile(); return e; } }    // (written again with its tags)
     if (mp3)
     {
         const auto lame = findLame();
@@ -470,14 +478,14 @@ MasterExportResult MasterExportJob::executeInner()
             auto w = audioops::makeWavWriter (outFile, T, 2, true);
             if (w == nullptr) { R.error = "Cannot write " + outFile.getFullPathName(); return R; }
             SincResampler rl (native, T), rr (native, T);
-            std::vector<float> ol, orr; juce::int64 written = 0;
+            std::vector<float> ol, orr; juce::int64 written = 0; bool writeFailed = false;
             auto flush = [&] ()
             {
                 const size_t m = juce::jmin (ol.size(), orr.size());
                 if (m == 0) return;
                 for (auto* v : { &ol, &orr }) for (size_t k = 0; k < m; ++k) peaks[(size_t) i] = juce::jmax (peaks[(size_t) i], std::abs ((*v)[k]));
                 const float* ptrs[2] = { ol.data(), orr.data() };
-                w->writeFromFloatArrays (ptrs, 2, (int) m);
+                if (! w->writeFromFloatArrays (ptrs, 2, (int) m)) writeFailed = true;      // (3.1.3: a refused write is an error, not a shorter file)
                 written += (juce::int64) m;
                 ol.erase (ol.begin(), ol.begin() + (long) m); orr.erase (orr.begin(), orr.begin() + (long) m);
             };
@@ -492,6 +500,8 @@ MasterExportResult MasterExportJob::executeInner()
             }
             rl.finish (ol); rr.finish (orr); flush();
             w.reset();
+            if (writeFailed) { R.error = "Could not write " + outFile.getFileName() + ": the drive did not take it (is it full?)"; return R; }
+            if (const auto e = audioops::checkWrittenLength (&fm, outFile, written); e.isNotEmpty()) { R.error = e; return R; }
             proc.push_back (outFile); R.frames[(size_t) i] = written;
         }
         sub = (float) (i + 1) / (float) n;
@@ -659,7 +669,9 @@ MasterExportResult MasterExportJob::executeInner()
         if (e.isNotEmpty()) { R.error = e; return R; }
         R.files.add (ddpFolder.getFullPathName()); if (zip != juce::File()) R.files.add (zip.getFullPathName());
         sub = 0.8f;
-        juce::String rep; ddp::verifyFileset (ddpFolder, rep); R.report = rep;
+        juce::String rep;
+        const bool consistent = ddp::verifyFileset (ddpFolder, rep); R.report = rep;
+        if (! consistent) { R.error = "The DDP was written but did not pass its own check - do not send it:\n" + rep; return R; }      // (3.1.3: a fileset that is not whole is an error, not a note)
         if (spec.disc.makeCue)
         {
             setStatus ("Writing the WAV and CUE...");

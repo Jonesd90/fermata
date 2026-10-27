@@ -800,7 +800,7 @@ MasteringComponent::MasteringComponent (AppContext& a)
     if (view == 1) scheduleRecheck (300);                                   // (DDP tab only) the first look at the renders, just after the window has opened
     startTimerHz (30);
     setWantsKeyboardFocus (true);
-    for (auto* c : getChildren()) if (dynamic_cast<juce::Button*> (c) != nullptr) c->setWantsKeyboardFocus (false);     // a click on a button must not take the arrow keys away
+    keysStayWithWindow (*this);         // a click on a button or a drop-down must not take the arrow keys away (3.1.2: the drop-downs, and the buttons inside the panels, too)
     setSize (1320, 720);
 }
 

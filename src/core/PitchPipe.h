@@ -612,8 +612,6 @@ public:
     void setClickToTalkback (bool on) noexcept { clickTb.store (on, std::memory_order_relaxed); }
     /** The two levels in the talkback pair (linear gains: the Pitch pipe box and the Click box). Message thread. */
     void setTalkbackLevels (float pipeGain, float clickGain) noexcept { pipeTbGain.store (pipeGain, std::memory_order_relaxed); clickTbGain.store (clickGain, std::memory_order_relaxed); }
-    bool pipeToTalkback() const noexcept  { return pipeTb.load (std::memory_order_relaxed); }
-    bool clickToTalkback() const noexcept { return clickTb.load (std::memory_order_relaxed); }
 
     /** Audio thread, once a block, before the outputs are filled: makes this block of both sources (talkbackMix and addToOutputs then use it). */
     void render (int n) noexcept

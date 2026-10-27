@@ -912,6 +912,9 @@ ReHarmoniserEditor::ReHarmoniserEditor() : bar (progressValue)
     originalBtn.onClick = [this] { toggleOriginal(); };
     writeBtn.onClick = [this] { writeBack(); }; cancelBtn.onClick = [this] { if (worker->running()) worker->cancel(); if (host.cancel) host.cancel(); };
     writeBtn.setTooltip (host.leaveUnchangedOk ? "Puts all the corrected notes back into the clip and closes this window. In an Out / In pair, press it on a stream you did not change too: that stream is simply left as it is." : "Puts all the corrected notes back into the clip and closes this window");
+    // the drop-downs do not take the keyboard when clicked (the buttons and sliders already do not): the arrows keep zooming and Enter keeps applying
+    // the correction after a click on one, instead of changing the drop-down (3.1.2)
+    for (auto* cb : { &refMode, &voiceTarget, &partialBox, &detailBox }) cb->setWantsKeyboardFocus (false);
     openSection (-1); updateButtons(); updateInfo();
     setSize (1280, 800);
     startTimerHz (30);
@@ -1892,7 +1895,7 @@ bool ReHarmoniserEditor::keyPressed (const juce::KeyPress& k)
 {
     const auto c = k.getTextCharacter();
     if (k == juce::KeyPress::escapeKey && chartPanel != nullptr) { closeChart(); return true; }
-    if (k == juce::KeyPress::spaceKey) { togglePlay(); return true; }
+    if (k == juce::KeyPress::spaceKey) { if (! (host.spaceIsTaken && host.spaceIsTaken())) togglePlay(); return true; }     // (the Space that stops a recording must not also start playback here)
     if (k.getModifiers().isCtrlDown() && (c == 'z' || c == 'Z' || k.getKeyCode() == 'Z')) { if (k.getModifiers().isShiftDown()) redoStep(); else undoStep(); return true; }
     if (c == '1') { loopIn = playT >= 0 ? playT : cueT; if (loopOut <= loopIn) loopOut = -1.0; view->repaint(); return true; }
     if (c == '2') { loopOut = playT >= 0 ? playT : cueT; view->repaint(); return true; }

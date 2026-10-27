@@ -4,6 +4,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "WaveColor.h"
 #include "WaveThumb.h"
+#include "../core/Common.h"
 #include <atomic>
 #include <deque>
 #include <map>
@@ -337,7 +338,7 @@ private:
             if (! isThreadRunning()) startThread (juce::Thread::Priority::low);
             notify();
         }
-        void stop() { signalThreadShouldExit(); notify(); stopThread (5000); }
+        void stop() { signalThreadShouldExit(); notify(); stopThreadOrLog (*this, 20000); }     // (a read from a drive that has gone to sleep can take seconds: 3.1.2, was 5 s)
         void run() override
         {
             while (! threadShouldExit())

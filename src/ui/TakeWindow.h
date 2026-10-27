@@ -1,5 +1,7 @@
 #pragma once
 #include "AppContext.h"
+#include "RecordMonitor.h"
+#include "BarCoverage.h"
 #include "Uikit.h"
 #include "TimeReadout.h"
 
@@ -41,6 +43,10 @@ private:
     void toggleBarSearch();                                   // "Search for bar": asks for a bar number, then frames every take here that contains it
     void setBarSearch (int bar);
     int searchBar = 0;
+    /** J / Shift + J (3.4.0): the same place in the next / previous take of this window, found by matching the music (TakeMatchService). */
+    void jumpToSamePlace (bool forward);
+    /** A click on the bar-coverage map: frame the takes that have the bar, and go to it. */
+    void goToBar (int bar);
     void playMarked();
     void loopChanged();                  // the Loop button / key L
     bool markedRange (juce::Uuid& take, double& in, double& out) const;
@@ -59,6 +65,8 @@ private:
     AppContext& app;
     juce::Uuid windowId;
     juce::Label nameLabel, statusLabel, markLabel;
+    RecordLamps recordLamps;                         // MAIN / 2ND / DEVICE (3.2.0): at the right end of the marks row; a click opens the Recording monitor
+    BarCoverageStrip barMap;                         // the bar-coverage map (3.4.0): under the head, when any take has bars
     juce::TextEditor nameEditor;
     StackedField nameBlock { nameLabel, nameEditor };          // "Piece / Take Window Name:" above the name box, as tall as the Next Take box
     NextTakeBox takeBox;

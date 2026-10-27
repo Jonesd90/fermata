@@ -24,6 +24,7 @@ SurfaceController::SurfaceController (AppContext& a) : app (a)
 {
     defaults();
     load();
+    sender.startThread (juce::Thread::Priority::normal);
     openPorts();
     startTimerHz (30);
 }
@@ -32,8 +33,51 @@ SurfaceController::~SurfaceController()
 {
     stopTimer();
     cancelPendingUpdate();
-    if (out != nullptr) blank();
+    if (out != nullptr) { blank(); sender.flush (1500); }     // (the blanking is written by the sender thread: waited for, but not for ever - a hung port must not hold the program's closing)
     closePorts();
+}
+
+// ============================================================================ MIDI out: its own thread (see Surface.h)
+SurfaceController::Sender::~Sender() { stopThreadOrLog (*this, 2000); }     // (only a port whose driver has hung inside a write keeps it: then it is killed, and the log says so)
+
+void SurfaceController::Sender::run()
+{
+    while (! threadShouldExit())
+    {
+        std::vector<juce::MidiMessage> batch; std::shared_ptr<juce::MidiOutput> p;
+        { const juce::ScopedLock sl (qLock); batch.swap (queue); p = port; }
+        if (batch.empty()) { wait (100); continue; }
+        if (p == nullptr) continue;
+        writing.store (true);
+        for (auto& m : batch) { if (threadShouldExit()) break; p->sendMessageNow (m); }
+        writing.store (false);
+    }
+}
+
+void SurfaceController::Sender::push (const juce::MidiMessage& m)
+{
+    { const juce::ScopedLock sl (qLock); if (queue.size() < 4096) queue.push_back (m); }
+    notify();
+}
+
+void SurfaceController::Sender::setPort (std::shared_ptr<juce::MidiOutput> p)
+{
+    const juce::ScopedLock sl (qLock);
+    port = std::move (p);
+    queue.clear();
+}
+
+bool SurfaceController::Sender::flush (int maxMs)
+{
+    const auto deadline = juce::Time::getMillisecondCounter() + (juce::uint32) maxMs;
+    for (;;)
+    {
+        bool empty;
+        { const juce::ScopedLock sl (qLock); empty = queue.empty(); }
+        if (empty && ! writing.load()) return true;
+        if (juce::Time::getMillisecondCounter() >= deadline) return false;
+        juce::Thread::sleep (5);
+    }
 }
 
 // ============================================================================ settings
@@ -180,7 +224,7 @@ void SurfaceController::openPorts()
     bool changed = false;
     // a port that has gone (EuControl closed, the surface unplugged) is let go of, and looked for again
     if (in != nullptr)  { bool still = false; for (auto& d : ins)  still = still || d.identifier == in->getDeviceInfo().identifier;  if (! still) { juce::Logger::writeToLog ("Surface: MIDI in '" + in->getName() + "' has gone");  in.reset();  changed = true; for (auto& t : touched) t = false; } }
-    if (out != nullptr) { bool still = false; for (auto& d : outs) still = still || d.identifier == out->getDeviceInfo().identifier; if (! still) { juce::Logger::writeToLog ("Surface: MIDI out '" + out->getName() + "' has gone"); out.reset(); changed = true; for (auto& s : sent) s = {}; } }
+    if (out != nullptr) { bool still = false; for (auto& d : outs) still = still || d.identifier == out->getDeviceInfo().identifier; if (! still) { juce::Logger::writeToLog ("Surface: MIDI out '" + out->getName() + "' has gone"); sender.setPort (nullptr); out.reset(); changed = true; for (auto& s : sent) s = {}; } }
     // nothing chosen yet: a port that looks like the S1 (EuControl's "EuMidi" ports) or a Mackie surface is taken (until one is chosen in the panel)
     auto pick = [] (const juce::Array<juce::MidiDeviceInfo>& list, const juce::String& wantId, const juce::String& wantName) -> juce::String
     {
@@ -209,6 +253,7 @@ void SurfaceController::openPorts()
         if (id.isNotEmpty())
         {
             out = juce::MidiOutput::openDevice (id);
+            sender.setPort (out);
             if (out != nullptr)
             {
                 juce::Logger::writeToLog ("Surface: MIDI out '" + out->getName() + "' open");
@@ -225,6 +270,7 @@ void SurfaceController::openPorts()
 void SurfaceController::closePorts()
 {
     if (in != nullptr) { in->stop(); in.reset(); }
+    sender.setPort (nullptr);
     out.reset();
     { const juce::ScopedLock sl (lock); pending.clear(); }
     for (auto& s : sent) s = {};
@@ -280,7 +326,7 @@ void SurfaceController::log (bool outgoing, const juce::MidiMessage& m)
 void SurfaceController::send (const juce::MidiMessage& m)
 {
     if (out == nullptr) return;
-    out->sendMessageNow (m);
+    sender.push (m);                                 // (written on the sender's thread: the message thread never waits for the MIDI driver)
     if (monitorShowsOutput) log (true, m);
 }
 

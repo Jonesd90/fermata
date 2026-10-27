@@ -64,7 +64,6 @@ public:
     }
 
     /** What the last job did (for the log and the tests). */
-    double lastWriteMs() const noexcept { return lastMs.load(); }
     int written() const noexcept { return writtenCount.load(); }
 
 private:

@@ -35,10 +35,6 @@ public:
         signalThreadShouldExit(); notify(); stopThread (2000);
     }
 
-    /** How many stalls have been seen (and of those, the longest, ms). */
-    int stallCount() const noexcept { return count.load(); }
-    double longestMs() const noexcept { return longest.load(); }
-
     static constexpr double kPeriodMs = 50.0, kReportMs = 150.0;
 
 private:

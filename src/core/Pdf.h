@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.h"
+#include "FileSync.h"
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -194,7 +195,7 @@ public:
     bool save (const juce::File& f) const
     {
         const auto mb = toPdf();
-        return f.replaceWithData (mb.getData(), mb.getSize());
+        return filesync::writeDataChecked (f, mb.getData(), mb.getSize());      // (3.1.3: checked, so a full drive is reported instead of leaving a short file)
     }
 
 private:

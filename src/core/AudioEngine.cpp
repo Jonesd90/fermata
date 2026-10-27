@@ -93,7 +93,7 @@ AudioEngine::~AudioEngine()
     mixerWorkers.stop();
     if (isRecording()) stopRecording();
     waitForFinishedTakes (60000);                    // (closing the program: every file is finished first)
-    finisher.stopThread (5000);
+    stopThreadOrLog (finisher, 20000);               // (a close still going after that minute is on a drive that is barely answering: a kill mid-flush would cost the take's last moments: 3.1.2, was 5 s)
     for (auto& f : finishing) if (f->rs != nullptr) for (auto& rt : f->rs->tracks) rt.writer.reset();     // (any the finisher did not get to)
     finishing.clear();
     ringBuilder.stopThread (4000);
@@ -102,7 +102,7 @@ AudioEngine::~AudioEngine()
     retirer.reset();                                 // (the sessions it still holds are freed: nothing plays any more)
     delete plan.exchange (nullptr);
     delete preRollPtr.exchange (nullptr);
-    writerThread.stopThread (3000);
+    stopThreadOrLog (writerThread, 20000);           // (idle by now: every take has been finished; the long wait is for a last write to a slow drive: 3.1.2, was 3 s)
 }
 
 // ------------------------------------------------------------------ device
@@ -113,14 +113,41 @@ void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* d)
     juce::Logger::writeToLog ("Engine: device starting - " + d->getTypeName() + " / " + d->getName() + ", "
                               + juce::String (d->getCurrentSampleRate()) + " Hz, buffer " + juce::String (d->getCurrentBufferSizeSamples())
                               + ", in " + juce::String (deviceInputs) + ", out " + juce::String (deviceOutputs));
+    // The device stopped and is starting again in the middle of a take (the driver's control panel, a clock change, the interface unplugged and
+    // back). The take used to go on as if nothing had happened: at the same rate that only means the sound is missing for as long as the device
+    // was down, but at a new rate the rest of the take would be written into files whose headers say the old rate - unplayable at the right
+    // speed from there on. So the take is ended when the rate changed, and either way the person is told (3.1.5).
+    if (session != nullptr)
+    {
+        const double newRate = d->getCurrentSampleRate();
+        if (juce::MessageManager::getInstance()->isThisTheMessageThread()) deviceRestartedWhileRecording (newRate);
+        else juce::MessageManager::callAsync ([this, newRate] { deviceRestartedWhileRecording (newRate); });     // (JUCE restarts a device on the message thread; this is only in case)
+    }
     prepare (d->getCurrentSampleRate(), juce::jmax (64, d->getCurrentBufferSizeSamples()));
     running = true;
     juce::Logger::writeToLog ("Engine: device started OK");
 }
 
+void AudioEngine::deviceRestartedWhileRecording (double newRate)
+{
+    if (session == nullptr) return;
+    const double secondsSoFar = sampleRate > 0.0 ? (double) session->samples.load() / sampleRate : 0.0;
+    if (std::abs (newRate - sampleRate) > 0.5)
+    {
+        // the files were made for the old rate: finished here with what they hold (the device is stopped, so the audio thread is not in the session)
+        deviceNote = "THE AUDIO DEVICE CAME BACK AT " + juce::String (newRate, 0) + " Hz (the take was at " + juce::String (sampleRate, 0) + " Hz), so the take was ended with the "
+                     + juce::String (secondsSoFar, 1) + " s recorded. Press Record to go on at the new rate.";
+        juce::Logger::writeToLog ("Recording: " + deviceNote);
+        stopRecording();
+        return;
+    }
+    deviceNote = "THE AUDIO DEVICE STOPPED AND STARTED AGAIN DURING THE TAKE: the sound while it was stopped is missing from the take (" + juce::String (secondsSoFar, 1) + " s recorded so far). The take goes on.";
+    juce::Logger::writeToLog ("Recording: " + deviceNote);
+}
+
 void AudioEngine::audioDeviceStopped()
 {
-    juce::Logger::writeToLog ("Engine: device stopped");
+    juce::Logger::writeToLog (session != nullptr ? juce::String ("Engine: device stopped WHILE RECORDING (the take gets no sound until it starts again)") : juce::String ("Engine: device stopped"));
     running = false;
 }
 
@@ -1486,6 +1513,15 @@ juce::String AudioEngine::startRecording (TakeWindowDef& window)
         timeReference = (juce::int64) std::llround (tod * sampleRate);
     }
     double bytesPerSecond = 0.0;
+    // A track whose file cannot be made stops the take before it starts. The files already made for the tracks before it (a header, no audio:
+    // nothing the project knows about) and their second-drive copies go again, so nothing is left behind and the next take gets its proper names
+    // (3.1.3: they stayed, and their copies were reported 20 s later as "could not keep up").
+    auto giveUp = [&] (const juce::String& why)
+    {
+        for (auto& rt : rs->tracks) { BackupCopier::cancel (rt.backup); rt.writer.reset(); rt.info.file.deleteFile(); }     // (the copy is called off before its source goes)
+        juce::Logger::writeToLog ("Recording did not start: " + why);
+        return why;
+    };
 
     for (auto* t : armed)
     {
@@ -1525,9 +1561,9 @@ juce::String AudioEngine::startRecording (TakeWindowDef& window)
                         .withMetadata (juce::WavAudioFormat::riffInfoSoftware, "Fermata " + juce::String (FERMATA_VERSION_STRING));
 
         std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (file, 1024);     // (a small buffer: see TakeWriter)
-        if (static_cast<juce::FileOutputStream*> (stream.get())->failedToOpen()) return "Cannot create " + file.getFullPathName();
+        if (static_cast<juce::FileOutputStream*> (stream.get())->failedToOpen()) return giveUp ("Cannot create " + file.getFullPathName());
         auto w = wav.createWriterFor (stream, opts);
-        if (w == nullptr) return "Cannot create a 24-bit WAV writer for " + t->name;
+        if (w == nullptr) { stream.reset(); file.deleteFile(); return giveUp ("Cannot create a 24-bit WAV writer for " + t->name); }
         // the buffer holds kRecordBufferSeconds of audio whatever the sample rate (the disk may stall that long); session mode hands the pre-roll over
         // faster than real time, so it gets more room. The header is written again every 10 s, so a file cut short by a crash is readable as it is.
         const int bufFrames = (int) std::lround (kRecordBufferSeconds * sampleRate * (ringNow != nullptr ? 1.5 : 1.0));
@@ -1551,8 +1587,12 @@ juce::String AudioEngine::startRecording (TakeWindowDef& window)
     rs->windowId = window.id;
     rs->groupId = group.id;
     currentGroupId = group.id;
+    // A take is not an undo step (3.1.4: it was, and undoing it set the take counter back, so the next take got the same number): what the person
+    // changed before Record becomes a step of its own first, then the window with its new take is the state the history goes on from.
+    project.undoTick (false, true);
     window.groups.push_back (group);
     window.nextNumber++;
+    project.undoAbsorb (window.id);
 
     session = std::move (rs);
     recFolder = folder;
@@ -1573,6 +1613,10 @@ juce::Uuid AudioEngine::stopRecording()
         const auto gid = session->groupId;
         if (auto* w = project.findTakeWindow (session->windowId))
             if (auto* g = w->findGroup (gid)) g->lengthSamples = session->samples.load();
+        for (auto& rt : session->tracks) BackupCopier::finish (rt.backup);     // (the second drive's copies take what the files hold; their headers are mended with the files' on reopening: 3.1.3)
+        deviceNote = "THE AUDIO DEVICE WAS NOT ANSWERING WHEN THE TAKE STOPPED (the audio thread has stalled - a plug-in stuck?). The take's files keep what was recorded ("
+                     + juce::String (sampleRate > 0.0 ? (double) session->samples.load() / sampleRate : 0.0, 1) + " s); their headers are put right the next time the project opens. Save, and restart Fermata before the next take.";
+        juce::Logger::writeToLog ("Recording: " + deviceNote);           // (this path used to leave no trace in the log: 3.1.5)
         (void) session.release();
         project.changed();
         return gid;

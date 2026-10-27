@@ -65,7 +65,6 @@ inline juce::Colour giltBright() { return juce::Colour (0xfff0c76a); }
 inline juce::Colour giltDim()    { return juce::Colour (0xff6b5120); }
 inline juce::Colour giltInk()    { return juce::Colour (0xff1a1409); }
 inline juce::Colour parchment()  { return juce::Colour (0xffe9dcc0); }
-inline juce::Colour navyKey()    { return juce::Colour (0xff1f2246); }
 /** The names the two styles' default typefaces go by inside JUCE. Every font that does not name a face is made with the default name, and JUCE keeps
     its drawn glyphs in a cache keyed by that name: so the Manuscript UI's face is given a name of its own, and a window drawn in one style can never
     pick up letters drawn in the other. The wordmark's italic face likewise. (See FermataLookAndFeel::getTypefaceForFont.) */
@@ -127,13 +126,6 @@ inline void paintPanel (juce::Graphics& g, juce::Rectangle<int> area, juce::Colo
                              base.darker (0.18f), (float) area.getCentreX(), (float) area.getBottom(), true);
     gr.addColour (0.55, base);
     g.setGradientFill (gr); g.fillRect (area);
-}
-/** The gilt rule round a panel of the Manuscript UI: a thin line of gold with a hair of shadow inside it. Does nothing in the Fermata style. */
-inline void paintGiltRule (juce::Graphics& g, juce::Rectangle<int> area)
-{
-    if (! manuscript() || area.getWidth() < 4 || area.getHeight() < 4) return;
-    g.setColour (border); g.drawRect (area, 1);
-    g.setColour (juce::Colour (0xff2a1f0e).withAlpha (0.8f)); g.drawRect (area.reduced (1), 1);
 }
 /** Five faint lines across a lane, like the staves of a manuscript (the Manuscript UI's timelines). Does nothing in the Fermata style. */
 inline void paintStaff (juce::Graphics& g, juce::Rectangle<int> lane)
@@ -702,6 +694,18 @@ inline bool spaceIsForRecording() { return spaceBelongsToRecordingHook() && spac
 /** A component (and everything inside it) whose R key has its own job (the edit window, the process windows) carries this property: R there does
     not start a recording. */
 inline const juce::Identifier& ownsRKeyProperty() { static const juce::Identifier id ("fermataOwnsRKey"); return id; }
+
+/** The buttons and drop-downs in 'root' (and everything inside it) stop taking the keyboard when clicked, so the window's own keys (the arrows,
+    Space, Enter) keep working after a click on one of them. Text boxes and sliders are left alone: they need the keys. Call it once the children
+    have been made (3.1.2). */
+inline void keysStayWithWindow (juce::Component& root)
+{
+    for (auto* c : root.getChildren())
+    {
+        if (dynamic_cast<juce::Button*> (c) != nullptr || dynamic_cast<juce::ComboBox*> (c) != nullptr) c->setWantsKeyboardFocus (false);
+        keysStayWithWindow (*c);
+    }
+}
 
 /** The windows that were minimised: they are hidden and shown as title bars along the bottom of the main window. */
 class DockHub
@@ -1289,7 +1293,7 @@ public:
 /** The little pictures on the buttons of the edit and take windows. Each is drawn from a 24 x 24 grid so it stays sharp at any size. */
 enum class Icon { Start, Rewind, Play, Stop, Forward, End, Record, Trim, Bounce, Pitch, Repair, Reharm, Tracks, Feedback, Mixer, Earlier, Later, Delete, Undo, Automation,
                   ExportProc, ImportMulti, Markers, FeedbackMarkers, SlipLeft, SlipRight, Shuffle, InsertFlag, NextAtEnd,
-                  Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search, Denoise, Align, TakeSheet, RoomTone, NoiseMode, ReTimEr };
+                  Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search, Denoise, Align, TakeSheet, RoomTone, NoiseMode, ReTimEr, VideoExport, AafExport };
 
 inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area, juce::Colour ink = theme::text)
 {
@@ -1491,6 +1495,26 @@ inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area, j
             }
             g.setColour (Rd); g.drawEllipse (2.6f, 2.6f, 18.8f, 18.8f, 2.0f);
             seg (5.4f, 5.4f, 18.6f, 18.6f, 2.0f, Rd);
+            break;
+        }
+        case Icon::VideoExport:
+        {
+            // a clapperboard (the video edit) with a run of timecode under it: the three files for the picture editor (3.2.0)
+            P board; board.addRoundedRectangle (3, 9, 18, 11, 1.2f); fill (board, Dk); g.setColour (W); g.strokePath (board, juce::PathStrokeType (1.2f));
+            P top; top.addRoundedRectangle (3, 4.5f, 18, 4.5f, 0.8f); fill (top, W);
+            for (int i = 0; i < 4; ++i) { P st; st.addTriangle (4.5f + 4.5f * (float) i, 4.5f, 7.0f + 4.5f * (float) i, 4.5f, 5.5f + 4.5f * (float) i, 9.0f); fill (st, Dk); }
+            seg (6, 15, 18, 15, 1.6f, Ye);                                       // the timecode's line
+            for (int i = 0; i < 5; ++i) seg (6.5f + 2.8f * (float) i, 13.2f, 6.5f + 2.8f * (float) i, 16.8f, 0.9f, Ye);
+            break;
+        }
+        case Icon::AafExport:
+        {
+            // a page with "AAF" on it and an arrow out to the right: the edit handed to another program (3.3.0)
+            P page; page.addRoundedRectangle (1.5f, 2.5f, 15, 19, 1.2f); fill (page, W);
+            P fold; fold.addTriangle (12.5f, 2.5f, 16.5f, 2.5f, 16.5f, 6.5f); fill (fold, Dk);
+            g.setColour (Dk); g.setFont (juce::FontOptions (5.4f, juce::Font::bold)); g.drawText ("AAF", juce::Rectangle<float> (1.5f, 8, 15, 8), juce::Justification::centred, false);
+            seg (14, 17.5f, 22, 17.5f, 1.8f, Ye);
+            P head; head.addTriangle (19.2f, 14.8f, 22.8f, 17.5f, 19.2f, 20.2f); fill (head, Ye);
             break;
         }
         case Icon::ReTimEr:

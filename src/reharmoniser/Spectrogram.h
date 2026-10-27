@@ -28,7 +28,6 @@ struct Spectrogram
     void setGains (const Vec& g);
     /** The channels added by power at one frame, in dB, bins 0..nb-1. */
     void combineFrame (size_t frame, std::vector<float>& outDb) const;
-    double frameTime (size_t frame) const { return (double) (frame * hop) / sr2; }
     double binHz (size_t bin) const { return (double) bin * df; }
 private:
     void findRef();

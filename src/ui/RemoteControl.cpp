@@ -22,6 +22,7 @@ RemoteControlServer::~RemoteControlServer()
 {
     *alive = false;
     stopTimer();
+    cancelPendingUpdate();
     app.peakListeners.remove (this);
     hub.stop();                                                            // every controller's thread has ended before anything else goes
 }
@@ -36,7 +37,23 @@ void RemoteControlServer::handleLine (remote::Hub::Connection& from, const juce:
         if (cmd.on) deskWanted = true;
         return;
     }
-    juce::MessageManager::callAsync ([this, cmd, flag = alive] { if (*flag) execute (cmd); });
+    {
+        const juce::ScopedLock sl (queueLock);
+        if (queued.size() >= kMaxQueued)                                 // (a flood: what does not fit is dropped, said once in the log)
+        {
+            if (! queueFull) { queueFull = true; juce::Logger::writeToLog ("Control port: a controller is sending commands faster than they can be carried out; some are dropped"); }
+            return;
+        }
+        queued.push_back (cmd);
+    }
+    triggerAsyncUpdate();
+}
+
+void RemoteControlServer::handleAsyncUpdate()
+{
+    std::vector<remote::Command> batch;
+    { const juce::ScopedLock sl (queueLock); batch.swap (queued); queueFull = false; }
+    for (auto& c : batch) if (*alive) execute (c);
 }
 
 void RemoteControlServer::execute (const remote::Command& c)

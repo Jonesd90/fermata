@@ -29,7 +29,9 @@ PlaybackSession::PlaybackSession (std::vector<int> counts, std::vector<PlaySegme
 
 PlaybackSession::~PlaybackSession()
 {
-    stopThread (3000);
+    // The reader may be inside a read from a drive that has gone to sleep (an external disk spinning up takes several seconds; a network share
+    // longer). This runs on the Retirer thread, so nothing visible waits for it: better a long wait than a thread killed mid-read (3.1.2: was 3 s).
+    stopThreadOrLog (*this, 30000);
 }
 
 PlaybackSession::Opener PlaybackSession::makeOpener (juce::AudioFormatManager& fm, int bufBytes, double rate, juce::String* problem)

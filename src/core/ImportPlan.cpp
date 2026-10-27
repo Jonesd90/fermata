@@ -803,6 +803,8 @@ juce::String copyImportFiles (juce::AudioFormatManager& fm, const ImportPlan& pl
                 if (! dout.write (ptrs, 2, cnt)) return fail ("Disk full or write error.");
                 doneSamples += (juce::int64) cnt * 2;
             }
+            w.reset();
+            if (const auto e = audioops::checkWrittenLength (&fm, dest, total); e.isNotEmpty()) return fail (e);      // (read back: every sample is in the file, 3.1.3)
         }
         // parts that come from the same polyphonic file are read once, together
         std::map<int, std::vector<size_t>> bySource;
@@ -850,6 +852,7 @@ juce::String copyImportFiles (juce::AudioFormatManager& fm, const ImportPlan& pl
                 doneSamples += cnt * (juce::int64) writers.size();
             }
             writers.clear();
+            for (auto pi : kv.second) if (const auto e = audioops::checkWrittenLength (&fm, files[ti][pi], src.length); e.isNotEmpty()) return fail (e);     // (read back, 3.1.3)
         }
     }
     return {};

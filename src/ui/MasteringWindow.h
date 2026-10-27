@@ -70,7 +70,7 @@ private:
     juce::String editName (const juce::Uuid&) const;
     std::vector<juce::int64> clipFrames() const;          // 44.1 kHz length of every clip of the disc
     juce::String signature() const;                       // changes when the set / names / lengths of the edits change
-    void touched() { app.project.markDirty(); }
+    void touched() { app.project.markDirtyForUndo(); }     // (an undo step of its own: 3.1.4)
 
     // ---- building / refreshing
     void setView (int v);

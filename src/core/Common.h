@@ -23,6 +23,17 @@ constexpr double kDefaultEdgeFade = 0.025;           // the fade at the start / 
 constexpr int kMaxTrackChannels = 16;   // widest track (surround)
 constexpr int kMaxInputs        = 256;  // physical input channels tracked for metering
 
+/** Stops a thread, waiting up to 'ms' for it to finish on its own. A thread that has not finished by then is killed by JUCE - and a thread killed
+    in the middle of a disk read, or while it holds the memory allocator's lock, can hang the whole program for good - so that is written to the log,
+    with the thread's name, as something to look into. The waits given here are long on purpose (3.1.2): a thread reading or writing a file may be
+    waiting on a drive that has gone to sleep or a network share, which take seconds to answer. False = it had to be killed. */
+inline bool stopThreadOrLog (juce::Thread& t, int ms)
+{
+    if (t.stopThread (ms)) return true;
+    juce::Logger::writeToLog ("Thread '" + t.getThreadName() + "' did not stop in " + juce::String (ms / 1000) + " s and had to be killed");
+    return false;
+}
+
 /** A float that can be read/written from the audio thread without locking. */
 struct Param
 {

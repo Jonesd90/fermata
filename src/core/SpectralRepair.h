@@ -781,13 +781,6 @@ public:
         double e = 0.0; for (long n = a; n < b; ++n) { const double d = (double) x[(size_t) n] - (double) x[(size_t) n - 1]; e += d * d; }
         return std::sqrt (e / (double) (b - a));
     }
-    static double rmsRange (const std::vector<float>& x, long a, long b)
-    {
-        a = juce::jmax (0L, a); b = juce::jmin ((long) x.size(), b);
-        if (b <= a) return 0.0;
-        double e = 0.0; for (long n = a; n < b; ++n) e += (double) x[(size_t) n] * (double) x[(size_t) n];
-        return std::sqrt (e / (double) (b - a));
-    }
 
     // ---- how much of a click a join is
     /** The third difference of the sound, a sharp high-pass: the curve of the music itself hardly shows in it, so a step or a kink left where a mend meets the sound shows in it at once. */

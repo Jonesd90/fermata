@@ -51,6 +51,7 @@ struct EditorHost
     std::function<void (double hz, double levelDb)> playTone;                // a short tone (the piano keys), at this level in dB (the Key level slider)
     std::function<void()> writeBack;                                         // the user pressed "Write back to clip" (setCorrected has already been called with the final corrections)
     std::function<void()> cancel;                                            // the user pressed Cancel
+    std::function<bool()> spaceIsTaken;                                      // true while the Space key belongs to the host (a take is recording: Space stops it): Space does nothing here then (3.1.2)
     bool leaveUnchangedOk = false;                                           // one stream window of an Out / In pair: "Write back to clip" with nothing changed means "leave this stream as it is" (the host handles that)
     std::function<void (const juce::String&)> log;                           // errors and notes for the log file
     std::function<juce::String (const juce::String& key)> loadSetting;       // remembered settings of the View block (empty = none saved)
@@ -67,7 +68,6 @@ public:
     /** Gives the editor the audio to work on: block[channel][frame], all the same length. Starts the analysis (a progress bar shows). */
     void setAudio (std::shared_ptr<const Block> audio, int sampleRate);
     bool hasAppliedChanges() const;                 // is there anything in Corrected Notes that is switched on
-    bool hasPending() const { return cand.has; }
     int appliedCount() const;
     const std::vector<NoteEdit>& editList() const { return edits; }
 
@@ -151,7 +151,6 @@ private:
     void loadVoicesAsPending (const NoteEdit&);
     juce::String noteName (int midi) const;
     static int parseNote (const juce::String&);
-    double notePitchHz (int midi) const { return midiHz (midi, a4); }
 
     // ---- state
     std::shared_ptr<const Block> orig; int sr = 0; double dur = 0.0;

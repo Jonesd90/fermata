@@ -1,4 +1,5 @@
 #include "RetimerWindow.h"
+#include "FixTools.h"
 #include "Uikit.h"
 #include "../core/Retime.h"
 #include "../core/AudioOps.h"
@@ -12,10 +13,7 @@ namespace td
 {
 namespace
 {
-void say (const juce::String& text)
-{
-    juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon).withTitle ("ReTimEr").withMessage (text).withButton ("OK"), nullptr);
-}
+void say (const juce::String& text) { fixtools::say ("ReTimEr", text); }     // (the fix tools' message box, with this window's title)
 
 juce::String clockOf (double seconds)
 {
@@ -95,17 +93,6 @@ public:
         g.setFont (juce::FontOptions (11.0f, juce::Font::italic));
         g.drawText ("speed", juce::Rectangle<float> (r.getX() + 4.0f, r.getY() + 3.0f, 60.0f, 14.0f), juce::Justification::centredLeft);
     }
-};
-
-/** While the retimed audio is in the edit only to be listened to, the automatic save waits (as FixTools' PreviewApplied): a crash can then never leave the
-    project pointing at files that were only being tried. */
-struct Hold
-{
-    explicit Hold (AppContext& a) : app (a) {}
-    ~Hold() { set (false); }
-    void set (bool b) { if (b != on) { on = b; app.saveHold += b ? 1 : -1; } }
-    bool get() const noexcept { return on; }
-    AppContext& app; bool on = false;
 };
 
 class RetimerPanel : public juce::Component, private juce::Timer
@@ -200,7 +187,7 @@ public:
     {
         stopTimer();
         if (! accepted) { app.stopPlayback(); takeOut(); discardMade(); }
-        hold.set (false);
+        hold = false;
         app.undoHold -= 1;
         if (job != nullptr) job->release();                                     // (asks it to stop; it tidies itself away - and the files of a run that is cut short)
         auto* us = app.props.getUserSettings();
@@ -484,14 +471,14 @@ private:
         if (e == nullptr || made == nullptr) return;
         base.restore (*e);
         retime::applyPlan (*e, made->plan);
-        hold.set (true);
+        hold = true;
         app.project.changed();
     }
     void takeOut()
     {
-        if (! hold.get()) return;
+        if (! hold) return;
         if (auto* e = edit()) { base.restore (*e); app.project.changed(); }
-        hold.set (false);
+        hold = false;
     }
 
     double prerollSeconds() const { return (double) juce::jmax (1, preroll.getSelectedId()); }
@@ -515,14 +502,13 @@ private:
     {
         if (! fresh()) { make (Then::write); return; }
         app.stopPlayback();
-        if (! hold.get()) putIn();
+        if (! hold) putIn();
         accepted = true;
-        hold.set (false);                                                     // (it is the edit now: the automatic save may write it)
-        app.fixUndoLabel = "ReTimEr";
-        app.fixUndo = [a = &app, id = editId, old = base]
+        hold = false;                                                     // (it is the edit now: the automatic save may write it)
+        app.armFixUndo ("ReTimEr", [a = &app, id = editId, old = base]
         {
             if (auto* e = a->project.findEdit (id)) { old.restore (*e); a->project.changed(); }
-        };
+        }, true, editId);
         app.project.changed();
         app.setNotice ("ReTimEr: " + (made != nullptr ? made->plan.retimed.size() == 1 ? juce::String ("1 piece") : juce::String ((int) made->plan.retimed.size()) + " pieces" : juce::String()) + " retimed. Undo fix takes it off again.");
         closeMe();
@@ -536,7 +522,7 @@ private:
     void timerCallback() override
     {
         if (running) progressValue = (double) job->progress();
-        if (hold.get() && ! app.isPlaying()) takeOut();                       // (it finished playing by itself)
+        if (hold && ! app.isPlaying()) takeOut();                       // (it finished playing by itself)
         const bool playing = app.isPlaying() && app.playInfo.kind == AppContext::PlayInfo::Kind::Edit && app.playInfo.id == editId;
         playOrig.setToggleState (playing && playingWhat == 1, juce::dontSendNotification);
         playNew.setToggleState (playing && playingWhat == 2, juce::dontSendNotification);
@@ -550,7 +536,7 @@ private:
     juce::String baseNote, madeNote;
     Base base;
     std::shared_ptr<Made> made;
-    Hold hold;
+    fixtools::PreviewApplied hold;                                       // while the retimed audio is in the edit only to be listened to, the automatic save waits (as every fix window: 3.1.7)
     bool accepted = false, running = false, refreshing = false;
     int playingWhat = 0, sepY = 0;
     Then then = Then::nothing;
@@ -611,15 +597,6 @@ void openRetimer (AppContext& app, const juce::Uuid& editId, const juce::Uuid& s
             for (auto& f : r.files) if (auto* t = app.project.findTrack (f.trackId)) hasLtc = hasLtc || t->isLtc;
     if (hasLtc) note = (note + " The LTC (timecode) track is not stretched: the retimed part has no timecode.").trim();
 
-    auto panel = std::make_unique<RetimerPanel> (app, editId, q, t0, t1, what, note);
-    juce::DialogWindow::LaunchOptions o;
-    o.content.setOwned (panel.release());
-    o.dialogTitle = "ReTimEr";
-    o.dialogBackgroundColour = theme::window;
-    o.escapeKeyTriggersCloseButton = true;
-    o.useNativeTitleBar = true;
-    o.resizable = false;
-    o.componentToCentreAround = parent;
-    o.launchAsync();
+    fixtools::launchDialog (std::make_unique<RetimerPanel> (app, editId, q, t0, t1, what, note), "ReTimEr", parent);     // (the same dialog as the other process windows: 3.1.7)
 }
 } // namespace td

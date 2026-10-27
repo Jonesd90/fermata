@@ -7,6 +7,7 @@
 #include "../core/SessionClock.h"
 #include "../core/SaveWriter.h"
 #include "StallWatch.h"
+#include "TakeMatchService.h"
 
 namespace td
 {
@@ -51,6 +52,8 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     juce::AudioDeviceManager devices;
     AudioEngine engine { project };
     PluginHost plugins;
+    /** The fingerprints of the takes and their alignments, for "the same place in another take" (3.4.0): made in the background, kept in the project's Analysis folder. */
+    TakeMatchService takeMatch { project, engine };
     juce::ApplicationProperties props;
 
     // windows (set by the application)
@@ -198,6 +201,9 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     std::function<void (const juce::File&)> mediaReveal;
     void revealInMedia (const juce::File& f) { mediaSelection = f; if (mediaReveal) mediaReveal (f); }
     std::function<void (const BounceContext&)> showBounce;
+    std::function<void (const juce::Uuid& editId, juce::Component* parent)> showVideoExport;     // Export for video edit (3.2.0): the dialog, from the edit window's button
+    std::function<void (const juce::Uuid& editId, juce::Component* parent)> showAafExport;       // Export AAF (3.3.0): the same, for the AAF
+    std::function<void (const juce::Uuid& editId, juce::Component* parent)> showVersions;        // Find other versions (3.5.0): the window, from the edit window's right-click menu
     std::function<bool (const juce::String& key)> windowIsOpen;       // is the program window with this key open ("trim:<edit id>", "bounce:<edit id>")? The edit window lights its Trim and Bounce Out buttons from it
     /** "Find missing audio files": the folder chooser and the search (the main window). Set by the main window. */
     std::function<void()> findMissingAudio;
@@ -207,6 +213,16 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     int saveHold = 0;      // > 0 while a fix's preview files are in a take or an edit (FixTools.cpp: PreviewApplied): the automatic save waits, so a crash can never leave the project pointing at them
     std::function<void()> fixUndo;
     juce::String fixUndoLabel;
+    /** Arms Undo fix: 'fn' puts the edit (or take window) 'id' back as it was before the fix. It is only good for the state the fix left - the hash of
+        the edit as this handler leaves it is remembered - so Undo fix after further editing refuses rather than put the whole edit back to before
+        those changes too (3.1.4: it replaced the pieces wholesale; Ctrl+Z steps back through everything, the fix among them). */
+    void armFixUndo (const juce::String& label, std::function<void()> fn, bool isEdit, const juce::Uuid& id, const juce::Uuid& takeGroup = juce::Uuid::null());
+    /** False once the edit (or, for a take's fix, that take) has changed since the fix, or it is gone: Undo fix would take more than the fix out. */
+    bool fixUndoStillValid();
+private:
+    juce::uint64 fixUndoHashNow (bool isEdit, const juce::Uuid& id, const juce::Uuid& takeGroup);
+    juce::uint64 fixUndoHash = 0; bool fixUndoIsEdit = true; juce::Uuid fixUndoId, fixUndoGroup;
+public:
 
     /** Session mode: every patched input is kept for the last 6 seconds, so a take starts 6 s before Record was pressed. Remembered for next time. */
     void setSessionMode (bool on);
@@ -354,9 +370,37 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     bool closeProject (bool save);
     std::function<void()> closeAllWindows;            // (set by the application) closes every project window
     AudioEngine::LoadStats lastLoad;                  // the load meter: the audio thread's last second (see tickLoad)
+
+    /** What the recording monitor shows (the take window's three lamps and the Recording monitor window, 3.2.0): the main drive, the second drive,
+        the audio device, and the events of the take being recorded (kept after Stop until the next take starts). Sampled ten times a second by
+        the watcher (tickRecordMonitor); message thread only. */
+    struct RecordMonitor
+    {
+        struct Event { juce::String time, text; bool bad = true; };     // time: the clock, "14:32:07"; bad: red in the list (an ordinary note is grey)
+        std::vector<Event> events;                   // this take's, oldest first (at most kMaxEvents)
+        bool recording = false;                      // (as of the last tick)
+        juce::String takeName;                       // "Take 12 - Piece 01" of the take being (or last) recorded
+        juce::Uuid windowId, takeId;                 // which take it is
+        juce::uint32 startedMs = 0;                  // when it started (the clock)
+        int overruns = 0; juce::int64 lostSamples = 0; bool writeFailed = false;     // the main drive, this take
+        int deviceStops = 0; bool deviceDown = false; bool deviceQuiet = false;      // the device: stopped during the take (count), down / not delivering right now
+        int copiesBinned = 0; bool copyKept = false; double worstLagSeconds = 0.0;  // the second drive, this take
+        bool everRecorded = false;                   // (a take has run since the program started: the lamps show its outcome, not "idle")
+        static constexpr size_t kMaxEvents = 200;
+    } recordMonitor;
+    /** One lamp of the monitor. level: -1 off (grey), 0 fine (green), 1 warning (amber), 2 problem (red). word: a few capitals for the lamp; detail: a line for the monitor window. */
+    struct Lamp { int level = -1; juce::String word, detail; };
+    Lamp mainDriveLamp() const;
+    Lamp secondDriveLamp() const;
+    Lamp deviceLamp() const;
+    std::function<void()> showRecordMonitor;          // (set by the application) opens the Recording monitor window
+    int quietSeconds = 0;                             // how many seconds in a row the device has been "running" but delivered no block (a hung driver: see tickLoad)
     /** quick: an automatic save - a snapshot here, written on the saver's thread (see BackgroundSaver). Save from the menu, closing, Save and
-        quit: a full one, written there and then (after the saver has finished what it was given). */
-    void saveNow (bool quick = false);
+        quit: a full one, written there and then (after the saver has finished what it was given).
+        True when the project was written (or handed to the saver), or there was nothing to write (no project file yet). False when the save
+        failed: it is said in a message box, unless errorOut is given - then the reason goes there and the caller says it in its own words
+        (what is called next must not go ahead over a project that could not be saved: see newProject, openProject, closeProject, Save and quit). */
+    bool saveNow (bool quick = false, juce::String* errorOut = nullptr);
     /** Waits until the automatic saves handed to the saver's thread are on the disk, and takes in what they did (a failed one is saved again). */
     void waitForSaves();
     /** Play / Stop just happened (the automatic save keeps out of the way for a few seconds: the next press may be coming). */
@@ -395,6 +439,7 @@ private:
     int minuteSeconds = 0;
     bool loadWasRecording = false;
     void tickLoad();
+    void tickRecordMonitor();                        // the watcher, 10 Hz: samples the engine for the recording monitor and raises its notices
     void timerCallback() override;                   // autosave
     void changeListenerCallback (juce::ChangeBroadcaster*) override;   // re-plan the engine after structural edits
     // ---- saving (2.102). An automatic save is a snapshot taken here (a few tens of milliseconds) and written on the saver's thread, and it only
@@ -413,6 +458,7 @@ private:
     std::shared_ptr<bool> saverAlive = std::make_shared<bool> (true);
     int saveGeneration = 0;                          // another project since a save was handed over: what it did is not this project's
     juce::uint32 lastAutosaveMs = 0, lastSaveErrorMs = 0;
+    juce::String channelsErrorShownFor;              // the device whose "not all channels could be enabled" message has been shown (once per device: see syncWithDevice)
     bool wholeSaveNext = false;                      // a window file could not be written: the next save is a full one, there and then
     void afterProjectReplaced();
 public:

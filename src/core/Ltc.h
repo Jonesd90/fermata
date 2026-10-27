@@ -21,7 +21,6 @@ public:
     void setStoreFrames (bool on) noexcept { store = on; }
     long long frameTotal() const noexcept { return total; }
     const Frame& lastFrame() const noexcept { return last; }
-    double bitLength() const noexcept { return tBit; }
 
 private:
     void edge (double pos);
@@ -70,6 +69,10 @@ public:
     void prepare (double sampleRate);
     /** Starts (or restarts) at the given time of day in seconds. */
     void start (int formatCode, double startSeconds) noexcept;
+    /** Starts in the middle of a frame, exactly where a generator that had been running since midnight would be at that moment (the frame, the bit
+        within it and the point within the bit), so a run of code that begins at any sample reads as a continuation of the time of day - for the
+        LTC file of the video export (3.2.0), whose runs begin at the first sample of a piece's fade-in. */
+    void startExact (int formatCode, double seconds) noexcept;
     void stop() noexcept { running = false; }
     bool isRunning() const noexcept { return running; }
     void fill (float* out, int count) noexcept;

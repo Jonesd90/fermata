@@ -1,5 +1,6 @@
 #pragma once
 #include "Project.h"
+#include "FileSync.h"
 
 namespace td
 {
@@ -137,9 +138,9 @@ inline juce::String run (juce::var root, const juce::File& srcFolder, const juce
     }
     for (const char* sub : { "Recorded Media", "Bounced Media", "Bounced Media/Mastered Audio" }) destFolder.getChildFile (sub).createDirectory();
     rep.projectFile = destFolder.getChildFile (juce::File::createLegalFileName (newName) + ".fermata");
-    juce::TemporaryFile tmp (rep.projectFile);
-    if (! tmp.getFile().replaceWithText (juce::JSON::toString (root, false)) || ! tmp.overwriteTargetFileWithTemporary())
-        return "Could not write the project file " + rep.projectFile.getFullPathName();
+    juce::String err;
+    if (! filesync::replaceTextSafely (rep.projectFile, juce::JSON::toString (root, false), false, &err))     // (3.1.3: checked - the copy's project file must be whole, like its audio)
+        return "Could not write the project file " + rep.projectFile.getFullPathName() + (err.isNotEmpty() ? " (" + err.fromLastOccurrenceOf (": ", false, false) + ")" : juce::String());
     progress (1.0f, "Done");
     return {};
 }

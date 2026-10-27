@@ -1,4 +1,5 @@
 #pragma once
+#include <cmath>
 #include <juce_core/juce_core.h>
 
 namespace td::remote
@@ -94,12 +95,20 @@ inline Command parseCommand (const juce::String& line)
                                    "desk", "bridge", "pitchpipe", "click", "takewindow", "minimiseall", "armtoggle", "wavecolour", "loop", "wact", "openwin",
                                    "monitor", "talkin", "preamp", "gain", "mixout", "mixmute", "stage", "stagereset" };
     for (auto* k : known) if (name == k) c.name = name;
+    // Numbers from the wire: clamped as doubles first (a value beyond int's range cast straight to int is undefined; JUCE casts a var that way), and
+    // "nan" - which JUCE's string-to-number reads as a real NaN, and which passes every jlimit since no comparison with it is true - is nothing (3.1.5).
+    auto wholeNumber = [&v] (const char* key, int low, int high, int fallback)
+    {
+        const double d = (double) v[key];
+        return std::isfinite (d) ? (int) juce::jlimit ((double) low, (double) high, d) : fallback;
+    };
     c.down = (bool) v["down"];
-    c.index = juce::jmax (0, (int) v["index"]);
+    c.index = wholeNumber ("index", 0, 100000, 0);
     c.on = v.hasProperty ("on") ? (bool) v["on"] : true;
-    c.input = v.hasProperty ("input") ? (int) v["input"] : -1;
+    c.input = v.hasProperty ("input") ? wholeNumber ("input", -1, 100000, -1) : -1;
     c.what = v["what"].toString().toLowerCase();
-    c.delta = juce::jlimit (-100.0, 100.0, (double) v["delta"]);              // (a stray huge number never throws a fader to its end)
+    const double delta = (double) v["delta"];
+    c.delta = std::isfinite (delta) ? juce::jlimit (-100.0, 100.0, delta) : 0.0;     // (a stray huge number never throws a fader to its end; NaN moves nothing)
     return c;
 }
 } // namespace td::remote

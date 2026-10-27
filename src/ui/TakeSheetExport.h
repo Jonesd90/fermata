@@ -1,6 +1,7 @@
 #pragma once
 #include "AppContext.h"
 #include "../core/TakeSheet.h"
+#include "../core/FileSync.h"
 
 #ifndef FERMATA_VERSION_STRING
  #define FERMATA_VERSION_STRING "dev"
@@ -30,7 +31,7 @@ inline void exportTakeSheet (AppContext& app, const juce::Uuid& windowId)
     juce::MemoryOutputStream csvData;
     csvData.write ("\xEF\xBB\xBF", 3);                                       // UTF-8 with a byte order mark: Excel then reads the accents right
     csvData << takesheet::csv (sections);
-    const bool okCsv = csvFile.replaceWithData (csvData.getData(), csvData.getDataSize());
+    const bool okCsv = filesync::writeDataChecked (csvFile, csvData.getData(), csvData.getDataSize());     // (3.1.3: checked)
     if (! okPdf || ! okCsv)
     {
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Take sheet", "Could not write " + (okPdf ? csvFile : pdfFile).getFullPathName() + " (is it open in another program?)");

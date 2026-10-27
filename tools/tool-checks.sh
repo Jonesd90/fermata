@@ -13,13 +13,17 @@
 #             not a list, or a number outside it, crashes - so each place must have checked first)
 #   valgrind  valgrind's memcheck on the stress test, the time-format and control-port tests: memory read before it was ever written
 #   coverage  which lines of src/core the core tests and the stress test run (gcov), per file, least covered first
+#   rtcheck   (3.1.2) the audio path never waits: the core tests and the stress test with tests/realtime_guard.cpp linked in, which reports every
+#             allocation, lock, sleep, file or socket call made while inside AudioEngine::process, with the place it came from
+#   longsession  (3.1.3) tests/long_session_test.cpp: LONG_HOURS simulated hours (default 2) of takes, saves, meters and playbacks, faster than real
+#             time, watching for memory that grows, lists that never shrink and timing that drifts (about 3 minutes per simulated hour)
 #   all       all of the above, one after another
 #
 # Usage: tools/tool-checks.sh /path/to/JUCE <mode> [out folder]          (out folder: default /tmp/fermata-tool-checks)
 # Each mode ends with a summary line per program or a count per file; the logs are in the out folder.
 # Two core test programs must never run at the same time (they share a temporary folder): run one mode at a time.
 JUCE=${1:?path to JUCE}
-MODE=${2:?mode: asan tsan fuzz warnings tidy query valgrind coverage all}
+MODE=${2:?mode: asan tsan fuzz warnings tidy query valgrind coverage rtcheck longsession all}
 OUT=${3:-/tmp/fermata-tool-checks}
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$OUT"
@@ -200,9 +204,67 @@ print(f"all of src/core: {100 * run / max(1, tot):.1f}% of {tot} lines run by th
 PY
 }
 
+run_rtcheck ()
+{
+    local O="$OUT/plain" CXX="g++ -std=c++17 -O1 -g -I$JUCE/modules $CORE_DEFS -w"
+    echo "== realtime check: nothing inside AudioEngine::process may allocate, lock, sleep or touch a file or socket ($O)"
+    build_core "$O" "$CXX"
+    g++ -std=c++17 -O1 -g -c "$HERE/tests/realtime_guard.cpp" -o "$O/realtime_guard.o" 2>"$O/t_realtime_guard.log" || { echo "FAILED realtime_guard (see t_realtime_guard.log)"; return; }
+    # the guard wraps AudioEngine::process (so it knows when a thread is on the audio path) and the two JUCE calls that wake another thread (allowed)
+    local L="-rdynamic -lpthread -ldl -lrt -Wl,--wrap=_ZN2td11AudioEngine7processEPKPKfiPKPfii -Wl,--wrap=_ZNK4juce13WaitableEvent6signalEv -Wl,--wrap=_ZNK4juce6Thread6notifyEv"
+    # first the guard's own check: a pretend engine that allocates, frees, locks and sleeps must give four kinds of report (else a clean run proves nothing)
+    $CXX -DRTGUARD_CONTROL_ENGINE -c "$HERE/tests/realtime_guard_control.cpp" -o "$O/rt_control_engine.o" 2>"$O/t_rt_control.log" || echo "FAILED realtime_guard_control (engine)"
+    $CXX -DRTGUARD_CONTROL_MAIN -c "$HERE/tests/realtime_guard_control.cpp" -o "$O/rt_control_main.o" 2>>"$O/t_rt_control.log" || echo "FAILED realtime_guard_control (main)"
+    g++ "$O/rt_control_main.o" "$O/rt_control_engine.o" "$O/realtime_guard.o" "$O/juce_core.o" "$O/juce_events.o" "$O/ct.o" -o "$O/rt_control" $L
+    ( cd "$O" && ./rt_control ) > "$OUT/rtcheck_control.log" 2>&1
+    local ok=1; for k in malloc free pthread_mutex_lock nanosleep; do grep -q "^REALTIME: $k " "$OUT/rtcheck_control.log" || ok=0; done
+    [ $ok = 1 ] && echo "guard self-check: OK (an allocation, a free, a lock and a sleep inside the audio callback were all reported)" || { echo "guard self-check FAILED (see rtcheck_control.log): the results below mean nothing"; }
+    for t in core_test stress_test; do $CXX -c "$HERE/tests/$t.cpp" -o "$O/t_$t.o" 2>"$O/t_$t.log" || echo "FAILED $t"; done
+    g++ "$O/t_core_test.o" "$O/realtime_guard.o" $CORE_OBJS $JUCE_OBJS -o "$O/rt_core_test" $L
+    g++ "$O/t_stress_test.o" "$O/realtime_guard.o" $CORE_OBJS $JUCE_OBJS -o "$O/rt_stress_test" $L
+    for t in core_test stress_test; do
+        ( cd "$O" && if [ "$t" = stress_test ]; then ./rt_$t 5; else ./rt_$t; fi ) > "$OUT/rtcheck_$t.log" 2>&1
+        report "$OUT/rtcheck_$t.log" $? "^REALTIME: " "realtime report(s)"
+        # each place once, as source lines (addr2line on the offsets backtrace_symbols_fd printed)
+        python3 - "$OUT/rtcheck_$t.log" "$O/rt_$t" <<'PY'
+import re, subprocess, sys
+log, exe = sys.argv[1], sys.argv[2]
+blocks, cur = [], None
+for line in open(log, errors='replace'):
+    if line.startswith('REALTIME: '): cur = [line.strip(), []]; blocks.append(cur); continue
+    if cur is None: continue
+    if line.startswith('REALTIME-END'): cur = None; continue
+    m = re.search(r'\(\+(0x[0-9a-f]+)\)', line)
+    if m: cur[1].append(m.group(1))
+for head, offs in blocks:
+    print('  ' + head)
+    if not offs: continue
+    out = subprocess.run(['addr2line', '-e', exe, '-f', '-C', '-i', '-p'] + offs, capture_output=True, text=True).stdout.splitlines()
+    shown = 0
+    for l in out:
+        if '/src/' in l or '/tests/' in l:
+            print('      ' + re.sub(r' at .*/(src|tests)/', ' at \\1/', l.strip())); shown += 1
+            if shown >= 8: break
+PY
+    done
+}
+
+run_longsession ()
+{
+    local O="$OUT/plain" CXX="g++ -std=c++17 -O1 -g -I$JUCE/modules $CORE_DEFS -w"
+    echo "== a long session, ${LONG_HOURS:-2} simulated hours ($O)"
+    build_core "$O" "$CXX"
+    $CXX -c "$HERE/tests/long_session_test.cpp" -o "$O/t_long_session_test.o" 2>"$O/t_long_session_test.log" || { echo "FAILED long_session_test (see t_long_session_test.log)"; return; }
+    g++ "$O/t_long_session_test.o" $CORE_OBJS $JUCE_OBJS -o "$O/long_session_test" -lpthread -ldl -lrt
+    ( cd "$O" && ./long_session_test "${LONG_HOURS:-2}" ) > "$OUT/longsession.log" 2>&1
+    local rc=$?
+    grep -E "^long session|^  heap|^  lists|FAIL|PASSED|FAILED" "$OUT/longsession.log"
+    echo "long_session_test exit $rc"
+}
+
 case "$MODE" in
     asan) run_asan ;; tsan) run_tsan ;; fuzz) run_fuzz ;; warnings) run_warnings ;; tidy) run_tidy ;; query) run_query ;;
-    valgrind) run_valgrind ;; coverage) run_coverage ;;
-    all) run_asan; run_tsan; run_fuzz; run_warnings; run_tidy; run_query; run_valgrind; run_coverage ;;
+    valgrind) run_valgrind ;; coverage) run_coverage ;; rtcheck) run_rtcheck ;; longsession) run_longsession ;;
+    all) run_asan; run_tsan; run_fuzz; run_warnings; run_tidy; run_query; run_valgrind; run_coverage; run_rtcheck; run_longsession ;;
     *) echo "unknown mode: $MODE"; exit 2 ;;
 esac

@@ -75,7 +75,10 @@ public:
     static constexpr int kLockWaitMs = 2000;
 
     /** Puts p in the slot (prepared first, outside the lock). False if the slot could not be locked in time: p is dropped and the slot is unchanged. */
-    bool set (std::unique_ptr<InsertProcessor> p, double sr, int maxBlock, int numCh)
+    bool set (std::unique_ptr<InsertProcessor> p, double sr, int maxBlock, int numCh) { return setKeeping (p, sr, maxBlock, numCh); }
+
+    /** As set(), but a plug-in the slot could not take stays in p (so the caller can put it back where it came from) instead of being dropped. */
+    bool setKeeping (std::unique_ptr<InsertProcessor>& p, double sr, int maxBlock, int numCh)
     {
         if (p != nullptr)
             p->prepare (sr, maxBlock, numCh);
@@ -89,7 +92,7 @@ public:
             latency.store (lat, std::memory_order_relaxed);
             loadedHint.store (proc != nullptr, std::memory_order_relaxed);
             savedDescription.clear();
-            savedState.clear();
+            savedState.clear(); savedName.clear();
             scratchSize (proc != nullptr ? maxBlock : 0);
         }
         // 'old' is destroyed here, outside the lock
@@ -109,7 +112,7 @@ public:
             p = std::move (proc);
             proc = nullptr;
             loadedHint.store (false, std::memory_order_relaxed);
-            savedDescription.clear(); savedState.clear();
+            savedDescription.clear(); savedState.clear(); savedName.clear();
             latency.store (0, std::memory_order_relaxed);
         }
         return p;
@@ -174,6 +177,7 @@ public:
         under it (see AutomationPlan). */
     std::atomic<int> autoLat { 0 };
     juce::String savedDescription, savedState;   // kept when a plugin could not be re-created
+    juce::String savedName;                      // its name, for the slot to show as "<name> (not loaded)" (message thread; cleared with the two above)
     /** How many times a message-thread lock gave up because the audio thread never let go (a plug-in stuck in its process call). */
     static std::atomic<int>& stuckCount() noexcept { static std::atomic<int> n { 0 }; return n; }
 private:

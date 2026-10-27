@@ -1,6 +1,7 @@
 #include "Bounce.h"
 #include "Playback.h"
 #include "Dither.h"
+#include "AudioOps.h"
 #include <set>
 #include "AudioFormats.h"
 
@@ -14,6 +15,16 @@ Bouncer::Bouncer (const Project& live, const BounceSettings& s) : settings (s)
     if (s.sources.empty() && s.sourcesPre.empty()) { prepareError = "Choose at least one output to bounce (an Ext bus, an Int bus or an audio track)."; return; }
     if (s.items.empty()) { prepareError = "Nothing to bounce."; return; }
     shadow = live.cloneForRender (s.sampleRate, kBlock);
+    // A plug-in that would not start in the render copy used to be left out of the bounce without a word, so the file did not sound like the mix.
+    // Now the bounce is refused and says which (the log says why it would not start).
+    if (const auto missing = live.pluginsMissingFrom (*shadow, s.mixerId); ! missing.isEmpty())
+    {
+        prepareError = (missing.size() == 1 ? "A plug-in could not be started for the render" : juce::String (missing.size()) + " plug-ins could not be started for the render")
+                       + ", so nothing was written (a bounce without " + (missing.size() == 1 ? "it" : "them") + " would not sound like the mix):\n\n   "
+                       + missing.joinIntoString ("\n   ") + "\n\nBypass or remove " + (missing.size() == 1 ? "it" : "them") + " to bounce without; the log says why "
+                       + (missing.size() == 1 ? "it" : "they") + " would not start.";
+        return;
+    }
     if (! s.items.empty()) shadow->alignActive = s.items.front().alignOwner.isNotEmpty() ? s.items.front().alignOwner : s.alignOwner;
     engine = std::make_unique<AudioEngine> (*shadow);
     engine->setOfflineTarget (s.mixerId, s.sources, s.sourcesPre);
@@ -155,12 +166,15 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
                 {
                     auto& cap = captures[(size_t) o];
                     for (int c = 0; c < 2; ++c) { const auto mm = cap.findMinMax (c, from, n - from); peaks[(size_t) o] = juce::jmax (peaks[(size_t) o], std::abs (mm.getStart()), std::abs (mm.getEnd())); }
-                    douts[(size_t) o]->write (cap, from, n - from);
+                    if (! douts[(size_t) o]->write (cap, from, n - from))          // (3.1.3: a refused write - the drive is full, or gone - stops the bounce and says so)
+                    { writers.clear(); cleanUp(); res.error = "Could not write " + (settings.normalise ? tmps : finals)[(size_t) o].getFileName() + ": the drive did not take it (is it full?)"; return res; }
                 }
             done += n; doneAll += n;
             if (progress != nullptr) progress->store ((float) juce::jmin (1.0, doneAll / totalAll));
         }
         writers.clear();
+        for (int o = 0; o < numOut; ++o)                              // each file read back: it holds every sample that was written (3.1.3)
+            if (const auto e = audioops::checkWrittenLength (&formats, settings.normalise ? tmps[(size_t) o] : finals[(size_t) o], total); e.isNotEmpty()) { cleanUp(); res.error = e; return res; }
 
         float loudest = 0.0f;
         for (auto pk : peaks) loudest = juce::jmax (loudest, pk);
@@ -178,14 +192,16 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
                 const float ref = settings.normaliseTogether ? loudest : peaks[(size_t) o];
                 const float gain = ref > 1.0e-9f ? juce::Decibels::decibelsToGain (settings.peakDb) / ref : 1.0f;
                 juce::AudioBuffer<float> buf (2, 16384);
-                for (juce::int64 pos = 0; pos < in->lengthInSamples; pos += 16384)
+                const auto frames = in->lengthInSamples;
+                for (juce::int64 pos = 0; pos < frames; pos += 16384)
                 {
-                    const int n = (int) juce::jmin ((juce::int64) 16384, in->lengthInSamples - pos);
+                    const int n = (int) juce::jmin ((juce::int64) 16384, frames - pos);
                     in->read (&buf, 0, n, pos, true, true);
                     buf.applyGain (0, n, gain);
-                    dout->write (buf, 0, n);
+                    if (! dout->write (buf, 0, n)) { out.reset(); in.reset(); finalFile.deleteFile(); cleanUp(); res.error = "Could not write " + finalFile.getFileName() + ": the drive did not take it (is it full?)"; return res; }
                 }
                 out.reset(); in.reset();
+                if (const auto e = audioops::checkWrittenLength (&formats, finalFile, frames); e.isNotEmpty()) { finalFile.deleteFile(); cleanUp(); res.error = e; return res; }
                 tmpFile.deleteFile();
                 finalPeak = peaks[(size_t) o] * gain;
                 res.files.add (finalFile.getFullPathName());

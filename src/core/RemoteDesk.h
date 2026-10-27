@@ -149,6 +149,7 @@ inline bool gainStep (Project& p, int input, float deltaDb)
 /** The monitor mode of the tracks fed by this input goes on one step: E -> S -> S-L -> T -> E. Returns the new mode, or -1 when no track is fed by the input. */
 inline int monitorCycle (Project& p, int input)
 {
+    if (input < 0) return -1;                        // (no input given: -1 would match every track that has no input, and cycle them all: 3.1.5)
     auto fed = tracksOnInput (p, input);
     if (fed.empty()) return -1;
     const int next = ((int) fed.front()->monitor() + 1) % 4;

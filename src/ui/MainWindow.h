@@ -50,7 +50,6 @@ public:
     DockBar() { DockHub::get().changes.addChangeListener (this); startTimerHz (4); }
     ~DockBar() override { DockHub::get().changes.removeChangeListener (this); }
     std::function<void()> onChange;
-    int wantedHeight() const { return wins.empty() ? 0 : 30; }
     void resized() override
     {
         auto r = getLocalBounds().reduced (0, 2);

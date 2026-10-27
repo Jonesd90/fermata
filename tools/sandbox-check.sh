@@ -21,6 +21,9 @@ $CXX -c "$HERE/src/core/AudioOps.cpp" -o "$OUT/AudioOps.o"
 $CXX -c "$HERE/src/core/DenoiseFft.cpp" -o "$OUT/DenoiseFft.o"
 $CXX -c "$HERE/src/core/ImportPlan.cpp" -o "$OUT/ImportPlan.o"
 $CXX -c "$HERE/src/core/Aaf.cpp" -o "$OUT/Aaf.o"
+$CXX -c "$HERE/src/core/AafWrite.cpp" -o "$OUT/AafWrite.o"
+$CXX -c "$HERE/src/core/AafExport.cpp" -o "$OUT/AafExport.o"
+$CXX -c "$HERE/src/core/TakeMatch.cpp" -o "$OUT/TakeMatch.o"
 $CXX -c "$HERE/src/core/Ltc.cpp" -o "$OUT/Ltc.o"
 $CXX -c "$HERE/src/core/MasterDef.cpp" -o "$OUT/MasterDef.o"
 $CXX -c "$HERE/src/core/Ddp.cpp" -o "$OUT/Ddp.o"
@@ -30,6 +33,7 @@ $CXX -c "$HERE/src/core/MasterRender.cpp" -o "$OUT/MasterRender.o"
 $CXX -c "$HERE/src/core/Ravenna.cpp" -o "$OUT/Ravenna.o"
 $CXX -c "$HERE/src/core/CoreReservation.cpp" -o "$OUT/CoreReservation.o"
 $CXX -c "$HERE/src/core/Retime.cpp" -o "$OUT/Retime.o"
+$CXX -c "$HERE/src/core/VideoExport.cpp" -o "$OUT/VideoExport.o"
 $CXX -c "$HERE/tests/core_test.cpp" -o "$OUT/core_test.o"
 $CXX "$OUT"/*.o -o "$OUT/core_test" -lpthread -ldl -lrt
 "$OUT/core_test"
@@ -37,6 +41,10 @@ $CXX "$OUT"/*.o -o "$OUT/core_test" -lpthread -ldl -lrt
 $CXX -c "$HERE/tests/stress_test.cpp" -o "$OUT/stress_test.o.x"
 $CXX "$OUT/stress_test.o.x" $(ls "$OUT"/*.o | grep -v core_test.o) -o "$OUT/stress_test" -lpthread -ldl -lrt
 "$OUT/stress_test" 3
+# a long session, simulated faster than real time (3.1.3): three quarters of an hour here, two hours in tools/tool-checks.sh longsession
+$CXX -c "$HERE/tests/long_session_test.cpp" -o "$OUT/long_session_test.o.x"
+$CXX "$OUT/long_session_test.o.x" $(ls "$OUT"/*.o | grep -v core_test.o) -o "$OUT/long_session_test" -lpthread -ldl -lrt
+"$OUT/long_session_test" 0.75
 # the time readout's formats and parsing (only needs juce_core and the LTC code)
 $CXX -c "$HERE/tests/timeformat_test.cpp" -o "$OUT/timeformat_test.o.x"
 $CXX "$OUT/timeformat_test.o.x" "$OUT/Ltc.o" "$OUT"/juce_*.o "$OUT/ct.o" -o "$OUT/timeformat_test" -lpthread -ldl -lrt

@@ -310,6 +310,28 @@ void LtcGenerator::start (int code, double startSeconds) noexcept
     running = true;
 }
 
+void LtcGenerator::startExact (int code, double seconds) noexcept
+{
+    formatInfo (code, fps, nominal, drop);
+    bitLen = rate / (fps * 80.0);
+    dayFrames = drop ? 2589408LL : (long long) nominal * 86400LL;
+    const double frames = std::fmod (std::max (0.0, seconds), 86400.0) * fps;
+    const double whole = std::floor (frames);
+    frameNo = (long long) whole % dayFrames;
+    const double bitPos = (frames - whole) * 80.0;                 // how far into the frame, in bits
+    bitIdx = juce::jlimit (0, 79, (int) std::floor (bitPos));
+    phase = (bitPos - std::floor (bitPos)) * bitLen;
+    buildFrame();
+    // the level a generator running since the frame's start would have now: it changes at every bit's start, and in the middle of every 1 bit
+    float l = 1.0f;
+    for (int i = 0; i < bitIdx; ++i) { if (bits[i] != 0) l = -l; l = -l; }
+    halfDone = bits[bitIdx] != 0 && phase >= bitLen * 0.5;
+    if (halfDone) l = -l;
+    level = l;
+    smooth = (double) (level * 0.35f);                              // (settled: no rise at the very first sample)
+    running = true;
+}
+
 void LtcGenerator::buildFrame() noexcept
 {
     int h, m, s, f; fieldsOfFrame (frameNo, nominal, drop, h, m, s, f);

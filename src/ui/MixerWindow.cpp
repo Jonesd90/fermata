@@ -399,6 +399,7 @@ public:
         {
             auto name = slots[i].getName();
             const bool loaded = name.isNotEmpty();
+            if (! loaded && slots[i].savedName.isNotEmpty()) name = slots[i].savedName + " (not loaded)";     // kept in the slot with its settings, but it could not be started (see openProject)
             const bool byp = slots[i].bypass.get();
             cells[i]->setLook (name, loaded ? (byp ? t.insertByp : t.insertOn) : t.field, loaded);
         }
@@ -409,7 +410,6 @@ public:
         const int h = r.getHeight() / count;
         for (auto* b : cells) b->setBounds (r.removeFromTop (h).reduced (1, 1));
     }
-    bool slotLoaded (int i) const { return slots[i].isLoaded(); }
     /** A channel strip linked to others right now (Shift + Alt held, see StripGang): their insert slots, so a plug-in inserted, removed or bypassed
         here is on them too; and a function that shows the result on their strips. Empty: on its own. */
     std::function<std::vector<InsertSlot*>()> gangSlots;
@@ -428,20 +428,23 @@ public:
         // 'make' loads a plug-in, and one that shows a window while it loads (a licence, a trial notice) runs a modal loop in which this row of slots can be
         // rebuilt and deleted (the mixer's refresh sees the new plug-in): from here on nothing of 'this' is used, only these copies
         auto& a = app; const auto refreshGang = gangRefresh;
-        int full = 0;
+        int full = 0, stuck = 0;
         const double sr = a.engine.getSampleRate(); const int blk = a.engine.getMaxBlock();
         for (auto* arr : others)
         {
             const int k = slotFor (arr, want);
             if (k < 0) { ++full; continue; }
             auto p = make();
-            if (p == nullptr) { showError ("Plug-in", "Could not load the plug-in on every selected strip."); break; }
+            if (p == nullptr) { showError ("Plug-in", "Could not load the plug-in on every selected strip (the log says why)."); break; }
             if (arr[k].set (std::move (p), sr, blk, 2)) arr[k].bypass.set (bypassed);
+            else ++stuck;                                                                 // (the slot could not be locked: the new instance is dropped, that strip is as it was)
         }
         a.project.markDirty(); a.engine.checkLatency();
         if (refreshGang) refreshGang();
         a.project.structure.sendChangeMessage();                                     // (a strip may need another slot row)
         if (full > 0) showError ("Plug-in", juce::String (full) + " of the selected strips had no free insert slot: the plug-in was not added there.");
+        if (stuck > 0) showError ("Plug-in", juce::String (stuck) + " of the selected strips did not let go of the slot for " + juce::String (InsertSlot::kLockWaitMs / 1000)
+                                               + " seconds (a plug-in stuck in its process call?): the plug-in was not added there. The log has the details.");
     }
     /** The name was clicked: open the plug-in, or (empty slot) offer the list. */
     void openOrMenu (int i)
@@ -477,8 +480,28 @@ public:
             if (pa == nullptr && src.isLoaded()) { showError ("Plug-in", stuckText (src)); return; }
             auto pb = dst.take();                                              // the one that was there (if any) swaps places with it
             if (pb == nullptr && dst.isLoaded()) { src.set (std::move (pa), sr, blk, 2); src.bypass.set (bs); showError ("Plug-in", stuckText (dst)); return; }
-            dst.set (std::move (pa), sr, blk, 2); dst.bypass.set (bs);
-            if (pb != nullptr) { src.set (std::move (pb), sr, blk, 2); src.bypass.set (bd); }
+            // Both slots are empty and unlocked now, so these cannot be refused in practice; still, a plug-in is never dropped without a word: one that
+            // cannot be put in goes back where it came from, and if even that fails it is said (the log has the rest)
+            auto putBack = [&] (InsertSlot& into, std::unique_ptr<InsertProcessor>& p, bool byp, juce::String& msg)
+            {
+                if (into.setKeeping (p, sr, blk, 2)) { into.bypass.set (byp); return; }
+                msg << "\n\n" << p->getName() << " could not be put back in its slot either: it is gone from the mixer.";
+            };
+            if (! dst.setKeeping (pa, sr, blk, 2))
+            {
+                juce::String msg = stuckText (dst);
+                putBack (src, pa, bs, msg);
+                if (pb != nullptr) putBack (dst, pb, bd, msg);
+                showError ("Plug-in", msg);
+                app.project.markDirty(); app.engine.checkLatency(); refresh(); target.refresh();
+                return;
+            }
+            dst.bypass.set (bs);
+            if (pb != nullptr)
+            {
+                if (! src.setKeeping (pb, sr, blk, 2)) showError ("Plug-in", stuckText (src) + "\n\n" + pb->getName() + ", which was in the slot the other one was dropped on, could not be put in its place: it is gone from the mixer.");
+                else src.bypass.set (bd);
+            }
             else src.bypass.set (false);
         }
         app.project.markDirty(); app.engine.checkLatency();
@@ -523,8 +546,14 @@ private:
         }
         else
         {
+            if (slot.savedName.isNotEmpty())                                               // a plug-in kept here that could not be started (see openProject)
+            {
+                m.addItem (-2, slot.savedName + " is kept here with its settings, but could not be started", false);
+                m.addItem (3, "Remove it (its settings go with it)");
+                m.addSeparator();
+            }
             if (app.plugins.getKnownPlugins().getNumTypes() == 0) m.addItem (-1, "No plug-ins known yet", false);
-            else m.addSubMenu ("Insert VST3 plug-in", app.plugins.buildPluginMenu (1000, *descs));
+            else m.addSubMenu (slot.savedName.isNotEmpty() ? "Replace it with..." : "Insert VST3 plug-in", app.plugins.buildPluginMenu (1000, *descs));
         }
         m.addSeparator();
         m.addItem (9, app.plugins.isScanning() ? "Scanning..." : "Scan for VST3 plug-ins", ! app.plugins.isScanning());
@@ -2203,7 +2232,6 @@ public:
     void setMinimumSize (int w, int h) { minW = w; minH = h; setSize (juce::jmax (naturalW, minW), juce::jmax (naturalH, minH)); }
     int getNaturalWidth() const noexcept  { return naturalW; }
     int getNumStrips() const noexcept { return strips.size(); }
-    int getNaturalHeight() const noexcept { return naturalH; }
     void refreshFromModel() { for (auto* s : strips) s->refreshFromModel(); }
     void tick() { gang.tick(); for (auto* s : strips) s->tick(); }
     void resetPeaks() { for (auto* s : strips) s->resetPeaks(); }

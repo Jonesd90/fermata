@@ -23,6 +23,7 @@
 #include "../src/core/RemoteProtocol.h"
 #include "../src/core/Ravenna.h"
 #include "../src/core/PreampMemory.h"
+#include <cmath>
 #include "../src/core/ScreenLayout.h"
 #include "../src/core/MasterDef.h"
 #include "../src/core/TimeFormat.h"
@@ -481,6 +482,9 @@ void remoteOne (const Bytes* given)
     Trying t (d);
     const auto c = remote::parseCommand (textOf (d));
     (void) remote::isWindowAct (c.what); (void) remote::isOpenWin (c.what);
+    // (3.1.5) whatever the line said, the numbers that reach the engine are finite and in range: a "nan" passed every clamp before, and went into a fader
+    if (! std::isfinite (c.delta) || c.delta < -100.0 || c.delta > 100.0) finding ("a delta out of range came through parseCommand: " + juce::String (c.delta));
+    if (c.index < 0 || c.input < -1) finding ("an index or input below its range came through parseCommand");
 }
 
 // ---- saved projects (with their edits and take windows), and the settings files
@@ -500,7 +504,17 @@ void jsonOne (const Bytes* given)
         text = bytesOf (juce::JSON::toString (v, true));
     }
     Trying t (text);
-    if (v["format"].toString() == "Fermata preamp memory") { PreampMemory pm; if (PreampMemory::fromVar (v, pm)) (void) PreampMemory::fromVar (pm.toVar(), pm); return; }
+    if (v["format"].toString() == "Fermata preamp memory")
+    {
+        PreampMemory pm;
+        if (PreampMemory::fromVar (v, pm))
+        {
+            for (auto& kv : pm.inputs)                 // (3.1.5) every gain read from the file is finite and within the preamps' range, whatever the file said
+                if (! std::isfinite (kv.second.gainDb) || kv.second.gainDb < 0.0f || kv.second.gainDb > 66.0f || kv.first < 0) finding ("a preamp memory gain or input out of range came through fromVar");
+            (void) PreampMemory::fromVar (pm.toVar(), pm);
+        }
+        return;
+    }
     if (v.hasProperty ("shape") && v.hasProperty ("cells")) { const auto l = LayoutDef::fromVar (v); (void) LayoutDef::fromVar (l.toVar()); return; }
     if (v.hasProperty ("tail") && v.hasProperty ("view") && ! v.hasProperty ("format")) { MasteringDef md; md.fromVar (v); MasteringDef again; again.fromVar (md.toVar()); return; }
     Project p;

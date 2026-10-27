@@ -48,4 +48,27 @@ void copyProject (AppContext&, juce::Component* parent, bool saveAs);
 void importAaf (AppContext&, juce::Component* parent);
 
 bool isAudioFile (const juce::File&);
+
+// ---- plumbing the process windows share (3.1.7: the ReTimEr had copies of its own) ----
+/** A message box with an OK button. */
+void say (const juce::String& title, const juce::String& text);
+/** Opens a process window as a dialog round 'content', centred on 'around' (native title bar, Escape closes it). resizable: its size and place are
+    remembered under the title. mayClose: asked before the window closes (false keeps it open: a job still running, say). */
+void launchDialog (std::unique_ptr<juce::Component> content, const juce::String& title, juce::Component* around, bool resizable = false, std::function<bool()> mayClose = {});
+/** The 'applied' flag of a fix window's state: while it is true the fix's preview files are in a take or an edit (to be played, or one stream of an
+    edit point waiting for the other), and the automatic save waits (AppContext::saveHold) - a crash can then never leave the project file pointing
+    at files that were only being listened to. Written like a bool; it raises and drops the hold itself (and drops it if the state goes while on). */
+struct PreviewApplied
+{
+    AppContext* app = nullptr;                                         // (set when the state is made)
+    PreviewApplied() = default;
+    explicit PreviewApplied (AppContext& a) : app (&a) {}
+    PreviewApplied (const PreviewApplied&) = delete;
+    PreviewApplied& operator= (const PreviewApplied&) = delete;
+    ~PreviewApplied() { if (on && app != nullptr) app->saveHold -= 1; }
+    PreviewApplied& operator= (bool b) { if (b != on) { on = b; if (app != nullptr) app->saveHold += b ? 1 : -1; } return *this; }
+    operator bool() const noexcept { return on; }
+private:
+    bool on = false;
+};
 }} // namespace td::fixtools

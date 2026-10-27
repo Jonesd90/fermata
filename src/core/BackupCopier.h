@@ -4,7 +4,9 @@
 #include <memory>
 #include <mutex>
 #include <vector>
+#include "Common.h"
 #include "CoreReservation.h"
+#include "WavRepair.h"
 
 namespace td
 {
@@ -27,6 +29,7 @@ public:
         double bytesPerSecond = 0.0;                // how fast the recording grows
         juce::uint32 startedMs = 0;
         std::atomic<bool> srcFinished { false };    // the main file is complete (its header holds the length)
+        std::atomic<bool> cancelled { false };      // the take never started (another track's file could not be made): the copy goes, quietly (3.1.3)
         // copier thread only:
         juce::int64 copied = 0;
         bool opened = false, done = false;
@@ -35,7 +38,7 @@ public:
     };
 
     BackupCopier() : juce::Thread ("Second drive copier") { startThread (juce::Thread::Priority::low); }
-    ~BackupCopier() override { stopThread (4000); }
+    ~BackupCopier() override { stopThreadOrLog (*this, 20000); }     // (it looks at its exit flag between 4 MB steps; the long wait is for a second drive that is slow to answer: 3.1.2, was 4 s)
 
     /** Message thread: starts copying 'src' (a file that is being recorded) to 'dst'. Cheap: the folders and the file are made by the copier thread. */
     std::shared_ptr<Job> add (const juce::File& src, const juce::File& dst, double bytesPerSecond)
@@ -48,11 +51,16 @@ public:
     }
     /** Message thread: the main file has been closed: copy what is left, and its finished header. */
     static void finish (const std::shared_ptr<Job>& j) { if (j != nullptr) j->srcFinished.store (true); }
+    /** Message thread: the recording did not start after all (see AudioEngine::startRecording): the copy is removed without a word. */
+    static void cancel (const std::shared_ptr<Job>& j) { if (j != nullptr) j->cancelled.store (true); }
 
     /** Message thread: the files whose copy was thrown away since the last call (and why). */
     juce::StringArray takeBinned() { const std::lock_guard<std::mutex> l (lock); auto r = binned; binned.clear(); return r; }
     /** How many copies are still going. */
     int busy() const { const std::lock_guard<std::mutex> l (lock); return (int) jobs.size(); }
+    /** How far behind the recording the slowest copy is right now, in seconds of audio (0 when every copy has caught up, or none is going). For
+        the recording monitor (3.2.0). */
+    double worstLagSeconds() const noexcept { return worstLag.load (std::memory_order_relaxed); }
 
     std::atomic<double> maxLagSeconds { 20.0 };
 
@@ -66,11 +74,15 @@ private:
             std::vector<std::shared_ptr<Job>> list;
             { const std::lock_guard<std::mutex> l (lock); list = jobs; }
             bool worked = false;
+            double lag = 0.0;
             for (auto& j : list)
             {
                 if (threadShouldExit()) break;
                 if (! j->done) worked = service (*j, buffer) || worked;
+                if (! j->done && j->opened && ! j->srcFinished.load() && j->in != nullptr && j->bytesPerSecond > 0.0)
+                    lag = juce::jmax (lag, (double) (j->in->getTotalLength() - j->copied) / j->bytesPerSecond);
             }
+            worstLag.store (lag, std::memory_order_relaxed);
             {
                 const std::lock_guard<std::mutex> l (lock);
                 jobs.erase (std::remove_if (jobs.begin(), jobs.end(), [] (const std::shared_ptr<Job>& x) { return x->done; }), jobs.end());
@@ -85,13 +97,26 @@ private:
         j.out.reset(); j.in.reset();
         j.dst.deleteFile();
         j.done = true;
+        if (j.cancelled.load()) return;                         // (a take that never started: its main file is going too, and nobody needs telling)
         const std::lock_guard<std::mutex> l (lock);
-        binned.add (j.src.getFileName() + ": " + why);
+        binned.add (j.src.getFileName() + ": " + why + "; the main recording is not affected");
+    }
+    /** The copy stays as it is (the main file could not be read back at the end): it is given a header from its own size and the notice says so. */
+    void keepAsItIs (Job& j)
+    {
+        j.out.reset(); j.in.reset();
+        const auto r = wavrepair::inspect (j.dst, true, true);
+        j.done = true;
+        const double secs = r.ok && r.sampleRate > 0 ? (double) r.frames / r.sampleRate : 0.0;
+        const std::lock_guard<std::mutex> l (lock);
+        binned.add (j.src.getFileName() + ": THE MAIN RECORDING COULD NOT BE READ BACK when it finished (has the drive gone?); the second drive's copy was kept as it is, "
+                    + juce::String ((int) (secs / 60.0)) + " min " + juce::String ((int) std::fmod (secs, 60.0)).paddedLeft ('0', 2) + " s of audio");
     }
 
     /** One step of one copy (at most kChunk bytes, so the files of a take are copied side by side). True if anything was copied. */
     bool service (Job& j, std::vector<char>& buffer)
     {
+        if (j.cancelled.load()) { j.out.reset(); j.in.reset(); j.dst.deleteFile(); j.done = true; return false; }
         if (! j.opened)
         {
             if (! j.dst.getParentDirectory().createDirectory()) { bin (j, "the folder on the second drive could not be made"); return false; }
@@ -112,9 +137,10 @@ private:
         }
         if (! finished)
         {
-            // how far behind the recording the copy is: what should have been written by now, less what has been copied
-            const double elapsed = (double) (juce::Time::getMillisecondCounter() - j.startedMs) / 1000.0;
-            const double behind = elapsed * j.bytesPerSecond - (double) j.copied;
+            // how far behind the recording the copy is: what the main file holds, less what has been copied. (3.1.3. It used to be judged by the time
+            // elapsed since the take began, which binned the copy of a main file that had STOPPED growing - a drive that failed - the one time the
+            // copy is needed. A copy that has everything the main file has is not behind.)
+            const double behind = (double) (j.in->getTotalLength() - j.copied);
             if (behind > maxLagSeconds.load() * j.bytesPerSecond) { bin (j, "the second drive could not keep up"); return false; }
             return got > 0;
         }
@@ -131,13 +157,16 @@ private:
             j.done = true;
             return true;
         }
-        bin (j, "the finished header could not be copied");
+        // The main file cannot be read back (its drive has gone?): the copy may be all there is. It is kept as it stands, with a header made from
+        // its own size, rather than thrown away (3.1.3: it was binned as "the finished header could not be copied").
+        keepAsItIs (j);
         return false;
     }
 
     static constexpr int kChunk = 4 << 20;                      // 4 MB per step
     mutable std::mutex lock;
     std::vector<std::shared_ptr<Job>> jobs;
+    std::atomic<double> worstLag { 0.0 };
     juce::StringArray binned;
 };
 } // namespace td

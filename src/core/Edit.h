@@ -585,6 +585,7 @@ struct EditDef
         r.inStart = r.inEnd = r.outStart = r.outEnd = 0.0;
         const auto len = r.length();
         for (int j = at; j < n; ++j) regions[(size_t) j].startSample += len;
+        rippleAfter (r.startSample, len);
         regions.insert (regions.begin() + at, std::move (r));
         insertIndex = -1;
         setDefaultJoinFades (at);
@@ -736,7 +737,64 @@ struct EditDef
         }
     }
 
-    /** Puts a piece on the main track AT 'sample': a piece that is playing there is cut in two to make room, and everything after moves later. */
+    /** Everything on the timeline from sample 'from' onwards moves by 'delta' samples (later for a positive delta): the overdubs, the markers, the listeners'
+        flags, the visual guide, the marks 1 / 2 and the playhead, and automation points fixed in time (points pinned to audio follow their audio when the
+        project settles). The main track's pieces are moved by the caller. (3.5.0: before, only the pieces moved, so markers and overdubs drifted.) */
+    void rippleAfter (juce::int64 from, juce::int64 delta)
+    {
+        if (delta == 0 || sampleRate <= 0.0) return;
+        const double dsec = (double) delta / sampleRate, fsec = (double) from / sampleRate;
+        for (auto& o : overdubs) if (o.startSample >= from) o.startSample = juce::jmax ((juce::int64) 0, o.startSample + delta);
+        for (auto& m : markers) if (m.seconds >= fsec) m.seconds = juce::jmax (0.0, m.seconds + dsec);
+        for (auto& f : feedback) if (f.seconds >= fsec) f.seconds = juce::jmax (0.0, f.seconds + dsec);
+        if (guide.active() && guide.start >= from) guide.start += delta;
+        if (fixIn >= fsec) fixIn = juce::jmax (0.0, fixIn + dsec);
+        if (fixOut >= fsec) fixOut = juce::jmax (0.0, fixOut + dsec);
+        if (playheadSeconds >= fsec) playheadSeconds = juce::jmax (0.0, playheadSeconds + dsec);
+        for (auto& lane : lanes)
+        {
+            for (auto& p : lane.pts) if (p.region.isNull() && p.time >= from) p.time = juce::jmax ((juce::int64) 0, p.time + delta);
+            lane.sortPoints();
+        }
+    }
+
+    /** Takes the audio between 'from' and 'to' off the main track and puts 'r' in its place, moving everything after 'to' by the difference in length
+        (rippleAfter): the music stays whole, so a version of a passage that is longer or shorter still fits. Pieces cut by the range are trimmed, pieces
+        inside it go, and the two new joins get the default crossfade. Returns the index of the new piece. (3.5.0: "Use this one" in Find other versions.) */
+    int replaceRangeRippled (EditRegion r, juce::int64 from, juce::int64 to)
+    {
+        if (isEmpty()) sampleRate = r.sampleRate;
+        from = juce::jmax ((juce::int64) 0, from); to = juce::jmax (from, to);
+        r.startSample = from;
+        r.inStart = r.inEnd = r.outStart = r.outEnd = 0.0;
+        for (auto cut : { to, from })
+            for (int i = 0; i < (int) regions.size(); ++i)
+            {
+                auto& x = regions[(size_t) i];
+                if (cut > x.startSample && cut < x.endSample()) { splitRegion (i, cut - x.startSample); break; }
+            }
+        for (int i = 0; i < (int) regions.size();)
+        {
+            const auto& x = regions[(size_t) i];
+            if (x.startSample >= from && x.endSample() <= to) regions.erase (regions.begin() + i); else ++i;
+        }
+        const juce::int64 delta = r.length() - (to - from);
+        for (auto& x : regions) if (x.startSample >= to) x.startSample += delta;
+        rippleAfter (to, delta);
+        int at = (int) regions.size();
+        for (int i = 0; i < (int) regions.size(); ++i) if (regions[(size_t) i].startSample >= from) { at = i; break; }
+        regions.insert (regions.begin() + at, std::move (r));
+        insertIndex = -1;
+        setDefaultJoinFades (at);
+        setDefaultJoinFades (at + 1);
+        hardenEnds();
+        settleGapFades();
+        clampAll();
+        return at;
+    }
+
+    /** Puts a piece on the main track AT 'sample': a piece that is playing there is cut in two to make room, and everything after moves later
+        (everything: the overdubs, markers, flags and the rest go with the music - rippleAfter). */
     int insertRegionAt (EditRegion r, juce::int64 sample)
     {
         if (isEmpty()) sampleRate = r.sampleRate;
@@ -753,6 +811,7 @@ struct EditDef
         r.inStart = r.inEnd = r.outStart = r.outEnd = 0.0;
         const auto len = r.length();
         for (int j = at; j < n; ++j) regions[(size_t) j].startSample += len;
+        rippleAfter (sample, len);
         regions.insert (regions.begin() + at, std::move (r));
         insertIndex = -1;
         setDefaultJoinFades (at);

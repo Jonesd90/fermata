@@ -73,7 +73,7 @@ private:
     juce::TextEditor nameEditor;
     StackedField nameBlock { nameCaption, nameEditor };      // "Piece / Edit Window Name:" above the name box
     IconButton playButton { "Play [Space]" }, startButton { "|<" }, backButton { "<<" }, fwdButton { ">>" }, endTransportButton { ">|" }, trimButton { "Trim Window [T]" }, deleteButton { "Delete piece" },
-               leftButton { "Move earlier" }, rightButton { "Move later" }, bounceButton { "Bounce Out..." }, mixerButton { "Edit Mixer" }, automationButton { "Automation" },
+               leftButton { "Move earlier" }, rightButton { "Move later" }, bounceButton { "Bounce Out..." }, videoButton { "Export for video edit..." }, aafButton { "Export AAF..." }, mixerButton { "Edit Mixer" }, automationButton { "Automation" },
                pitchButton { "Pitch..." }, repairButton { "Repair & DeClick..." }, reharmoniserButton { "ReHarmoniSer..." }, retimerButton { "ReTimEr..." }, undoFixButton { "Undo fix" }, tracksButton { "Tracks..." }, feedbackButton { "Feedback..." },
                endButton { "Next goes at end" }, exportProcButton { "Export for Processing..." }, importButton { "Import..." }, alignButton { "Align spot mics" }, roomToneButton { "Room tone" }, noiseModeButton { "Noise mode" },
                slipLeftToggle { "Slip Left" }, slipRightToggle { "Slip Right" }, shuffleToggle { "Shuffle" }, insertFlagToggle { "Insert flag" }, markersToggle { "Markers" }, feedbackToggle { "Feedback markers" };

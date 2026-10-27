@@ -21,7 +21,7 @@ struct AlignComponent::Job : public juce::Thread
 {
     Job (Source s, std::vector<timealign::TrackIn> t, std::vector<juce::Uuid> i)
         : juce::Thread ("Align spot mics"), src (std::move (s)), tins (std::move (t)), ids (std::move (i)) { td::registerAudioFormats (formats); }
-    ~Job() override { stopThread (4000); }
+    ~Job() override { stopThreadOrLog (*this, 20000); }           // (it stops at the next progress call; the long wait is for a file read that is slow to come back: 3.1.2, was 4 s)
 
     void run() override
     {

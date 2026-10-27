@@ -18,7 +18,11 @@ public:
 
     /** Message thread. Returns null (with an error message) if the plug-in can't be loaded. */
     std::unique_ptr<InsertProcessor> create (const juce::PluginDescription&, double sampleRate, int blockSize, juce::String& error);
+    /** The factory a project (or a render copy of one) uses to bring its saved plug-ins back. A plug-in that cannot be started is logged, with the
+        reason, and the reason is kept in lastFactoryError (message thread) for whoever called the factory to tell the person. */
     InsertFactory makeFactory (std::function<double()> sampleRate, std::function<int()> blockSize);
+    /** Why the last plug-in the factory was asked for could not be started (empty: it could). Message thread. */
+    juce::String lastFactoryError;
 
     void showEditor (InsertProcessor*);
     void closeEditorsFor (InsertProcessor*);

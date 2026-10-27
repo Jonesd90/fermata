@@ -1842,7 +1842,7 @@ private:
         return nullptr;
     }
 
-    /** Right-click on a piece: volume changes (and deleting an overdub). */
+    /** Right-click on a piece: volume changes (and deleting an overdub), and the other versions of the marked part (3.5.0). */
     void showPieceMenu (const juce::MouseEvent& e, EditDef& ed, double t, double rate)
     {
         EditRegion* piece = overdubAt (ed, e.getPosition(), rate);
@@ -1863,6 +1863,8 @@ private:
         m.addItem (2, "Change volume between fades (this take only)...");
         m.addSeparator();
         m.addItem (3, "Remove all volume changes in this piece", hasGains);
+        m.addSeparator();
+        m.addItem (9, "Find other versions of the part between the 1/2 marks...", haveRange && rangeFrom >= piece->startSample && rangeTo <= piece->endSample());
         if (isOver) { m.addSeparator(); m.addItem (4, "Delete this overdub"); }
         std::vector<juce::File> redrawFiles;                                          // the file of the track that was clicked (else every file of the piece)
         {
@@ -1885,6 +1887,7 @@ private:
         m.showMenuAsync (juce::PopupMenu::Options(), [appPtr, eid, rid, rel, self, rangeFrom, rangeTo, redrawFiles] (int r)
         {
             if (r == 8) { appPtr->redrawWaveforms (redrawFiles); return; }
+            if (r == 9) { if (appPtr->showVersions) appPtr->showVersions (eid, self.getComponent()); return; }
             auto* ed2 = appPtr->project.findEdit (eid);
             auto* p2 = ed2 ? ed2->findAny (rid) : nullptr;
             if (p2 == nullptr) return;
@@ -2139,6 +2142,8 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     rightButton.onClick = [this] { moveSelected (1); };
     endButton.onClick = [this] { if (auto* e = edit()) { e->insertIndex = -1; app.project.changed(); } };
     bounceButton.onClick = [this] { openBounce(); };
+    videoButton.onClick = [this] { if (app.showVideoExport) app.showVideoExport (editId, this); };
+    aafButton.onClick = [this] { if (app.showAafExport) app.showAafExport (editId, this); };
     automationButton.setClickingTogglesState (true);
     automationButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffc28a00));
     automationButton.setTooltip ("Automation: shows the automation rows - draw fader, pan, gain, send and plug-in moves on every track, Int Bus, Ext Bus and VCA (the buses and VCAs are listed under the tracks). "
@@ -2185,6 +2190,8 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     undoFixButton.setTooltip ("Undo the last pitch correction, repair, de-click, denoise, ReTimEr or export for processing (the original audio files were never touched)");
     undoFixButton.onClick = [this] { fixtools::undoLastFix (app); };
     bounceButton.setTooltip ("Make a master file of this edit through its own mixer (or another mixer)");
+    aafButton.setTooltip ("Export AAF: this edit as an AAF for Pro Tools, Resolve or Pyramix - the pieces of every track with their crossfades, the takes' files linked by their paths, and each file's source timecode from the LTC track");
+    videoButton.setTooltip ("Export for video edit: the stereo mix of this edit, the takes' timecode as audio with no fades, and a check file with both - three files of exactly the same length for the picture editor");
     bounceButton.setColour (juce::TextButton::buttonOnColourId, theme::accent);        // lit (gold) only while the Bounce Out window is open, which is also while it is bouncing (see timerCallback)
     mixerButton.setTooltip ("Opens the mixer of this edit. The edit always plays through it (and is bounced through it), so each piece can have its own mix. It started as a copy of the processing mixer");
     ltcButton.setTooltip ("Show or hide the LTC (timecode) track of this edit. The LTC pieces never fade or crossfade: each starts hard, and stops one sample before the next piece's fade-in begins.");
@@ -2229,7 +2236,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     timeline->slipLeft = app.trimSlipLeft; timeline->slipRight = app.trimSlipRight;
     slipLeftToggle.onClick  = [this] { timeline->slipLeft = slipLeftToggle.getToggleState(); app.setTrimSlip (slipLeftToggle.getToggleState(), app.trimSlipRight); };     // (the other one as it is now)
     slipRightToggle.onClick = [this] { timeline->slipRight = slipRightToggle.getToggleState(); app.setTrimSlip (app.trimSlipLeft, slipRightToggle.getToggleState()); };
-    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &mixerButton, &ltcButton, &guideToggle, &automationButton, &pitchButton, &repairButton, &roomToneButton, &noiseModeButton, &reharmoniserButton, &retimerButton, &exportProcButton, &undoFixButton, &alignButton,
+    for (auto* b : std::initializer_list<juce::Button*> { &playButton, &trimButton, &deleteButton, &leftButton, &rightButton, &endButton, &zoomInButton, &zoomOutButton, &bounceButton, &videoButton, &aafButton, &mixerButton, &ltcButton, &guideToggle, &automationButton, &pitchButton, &repairButton, &roomToneButton, &noiseModeButton, &reharmoniserButton, &retimerButton, &exportProcButton, &undoFixButton, &alignButton,
                                                           &slipLeftToggle, &slipRightToggle, &shuffleToggle, &insertFlagToggle })
     {
         addAndMakeVisible (b);
@@ -2239,7 +2246,7 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     playButton.setIcon (Icon::Play, "Play / Stop [Space]"); startButton.setIcon (Icon::Start, "Return to start [Home]"); backButton.setIcon (Icon::Rewind, "Rewind 5 seconds");
     fwdButton.setIcon (Icon::Forward, "Forward 5 seconds"); endTransportButton.setIcon (Icon::End, "Go to the end [End]");
     trimButton.setIcon (Icon::Trim, "Trim Window [T]"); deleteButton.setIcon (Icon::Delete, "Delete piece"); leftButton.setIcon (Icon::Earlier, "Move earlier"); rightButton.setIcon (Icon::Later, "Move later");
-    bounceButton.setIcon (Icon::Bounce, "Bounce Out"); mixerButton.setIcon (Icon::Mixer, "Edit Mixer"); automationButton.setIcon (Icon::Automation, "Automation");
+    bounceButton.setIcon (Icon::Bounce, "Bounce Out"); videoButton.setIcon (Icon::VideoExport, "Export for video edit"); aafButton.setIcon (Icon::AafExport, "Export AAF"); mixerButton.setIcon (Icon::Mixer, "Edit Mixer"); automationButton.setIcon (Icon::Automation, "Automation");
     pitchButton.setIcon (Icon::Pitch, "Pitch & Pitch curve"); repairButton.setIcon (Icon::Repair, "ReTouch, DeClick & Denoise [Enter]"); reharmoniserButton.setIcon (Icon::Reharm, "ReHarmoniSer [H]"); alignButton.setIcon (Icon::Align, "Align spot mics");
     roomToneButton.setIcon (Icon::RoomTone, "Room tone"); noiseModeButton.setIcon (Icon::NoiseMode, "Noise mode"); retimerButton.setIcon (Icon::ReTimEr, "ReTimEr");
     undoFixButton.setIcon (Icon::Undo, "Undo fix"); tracksButton.setIcon (Icon::Tracks, "Tracks"); feedbackButton.setIcon (Icon::Feedback, "Feedback");
@@ -2284,7 +2291,7 @@ void EditWindowComponent::resized()
         { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
         { &trimButton, IW, IH, 2 }, { &deleteButton, IW, IH, 14 },
         { &leftButton, IW, IH, 2 }, { &rightButton, IW, IH, 6 }, { &endButton, IW, IH, 14 },
-        { &bounceButton, IW, IH, 2 }, { &mixerButton, IW, IH, 6 }, { &ltcButton, 74, grid::btnH, 6 }, { &guideToggle, 58, grid::btnH, 14 },
+        { &bounceButton, IW, IH, 2 }, { &videoButton, IW, IH, 2 }, { &aafButton, IW, IH, 2 }, { &mixerButton, IW, IH, 6 }, { &ltcButton, 74, grid::btnH, 6 }, { &guideToggle, 58, grid::btnH, 14 },
         { &automationButton, IW, IH, 14 },
         { &pitchButton, IW, IH, 2 }, { &repairButton, IW, IH, 2 }, { &roomToneButton, IW, IH, 2 }, { &noiseModeButton, IW, IH, 2 }, { &reharmoniserButton, IW, IH, 2 }, { &retimerButton, IW, IH, 10 }, { &exportProcButton, IW + 8, IH, 2 }, { &undoFixButton, IW, IH, 14 }, { &alignButton, IW, IH, 14 },
         { &tracksButton, IW, IH, 2 }, { &importButton, IW + 8, IH, 14 }, { &feedbackButton, IW, IH, 8 }, { &markersToggle, IW, IH, 2 }, { &feedbackToggle, IW + 8, IH, 14 },

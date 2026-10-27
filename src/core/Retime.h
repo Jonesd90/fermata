@@ -149,7 +149,6 @@ struct Plan
         if (t >= t1) return t + delta;
         return (juce::int64) std::llround (map.map ((double) t));
     }
-    juce::int64 framesToMake() const { juce::int64 n = 0; for (auto& s : streams) n += (s.outB - s.outA) * (juce::int64) juce::jmax (1, s.channels()); return n; }
     bool ok() const noexcept { return error.isEmpty(); }
 };
 

@@ -123,18 +123,22 @@ int WebSocketClient::receive (juce::String& out, int timeoutMs)
         if (masked) { auto* p = static_cast<juce::uint8*> (payload.getData()); for (size_t i = 0; i < payload.getSize(); ++i) p[i] ^= mask[i & 3]; }
 
         if (opcode == 8) { close(); return -1; }
+        // A control frame (ping, pong) may arrive between the pieces of a fragmented message: it is answered and the message goes on collecting
+        // (it used to be forgotten there, and the rest of the message then read as a new one). The parts of one message together may not go past the
+        // same 64 MB a single frame may have: a peer sending pieces without end used to grow the memory without bound (3.1.5).
         if (opcode == 9)                                     // ping: answer with the same bytes
         {
             const juce::ScopedLock sl (writeLock);
             juce::uint8 m[4] = { 1, 2, 3, 4 };
             auto f = makeFrame (10, payload.getData(), payload.getSize(), m);
             writeAll (f.getData(), f.getSize());
-            inMessage = false; continue;
+            continue;
         }
-        if (opcode == 10) { inMessage = false; continue; }
+        if (opcode == 10) continue;
         if (opcode == 1 || opcode == 2 || opcode == 0)
         {
             if (opcode != 0) message.reset();
+            if (message.getSize() + payload.getSize() > 64ull * 1024 * 1024) { close(); return -1; }
             message.append (payload.getData(), payload.getSize());
             if (fin) { out = textFromBytes (message.getData(), message.getSize()); return 1; }     // (never taken as UTF-8 unchecked: see TextBytes.h)
             inMessage = true; wait = 5000;
@@ -405,7 +409,22 @@ void RavennaDevice::handleSettings (const juce::var& data)
                 if (close > 0 && it != modules.end())
                 {
                     changed = applyPath (it->second, path.substring (close + 5), value);
-                    if (changed && path.substring (close + 5).containsIgnoreCase ("channels")) {} else if (changed && path.substring (close + 5).isEmpty()) rebuildChannelList();
+                    if (changed)
+                    {
+                        // The list of channels is made again when this module now has another number of channels than the list knows about (a module
+                        // replaced whole, or a channels message that changed the count: that one used to leave the list stale until the next full
+                        // settings message, with channels missing or reading as nothing: 3.1.5). A message that only changes a channel's values leaves it.
+                        int listed = 0;
+                        for (auto& rf : refs) if (rf.moduleId == id) ++listed;
+                        const auto* arr = it->second["custom"]["ins"]["channels"].getArray();
+                        juce::String why;
+                        const int have = arr != nullptr && usablePreampModule (it->second, why) ? arr->size() : 0;
+                        if (have != listed || path.substring (close + 5).isEmpty())
+                        {
+                            rebuildChannelList();
+                            status = "Connected: " + juce::String ((int) refs.size()) + " preamp channels";
+                        }
+                    }
                 }
             }
         }
@@ -751,7 +770,9 @@ AnemanPlan fetchAnemanPlan (const juce::String& preferred)
             std::unique_ptr<juce::InputStream> in (url.createInputStream (juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inPostData)
                                                                               .withExtraHeaders ("Content-Type: application/json\r\n").withConnectionTimeoutMs (1500)));
             if (in == nullptr) return false;
-            out = juce::JSON::parse (in->readEntireStreamAsString());
+            juce::MemoryBlock bytes;
+            in->readIntoMemoryBlock (bytes, 16 * 1024 * 1024);                 // (a reply beyond 16 MB is not ANEMAN's list of devices)
+            out = juce::JSON::parse (textFromBytes (bytes.getData(), bytes.getSize()));     // (bytes from outside become text only this way: TextBytes.h)
             return out.isArray();
         };
         juce::var devs, conns;

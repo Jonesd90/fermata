@@ -1,5 +1,7 @@
 #pragma once
+#include <cmath>
 #include "Preamp.h"
+#include "FileSync.h"
 
 namespace td
 {
@@ -37,14 +39,17 @@ struct PreampMemory
         if (auto* a = v["inputs"].getArray())
             for (auto& e : *a)
             {
-                PreampSettings s; s.gainDb = (float) (double) e["gainDb"]; s.phantom = (bool) e["phantom"]; s.line = (bool) e["line"];
+                // (numbers from a file: finite and within range before they can reach a preamp - a "nan" in a damaged file would pass every clamp: 3.1.5)
+                auto finite = [&e] (const char* key, double low, double high, double fallback) { const double d = (double) e[key]; return std::isfinite (d) ? juce::jlimit (low, high, d) : fallback; };
+                PreampSettings s; s.gainDb = (float) finite ("gainDb", 0.0, 66.0, 0.0); s.phantom = (bool) e["phantom"]; s.line = (bool) e["line"];
                 s.lowCut = (bool) e["lowCut"]; s.polarity = (bool) e["polarity"]; s.pad = (bool) e["pad"]; s.zHigh = (bool) e["zHigh"]; s.boost = (bool) e["boost"];
-                s.lowCutHz = e.hasProperty ("lowCutHz") ? (int) e["lowCutHz"] : 80;
-                out.inputs[(int) e["input"]] = s;
+                s.lowCutHz = e.hasProperty ("lowCutHz") ? (int) finite ("lowCutHz", 0.0, 1000.0, 80.0) : 80;
+                const int input = (int) finite ("input", -1.0, 100000.0, -1.0);
+                if (input >= 0) out.inputs[input] = s;
             }
         return true;
     }
-    bool save (const juce::File& f) const { return f.replaceWithText (juce::JSON::toString (toVar(), false)); }     // written via a temporary file: never half-written
+    bool save (const juce::File& f) const { return filesync::replaceTextSafely (f, juce::JSON::toString (toVar(), false), false); }     // written via a temporary file and checked (3.1.3): never half-written, and a full drive leaves the old file
     static bool load (const juce::File& f, PreampMemory& out)
     {
         if (! f.existsAsFile()) return false;
