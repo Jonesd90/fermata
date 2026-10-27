@@ -1,0 +1,1110 @@
+#pragma once
+#include "Common.h"
+#include <map>
+#include "Automation.h"
+#include "Markers.h"
+#include "Feedback.h"
+
+namespace td
+{
+/** The shapes of a crossfade. The out-fade is always the mirror image of the in-fade. */
+enum class FadeCurve { EqualPower = 0, Linear = 1, Cosine = 2, SCurve = 3, Logarithmic = 4, Exponential = 5, Fast = 6, Slow = 7, Count };
+
+inline const char* fadeCurveName (FadeCurve c) noexcept
+{
+    switch (c)
+    {
+        case FadeCurve::EqualPower:  return "Equal power (sine)";
+        case FadeCurve::Linear:      return "Linear";
+        case FadeCurve::Cosine:      return "Cosine (S-curve, equal gain)";
+        case FadeCurve::SCurve:      return "Smooth S (cubic)";
+        case FadeCurve::Logarithmic: return "Logarithmic (fast start)";
+        case FadeCurve::Exponential: return "Exponential (slow start)";
+        case FadeCurve::Fast:        return "Fast (cubic, quick rise)";
+        case FadeCurve::Slow:        return "Slow (cubic, late rise)";
+        default:                     return "Equal power (sine)";
+    }
+}
+
+/** The gain of a fade-IN at x = 0..1 through the fade (the fade-out uses 1 - x). */
+inline float fadeInShape (FadeCurve c, float x) noexcept
+{
+    constexpr float halfPi = juce::MathConstants<float>::halfPi, pi = juce::MathConstants<float>::pi;
+    switch (c)
+    {
+        case FadeCurve::Linear:      return x;
+        case FadeCurve::Cosine:      return 0.5f - 0.5f * std::cos (pi * x);
+        case FadeCurve::SCurve:      return x * x * (3.0f - 2.0f * x);
+        case FadeCurve::Logarithmic: return std::log10 (1.0f + 9.0f * x);              // quick at first, then eases in
+        case FadeCurve::Exponential: return (std::pow (10.0f, x) - 1.0f) / 9.0f;       // slow at first, then speeds up
+        case FadeCurve::Fast:        return 1.0f - (1.0f - x) * (1.0f - x) * (1.0f - x);
+        case FadeCurve::Slow:        return x * x * x;
+        default:                     return std::sin (halfPi * x);
+    }
+}
+
+
+/** One audio file of an edit region (one track's audio). Edits keep their own copy of the file list, so a take can be
+    removed from its take window without touching the edit: both just point at the same files on disk. */
+struct RegionFile
+{
+    juce::Uuid   trackId;
+    juce::String trackName;
+    juce::File   file;
+    int          numChannels = 1;
+    juce::int64  fileStart = 0;        // the take's sample that sits at sample 0 of this file (0 for a whole take; a repaired / pitch-corrected piece is a short file that starts later)
+};
+
+/** A volume change inside a piece of an edit: from 'at' (samples after the piece's start) each file moves to its own level 'db[i]'
+    (aligned with the piece's files), instantly if 'ramp' is 0, otherwise gliding over 'ramp' seconds. */
+struct GainChange
+{
+    juce::int64        at = 0;
+    double             ramp = 0.0;
+    std::vector<float> db;
+    bool               autoNorm = false;   // made by "normalise volume over next take" (kept up to date by Fermata; do not edit by hand)
+};
+inline float dbToLinear (float db) noexcept { return db <= -99.0f ? 0.0f : std::pow (10.0f, db / 20.0f); }
+
+/** A piece of one take (all of the take's tracks together) placed on the edit timeline.
+
+    Audio at timeline sample t comes from file sample  t + (srcIn - startSample).
+    Each region has its own fade-in and fade-out, completely independent of its neighbours:
+      fade-in : from  start + inStart   to  start + inEnd     (seconds relative to the region's START)
+      fade-out: from  end   + outStart  to  end   + outEnd    (seconds relative to the region's END)
+    A fade may begin before the region start / finish after its end: the audio comes from the 'handles'
+    (the parts of the take outside srcIn..srcOut). A fade with start == end is a hard cut at that position. */
+/** A part that was sent out of Fermata to be processed in other software ("Export for Processing"). The audio stays as it was until the corrected files come back. */
+struct WaitingPiece
+{
+    juce::String name;                 // what the user called it ("bar 4", "click removal")
+    juce::int64  from = 0, to = 0;     // the part, in samples of the take (or of the piece's files): [from, to)
+    std::vector<juce::File> files;     // the exported files, in the order of the piece's / take's files; the other program overwrites them
+    std::vector<juce::Uuid> tracks;    // the track of each exported file (empty = all the files of the piece / take, in order)
+    bool active() const noexcept { return ! files.empty() && to > from; }
+};
+
+struct EditRegion
+{
+    WaitingPiece waiting;              // set while the piece waits for corrected audio (from/to = srcIn/srcOut at the time of the export)
+    juce::Uuid   id;
+    juce::Uuid   windowId, takeId;     // where it came from (informational only: the edit does not depend on them)
+    juce::String takeName;             // display name, e.g. "002 - Take"
+    std::vector<RegionFile> files;
+    juce::int64  sourceLength = 0;     // length of the take's files in samples (limits the handles); 0 = unknown
+    juce::int64  srcIn = 0, srcOut = 0;           // sample range used inside the files (srcOut is exclusive)
+    double       sampleRate = 48000.0;
+    juce::int64  startSample = 0;      // position of srcIn on the edit timeline
+    int          barIn = 0, barOut = 0;   // the bars of the take this piece came from (copied from the take; 0 = none entered)
+
+    double       inStart = 0.0,  inEnd = 0.0;      // fade-in,  seconds relative to the region start
+    double       outStart = 0.0, outEnd = 0.0;     // fade-out, seconds relative to the region end
+    FadeCurve    curve = FadeCurve::EqualPower;    // the curve of the fade-in (and, unless outCurveOwn, of the fade-out as well)
+    FadeCurve    outCurve = FadeCurve::EqualPower; bool outCurveOwn = false;   // a fade-out with a curve of its own (a processing join next to a real edit point)
+    FadeCurve outCurveValue() const noexcept { return outCurveOwn ? outCurve : curve; }
+    void setOutCurve (FadeCurve c) noexcept { if (c == curve) outCurveOwn = false; else { outCurve = c; outCurveOwn = true; } }
+    void setInCurve (FadeCurve c) noexcept { const auto o = outCurveValue(); curve = c; setOutCurve (o); }      // (changes the fade-in only: the fade-out keeps its curve)
+    bool         fixIn = false, fixOut = false;    // the join at its start / end was made by an offline fix (pitch, repair, de-click, export for processing), not by an edit: it is not counted as an edit point
+    bool         snipIn = false, snipOut = false;  // the join at its start / end is a snip (F1 in the edit window: a cut inside one take, to roll a moment out). Not an edit point either,
+                                                   // but a real join (both sides are needed: the offline fixes treat it as one, with its two streams). A snip needs both flags (EditDef::isSnipJoin)
+    std::vector<GainChange> gains;     // volume changes inside this piece, sorted by 'at'
+    bool         normaliseIn = false;  // trim window: the level given to this piece at its start glides back to 0 dB by the next crossfade (see EditDef::refreshNormalised)
+
+    juce::int64 length()    const noexcept { return srcOut - srcIn; }
+
+    // ---- volume changes ----
+    /** The level (linear gain) of file 'fileIndex' at 'rel' samples after the start of the piece, using only the first 'count' changes. */
+    float levelAfter (size_t fileIndex, size_t count, juce::int64 rel) const noexcept
+    {
+        if (count == 0) return 1.0f;
+        const auto& g = gains[count - 1];
+        if (rel < g.at) return levelAfter (fileIndex, count - 1, rel);
+        const float to = fileIndex < g.db.size() ? dbToLinear (g.db[fileIndex]) : 1.0f;
+        const auto rl = (juce::int64) std::llround (g.ramp * sampleRate);
+        if (rl > 0 && rel < g.at + rl)
+        {
+            const float from = levelAfter (fileIndex, count - 1, g.at);
+            return from + (to - from) * (float) (rel - g.at) / (float) rl;
+        }
+        return to;
+    }
+    float levelAt (size_t fileIndex, juce::int64 rel) const noexcept { return levelAfter (fileIndex, gains.size(), rel); }
+    float levelDbAt (size_t fileIndex, juce::int64 rel) const noexcept { return juce::Decibels::gainToDecibels (levelAt (fileIndex, rel), -100.0f); }
+
+    /** The level this piece is given as a whole, in dB: the average of the change that sits at its very start (0 when there is none). This is what the faders of
+        the trim window show; the same change is what the volume dialogs ("between fades") show and edit. */
+    float pieceLevelDb() const noexcept
+    {
+        const auto tol = (juce::int64) (0.001 * sampleRate);
+        for (auto& g : gains)
+            if (! g.autoNorm && g.at <= tol && ! g.db.empty())
+            {
+                double sum = 0.0;
+                for (float d : g.db) sum += juce::jmax (-100.0f, d);
+                return (float) (sum / (double) g.db.size());
+            }
+        return 0.0f;
+    }
+    /** Moves the level of the whole piece to 'target' dB, keeping the balance between its files (every file moves by the same amount). */
+    void setPieceLevelDb (float target)
+    {
+        const auto tol = (juce::int64) (0.001 * sampleRate);
+        const float d = target - pieceLevelDb();
+        std::vector<float> db (files.size(), 0.0f);
+        double ramp = 0.0;
+        for (auto& g : gains)
+            if (! g.autoNorm && g.at <= tol && ! g.db.empty()) { for (size_t k = 0; k < db.size() && k < g.db.size(); ++k) db[k] = g.db[k]; ramp = g.ramp; break; }
+        bool allZero = true;
+        for (auto& x : db) { if (x > -99.0f) x = juce::jlimit (-99.0f, 24.0f, x + d); allZero = allZero && std::abs (x) < 0.0005f; }
+        if (allZero) { for (size_t i = 0; i < gains.size(); ++i) if (! gains[i].autoNorm && gains[i].at <= tol) { gains.erase (gains.begin() + (long) i); break; } return; }
+        setGainChange (0, ramp, db);
+    }
+    /** Adds a change (or replaces the one at the same place, within 1 ms). */
+    void setGainChange (juce::int64 at, double ramp, std::vector<float> db)
+    {
+        db.resize (files.size(), 0.0f);
+        const auto tol = (juce::int64) (0.001 * sampleRate);
+        for (auto& g : gains)
+            if (std::abs (g.at - at) <= tol) { g.at = at; g.ramp = ramp; g.db = db; return; }
+        GainChange c; c.at = at; c.ramp = ramp; c.db = db;
+        gains.insert (std::upper_bound (gains.begin(), gains.end(), c, [] (const GainChange& a, const GainChange& b) { return a.at < b.at; }), c);
+    }
+    /** Removes the change at that place (within 1 ms). Returns true if there was one. */
+    bool removeGainChangeAt (juce::int64 at)
+    {
+        const auto tol = (juce::int64) (0.001 * sampleRate);
+        for (size_t i = 0; i < gains.size(); ++i)
+            if (std::abs (gains[i].at - at) <= tol) { gains.erase (gains.begin() + (long) i); return true; }
+        return false;
+    }
+    /** This piece's start moved later by d samples (earlier if negative; its audio did not move): the volume changes, which are counted from the start of the piece, follow.
+        'old' is the piece as it was. The level the old start had been given (and what had happened before the new start) is kept for what is now the start. */
+    void rebaseGains (const EditRegion& old, juce::int64 d)
+    {
+        if (d == 0 || old.gains.empty()) return;
+        EditRegion& b = *this; const EditRegion& oldB = old; const juce::int64 dB = d;
+        const auto tol = (juce::int64) (0.001 * b.sampleRate);
+        b.gains.clear();
+        if (dB > 0)
+        {
+            GainChange c0; c0.at = 0; c0.ramp = 0.0;
+            for (size_t f = 0; f < oldB.files.size(); ++f) c0.db.push_back (oldB.levelDbAt (f, dB));
+            b.gains.push_back (c0);
+            for (auto g : oldB.gains)
+            {
+                const auto rl = (juce::int64) std::llround (g.ramp * b.sampleRate);
+                if (g.at >= dB) { g.at -= dB; b.gains.push_back (g); }
+                else if (g.at + rl > dB) { g.ramp = (double) (g.at + rl - dB) / b.sampleRate; g.at = 0; b.gains.push_back (g); }
+            }
+        }
+        else for (auto g : oldB.gains) { g.at = g.at <= tol ? 0 : g.at - dB; b.gains.push_back (g); }
+    }
+    juce::int64 endSample() const noexcept { return startSample + length(); }
+    juce::int64 samples (double seconds) const noexcept { return (juce::int64) std::llround (seconds * sampleRate); }
+
+    // fades on the edit timeline (samples)
+    juce::int64 fadeInBegin()  const noexcept { return startSample + samples (inStart); }
+    juce::int64 fadeInFinish() const noexcept { return startSample + samples (inEnd); }
+    juce::int64 fadeOutBegin() const noexcept { return endSample() + samples (outStart); }
+    juce::int64 fadeOutFinish()const noexcept { return endSample() + samples (outEnd); }
+
+    /** The gain this region's fades give at timeline sample t (0 outside the audible span). */
+    float gainAt (juce::int64 t) const noexcept
+    {
+        const auto ib = fadeInBegin(), ie = fadeInFinish(), ob = fadeOutBegin(), oe = fadeOutFinish();
+        float g = 1.0f;
+        if (ie > ib) g *= t < ib ? 0.0f : t >= ie ? 1.0f : fadeGainFor (curve, (float) (t - ib) / (float) (ie - ib), true);
+        else         g *= t < ib ? 0.0f : 1.0f;
+        if (oe > ob) g *= t < ob ? 1.0f : t >= oe ? 0.0f : fadeGainFor (outCurveValue(), (float) (t - ob) / (float) (oe - ob), false);
+        else         g *= t < ob ? 1.0f : 0.0f;
+        return g;
+    }
+    static float fadeGainFor (FadeCurve c, float x, bool fadeIn) noexcept
+    {
+        x = juce::jlimit (0.0f, 1.0f, x);
+        return fadeInShape (c, fadeIn ? x : 1.0f - x);
+    }
+};
+
+/** The edit window's visual guide (2.102): one track's clip of a take - or the part of it between the take window's 1 and 2 - shown in a lane of
+    its own above the edit's tracks, so the timing of a reference (typically the run-through recorded at the start of the session) can be seen
+    against the edit: how long the gaps between the phrases were. It is only a picture: it never plays with the edit and is never bounced or
+    mastered, and it never makes the edit longer. Its S button plays it on its own instead of the edit (AppContext::playEditGuide). It can be slid
+    anywhere along the timeline, also to start before 0:00 (that part is simply not shown). */
+struct EditGuide
+{
+    juce::Uuid   windowId, takeId, trackId;  // where it came from: the take window, the take, the track whose clip it is
+    juce::String takeName, trackName;        // for its label ("Take 3", "ORTF")
+    juce::File   file;                       // the clip's audio file (mono, or a stereo pair)
+    int          numChannels = 1;
+    double       sampleRate = 0.0;
+    juce::int64  srcIn = 0, srcOut = 0;      // the part of the file it shows (samples)
+    juce::int64  start = 0;                  // where srcIn stands on the edit's timeline (samples at sampleRate; may be negative)
+    bool active() const noexcept           { return file != juce::File() && srcOut > srcIn && sampleRate > 0.0; }
+    juce::int64 length() const noexcept    { return srcOut - srcIn; }
+    juce::int64 end() const noexcept       { return start + length(); }
+};
+
+/** The edit: regions placed on a timeline. Normally butted end to end; slipping can open gaps / overlaps. */
+struct EditDef
+{
+    juce::Uuid   id;
+    juce::String name { "Edit" };
+    juce::Uuid   windowId;                 // the take window this edit was first made from (informational)
+    double       sampleRate = 0.0;         // set by the first region
+    std::vector<EditRegion> regions;
+    std::vector<EditRegion> overdubs;      // pieces laid OVER the edit (they play at the same time as whatever is under them); free to move, never ripple
+    std::vector<juce::Uuid> trackIds;      // this edit's own track rows, top to bottom. Empty = every project track in the project's order (the default)
+    double       playheadSeconds = 0.0;    // the edit window's playhead (where key 4 in a take window places a piece)
+    int          insertIndex = -1;         // where the next region goes: -1 = at the end, else before regions[insertIndex]
+    double       fixIn = -1.0, fixOut = -1.0;     // keys 1 / 2: the part to pitch-correct or repair (seconds on the edit timeline, -1 = not set)
+    std::vector<juce::Uuid> fixTracks;            // Alt + drag: only these tracks are marked (empty = every track)
+    bool fixUses (const juce::Uuid& track) const { return fixTracks.empty() || std::find (fixTracks.begin(), fixTracks.end(), track) != fixTracks.end(); }
+
+    // ---- automation (drawn in the edit window; only plays from the edit) ----
+    bool                 showLtc = false;       // the LTC track's row is shown in this edit window (the triangle button)
+    std::vector<Marker>  markers;               // quick markers along the top of this edit window (not part of undo)
+    std::vector<FeedbackNote> feedback;         // listeners' comments (Include Feedback Form / imported marker lists), drawn as flags on this edit window (not part of undo)
+    bool                 showFeedback = true;
+    bool                 showMarkers = true;          // the Markers tick box in the edit window
+    EditGuide            guide;                       // the visual guide above the tracks (see EditGuide); part of undo
+    bool                 showGuide = true;            // the Guide button at the top of the edit window: the guide's lane is shown (a view: not part of undo)
+    bool                 automationOn = false;       // the lane view: the automation rows are shown (the buses and VCAs are listed under the tracks). The automation itself plays whether they are shown or not.
+    std::vector<AutoLane> lanes;
+
+    /** What one row of automation in the edit window shows. A view only: the lanes above keep playing, and are written, whatever the rows show; a row taken away loses nothing. */
+    struct LaneShown { juce::String param { autoparam::fader }; juce::Uuid mixer = juce::Uuid::null(); };
+    /** The rows of every track / bus / VCA, by its id (text). The first is the node's own row (for a track the one with its audio), the rest are extra rows under it. No entry = one
+        row showing the fader. Saved with the project; not part of undo (it is a view). */
+    std::map<juce::String, std::vector<LaneShown>> laneRows;
+    std::vector<LaneShown>& laneRowsOf (const juce::Uuid& node) { auto& v = laneRows[node.toString()]; if (v.empty()) v.push_back (LaneShown()); return v; }
+    int laneRowCount (const juce::Uuid& node) const { auto it = laneRows.find (node.toString()); return it == laneRows.end() || it->second.empty() ? 1 : (int) it->second.size(); }
+    /** True for the rows every node has when nothing was chosen: one row showing the fader (such an entry is not kept or saved). */
+    static bool isDefaultRows (const std::vector<LaneShown>& v) { return v.empty() || (v.size() == 1 && v[0].param == autoparam::fader && v[0].mixer.isNull()); }
+    /** What row 'k' of a node shows (the default - the fader - when nothing was chosen). Read only: looking never adds an entry. */
+    LaneShown laneShown (const juce::Uuid& node, int k) const
+    {
+        auto it = laneRows.find (node.toString());
+        return it == laneRows.end() || k < 0 || k >= (int) it->second.size() ? LaneShown() : it->second[(size_t) k];
+    }
+    /** Chooses what row 'k' of a node shows. */
+    void setLaneShown (const juce::Uuid& node, int k, const LaneShown& s)
+    {
+        if (k < 0 || k >= kMaxLaneRows) return;
+        auto& v = laneRowsOf (node);
+        if ((int) v.size() <= k) v.resize ((size_t) k + 1);
+        v[(size_t) k] = s;
+        if (isDefaultRows (v)) laneRows.erase (node.toString());
+    }
+    static constexpr int kMaxLaneRows = 12;                                       // (per track: a row each is plenty, and the window stays usable)
+    /** The parameter a new row should show: the first of Fader, Pan, Gain that no row of the node shows yet; the fader again when all of them are shown. */
+    static juce::String freeLaneParam (const std::vector<LaneShown>& shown, bool hasPan, bool hasGain)
+    {
+        auto used = [&] (const juce::String& p) { for (auto& s : shown) if (s.param == p && s.mixer.isNull()) return true; return false; };
+        if (! used (autoparam::fader)) return autoparam::fader;
+        if (hasPan && ! used (autoparam::pan)) return autoparam::pan;
+        if (hasGain && ! used (autoparam::gain)) return autoparam::gain;
+        return autoparam::fader;
+    }
+    /** Adds an extra row under a node's rows (true if there was room). 'hasPan' / 'hasGain': what the node offers. */
+    bool addLaneRow (const juce::Uuid& node, bool hasPan, bool hasGain)
+    {
+        auto& v = laneRowsOf (node);
+        if ((int) v.size() >= kMaxLaneRows) return false;
+        LaneShown s; s.param = freeLaneParam (v, hasPan, hasGain);
+        v.push_back (s);
+        return true;
+    }
+    /** Takes row 'row' (1 = the first extra row) away. The node's own row (0) cannot go; the lane behind a row that goes keeps its points and keeps playing. */
+    bool removeLaneRow (const juce::Uuid& node, int row)
+    {
+        auto it = laneRows.find (node.toString());
+        if (it == laneRows.end() || row < 1 || row >= (int) it->second.size()) return false;
+        it->second.erase (it->second.begin() + row);
+        if (isDefaultRows (it->second)) laneRows.erase (it);
+        return true;
+    }
+    /** True when any lane has points: the edit has automation to play and to bounce, whether the rows are shown or not. */
+    bool hasAutomation() const { for (auto& l : lanes) if (! l.pts.empty()) return true; return false; }
+
+    AutoLane* findLane (const juce::Uuid& laneId) { for (auto& l : lanes) if (l.id == laneId) return &l; return nullptr; }
+    AutoLane* findLane (const juce::Uuid& trackId, const juce::String& param, const juce::Uuid& mixerId)
+    {
+        for (auto& l : lanes) if (l.trackId == trackId && l.param == param && l.mixerId == mixerId) return &l;
+        return nullptr;
+    }
+    AutoLane& addLane (const juce::Uuid& trackId, const juce::String& param, const juce::Uuid& mixerId)
+    {
+        if (auto* l = findLane (trackId, param, mixerId)) return *l;
+        AutoLane l; l.trackId = trackId; l.param = param; l.mixerId = mixerId;
+        lanes.push_back (std::move (l));
+        return lanes.back();
+    }
+
+    /** Which piece of audio is at timeline sample t (the last one that starts at or before t and still covers it); -1 = none (a gap or past the end). */
+    int regionAt (juce::int64 t) const
+    {
+        int found = -1;
+        for (int i = 0; i < (int) regions.size(); ++i)
+            if (t >= regions[(size_t) i].startSample && t < regions[(size_t) i].endSample()) found = i;
+        return found;
+    }
+
+    /** Pins a point to the audio under timeline sample t (or to the plain time when there is no audio there). */
+    void anchorPoint (AutoPoint& p, juce::int64 t) const
+    {
+        p.time = t; p.floating = false;
+        const int i = regionAt (t);
+        if (i < 0) { p.region = juce::Uuid::null(); p.take = juce::Uuid::null(); p.srcPos = 0; return; }
+        const auto& r = regions[(size_t) i];
+        p.region = r.id; p.take = r.takeId; p.srcPos = r.srcIn + (t - r.startSample);
+    }
+
+    /** Adds a point at timeline sample t (or moves a lane's point if 'replaceIndex' >= 0). Returns the point's index after sorting. */
+    int addPoint (AutoLane& lane, juce::int64 t, float value)
+    {
+        AutoPoint p; p.id = juce::Uuid(); p.value = lane.clampValue (value);
+        anchorPoint (p, juce::jmax ((juce::int64) 0, t));
+        const auto pid = p.id;
+        lane.pts.push_back (p); lane.sortPoints();
+        for (int i = 0; i < (int) lane.pts.size(); ++i) if (lane.pts[(size_t) i].id == pid) return i;
+        return (int) lane.pts.size() - 1;
+    }
+
+    /** The user moved a point: it attaches to whatever audio is now under it. Returns its new index. */
+    int movePoint (AutoLane& lane, int index, juce::int64 t, float value)
+    {
+        if (! juce::isPositiveAndBelow (index, (int) lane.pts.size())) return index;
+        auto p = lane.pts[(size_t) index];
+        p.value = lane.clampValue (value);
+        anchorPoint (p, juce::jmax ((juce::int64) 0, t));
+        lane.pts[(size_t) index] = p; lane.sortPoints();
+        for (int i = 0; i < (int) lane.pts.size(); ++i) if (lane.pts[(size_t) i].id == p.id) return i;
+        return index;
+    }
+
+    /** Called after ANY change to the edit's pieces. Every point goes to where its audio is now. A point whose audio has gone is put where the
+        edit's change suggests (it moves like its nearest surviving neighbours, in proportion) and marked 'floating' so it can be checked. */
+    /** "Normalise volume over next take": a piece whose level was raised or lowered at its start (to make the edit into it work) and that has this ticked glides
+        back to 0 dB, in a straight line, from the end of its crossfade until the start of the next crossfade. The glide is a volume change made and removed here,
+        so it follows the crossfades whenever they are moved. */
+    void refreshNormalised()
+    {
+        for (auto& r : regions)
+        {
+            r.gains.erase (std::remove_if (r.gains.begin(), r.gains.end(), [] (const GainChange& g) { return g.autoNorm; }), r.gains.end());
+            if (! r.normaliseIn) continue;
+            const auto tol = (juce::int64) (0.001 * r.sampleRate);
+            bool raised = false;
+            for (auto& g : r.gains) if (g.at <= tol) for (float d : g.db) raised = raised || std::abs (d) > 0.0005f;
+            if (! raised) continue;
+            const juce::int64 from = juce::jmax (r.samples (r.inEnd), 3 * tol);                 // the end of the crossfade into this piece
+            const juce::int64 to = r.length() + r.samples (r.outStart);                         // where the crossfade out of it begins (the end of the piece when it has none)
+            if (to <= from + tol) continue;
+            GainChange c; c.at = from; c.ramp = (double) (to - from) / r.sampleRate; c.db.assign (r.files.size(), 0.0f); c.autoNorm = true;
+            r.gains.insert (std::upper_bound (r.gains.begin(), r.gains.end(), c, [] (const GainChange& a, const GainChange& b) { return a.at < b.at; }), c);
+        }
+    }
+    void resolveAutomation()
+    {
+        for (auto& lane : lanes)
+        {
+            const size_t n = lane.pts.size();
+            std::vector<juce::int64> newTime (n, 0);
+            std::vector<char> lost (n, 0);
+            for (size_t k = 0; k < n; ++k)
+            {
+                auto& p = lane.pts[k];
+                newTime[k] = p.time;
+                if (p.region.isNull()) continue;                                  // fixed in time
+                const int ri = [&] { for (int i = 0; i < (int) regions.size(); ++i) if (regions[(size_t) i].id == p.region) return i; return -1; }();
+                if (ri >= 0 && p.srcPos >= regions[(size_t) ri].srcIn && p.srcPos <= regions[(size_t) ri].srcOut)
+                {
+                    newTime[k] = regions[(size_t) ri].startSample + (p.srcPos - regions[(size_t) ri].srcIn);
+                    continue;
+                }
+                // its piece was split, trimmed or replaced: is the same audio of the same take in another piece? (the nearest one to where it was)
+                int best = -1; juce::int64 bestDist = 0, bestTime = 0;
+                if (! p.take.isNull())
+                    for (int i = 0; i < (int) regions.size(); ++i)
+                    {
+                        const auto& r = regions[(size_t) i];
+                        if (r.takeId != p.take || p.srcPos < r.srcIn || p.srcPos > r.srcOut) continue;
+                        const auto t = r.startSample + (p.srcPos - r.srcIn);
+                        const auto d = t > p.time ? t - p.time : p.time - t;
+                        if (best < 0 || d < bestDist) { best = i; bestDist = d; bestTime = t; }
+                    }
+                if (best >= 0) { newTime[k] = bestTime; p.region = regions[(size_t) best].id; }
+                else lost[k] = 1;
+            }
+            for (size_t k = 0; k < n; ++k)
+            {
+                if (! lost[k]) continue;
+                const auto t0 = lane.pts[k].time;
+                int prev = -1, next = -1;
+                for (int j = (int) k - 1; j >= 0; --j) if (! lost[(size_t) j]) { prev = j; break; }
+                for (size_t j = k + 1; j < n; ++j) if (! lost[j]) { next = (int) j; break; }
+                double shift = 0.0;
+                const double sp = prev >= 0 ? (double) (newTime[(size_t) prev] - lane.pts[(size_t) prev].time) : 0.0;
+                const double sn = next >= 0 ? (double) (newTime[(size_t) next] - lane.pts[(size_t) next].time) : 0.0;
+                if (prev >= 0 && next >= 0)
+                {
+                    const double span = (double) (lane.pts[(size_t) next].time - lane.pts[(size_t) prev].time);
+                    const double f = span > 0.0 ? (double) (t0 - lane.pts[(size_t) prev].time) / span : 0.5;
+                    shift = sp + (sn - sp) * juce::jlimit (0.0, 1.0, f);
+                }
+                else if (prev >= 0) shift = sp;
+                else if (next >= 0) shift = sn;
+                newTime[k] = juce::jmax ((juce::int64) 0, t0 + (juce::int64) std::llround (shift));
+            }
+            for (size_t k = 0; k < n; ++k) { lane.pts[k].time = newTime[k]; lane.pts[k].floating = lost[k] != 0; }
+            lane.sortPoints();
+        }
+    }
+
+    static constexpr double kDefaultHalfFade = 0.015;     // default crossfade: 30 ms centred on the join
+
+    juce::int64 lengthSamples() const
+    {
+        juce::int64 e = 0;
+        for (auto& r : regions) e = juce::jmax (e, r.endSample());
+        for (auto& r : overdubs) e = juce::jmax (e, r.endSample());
+        return e;
+    }
+    juce::int64 firstSample() const
+    {
+        juce::int64 f = std::numeric_limits<juce::int64>::max();
+        for (auto& r : regions) f = juce::jmin (f, r.startSample);
+        for (auto& r : overdubs) f = juce::jmin (f, r.startSample);
+        return f == std::numeric_limits<juce::int64>::max() ? 0 : f;
+    }
+    bool isEmpty() const { return regions.empty() && overdubs.empty(); }
+    double lengthSeconds() const { return sampleRate > 0 ? (double) lengthSamples() / sampleRate : 0.0; }
+    /** Where the edit's sound begins and ends on its timeline: the earliest fade-in begin and the latest fade-out finish. A fade may reach outside
+        its piece (the first piece's fade-in can start before the piece does, the last one's fade-out can run on after it), so this is what a bounce
+        or a mastering render of the whole edit covers - what playing it plays. */
+    juce::int64 audibleStart() const
+    {
+        juce::int64 f = std::numeric_limits<juce::int64>::max();
+        for (auto& r : regions) f = juce::jmin (f, r.fadeInBegin(), r.startSample);
+        for (auto& r : overdubs) f = juce::jmin (f, r.fadeInBegin(), r.startSample);
+        return f == std::numeric_limits<juce::int64>::max() ? 0 : f;
+    }
+    juce::int64 audibleEnd() const
+    {
+        juce::int64 e = 0;
+        for (auto& r : regions) e = juce::jmax (e, r.fadeOutFinish(), r.endSample());
+        for (auto& r : overdubs) e = juce::jmax (e, r.fadeOutFinish(), r.endSample());
+        return e;
+    }
+
+    /** Keep one region's fades legal: inside the audio that exists, in order, and not crossing each other. */
+    void clampFades (int i)
+    {
+        if (! juce::isPositiveAndBelow (i, (int) regions.size())) return;
+        auto& r = regions[(size_t) i];
+        const double rate = juce::jmax (1.0, r.sampleRate);
+        const double len = (double) r.length() / rate;
+        r.inStart = juce::jmax (r.inStart, -(double) r.srcIn / rate);
+        r.inEnd   = juce::jmax (r.inEnd, r.inStart);
+        if (r.sourceLength > 0) r.outEnd = juce::jmin (r.outEnd, (double) (r.sourceLength - r.srcOut) / rate);
+        r.outStart = juce::jmin (r.outStart, r.outEnd);
+        r.outStart = juce::jmax (r.outStart, r.inEnd - len);        // the fade-out may not begin before the fade-in has finished
+        r.outEnd   = juce::jmax (r.outEnd, r.outStart);
+    }
+
+    void clampAll() { for (int i = 0; i < (int) regions.size(); ++i) clampFades (i); if (insertIndex > (int) regions.size()) insertIndex = -1; }
+
+    /** Shuffle (like swapping two cards in a deck): piece i trades places with its neighbour, dir = +1 (the one after it) or -1 (the one before it). The two take each
+        other's room, so everything after them stays where it was; the joins around them get the default crossfade again. Returns the new index of piece i, or -1 if it cannot be done
+        (no neighbour, or the two were cut apart by an offline fix). */
+    int shuffleRegion (int i, int dir)
+    {
+        const int n = (int) regions.size(), j = i + dir;
+        if (! juce::isPositiveAndBelow (i, n) || ! juce::isPositiveAndBelow (j, n) || (dir != 1 && dir != -1)) return -1;
+        const int lo = juce::jmin (i, j);
+        if (regions[(size_t) lo].fixOut || regions[(size_t) lo + 1].fixIn) return -1;
+        const auto gap = regions[(size_t) lo + 1].startSample - regions[(size_t) lo].endSample();
+        const auto start = regions[(size_t) lo].startSample;
+        std::swap (regions[(size_t) lo], regions[(size_t) lo + 1]);
+        regions[(size_t) lo].startSample = start;
+        regions[(size_t) lo + 1].startSample = start + regions[(size_t) lo].length() + gap;
+        regions[(size_t) lo].fixOut = false; regions[(size_t) lo + 1].fixIn = false;
+        if (lo > 0) regions[(size_t) lo - 1].fixOut = false;
+        regions[(size_t) lo].fixIn = false;
+        if (lo + 2 < n) regions[(size_t) lo + 2].fixIn = false;
+        regions[(size_t) lo + 1].fixOut = false;
+        for (int k = juce::jmax (0, lo - 1); k <= juce::jmin (n - 1, lo + 2); ++k) regions[(size_t) k].snipIn = regions[(size_t) k].snipOut = false;     // (the joins round them are new)
+        for (int k = lo; k <= lo + 2; ++k) setDefaultJoinFades (k);
+        hardenEnds();
+        clampAll();
+        return j;
+    }
+
+    /** After pieces were moved apart: where two neighbouring pieces now have silence between them, each of the two sides gets a short fade at its own edge instead of a crossfade
+        that would reach into the gap (a hard stop and start, without a click). Touching or overlapping pieces are left as they are. */
+    void settleGapFades()
+    {
+        for (size_t k = 1; k < regions.size(); ++k)
+        {
+            auto& a = regions[k - 1]; auto& b = regions[k];
+            if (b.startSample <= a.endSample()) continue;
+            if (a.outEnd > 0.0)    { a.outStart = -kDefaultEdgeFade; a.outEnd = 0.0; }
+            if (b.inStart < 0.0)   { b.inStart = 0.0; b.inEnd = kDefaultEdgeFade; }
+            clampFades ((int) k - 1); clampFades ((int) k);
+        }
+    }
+
+    /** Default 30 ms centred crossfade for the join before region i. */
+    void setDefaultJoinFades (int i)
+    {
+        if (i <= 0 || i >= (int) regions.size()) return;
+        auto& a = regions[(size_t) i - 1]; auto& b = regions[(size_t) i];
+        a.outStart = -kDefaultHalfFade; a.outEnd = kDefaultHalfFade;
+        b.inStart  = -kDefaultHalfFade; b.inEnd  = kDefaultHalfFade;
+        clampFades (i - 1); clampFades (i);
+    }
+
+    /** The two ends of the edit get a short fade (25 ms by default: no click, and the file is untouched). A fade the user already made
+        there (starting at the piece's own start / end) is kept; a hard cut, or the crossfade left over from when the piece was in the middle, is replaced. */
+    void hardenEnds()
+    {
+        if (regions.empty()) return;
+        auto& f = regions.front(); auto& b = regions.back();
+        if (f.inStart != 0.0 || f.inEnd <= f.inStart || f.inEnd < 0.0011) { f.inStart = 0.0; f.inEnd = kDefaultEdgeFade; }
+        if (b.outEnd != 0.0 || b.outEnd <= b.outStart || b.outStart > -0.0011) { b.outStart = -kDefaultEdgeFade; b.outEnd = 0.0; }
+    }
+
+    /** Insert a region at the insert point (default: after the last one), rippling later regions. Returns its index. */
+    int insertRegion (EditRegion r)
+    {
+        if (isEmpty()) sampleRate = r.sampleRate;
+        const int n = (int) regions.size();
+        const int at = insertIndex < 0 || insertIndex > n ? n : insertIndex;
+        r.startSample = at >= n ? (n == 0 ? 0 : regions.back().endSample()) : regions[(size_t) at].startSample;
+        r.inStart = r.inEnd = r.outStart = r.outEnd = 0.0;
+        const auto len = r.length();
+        for (int j = at; j < n; ++j) regions[(size_t) j].startSample += len;
+        rippleAfter (r.startSample, len);
+        regions.insert (regions.begin() + at, std::move (r));
+        insertIndex = -1;
+        setDefaultJoinFades (at);
+        setDefaultJoinFades (at + 1);
+        hardenEnds();
+        clampAll();
+        return at;
+    }
+
+    /** Remove a region; later regions move up to close the gap when 'ripple' is true. */
+    void removeRegion (int i, bool ripple = true)
+    {
+        if (! juce::isPositiveAndBelow (i, (int) regions.size())) return;
+        const auto len = regions[(size_t) i].length();
+        regions.erase (regions.begin() + i);
+        if (ripple) for (int j = i; j < (int) regions.size(); ++j) regions[(size_t) j].startSample -= len;
+        if (isEmpty()) sampleRate = 0.0;
+        setDefaultJoinFades (i);
+        hardenEnds();
+        clampAll();
+    }
+
+    /** Re-order: moves a region to a new place in the list and re-packs the regions end to end. */
+    void moveRegion (int from, int to)
+    {
+        const int n = (int) regions.size();
+        if (! juce::isPositiveAndBelow (from, n) || ! juce::isPositiveAndBelow (to, n) || from == to) return;
+        juce::int64 pos = regions.front().startSample;
+        auto r = std::move (regions[(size_t) from]);
+        regions.erase (regions.begin() + from);
+        regions.insert (regions.begin() + to, std::move (r));
+        for (auto& x : regions) { x.startSample = pos; pos += x.length(); }
+        for (int j = juce::jmax (1, juce::jmin (from, to) - 1); j <= juce::jmin (n - 1, juce::jmax (from, to) + 1); ++j) setDefaultJoinFades (j);
+        hardenEnds();
+        clampAll();
+    }
+
+    /** True if edit point k (k = the join before regions[k]) was made by an offline fix: such joins are not counted or numbered, and "next / previous fade" skips them. */
+    /** The number shown for edit point k (0 = start of the first piece, n = end of the last): joins made by an offline fix are not edits and have no number (0). */
+    int editNumberAt (int k) const noexcept
+    {
+        if (k < 0 || k > (int) regions.size() || isUnnumberedJoin (k)) return 0;
+        int n = 0;
+        for (int i = 0; i <= k; ++i) if (! isUnnumberedJoin (i)) ++n;
+        return n;
+    }
+    bool isFixJoin (int k) const noexcept { return k > 0 && k < (int) regions.size() && (regions[(size_t) k].fixIn || regions[(size_t) k - 1].fixOut); }
+    /** Join k is a snip (F1): made inside one take to roll a moment out. Both sides carry the mark (a piece moved away from its snip partner makes a plain edit). */
+    bool isSnipJoin (int k) const noexcept { return k > 0 && k < (int) regions.size() && regions[(size_t) k].snipIn && regions[(size_t) k - 1].snipOut; }
+    /** Joins that are not edit points: no number, not counted, skipped by next / previous in the Trim window (offline fixes' joins and snips). */
+    bool isUnnumberedJoin (int k) const noexcept { return isFixJoin (k) || isSnipJoin (k); }
+    EditRegion* find (const juce::Uuid& rid) { for (auto& r : regions) if (r.id == rid) return &r; return nullptr; }
+    /** A piece of the main track OR an overdub. */
+    EditRegion* findAny (const juce::Uuid& rid) { if (auto* r = find (rid)) return r; for (auto& o : overdubs) if (o.id == rid) return &o; return nullptr; }
+    bool isOverdub (const juce::Uuid& rid) const { for (auto& o : overdubs) if (o.id == rid) return true; return false; }
+    bool removeOverdub (const juce::Uuid& rid)
+    {
+        for (size_t i = 0; i < overdubs.size(); ++i) if (overdubs[i].id == rid) { overdubs.erase (overdubs.begin() + (long) i); if (isEmpty()) sampleRate = 0.0; return true; }
+        return false;
+    }
+
+    /** Cuts region i in two at 'offset' samples after its start (the audio carries on unbroken, with a short crossfade over the cut).
+        The volume changes are shared out between the two halves. Returns the index of the right half. */
+    int splitRegion (int i, juce::int64 offset)
+    {
+        if (! juce::isPositiveAndBelow (i, (int) regions.size())) return i;
+        auto left = regions[(size_t) i];
+        if (offset <= 0 || offset >= left.length()) return i;
+        EditRegion right = left;
+        left.waiting = WaitingPiece(); right.waiting = WaitingPiece();            // a cut piece no longer matches the exported files
+        right.id = juce::Uuid();
+        right.fixIn = false; left.fixOut = false;                            // (the new join is an edit; the caller of a fix marks it as a fix join)
+        right.snipIn = false; left.snipOut = false;                          // (the right half keeps the piece's own end, and so its snipOut)
+        right.srcIn += offset; right.startSample += offset;
+        right.gains.clear();
+        right.normaliseIn = false;
+        for (auto& g : left.gains) if (g.at >= offset && ! g.autoNorm) { auto c = g; c.at -= offset; right.gains.push_back (c); }
+        if (! left.gains.empty())                                             // the right half starts at the level the left half had reached
+        {
+            std::vector<float> start;
+            for (size_t f = 0; f < left.files.size(); ++f) start.push_back (left.levelDbAt (f, offset));
+            if (right.gains.empty() || right.gains.front().at > 0) { GainChange c; c.at = 0; c.ramp = 0.0; c.db = start; right.gains.insert (right.gains.begin(), c); }
+        }
+        left.gains.erase (std::remove_if (left.gains.begin(), left.gains.end(), [offset] (const GainChange& g) { return g.at >= offset; }), left.gains.end());
+        left.srcOut = left.srcIn + offset;
+        left.outStart = left.outEnd = 0.0;
+        right.inStart = right.inEnd = 0.0;
+        regions[(size_t) i] = std::move (left);
+        regions.insert (regions.begin() + i + 1, std::move (right));
+        setDefaultJoinFades (i + 1);
+        clampAll();
+        return i + 1;
+    }
+
+    /** F1 in the edit window: a SNIP at timeline sample 'at'. The piece playing there is cut in two with the usual short crossfade (30 ms, centred on the
+        cut) in the normal curve (equal power), and the join is marked as a snip: not an edit point (no number), shown as "sn". Opened in the Trim window, the
+        two sides are rolled into each other to take a moment out (one singer coming in a fraction early). Returns the index of the piece after the snip, or
+        -1 with 'why' when there is no piece there, the piece waits for processed audio, or the cut is too close to a crossfade already there. */
+    int snipAt (juce::int64 at, juce::String& why)
+    {
+        const int i = regionAt (at);
+        if (i < 0) { why = "There is no audio at the playhead to snip (a snip goes into the pieces of the edit, not into an overdub)."; return -1; }
+        const auto& r = regions[(size_t) i];
+        if (r.waiting.active()) { why = "This piece is waiting for corrected audio (Export for Processing): re-link it first, then snip it."; return -1; }
+        const auto half = (juce::int64) std::llround (kDefaultHalfFade * (r.sampleRate > 0 ? r.sampleRate : 48000.0));
+        if (at - half < juce::jmax (r.startSample, r.fadeInFinish()) || at + half > juce::jmin (r.endSample(), r.fadeOutBegin()))
+        {
+            why = "Too close to a crossfade or the end of a piece: the snip's own crossfade (30 ms) would run into it. Move the playhead a little further in.";
+            return -1;
+        }
+        const int k = splitRegion (i, at - r.startSample);
+        if (k == i) { why = "The piece could not be cut there."; return -1; }
+        auto& a = regions[(size_t) k - 1]; auto& b = regions[(size_t) k];
+        a.snipOut = true; b.snipIn = true;
+        a.setOutCurve (FadeCurve::EqualPower); b.setInCurve (FadeCurve::EqualPower);       // a normal fade (the joins of offline fixes are linear)
+        clampAll();
+        return k;
+    }
+
+    /** The audio of piece i exists only for the take range [from,to) (a corrected file from an offline fix or an external program). A crossfade at one of its FIX joins must not
+        start before there is audio to fade in, or end after it has run out: the whole crossfade is slid inside (same length), and the neighbouring piece's matching fade with it. */
+    void keepFixFadesInside (int i, juce::int64 from, juce::int64 to)
+    {
+        if (! juce::isPositiveAndBelow (i, (int) regions.size())) return;
+        auto& r = regions[(size_t) i];
+        const double rate = r.sampleRate > 0 ? r.sampleRate : 48000.0;
+        auto sm = [rate] (double s) { return (juce::int64) std::llround (s * rate); };
+        if (r.fixIn && i > 0)
+        {
+            const auto begin = r.srcIn + sm (r.inStart);
+            if (begin < from)
+            {
+                const double d = (double) (from - begin) / rate;
+                r.inStart += d; r.inEnd += d;
+                auto& p = regions[(size_t) i - 1];
+                p.outStart = (double) (r.fadeInBegin() - p.endSample()) / rate; p.outEnd = (double) (r.fadeInFinish() - p.endSample()) / rate;
+            }
+        }
+        if (r.fixOut && i + 1 < (int) regions.size())
+        {
+            const auto finish = r.srcOut + sm (r.outEnd);
+            if (finish > to)
+            {
+                const double d = (double) (finish - to) / rate;
+                r.outStart -= d; r.outEnd -= d;
+                auto& n = regions[(size_t) i + 1];
+                n.inStart = (double) (r.fadeOutBegin() - n.startSample) / rate; n.inEnd = (double) (r.fadeOutFinish() - n.startSample) / rate;
+            }
+        }
+    }
+
+    /** Everything on the timeline from sample 'from' onwards moves by 'delta' samples (later for a positive delta): the overdubs, the markers, the listeners'
+        flags, the visual guide, the marks 1 / 2 and the playhead, and automation points fixed in time (points pinned to audio follow their audio when the
+        project settles). The main track's pieces are moved by the caller. (3.5.0: before, only the pieces moved, so markers and overdubs drifted.) */
+    void rippleAfter (juce::int64 from, juce::int64 delta)
+    {
+        if (delta == 0 || sampleRate <= 0.0) return;
+        const double dsec = (double) delta / sampleRate, fsec = (double) from / sampleRate;
+        for (auto& o : overdubs) if (o.startSample >= from) o.startSample = juce::jmax ((juce::int64) 0, o.startSample + delta);
+        for (auto& m : markers) if (m.seconds >= fsec) m.seconds = juce::jmax (0.0, m.seconds + dsec);
+        for (auto& f : feedback) if (f.seconds >= fsec) f.seconds = juce::jmax (0.0, f.seconds + dsec);
+        if (guide.active() && guide.start >= from) guide.start += delta;
+        if (fixIn >= fsec) fixIn = juce::jmax (0.0, fixIn + dsec);
+        if (fixOut >= fsec) fixOut = juce::jmax (0.0, fixOut + dsec);
+        if (playheadSeconds >= fsec) playheadSeconds = juce::jmax (0.0, playheadSeconds + dsec);
+        for (auto& lane : lanes)
+        {
+            for (auto& p : lane.pts) if (p.region.isNull() && p.time >= from) p.time = juce::jmax ((juce::int64) 0, p.time + delta);
+            lane.sortPoints();
+        }
+    }
+
+    /** Takes the audio between 'from' and 'to' off the main track and puts 'r' in its place, moving everything after 'to' by the difference in length
+        (rippleAfter): the music stays whole, so a version of a passage that is longer or shorter still fits. Pieces cut by the range are trimmed, pieces
+        inside it go, and the two new joins get the default crossfade. Returns the index of the new piece. (3.5.0: "Use this one" in Find other versions.) */
+    int replaceRangeRippled (EditRegion r, juce::int64 from, juce::int64 to)
+    {
+        if (isEmpty()) sampleRate = r.sampleRate;
+        from = juce::jmax ((juce::int64) 0, from); to = juce::jmax (from, to);
+        r.startSample = from;
+        r.inStart = r.inEnd = r.outStart = r.outEnd = 0.0;
+        for (auto cut : { to, from })
+            for (int i = 0; i < (int) regions.size(); ++i)
+            {
+                auto& x = regions[(size_t) i];
+                if (cut > x.startSample && cut < x.endSample()) { splitRegion (i, cut - x.startSample); break; }
+            }
+        for (int i = 0; i < (int) regions.size();)
+        {
+            const auto& x = regions[(size_t) i];
+            if (x.startSample >= from && x.endSample() <= to) regions.erase (regions.begin() + i); else ++i;
+        }
+        const juce::int64 delta = r.length() - (to - from);
+        for (auto& x : regions) if (x.startSample >= to) x.startSample += delta;
+        rippleAfter (to, delta);
+        int at = (int) regions.size();
+        for (int i = 0; i < (int) regions.size(); ++i) if (regions[(size_t) i].startSample >= from) { at = i; break; }
+        regions.insert (regions.begin() + at, std::move (r));
+        insertIndex = -1;
+        setDefaultJoinFades (at);
+        setDefaultJoinFades (at + 1);
+        hardenEnds();
+        settleGapFades();
+        clampAll();
+        return at;
+    }
+
+    /** Puts a piece on the main track AT 'sample': a piece that is playing there is cut in two to make room, and everything after moves later
+        (everything: the overdubs, markers, flags and the rest go with the music - rippleAfter). */
+    int insertRegionAt (EditRegion r, juce::int64 sample)
+    {
+        if (isEmpty()) sampleRate = r.sampleRate;
+        sample = juce::jmax ((juce::int64) 0, sample);
+        int at = (int) regions.size();
+        for (int i = 0; i < (int) regions.size(); ++i)
+        {
+            auto& x = regions[(size_t) i];
+            if (sample > x.startSample && sample < x.endSample()) { at = splitRegion (i, sample - x.startSample); break; }
+            if (x.startSample >= sample) { at = i; break; }
+        }
+        const int n = (int) regions.size();
+        r.startSample = sample;
+        r.inStart = r.inEnd = r.outStart = r.outEnd = 0.0;
+        const auto len = r.length();
+        for (int j = at; j < n; ++j) regions[(size_t) j].startSample += len;
+        rippleAfter (sample, len);
+        regions.insert (regions.begin() + at, std::move (r));
+        insertIndex = -1;
+        setDefaultJoinFades (at);
+        setDefaultJoinFades (at + 1);
+        hardenEnds();
+        clampAll();
+        return at;
+    }
+
+    /** Puts a piece on the main track AT 'sample' and takes away the same length of what was playing there: nothing else moves, so everything after the piece
+        stays in time. A piece that the new one only partly covers is trimmed (the part that stays is the same audio as before), a piece it covers whole goes, and the two
+        new joins get the default crossfade. Past the end of the edit, or in a gap, it just lies there (a gap beside it gets short fades, not a crossfade into silence).
+        Overdubs are left alone. 'replaced' (if given) gets the length of audio that was taken away (samples). Returns the index of the new piece. */
+    int overwriteRegionAt (EditRegion r, juce::int64 sample, juce::int64* replaced = nullptr)
+    {
+        if (isEmpty()) sampleRate = r.sampleRate;
+        sample = juce::jmax ((juce::int64) 0, sample);
+        r.startSample = sample;
+        r.inStart = r.inEnd = r.outStart = r.outEnd = 0.0;
+        const auto end = sample + r.length();
+        for (auto cut : { end, sample })                                   // cut at the new piece's end first, then at its start (the first cut does not move the second's index)
+            for (int i = 0; i < (int) regions.size(); ++i)
+            {
+                auto& x = regions[(size_t) i];
+                if (cut > x.startSample && cut < x.endSample()) { splitRegion (i, cut - x.startSample); break; }
+            }
+        juce::int64 removed = 0;
+        for (int i = 0; i < (int) regions.size();)
+        {
+            const auto& x = regions[(size_t) i];
+            if (x.startSample >= sample && x.endSample() <= end) { removed += x.length(); regions.erase (regions.begin() + i); }
+            else ++i;
+        }
+        int at = (int) regions.size();
+        for (int i = 0; i < (int) regions.size(); ++i) if (regions[(size_t) i].startSample >= sample) { at = i; break; }
+        regions.insert (regions.begin() + at, std::move (r));
+        insertIndex = -1;
+        setDefaultJoinFades (at);
+        setDefaultJoinFades (at + 1);
+        hardenEnds();
+        settleGapFades();
+        clampAll();
+        if (replaced != nullptr) *replaced = removed;
+        return at;
+    }
+
+    /** Lays a piece OVER the edit at 'sample'. It plays together with everything else; short fades only stop clicks. */
+    void addOverdub (EditRegion r, juce::int64 sample)
+    {
+        if (isEmpty()) sampleRate = r.sampleRate;
+        r.startSample = juce::jmax ((juce::int64) 0, sample);
+        r.inStart = 0.0; r.inEnd = 0.005; r.outStart = -0.005; r.outEnd = 0.0;      // an overdub: 5 ms
+        overdubs.push_back (std::move (r));
+    }
+    int indexOf (const juce::Uuid& rid) const { for (size_t i = 0; i < regions.size(); ++i) if (regions[i].id == rid) return (int) i; return -1; }
+
+    // ------------------------------------------------------------------ moving things (edit window and trim window)
+
+    /** Slide region i (just the region, nothing else changes about its audio) by d samples.
+        slipLeft: every region before it moves with it.  slipRight: every region after it moves with it.
+        Returns the distance actually moved (the move stops where regions would change order or pass the start). */
+    juce::int64 slideRegion (int i, juce::int64 d, bool slipLeft, bool slipRight)
+    {
+        const int n = (int) regions.size();
+        if (! juce::isPositiveAndBelow (i, n) || d == 0) return 0;
+        auto moves = [&] (int j) { return j == i || (j < i && slipLeft) || (j > i && slipRight); };
+
+        juce::int64 lo = std::numeric_limits<juce::int64>::min(), hi = std::numeric_limits<juce::int64>::max();
+        for (int j = 0; j < n; ++j)
+        {
+            if (moves (j)) lo = juce::jmax (lo, -regions[(size_t) j].startSample);                     // never before time zero
+            if (j + 1 < n)
+            {
+                const auto sj = regions[(size_t) j].startSample, sk = regions[(size_t) j + 1].startSample;
+                if (moves (j) && ! moves (j + 1)) hi = juce::jmin (hi, sk - sj);                        // may not pass the next region's start
+                if (! moves (j) && moves (j + 1)) lo = juce::jmax (lo, sj - sk);                        // may not pass the previous region's start
+            }
+        }
+        d = juce::jlimit (lo, juce::jmax (lo, hi), d);
+        for (int j = 0; j < n; ++j) if (moves (j)) regions[(size_t) j].startSample += d;
+        return d;
+    }
+
+    /** Trim window: slide the OUT audio (region k-1) under the join. The join does not move; the audio to its
+        left moves later by d (earlier if d is negative). slipLeft: the regions before it move too, otherwise they stay put. */
+    juce::int64 slipOut (int k, juce::int64 d, bool slipLeft)
+    {
+        const int n = (int) regions.size();
+        if (k < 1 || k >= n || d == 0) return 0;
+        auto& a = regions[(size_t) k - 1];
+        const auto minLen = (juce::int64) (0.01 * a.sampleRate);
+        juce::int64 lo = std::numeric_limits<juce::int64>::min() / 4, hi = std::numeric_limits<juce::int64>::max() / 4;
+        hi = juce::jmin (hi, a.length() - minLen);                                      // the region must keep some length
+        if (a.sourceLength > 0) lo = juce::jmax (lo, a.srcOut - a.sourceLength);        // srcOut - d <= sourceLength
+        for (int j = 0; j <= k - 1; ++j)
+        {
+            const bool moved = j == k - 1 || slipLeft;
+            if (moved) lo = juce::jmax (lo, -regions[(size_t) j].startSample);          // not before time zero
+        }
+        if (! slipLeft && k - 2 >= 0) lo = juce::jmax (lo, regions[(size_t) k - 2].startSample - a.startSample);   // keep order
+        d = juce::jlimit (lo, juce::jmax (lo, hi), d);
+        a.startSample += d; a.srcOut -= d;
+        if (slipLeft) for (int j = 0; j < k - 1; ++j) regions[(size_t) j].startSample += d;
+        clampFades (k - 1);
+        return d;
+    }
+
+    /** Trim window: slide the IN audio (region k) under the join. The join does not move; the audio to its right
+        moves later by d. slipRight: the regions after it move too (by the amount the region grew), otherwise they stay put. */
+    juce::int64 slipIn (int k, juce::int64 d, bool slipRight)
+    {
+        const int n = (int) regions.size();
+        if (k < 1 || k >= n || d == 0) return 0;
+        auto& b = regions[(size_t) k];
+        const auto minLen = (juce::int64) (0.01 * b.sampleRate);
+        const juce::int64 lo = minLen - b.length();     // the region keeps some length
+        const juce::int64 hi = b.srcIn;                 // srcIn - d >= 0
+        d = juce::jlimit (lo, juce::jmax (lo, hi), d);
+        b.srcIn -= d;
+        if (slipRight) for (int j = k + 1; j < n; ++j) regions[(size_t) j].startSample += d;
+        clampFades (k);
+        return d;
+    }
+
+    /** Trim window: move the join itself. Both audios stay where they are in time; the cut moves. */
+    juce::int64 moveJoin (int k, juce::int64 d)
+    {
+        const int n = (int) regions.size();
+        if (k < 1 || k >= n || d == 0) return 0;
+        auto& a = regions[(size_t) k - 1]; auto& b = regions[(size_t) k];
+        const auto minA = (juce::int64) (0.01 * a.sampleRate), minB = (juce::int64) (0.01 * b.sampleRate);
+        juce::int64 lo = juce::jmax (-(a.length() - minA), -b.srcIn);                   // earlier: A shorter, B gains from before its srcIn
+        juce::int64 hi = b.length() - minB;                                             // later: B shorter
+        if (a.sourceLength > 0) hi = juce::jmin (hi, a.sourceLength - a.srcOut);        // A needs source after its srcOut
+        d = juce::jlimit (lo, juce::jmax (lo, hi), d);
+        a.srcOut += d;
+        b.srcIn += d; b.startSample += d;
+        clampFades (k - 1); clampFades (k);
+        return d;
+    }
+
+    /** Trim window, at the very START (k = 0) or END (k = number of pieces) of the edit: when the fade has been moved inward, the audio the fade now leaves out (before a fade-in, after a fade-out)
+        is cut off the piece, so it does not sit there as silence. At the start the piece begins where the fade begins; with 'slipRight' everything after it moves earlier by the same amount
+        (the first piece stays at its place), otherwise it stays where it is and a gap is left before it. The fade keeps its shape. Returns how many samples were removed (0 = nothing to do). */
+    juce::int64 trimEdgeToFade (int k, bool slipRight)
+    {
+        const int n = (int) regions.size();
+        if (n == 0 || (k != 0 && k != n)) return 0;
+        if (k == 0)
+        {
+            auto& b = regions.front();
+            if (b.waiting.active()) return 0;
+            if (const auto ext = juce::jmin (b.startSample - b.fadeInBegin(), b.startSample, b.srcIn); ext > 0)       // the fade-in was dragged EARLIER than the piece: the piece grows to cover it
+            {
+                const auto ib = b.fadeInBegin(), ie = b.fadeInFinish();
+                b.srcIn -= ext; b.startSample -= ext;
+                for (auto& g : b.gains) g.at += ext;
+                b.inStart = (double) (ib - b.startSample) / juce::jmax (1.0, b.sampleRate); b.inEnd = (double) (ie - b.startSample) / juce::jmax (1.0, b.sampleRate);
+                clampFades (0);
+                return ext;
+            }
+            const auto d = b.fadeInBegin() - b.startSample;
+            if (d <= 0 || b.waiting.active() || b.length() - d < (juce::int64) (0.01 * b.sampleRate)) return 0;
+            const auto ib = b.fadeInBegin(), ie = b.fadeInFinish(); const auto old = b;
+            b.srcIn += d;
+            if (slipRight) { for (int j = 1; j < n; ++j) regions[(size_t) j].startSample -= d; }
+            else b.startSample += d;
+            b.inStart = 0.0; b.inEnd = (double) (ie - ib) / juce::jmax (1.0, b.sampleRate);
+            b.rebaseGains (old, d);
+            clampFades (0);
+            return d;
+        }
+        auto& a = regions.back();
+        if (a.waiting.active()) return 0;
+        if (const auto ext = a.fadeOutFinish() - a.endSample(); ext > 0)       // the fade-out was dragged LATER than the piece: the piece grows to cover it
+        {
+            const auto ob = a.fadeOutBegin();
+            a.srcOut += ext;
+            a.outEnd = 0.0; a.outStart = (double) (ob - a.endSample()) / juce::jmax (1.0, a.sampleRate);
+            clampFades ((int) regions.size() - 1);
+            return ext;
+        }
+        const auto d = a.endSample() - a.fadeOutFinish();
+        if (d <= 0 || a.waiting.active() || a.length() - d < (juce::int64) (0.01 * a.sampleRate)) return 0;
+        const auto ob = a.fadeOutBegin();
+        a.srcOut -= d;
+        a.outEnd = 0.0; a.outStart = (double) (ob - a.endSample()) / juce::jmax (1.0, a.sampleRate);
+        clampFades (n - 1);
+        return d;
+    }
+
+    /** Where edit point k stands on the timeline (k = 0 start of the first piece, k = n end of the last): the middle of the crossfade (or of the gap). */
+    juce::int64 editPointSample (int k) const
+    {
+        const int n = (int) regions.size();
+        if (n == 0) return 0;
+        if (k <= 0) return (regions.front().fadeInBegin() + regions.front().fadeInFinish()) / 2;           // the middle of the fade, wherever it has been moved to
+        if (k >= n) return (regions.back().fadeOutBegin() + regions.back().fadeOutFinish()) / 2;
+        return (regions[(size_t) k - 1].fadeOutFinish() + regions[(size_t) k].fadeInBegin()) / 2;
+    }
+
+    /** Puts the boundary between the two pieces of join k (the point where the audio is "handed over") exactly in the middle of the crossfade, which is where the edit point flag is.
+        The fades keep their ABSOLUTE times and each piece keeps reading the same file samples at the same timeline times, so the sound is sample-for-sample the same; only the pieces' edges
+        (and so the piece names, the click line of the spectrogram, which take an offline fix opens, ...) move to where the edit really is.
+        Does nothing for joins made by offline fixes, for pieces waiting for processed audio, joins with silence between them, or when a piece would become too short / run out of audio.
+        Returns the number of samples the boundary moved (0 = nothing changed). */
+    juce::int64 commitJoin (int k)
+    {
+        const int n = (int) regions.size();
+        if (k < 1 || k >= n || isFixJoin (k)) return 0;
+        auto& a = regions[(size_t) k - 1]; auto& b = regions[(size_t) k];
+        if (a.waiting.active() || b.waiting.active()) return 0;
+        if (b.startSample > a.endSample()) return 0;                                   // silence between them: not a handover
+        const auto J = editPointSample (k);
+        const auto dA = J - a.endSample(), dB = J - b.startSample;
+        if (dA == 0 && dB == 0) return 0;
+        const auto minA = (juce::int64) (0.01 * a.sampleRate), minB = (juce::int64) (0.01 * b.sampleRate);
+        if (a.length() + dA < minA || b.length() - dB < minB) return 0;
+        if (a.sourceLength > 0 && a.srcOut + dA > a.sourceLength) return 0;
+        if (b.srcIn + dB < 0 || a.srcOut + dA <= a.srcIn) return 0;
+
+        const auto ob = a.fadeOutBegin(), oe = a.fadeOutFinish(), ib = b.fadeInBegin(), ie = b.fadeInFinish();
+        const auto oldB = b;                                                           // (for the volume changes)
+        const auto A0 = a.endSample(), B0 = b.startSample;
+        a.srcOut += dA;
+        b.srcIn += dB; b.startSample += dB;
+        const double rA = juce::jmax (1.0, a.sampleRate), rB = juce::jmax (1.0, b.sampleRate);
+        a.outStart = (double) (ob - a.endSample()) / rA; a.outEnd = (double) (oe - a.endSample()) / rA;
+        b.inStart  = (double) (ib - b.startSample) / rB; b.inEnd  = (double) (ie - b.startSample) / rB;
+
+        // volume changes of B are counted from its start: shift them (the level the old start had been given is kept for what is now the start)
+        b.rebaseGains (oldB, dB);
+        clampFades (k - 1); clampFades (k);
+
+        // automation points that were pinned to the audio of these two pieces are pinned again, to whichever piece now owns that moment
+        for (auto& lane : lanes)
+            for (auto& p : lane.pts)
+                if (! p.floating && (p.region == a.id || p.region == b.id)) anchorPoint (p, p.time);
+        juce::ignoreUnused (A0, B0);
+        return dB != 0 ? dB : dA;
+    }
+
+    /** Commits every join (see commitJoin). Returns how many joins moved. */
+    int commitAllJoins()
+    {
+        int moved = 0;
+        for (int k = 1; k < (int) regions.size(); ++k) if (commitJoin (k) != 0) ++moved;
+        return moved;
+    }
+
+    /** 'A' key: copy the fade-out of the region before the join onto the fade-in of the region after it. */
+    void copyOutToIn (int k)
+    {
+        if (k < 1 || k >= (int) regions.size()) return;
+        auto& a = regions[(size_t) k - 1]; auto& b = regions[(size_t) k];
+        const double gap = joinGapSeconds (k);                      // the fade is copied to the same place IN TIME, not to the same distance from the piece's own edge
+        b.inStart = a.outStart - gap; b.inEnd = a.outEnd - gap; b.setInCurve (a.outCurveValue());
+        clampFades (k);
+    }
+    /** 'Z' key: the other way round. */
+    void copyInToOut (int k)
+    {
+        if (k < 1 || k >= (int) regions.size()) return;
+        auto& a = regions[(size_t) k - 1]; auto& b = regions[(size_t) k];
+        const double gap = joinGapSeconds (k);
+        a.outStart = b.inStart + gap; a.outEnd = b.inEnd + gap; a.setOutCurve (b.curve);
+        clampFades (k - 1);
+    }
+
+    /** How far the start of piece k is after the end of the piece before it, in seconds: 0 when they butt together, positive for silence between them, negative when they overlap. */
+    double joinGapSeconds (int k) const
+    {
+        if (k < 1 || k >= (int) regions.size()) return 0.0;
+        const auto& a = regions[(size_t) k - 1]; const auto& b = regions[(size_t) k];
+        return (double) (b.startSample - a.endSample()) / juce::jmax (1.0, b.sampleRate);
+    }
+
+    /** Make piece k start exactly where the piece before it ends: it, and every piece after it, move by the same amount (so the rest of the edit keeps its shape).
+        The join gets the default crossfade again. Returns how many samples they moved (negative = earlier). */
+    juce::int64 closeGap (int k)
+    {
+        if (k < 1 || k >= (int) regions.size()) return 0;
+        const juce::int64 d = regions[(size_t) k - 1].endSample() - regions[(size_t) k].startSample;
+        if (d == 0) return 0;
+        for (size_t j = (size_t) k; j < regions.size(); ++j) regions[j].startSample += d;
+        setDefaultJoinFades (k);
+        return d;
+    }
+};
+
+inline float fadeGain (FadeCurve c, float x, bool fadeIn) noexcept   // x = 0..1 through the fade
+{
+    x = juce::jlimit (0.0f, 1.0f, x);
+    return fadeInShape (c, fadeIn ? x : 1.0f - x);
+}
+} // namespace td

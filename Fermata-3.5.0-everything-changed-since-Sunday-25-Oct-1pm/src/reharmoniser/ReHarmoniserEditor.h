@@ -1,0 +1,208 @@
+#pragma once
+/** Re-HarmoniSer editor: a reusable juce::Component (spectrogram, Note Selection, Ensemble ReCentre, Note ReShape, Corrected Notes, View).
+    It has no window, file or audio-device handling of its own. The host (Fermata, or the standalone app's shell) gives it the audio as float buffers
+    and fills in EditorHost to let it hear things, and to take the result. All the maths is in the JUCE-free core (Engine.h, Spectrogram.h). */
+#include <juce_gui_basics/juce_gui_basics.h>
+#include <memory>
+#include "Engine.h"
+#include "Spectrogram.h"
+
+namespace rehar
+{
+/** One confirmed note correction (an entry of Corrected Notes). It holds everything needed to render it again. */
+struct NoteEdit
+{
+    int id = 0;
+    double t0 = 0, t1 = 0, fLo = 0, fHi = 0;       // the box that was drawn (seconds in the audio, Hz)
+    int midi = 57; double a4 = 440.0;
+    Params params;
+    Vec ts, f0, off;                               // the measured note (seconds, Hz) and the correction (cents) on the same grid
+    std::vector<Vec> nb;                           // the lines (Hz, on the same grid) of other voices found beside the note: they are kept as they were
+    std::vector<Vec> nbActive;                     // per line of nb: empty = there all through the note, else when it sounds (0..1 on the same grid): a piano note struck inside the box
+    bool enabled = true;
+    juce::String label;
+    bool isVoices = false; VoiceSet vs; Vec offs, vis; int vtarget = 0; std::vector<bool> vticks;     // a Section ReFinement move: the voices found, how far each moved, the See gains used
+    bool isBrush = false; Brush brush;             // an Erase ReBrush stroke instead of a note (ts / f0 / off are empty then)
+};
+
+/** Everything needed to make the corrected audio: the confirmed corrections (and the one being tried), and the Isolate settings.
+    The host applies it to whatever audio it has, with renderCorrection (so Fermata can do it on each clip's own audio, crossfades kept). */
+struct Correction
+{
+    std::vector<NoteEdit> list;
+    Vec isoTs, isoF; Params isoP;                  // Isolate: the picked note on its own (empty = off)
+    std::vector<char> leave;                       // channels that must come out exactly as they went in (the TimeCode channel); empty = none
+};
+/** Applies a Correction to block[channel][frame]. originSec is the time (in the editor's seconds) of the first frame of the block, so the
+    block can be any stretch of the audio. The length of the block never changes. Throws Cancelled if the hook says so. */
+void renderCorrection (const Correction&, Block& block, int sampleRate, double originSec, const Hooks& hooks = {});
+/** True when the Correction can change anything between fromSec and toSec (so a host can leave alone the pieces it cannot reach). */
+bool correctionReaches (const Correction&, double fromSec, double toSec);
+
+/** What the editor needs from whoever hosts it. Every call is made on the message thread. All of them are optional. */
+struct EditorHost
+{
+    /** Make the host play the audio with these corrections applied (it calls renderCorrection on its own copy of the audio, which has the same length as
+        the one given to setAudio), or the original when null. done (error) when it is ready to play. */
+    std::function<void (std::shared_ptr<const Correction> corrections, std::function<void (const juce::String&)> done)> setCorrected;
+    std::function<void (double fromSec, double toSec, bool loop)> play;      // seconds from the start of the audio
+    std::function<void()> stop;
+    std::function<double()> playPosition;                                    // seconds from the start of the audio, or a negative number when not playing
+    std::function<void (double hz, double levelDb)> playTone;                // a short tone (the piano keys), at this level in dB (the Key level slider)
+    std::function<void()> writeBack;                                         // the user pressed "Write back to clip" (setCorrected has already been called with the final corrections)
+    std::function<void()> cancel;                                            // the user pressed Cancel
+    std::function<bool()> spaceIsTaken;                                      // true while the Space key belongs to the host (a take is recording: Space stops it): Space does nothing here then (3.1.2)
+    bool leaveUnchangedOk = false;                                           // one stream window of an Out / In pair: "Write back to clip" with nothing changed means "leave this stream as it is" (the host handles that)
+    std::function<void (const juce::String&)> log;                           // errors and notes for the log file
+    std::function<juce::String (const juce::String& key)> loadSetting;       // remembered settings of the View block (empty = none saved)
+    std::function<void (const juce::String& key, const juce::String& value)> saveSetting;
+};
+
+class ReHarmoniserEditor : public juce::Component, private juce::Timer
+{
+public:
+    ReHarmoniserEditor();
+    ~ReHarmoniserEditor() override;
+
+    EditorHost host;
+    /** Gives the editor the audio to work on: block[channel][frame], all the same length. Starts the analysis (a progress bar shows). */
+    void setAudio (std::shared_ptr<const Block> audio, int sampleRate);
+    bool hasAppliedChanges() const;                 // is there anything in Corrected Notes that is switched on
+    int appliedCount() const;
+    const std::vector<NoteEdit>& editList() const { return edits; }
+
+    /** Names for the channels of the audio (for the See mixer), in the order of the Block. Call before or after setAudio. */
+    void setChannelNames (const juce::StringArray&);
+    /** Puts back the View settings saved last time (host.loadSetting): call once after the host hooks are set. They are saved when the editor closes. */
+    void restoreViewSettings();
+
+    /** Shows a message on the status line (the host uses it while it is loading the audio). */
+    void setStatus (const juce::String&, bool error = false);
+    /** Shows the progress bar while the host is working (writing the corrected audio, say): fraction 0..1, or below -1 to hide it again (text is then shown on the status line). */
+    void setProgress (double fraction, const juce::String& text = {});
+
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    bool keyPressed (const juce::KeyPress&) override;
+
+private:
+    class View; class Worker; class EditsList; struct Section; class SectionHeader;
+    friend class View;
+    std::unique_ptr<juce::LookAndFeel_V4> look;      // (declared first so it is destroyed last)
+    struct Cand { bool has = false; double t0 = 0, t1 = 0, fLo = 0, fHi = 0; Vec ts, f0; std::vector<Vec> nb, nbActive; int hint = 1, midi = 57; Plan plan; } cand;
+    struct Hist { Params p; };
+    struct BCand { bool has = false; Brush b; } bcand;
+    struct VCand { bool has = false, preview = false; VoiceSet vs; } vcand;
+    struct VoiceRowC; class ChartPanel;
+    std::unique_ptr<ChartPanel> chartPanel; juce::TextButton chartBtn { "Pitch over time..." };
+    void showChart(); void closeChart(); void closeChartSoon();
+
+    // ---- the work
+    void timerCallback() override;
+    void startAnalysis();
+    void selectBox (double t0, double t1, double fLo, double fHi);
+    void measure();
+    void replan();
+    void renderAndSet (bool withPending, std::function<void()> then = {});
+    void applyCorrection();
+    void deselect();
+    void clearChanges();
+    void undoStep();
+    void redoStep();
+    void pushHistory();
+    void audition();
+    void auditionAny();                              // the one Audition button: the note, the voices or the brush stroke, whichever is being worked on
+    void afterAudition(); bool autoPlayNext = false, extProgress = false;
+    void togglePlay();
+    void toggleOriginal();
+    void writeBack();
+    void rebuildEditsList();
+    void loadAsPending (const NoteEdit&);
+    void startJob (const juce::String& stage, std::function<juce::String (Worker&)> work, std::function<void (const juce::String&)> done);
+    void saveViewSettings();
+    void syncSliders();
+    void sliderChanged();
+    void detectReference();
+    void updateInfo();
+    void updateButtons();
+    void openSection (int idx);
+    void layoutSections();
+    void rebuildSeeStrips();
+    void layoutSeeStrips();
+    Vec seeGainsDb() const;                          // the See mixer as dB per channel (muted / not soloed = -100); empty = all flat
+    Vec seeGainsLin() const;                         // the same as linear gains for the picture (empty = all flat)
+    std::vector<char> ltcCh;                         // channels that are timecode, not music (found when the audio is given): shown muted, never measured, never changed
+    void seeChanged();
+    void recombine();
+    void brushChanged();
+    void applyBrush();
+    void discardBrush();
+    void loadBrushAsPending (const NoteEdit&);
+    void strokeBegin();
+    void strokePoint (double t, double hz);
+    void strokeEnd();
+    bool brushMode() const { return openIdx == 3; }
+    void findVoices();
+    void rebuildVoiceRows();
+    bool makeVoiceEdit (NoteEdit&) const;
+    void previewVoices();
+    void applyVoices();
+    void discardVoices();
+    void loadVoicesAsPending (const NoteEdit&);
+    juce::String noteName (int midi) const;
+    static int parseNote (const juce::String&);
+
+    // ---- state
+    std::shared_ptr<const Block> orig; int sr = 0; double dur = 0.0;
+    struct Mix { size_t nf = 0, nb = 0; double hopSec = 0.01, df = 1.0; std::vector<uint8_t> v; };
+    static std::shared_ptr<Mix> makeMix (const Spectrogram&);
+    std::shared_ptr<const Mix> mix; double refDb = 0.0;
+    std::shared_ptr<Spectrogram> spec;               // the per-channel pictures (the See mixer adds them again with new gains)
+    bool seeDirty = false; juce::uint32 seeDirtyAt = 0; juce::StringArray chanNames;
+    double a4 = 440.0; bool midiLocked = false;
+    Params params; int partial = 1;
+    std::vector<NoteEdit> edits, undone; int nextId = 1;
+    bool busy = false; int refModeId = 1;
+    std::vector<Hist> hist; size_t histPos = 0; bool inHistory = false;
+    enum class HostState { Original, Corrected, CorrectedWithPending } hostState = HostState::Original;
+    bool originalMode = false, hostBusy = false, auditionStale = false, analysing = false, measuring = false;
+    double cueT = 0.0, loopIn = -1.0, loopOut = -1.0, playT = -1.0; bool looping = false;
+    int serial = 0;
+    juce::String lastStatus;
+
+    // ---- the parts
+    std::unique_ptr<View> view;
+    std::unique_ptr<Worker> worker;
+    juce::Label status, noteInfo, tipLabel;
+    juce::TextButton startBtn { "|<" }, endBtn { ">|" }, isoBtn { "Isolate" }, playBtn { "Play" }, stopBtn { "Stop" }, loopBtn { "Loop" }, originalBtn { "Original" }, writeBtn { "Write back to clip" }, cancelBtn { "Cancel" };
+    double progressValue = 0.0; juce::ProgressBar bar;
+    // Note Selection
+    juce::Label nameCap { {}, "meant to be" }; juce::TextEditor nameBox; juce::TextButton downBtn { "dn" }, upBtn { "up" }, remeasureBtn { "Measure again" };
+    juce::TextButton tipUse { "Use it" }, tipIgnore { "Ignore" };
+    // sections
+    std::vector<std::unique_ptr<Section>> sections; int openIdx = -1;
+    juce::Label a4Cap { {}, "Reference A4" }; juce::TextEditor a4Box; juce::TextButton detectBtn { "Detect" }; juce::ComboBox refMode; juce::Label refInfo;
+    struct Row { juce::Label cap; juce::Slider s; };
+    Row moveRow, snapRow, strengthRow, keepRow, smoothRow, easeRow, holdRow, bwRow, linesRow, gainRow, keyRow;
+    juce::Label voiceHelp; juce::ComboBox voiceTarget; juce::TextButton voiceFindBtn { "Find voices" }, voicePreviewBtn { "Preview move" }, voiceApplyBtn { "Apply correction" }, voiceDiscardBtn { "Deselect" };
+    std::vector<std::unique_ptr<VoiceRowC>> voiceRows;
+    Row brushTRow, brushCRow, brushAmtRow; juce::Label brushHelp; juce::ToggleButton brushHarm { "Also the overtones above" };
+    juce::TextButton brushAuditionBtn { "Audition" }, brushApplyBtn { "Erase (apply)" }, brushDiscardBtn { "Discard stroke" };
+    struct SeeStrip { juce::Label name; juce::TextButton m { "M" }, s { "S" }; juce::Slider g; };
+    std::vector<std::unique_ptr<SeeStrip>> seeStrips; juce::Component seeHolder; juce::Viewport seeView;
+    juce::ComboBox partialBox; juce::ToggleButton matchBox { "Level smoothing" }; juce::ToggleButton advancedBtn { "Advanced" };
+    juce::ToggleButton oneVoiceBox { "One voice only" };     // only one singer / instrument on this note: nothing is looked for beside it
+    juce::TextButton auditionBtn { "Audition" }, applyBtn { "Apply correction" }, deselectBtn { "Deselect" }, clearBtn { "Clear changes" }, undoBtn { "Undo" }, redoBtn { "Redo" };
+    juce::TextButton zoomTIn { "+" }, zoomTOut { "-" }, zoomPIn { "+" }, zoomPOut { "-" }, loopClearBtn { "Clear loop" };
+    juce::Label zoomCap { {}, "Zoom time" }, pitchCap { {}, "pitch" }, loopCap { {}, "Loop markers" }, detailCap { {}, "Detail" };
+    // the look of the original: Note Selection title, from / to, View block
+    juce::Label noteSelTitle { {}, "Note Selection" }, fromCap { {}, "from" }, toCap { {}, "to" };
+    juce::TextEditor fromBox, toBox; juce::TextButton setBtn { "Set" };
+    std::unique_ptr<juce::Component> hueWheel; juce::Label hueCap { {}, "Colour" };      // the spectrogram colour wheel (View block)
+    Row contrastRow, opacityRow, isoPreRow, isoPostRow; bool isolating = false; juce::ComboBox detailBox; int detailMode = 1;
+    std::unique_ptr<SectionHeader> viewHeader; bool viewOpen = true, viewAuto = false;
+    std::vector<int> ruleYs; int ruleX0 = 0, ruleX1 = 0;
+    std::unique_ptr<EditsList> editsList; juce::Viewport editsView;
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ReHarmoniserEditor)
+};
+} // namespace rehar

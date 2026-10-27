@@ -1,0 +1,1725 @@
+#pragma once
+#include <juce_gui_basics/juce_gui_basics.h>
+#include <juce_audio_utils/juce_audio_utils.h>
+#include "../core/AudioEngine.h"
+#include "WaveColor.h"
+#include "WinOwner.h"
+#include <map>
+#include <array>
+#include <algorithm>
+#include <limits>
+
+namespace td
+{
+/** Colours used everywhere: a dark console look (the same greys as the mixer) with the logo's teal as the accent and fine outlines. */
+namespace theme
+{
+// Plain variables (not constants): switching between the dark and the light look changes them, and everything is drawn from them.
+inline juce::Colour window   { 0xff566b82 };     // the desk's blue-grey panel (the "dark" look: see setDark)
+inline juce::Colour panel    { 0xff4a5e74 };
+inline juce::Colour row      { 0xff1d2b3a };
+inline juce::Colour rowAlt   { 0xff1a2735 };
+inline juce::Colour field    { 0xff05080c };
+inline juce::Colour wave     { 0xff0f1821 };     // waveform backgrounds
+inline juce::Colour waveAlt  { 0xff131e2a };
+inline juce::Colour ruler    { 0xff1b2634 };
+inline juce::Colour grid     { 0xff33465a };
+inline juce::Colour selected { 0xff2b5f7a };
+inline juce::Colour text     { 0xffeef2f6 };
+inline juce::Colour dimText  { 0xffc3ccd6 };
+inline juce::Colour border   { 0xff2f3e50 };     // the 1-pixel outline around every control: what makes the interface look crisp
+inline juce::Colour accent   { 0xff2a9cc0 };     // "on", selected, the value part of sliders
+inline juce::Colour button   { 0xff96abc0 };     // a key at rest: lighter than the panel, so it stands out (dark writing on it)
+inline juce::Colour warn     { 0xffe0a040 };     // warnings
+inline juce::Colour playhead { 0xffff4a4a };
+inline juce::Colour wellDark { 0xff0c0e11 };     // the dark wells of the level meters
+
+/** The colour of the desk (Project > Colour theme): 0 blue (the default), 1 red, 2 orange, 3 yellow, 4 green, 5 purple. */
+inline int& deskIndex() { static int i = 0; return i; }
+/** Moves a blue colour of the desk to the chosen colour (meters, channel colours and other colours are left alone). */
+inline juce::Colour deskTint (juce::Colour c, int t)
+{
+    if (t <= 0) return c;
+    static const float hue[] { 0.0f, 0.985f, 0.07f, 0.125f, 0.385f, 0.75f };
+    static const float satMul[] { 1.0f, 1.5f, 1.6f, 1.6f, 0.95f, 1.3f };
+    t = juce::jlimit (0, 5, t);
+    const float h = c.getHue(), s = c.getSaturationHSL(), l = c.getLightness();
+    if (h > 0.52f && h < 0.68f && s > 0.08f)
+        return juce::Colour::fromHSL (hue[t], juce::jmin (0.6f, s * satMul[t]), l, c.getFloatAlpha());
+    return c;
+}
+inline juce::Colour desk (juce::uint32 argb) { return deskTint (juce::Colour (argb), deskIndex()); }
+
+inline bool& darkFlag() { static bool d = false; return d; }     // false: the light look (the desk as it is); true: the dark look (the desk a shade darker)
+inline bool isDark() { return darkFlag(); }
+
+/** The style of the whole interface (Project > UI style): 0 the Fermata style UI (the blue-grey desk, Inter), 1 the Manuscript UI (midnight blue and
+    gilt, parchment writing in a Renaissance serif, staff lines behind the timelines). Everything is drawn from the palette, so the style is mostly
+    the palette; the few places with their own drawing ask manuscript(). */
+inline int& styleIndex() { static int s = 0; return s; }
+inline bool manuscript() { return styleIndex() == 1; }
+inline const char* styleName (int i) { return i == 1 ? "Manuscript UI" : "Fermata style UI"; }
+// the Manuscript UI's own colours (beside the palette): the gilt in two shades, the ink that is written on gilt, the parchment
+inline juce::Colour gilt()       { return juce::Colour (0xffd4a84b); }
+inline juce::Colour giltBright() { return juce::Colour (0xfff0c76a); }
+inline juce::Colour giltDim()    { return juce::Colour (0xff6b5120); }
+inline juce::Colour giltInk()    { return juce::Colour (0xff1a1409); }
+inline juce::Colour parchment()  { return juce::Colour (0xffe9dcc0); }
+/** The names the two styles' default typefaces go by inside JUCE. Every font that does not name a face is made with the default name, and JUCE keeps
+    its drawn glyphs in a cache keyed by that name: so the Manuscript UI's face is given a name of its own, and a window drawn in one style can never
+    pick up letters drawn in the other. The wordmark's italic face likewise. (See FermataLookAndFeel::getTypefaceForFont.) */
+inline const char* sansName (bool manuscriptStyle) { return manuscriptStyle ? "<Sans-Serif-Manuscript>" : "<Sans-Serif>"; }
+inline const char* wordmarkFontName()              { return manuscript() ? "<Manuscript-Italic>" : "Georgia"; }
+inline bool isSansName (const juce::String& n)     { return n.isEmpty() || n == "<Sans-Serif>" || n == "<Sans-Serif-Manuscript>"; }
+/** Makes new fonts use the style's default name (JUCE hands out the name by reference to a static, which is set here). */
+inline void applyDefaultFontName() { const_cast<juce::String&> (juce::Font::getDefaultSansSerifFontName()) = sansName (manuscript()); }
+/** True for the Manuscript UI's own dark navy keys (any shade of them): their writing is gilt. A key given a colour of its own (a red Record) is not one. */
+inline bool isNavyKey (juce::Colour c) { const float h = c.getHue(); return c.getPerceivedBrightness() < 0.3f && h > 0.58f && h < 0.74f; }
+
+/** All the palette colours in a fixed order (for switching and for re-colouring what was coloured by hand). */
+inline std::array<juce::Colour*, 18> all()
+{
+    return { &window, &panel, &row, &rowAlt, &field, &wave, &waveAlt, &ruler, &grid, &selected, &text, &dimText, &border, &accent, &button, &warn, &playhead, &wellDark };
+}
+inline std::array<juce::uint32, 18> snapshot() { std::array<juce::uint32, 18> a {}; auto c = all(); for (size_t i = 0; i < a.size(); ++i) a[i] = c[i]->getARGB(); return a; }
+
+/** The dark look: the same colours as the light one, a shade darker. 'shade' is how much of the brightness is kept. */
+inline juce::Colour deskShade (juce::Colour c, bool dark, float shade) { return dark ? c.withMultipliedBrightness (shade) : c; }
+
+/** Goes up by one whenever the palette changes (dark / light, or another desk colour), so windows can tell they must take the new colours. */
+inline int& generation() { static int g = 0; return g; }
+
+/** Sets the palette: the desk (a blue-grey panel in the colour chosen in the Project menu, with dark displays and waveform lanes and light keys).
+    The light look is the desk as it is; the dark look is the same colours a shade darker. */
+inline void setDark (bool dark)
+{
+    darkFlag() = dark;
+    ++generation();
+    static const juce::uint32 d[18] = { 0xff566b82, 0xff4a5e74, 0xff1d2b3a, 0xff1a2735, 0xff05080c, 0xff0f1821, 0xff131e2a, 0xff1b2634, 0xff33465a,
+                                        0xff2b5f7a, 0xffeef2f6, 0xffc3ccd6, 0xff2f3e50, 0xff2a9cc0, 0xff96abc0, 0xffe0a040, 0xffff4a4a, 0xff0c0e11 };
+    // how much of each colour's brightness the dark look keeps: the panels go well down, the lanes (already dark) and the keys a little
+    static const float shade[18] = { 0.62f, 0.62f, 0.72f, 0.72f, 1.0f, 0.72f, 0.72f, 0.7f, 0.72f, 0.8f, 1.0f, 1.0f, 0.7f, 1.0f, 0.8f, 1.0f, 1.0f, 1.0f };
+    // the Manuscript UI: midnight blue panels, near-black lanes and fields, gilt outlines and accents, parchment writing (the desk colour is not applied)
+    static const juce::uint32 m[18] = { 0xff161a36, 0xff1b2042, 0xff10132b, 0xff13172f, 0xff090a16, 0xff0b0d1e, 0xff0e1024, 0xff11142b, 0xff2b2a4d,
+                                        0xff3b3468, 0xffe9dcc0, 0xffb89a5a, 0xff8a6a2a, 0xffd4a84b, 0xff1f2246, 0xfff0a040, 0xfff0c76a, 0xff06060f };
+    static const float mshade[18] = { 0.7f, 0.7f, 0.8f, 0.8f, 1.0f, 0.85f, 0.85f, 0.8f, 0.8f, 0.85f, 1.0f, 1.0f, 0.85f, 1.0f, 0.8f, 1.0f, 1.0f, 1.0f };
+    auto c = all();
+    if (manuscript())
+    {
+        for (size_t i = 0; i < c.size(); ++i) *c[i] = deskShade (juce::Colour (m[i]), dark, mshade[i]);
+        return;
+    }
+    for (size_t i = 0; i < c.size(); ++i)
+    {
+        const bool keep = (i == 4 || i == 10 || i == 13 || i == 15 || i == 16 || i == 17);     // field, text, accent, warn, playhead, meter wells: the same in every desk colour
+        *c[i] = keep ? juce::Colour (d[i]) : deskShade (desk (d[i]), dark, shade[i]);
+    }
+}
+/** Dark or light writing for something drawn on 'fill' (the keys are light in the desk look, so their writing and pictures are dark). */
+inline juce::Colour inkOn (juce::Colour fill);
+
+/** A panel's background: flat in the Fermata style; in the Manuscript UI a soft glow from the top, like candlelight on a dark page. */
+inline void paintPanel (juce::Graphics& g, juce::Rectangle<int> area, juce::Colour base)
+{
+    if (! manuscript() || area.isEmpty()) { g.setColour (base); g.fillRect (area); return; }
+    juce::ColourGradient gr (base.brighter (0.22f), (float) area.getCentreX(), (float) area.getY() - (float) area.getHeight() * 0.3f,
+                             base.darker (0.18f), (float) area.getCentreX(), (float) area.getBottom(), true);
+    gr.addColour (0.55, base);
+    g.setGradientFill (gr); g.fillRect (area);
+}
+/** Five faint lines across a lane, like the staves of a manuscript (the Manuscript UI's timelines). Does nothing in the Fermata style. */
+inline void paintStaff (juce::Graphics& g, juce::Rectangle<int> lane)
+{
+    if (! manuscript() || lane.getHeight() < 24) return;
+    g.setColour (border.withAlpha (0.16f));
+    const float gap = (float) lane.getHeight() / 6.0f;
+    for (int i = 1; i <= 5; ++i) g.fillRect ((float) lane.getX(), (float) lane.getY() + gap * (float) i - 0.5f, (float) lane.getWidth(), 1.0f);
+}
+/** The playhead line: red in the Fermata style; in the Manuscript UI a line of gold with a soft glow either side. */
+/** How far to either side of x paintPlayhead can touch (the line and, in the Manuscript look, its glow). A window that moves the line by redrawing only a thin strip
+    must redraw THIS much around the old and the new x: a narrower strip leaves a trail of glow behind the line. Use playheadStrip (x) for the area. */
+inline constexpr int playheadReach = 6;
+inline juce::Rectangle<int> playheadStrip (int x, int top, int height, int width = 2) { return { x - playheadReach, top, width + 2 * playheadReach, height }; }
+inline void paintPlayhead (juce::Graphics& g, int x, int y, int height, int width = 2)
+{
+    if (manuscript())
+    {
+        g.setColour (playhead.withAlpha (0.10f)); g.fillRect (x - 5, y, width + 10, height);
+        g.setColour (playhead.withAlpha (0.25f)); g.fillRect (x - 2, y, width + 4, height);
+    }
+    g.setColour (playhead); g.fillRect (x, y, width, height);
+}
+inline juce::Colour inkOn (juce::Colour fill) { return fill.getPerceivedBrightness() > 0.6f ? (manuscript() ? giltInk() : juce::Colour (0xff14181f)) : (manuscript() && isNavyKey (fill) ? gilt() : text); }
+
+/** The widget look. */
+inline juce::LookAndFeel_V4::ColourScheme scheme()
+{
+    return juce::LookAndFeel_V4::ColourScheme (window, panel, field, border, text, accent, juce::Colours::white, accent, text);
+}
+} // namespace theme
+
+/** One grid for every row of buttons, so they are all the same size and line up. */
+namespace grid
+{
+constexpr int btnH = 24, gap = 6, btnW = 116, rowH = btnH + 8;
+constexpr int cornerReserve = 58;      // the pin and sun / moon buttons in a window's top-right corner: a top bar keeps this much clear at its right (inside the 6 px edge)
+/** Column 'col' (0-based) of a row; 'span' columns wide. */
+inline juce::Rectangle<int> cell (juce::Rectangle<int> row, int col, int span = 1)
+{
+    return { row.getX() + col * (btnW + gap), row.getY() + (row.getHeight() - btnH) / 2, span * btnW + (span - 1) * gap, btnH };
+}
+
+/** One thing in a toolbar that flows: its width, its height and the space after it. */
+struct FlowItem
+{
+    juce::Component* c;
+    int w = btnW, h = btnH, gapAfter = gap;
+};
+/** Puts the items on as few lines as possible, left to right, and starts a new line when the width runs out (so a wide window has one
+    line and a narrow one spills over onto two or three). Returns the height used. With place = false nothing is moved (it only measures).
+    keepGroups: a group (the items up to one with a wide gap after it) that would be split at the end of a line starts on the next line instead,
+    when it fits on a line of its own (so the transport buttons stay together). */
+inline int flow (juce::Rectangle<int> area, const std::vector<FlowItem>& items, bool place = true, int* linesUsed = nullptr, bool keepGroups = false)
+{
+    std::vector<std::vector<const FlowItem*>> lines (1);
+    int x = 0;
+    for (size_t i = 0; i < items.size(); ++i)
+    {
+        const auto& it = items[i];
+        if (keepGroups && x > 0 && (i == 0 || items[i - 1].gapAfter >= 10))       // a group starts here: how wide is it?
+        {
+            int gw = 0;
+            for (size_t j = i; j < items.size(); ++j) { gw += items[j].w; if (items[j].gapAfter >= 10) break; gw += items[j].gapAfter; }
+            if (x + gw > area.getWidth() && gw <= area.getWidth()) { lines.emplace_back(); x = 0; }
+        }
+        if (x > 0 && x + it.w > area.getWidth()) { lines.emplace_back(); x = 0; }
+        lines.back().push_back (&it);
+        x += it.w + it.gapAfter;
+    }
+    if (linesUsed != nullptr) *linesUsed = items.empty() ? 0 : (int) lines.size();
+    if (items.empty()) return 0;
+    int y = area.getY();
+    for (auto& line : lines)
+    {
+        int lh = rowH;
+        for (auto* it : line) lh = juce::jmax (lh, it->h + 8);
+        int px = area.getX();
+        if (place)
+            for (auto* it : line)
+            {
+                it->c->setBounds (px, y + (lh - it->h) / 2, it->w, it->h);
+                px += it->w + it->gapAfter;
+            }
+        y += lh;
+    }
+    return y - area.getY();
+}
+}
+
+
+/** Channel colours: every audio track, Int Bus and Ext Bus has one. It tints the mixer strip and the track in the take and edit windows. */
+namespace chan
+{
+inline const std::vector<juce::uint32>& palette()
+{
+    static const std::vector<juce::uint32> p {
+        0xff3f7fc4, 0xff2f9bbd, 0xff2f9e8f, 0xff4fa24a, 0xff93b43a, 0xffd9b327, 0xffe0842b, 0xffd2503f,
+        0xffd2579a, 0xffa855b8, 0xff7a5bc4, 0xff4f62c4, 0xff6d7f96, 0xff9c6c45, 0xff8b9099, 0xff3b4352 };
+    return p;
+}
+
+/** The colour a channel has when you have not picked one: audio tracks blue, Int Buses violet, Ext Buses red. */
+inline juce::Colour automaticFor (NodeKind k)
+{
+    return juce::Colour (k == NodeKind::IntBus ? 0xff7a5bc4 : k == NodeKind::ExtBus ? 0xffc9503f : k == NodeKind::Vca ? 0xffd9a21b : 0xff3f7fc4);
+}
+
+inline juce::Colour of (const Project& p, const juce::Uuid& id)
+{
+    const auto c = p.channelColour (id);
+    return c != 0 ? juce::Colour (c) : automaticFor (p.kindOf (id));
+}
+
+/** Black or white, whichever reads better on 'c'. */
+inline juce::Colour textOn (juce::Colour c) { return c.getPerceivedBrightness() > 0.62f ? juce::Colour (0xff10141a) : juce::Colours::white; }
+
+/** The waveform colour on a clip: the channel's colour, lightened so it stands out from the dark clip. */
+inline juce::Colour waveColour (juce::Colour c) { return c.interpolatedWith (juce::Colours::white, 0.38f); }
+
+/** The dark fill of a clip on a track: the track's colour, deepened so the light waveform shows clearly on it. */
+inline juce::Colour clipFill (juce::Colour c, bool selected = false)
+{
+    // the Pyramix look: a solid, saturated clip colour with a pale waveform (and a thin dark outline) standing on it
+    if (solidLook()) return c.withMultipliedSaturation (0.85f).withBrightness (selected ? 0.60f : 0.82f);
+    return c.withMultipliedSaturation (0.9f).withMultipliedBrightness (selected ? 0.34f : 0.52f);
+}
+} // namespace chan
+
+/** The Fermata mark: a fermata arc with a dot underneath (the logo's own curve, scaled into 'area'). */
+inline void drawFermataLogo (juce::Graphics& g, juce::Rectangle<float> area, juce::Colour ink, juce::Colour dot)
+{
+    juce::Path p;
+    p.startNewSubPath (20.0f, 100.0f);
+    p.cubicTo (20.0f, 20.0f, 220.0f, 20.0f, 220.0f, 100.0f);
+    p.cubicTo (205.0f, 56.0f, 35.0f, 56.0f, 20.0f, 100.0f);
+    p.closeSubPath();
+    const auto box = juce::Rectangle<float> (0.0f, 0.0f, 240.0f, 120.0f);
+    const auto t = juce::RectanglePlacement (juce::RectanglePlacement::centred).getTransformToFit (box, area);
+    g.setColour (ink);   g.fillPath (p, t);
+    g.setColour (dot);   g.fillEllipse (juce::Rectangle<float> (110.0f, 84.0f, 20.0f, 20.0f).transformedBy (t));
+}
+
+/** The logo as a square image (window / task bar / program icon): the mark on the logo's dark ground. */
+inline juce::Image makeFermataIcon (int size)
+{
+    juce::Image img (juce::Image::ARGB, size, size, true);
+    juce::Graphics g (img);
+    g.setColour (juce::Colour (0xff1b1e23));                                 // always the logo's own dark ground, whatever the look
+    g.fillRoundedRectangle (0.0f, 0.0f, (float) size, (float) size, (float) size * 0.2f);
+    g.setColour (juce::Colour (0xff59606c).withAlpha (0.9f));
+    g.drawRoundedRectangle (juce::Rectangle<float> (0.0f, 0.0f, (float) size, (float) size).reduced ((float) size * 0.01f), (float) size * 0.2f, juce::jmax (1.0f, (float) size * 0.012f));
+    drawFermataLogo (g, juce::Rectangle<float> (0.0f, 0.0f, (float) size, (float) size).reduced ((float) size * 0.12f), juce::Colour (0xffe9edf2), juce::Colour (0xff2a8fb0));
+    return img;
+}
+
+/** The icon of a saved project file: a sheet of paper with a folded corner and the logo on it. */
+inline juce::Image makeFermataFileIcon (int size)
+{
+    juce::Image img (juce::Image::ARGB, size, size, true);
+    juce::Graphics g (img);
+    const float s = (float) size, fold = s * 0.26f;
+    juce::Rectangle<float> page (s * 0.16f, s * 0.05f, s * 0.68f, s * 0.90f);
+    juce::Path p;
+    p.startNewSubPath (page.getX(), page.getY());
+    p.lineTo (page.getRight() - fold, page.getY());
+    p.lineTo (page.getRight(), page.getY() + fold);
+    p.lineTo (page.getRight(), page.getBottom());
+    p.lineTo (page.getX(), page.getBottom());
+    p.closeSubPath();
+    g.setColour (juce::Colours::black.withAlpha (0.25f)); g.fillPath (p, juce::AffineTransform::translation (s * 0.012f, s * 0.018f));
+    g.setColour (juce::Colour (0xfff4f6f9)); g.fillPath (p);
+    g.setColour (juce::Colour (0xff9aa3b0)); g.strokePath (p, juce::PathStrokeType (juce::jmax (1.0f, s * 0.012f)));
+    juce::Path corner;                                                       // the folded corner
+    corner.startNewSubPath (page.getRight() - fold, page.getY());
+    corner.lineTo (page.getRight() - fold, page.getY() + fold);
+    corner.lineTo (page.getRight(), page.getY() + fold);
+    corner.closeSubPath();
+    g.setColour (juce::Colour (0xffd5dbe3)); g.fillPath (corner);
+    g.setColour (juce::Colour (0xff9aa3b0)); g.strokePath (corner, juce::PathStrokeType (juce::jmax (1.0f, s * 0.012f)));
+    drawFermataLogo (g, juce::Rectangle<float> (page.getX() + page.getWidth() * 0.08f, page.getY() + page.getHeight() * 0.36f, page.getWidth() * 0.84f, page.getHeight() * 0.38f),
+                     juce::Colour (0xff1b1e23), theme::accent);
+    g.setColour (juce::Colour (0xffb9c1cc));                                 // a few lines of "writing" under the logo
+    for (int i = 0; i < 3; ++i)
+        g.fillRoundedRectangle (page.getX() + page.getWidth() * 0.14f, page.getY() + page.getHeight() * (0.80f + 0.055f * (float) i), page.getWidth() * (i == 2 ? 0.40f : 0.72f), s * 0.014f, s * 0.007f);
+    return img;
+}
+
+/** How the mixer's level meters behave (shared by all mixers, remembered between runs): what they show and how fast they move. */
+struct MeterSettings
+{
+    int mode = 0;      // 0 peak, 1 RMS, 2 both (RMS bar inside the peak bar)
+    int rise = 1;      // 0 instant, 1 fast (10 ms), 2 medium (50 ms), 3 slow (300 ms): how long the bar takes to climb to a new level
+    int fall = 1;      // 0 fast (90 dB/s), 1 medium (25 dB/s), 2 slow (12 dB/s), 3 very slow (6 dB/s)
+    int hold = 2;      // index into holdFor
+    static float riseMs (int i) noexcept { static const float v[] { 0.0f, 10.0f, 50.0f, 300.0f }; return v[juce::jlimit (0, 3, i)]; }
+    static float fallDbPerSec (int i) noexcept { static const float v[] { 90.0f, 25.0f, 12.0f, 6.0f }; return v[juce::jlimit (0, 3, i)]; }
+    static juce::uint32 holdFor (int i) noexcept { static const juce::uint32 v[] { 0, 1000, 3000, 10000, 30000, 0xffffffffu }; return v[juce::jlimit (0, 5, i)]; }
+};
+inline MeterSettings& meterSettings() { static MeterSettings s; return s; }
+
+/** A level meter. The main window's input / output meters: -60 .. 0 dB, green, orange from -9 dB, red from -2 dB, the peak marker held 10 s
+    (latched above -2 dBFS until resetPeak). The mixer's meters (useFaderScale) are drawn like Pyramix's: a dark well, a green bar that climbs at the
+    meter's rise time and falls at its fall rate, a lighter cap on it for the sample peak (instant, falling 60 dB/s), red above 0 dBFS, a peak-hold
+    line held for the hold time, and a clip light at the top. The scale is the fader's (+12 .. -80 dB, -20 dB at the middle). */
+class LevelMeter : public juce::Component
+{
+public:
+    static constexpr float kRedDb = -2.0f, kOrangeDb = -9.0f, kFloorDb = -60.0f;
+    static constexpr juce::uint32 kHoldMs = 10000;
+    static constexpr float kCapFallDbPerSec = 60.0f;                  // the sample-peak cap of the mixer's meters
+
+    explicit LevelMeter (bool vertical = true) : isVertical (vertical) {}
+
+    static float frac (float db) noexcept { return juce::jlimit (0.0f, 1.0f, (db - kFloorDb) / (0.0f - kFloorDb)); }
+
+    /** Where a level sits on a mixer fader's travel (-80 .. +12 dB, with -20 dB at the middle): the same mapping as the fader,
+        so one dB scale serves both and the meter lines up with the fader's markings. */
+    static float faderFrac (float db) noexcept
+    {
+        static const double skew = std::log (0.5) / std::log (60.0 / 92.0);
+        return (float) std::pow (juce::jlimit (0.0, 1.0, ((double) db + 80.0) / 92.0), skew);
+    }
+    /** Makes this meter use the fader's scale (it then reaches up to +12 dB) and the Pyramix look. */
+    void useFaderScale() noexcept { faderScale = true; }
+    float pos (float db) const noexcept { return faderScale ? faderFrac (db) : frac (db); }
+
+    // the Pyramix colours
+    static juce::Colour wellColour()  { return juce::Colour (0xff101010); }
+    static juce::Colour wellEdge()    { return juce::Colour (0xff232323); }
+    static juce::Colour barGreen()    { return juce::Colour (0xff83a84e); }
+    static juce::Colour capGreen()    { return juce::Colour (0xffa2d25e); }
+    static juce::Colour overRed()     { return juce::Colour (0xffdc5467); }
+    static juce::Colour clipOff()     { return juce::Colour (0xff3a1a20); }
+
+    void setLevel (float linearPeak, float linearRms = 0.0f)
+    {
+        const auto now = juce::Time::getMillisecondCounter();
+        const auto& ms = meterSettings();
+        const juce::uint32 holdMs = faderScale ? MeterSettings::holdFor (ms.hold) : kHoldMs;
+        if (faderScale)
+        {
+            // in dB, by the clock: the bar climbs with the rise time and falls at the fall rate, the cap is the sample peak falling at its own rate
+            const float dt = lastTick == 0 ? 0.033f : juce::jlimit (0.001f, 0.5f, (float) (now - lastTick) * 0.001f);
+            lastTick = now;
+            const float peakDb = juce::Decibels::gainToDecibels (linearPeak, -100.0f), rmsDb = juce::Decibels::gainToDecibels (linearRms, -100.0f);
+            const float riseMs = MeterSettings::riseMs (ms.rise), fallRate = MeterSettings::fallDbPerSec (ms.fall);
+            auto follow = [&] (float& v, float target)
+            {
+                if (target > v) v = riseMs <= 0.0f ? target : v + (target - v) * juce::jmin (1.0f, dt * 1000.0f / riseMs);
+                else            v = juce::jmax (target, v - fallRate * dt);
+            };
+            follow (barDb, peakDb);
+            follow (rmsBarDb, rmsDb);
+            capDb = peakDb > capDb ? peakDb : juce::jmax (peakDb, capDb - kCapFallDbPerSec * dt);
+            level = juce::Decibels::decibelsToGain (barDb, -100.0f); rmsLevel = juce::Decibels::decibelsToGain (rmsBarDb, -100.0f);
+        }
+        else
+        {
+            const float rc = 1.0f, fc = 0.82f;
+            auto follow = [&] (float& v, float target)
+            {
+                if (target > v) v += (target - v) * rc;
+                else            v = v * fc + target * (1.0f - fc);
+            };
+            follow (level, linearPeak);
+            follow (rmsLevel, linearRms);
+        }
+        if (linearPeak > juce::Decibels::decibelsToGain (kRedDb)) latched = true;
+        if (linearPeak >= 0.999f) clipped = true;                                   // the clip light: a sample at full scale
+        if (linearPeak >= hold) { hold = linearPeak; holdTime = now; }
+        else if (! latched && holdMs != 0xffffffffu && now - holdTime > holdMs) { hold = linearPeak; holdTime = now; }
+        // a meter that shows the same picture is not repainted (an idle input used to cost a repaint 30 times a second, forty of them on a big rig)
+        const bool same = std::abs (level - shownLevel) < 1.0e-4f && std::abs (rmsLevel - shownRms) < 1.0e-4f && hold == shownHold && latched == shownLatched
+                          && std::abs (capDb - shownCap) < 0.05f && clipped == shownClipped;
+        shownLevel = level; shownRms = rmsLevel; shownHold = hold; shownLatched = latched; shownCap = capDb; shownClipped = clipped;
+        if (! same) repaint();
+    }
+    float shownLevel = -1.0f, shownRms = -1.0f, shownHold = -1.0f, shownCap = -200.0f; bool shownLatched = false, shownClipped = false;
+
+    /** The 'Reset peaks' button. */
+    void resetPeak() { hold = 0.0f; latched = false; clipped = false; holdTime = juce::Time::getMillisecondCounter(); level = 0.0f; rmsLevel = 0.0f; barDb = rmsBarDb = capDb = -100.0f; repaint(); }
+    float getHoldDb() const noexcept { return juce::Decibels::gainToDecibels (hold, -100.0f); }
+    bool isLatched() const noexcept { return latched; }
+
+    static const std::initializer_list<int>& scaleDbs() { static const std::initializer_list<int> l { 0, -3, -6, -12, -20, -30, -40, -60 }; return l; }
+    static const std::initializer_list<int>& faderScaleDbs() { static const std::initializer_list<int> l { 12, 6, 0, -6, -12, -20, -30, -40, -60 }; return l; }
+
+    void paint (juce::Graphics& g) override
+    {
+        if (faderScale) { paintPyramix (g); return; }
+        auto b = getLocalBounds().toFloat();
+        g.setColour (theme::wellDark);
+        g.fillRect (b);
+        g.setColour (theme::border); g.drawRect (getLocalBounds(), 1);
+        const float h = pos (getHoldDb());
+        const float fo = pos (kOrangeDb), fr = pos (kRedDb);
+        auto bar = [&] (float lin, juce::Rectangle<float> area, float alpha)
+        {
+            const float f = pos (juce::Decibels::gainToDecibels (lin, kFloorDb));
+            auto zone = [&] (float from, float to, juce::Colour c)
+            {
+                to = juce::jmin (to, f);
+                if (to <= from) return;
+                g.setColour (c.withAlpha (alpha));
+                if (isVertical) g.fillRect (area.getX(), area.getBottom() - area.getHeight() * to, area.getWidth(), area.getHeight() * (to - from));
+                else            g.fillRect (area.getX() + area.getWidth() * from, area.getY(), area.getWidth() * (to - from), area.getHeight());
+            };
+            zone (0.0f, fo, juce::Colour (0xff35c46b));
+            zone (fo, fr, juce::Colour (0xffff9a1f));
+            zone (fr, 1.0f, juce::Colour (0xffe8281e));
+        };
+        bar (level, b, 1.0f);
+        if (isVertical && b.getHeight() > 40.0f)                                    // fine segment lines: the bar reads like an LED ladder
+        {
+            g.setColour (theme::wellDark.withAlpha (0.85f));
+            for (float y = b.getBottom() - 2.0f; y > b.getY(); y -= 3.0f) g.fillRect (b.getX(), y, b.getWidth(), 1.0f);
+        }
+        g.setColour (juce::Colours::black.withAlpha (0.35f));                      // scale ticks across the bar
+        for (int db : scaleDbs())
+        {
+            const float t = pos ((float) db);
+            if (isVertical) g.fillRect (b.getX(), b.getBottom() - b.getHeight() * t - 0.5f, b.getWidth(), 1.0f);
+            else            g.fillRect (b.getX() + b.getWidth() * t - 0.5f, b.getY(), 1.0f, b.getHeight());
+        }
+        if (hold > 0.0f)
+        {
+            g.setColour (latched ? juce::Colour (0xffff6a5a) : juce::Colours::white);
+            if (isVertical) g.fillRect (b.getX(), b.getBottom() - b.getHeight() * h - 1.0f, b.getWidth(), 2.0f);
+            else            g.fillRect (b.getX() + b.getWidth() * h - 1.0f, b.getY(), 2.0f, b.getHeight());
+        }
+    }
+
+    /** The clip light's height at the top of a Pyramix-style meter (the bar's travel starts under it). */
+    static constexpr int kClipH = 5;
+
+private:
+    /** The Pyramix look (vertical only): the well, the clip light, the bar in green with the part above 0 dB in red, the sample-peak cap in a
+        lighter green, the peak-hold line. 'mode' 1 shows the RMS as the bar; 2 shows the peak bar dimmed with the RMS bar full over it. */
+    void paintPyramix (juce::Graphics& g)
+    {
+        const auto b = getLocalBounds();
+        g.setColour (wellColour()); g.fillRect (b);
+        g.setColour (wellEdge());   g.drawRect (b, 1);
+        auto well = b.reduced (1);
+        auto clip = well.removeFromTop (kClipH);
+        g.setColour (clipped ? overRed() : clipOff()); g.fillRect (clip.reduced (1, 1));
+        well.removeFromTop (1);
+        const float top = (float) well.getY(), bottom = (float) well.getBottom(), span = bottom - top;
+        auto yOf = [&] (float db) { return bottom - span * faderFrac (db); };
+        const float y0 = yOf (0.0f);
+        auto bar = [&] (float db, int inset, float alpha)                        // from the floor up to db: green below 0 dB, red above
+        {
+            if (db <= -79.9f) return;
+            const float y = yOf (db);
+            const auto r = well.toFloat().reduced ((float) inset, 0.0f);
+            g.setColour (barGreen().withAlpha (alpha)); g.fillRect (r.getX(), juce::jmax (y, y0), r.getWidth(), bottom - juce::jmax (y, y0));
+            if (y < y0) { g.setColour (overRed().withAlpha (alpha)); g.fillRect (r.getX(), y, r.getWidth(), y0 - y); }
+        };
+        const int mode = meterSettings().mode;
+        const float peakBar = barDb, rmsBar = rmsBarDb;
+        if (mode == 0) bar (peakBar, 0, 1.0f);
+        else if (mode == 1) bar (rmsBar, 0, 1.0f);
+        else { bar (peakBar, 0, 0.45f); bar (rmsBar, 0, 1.0f); }
+        const float shownBar = mode == 1 ? rmsBar : peakBar;
+        if (capDb > shownBar + 0.1f && capDb > -79.9f)                             // the sample peak above the bar: the lighter cap
+        {
+            const float yc = yOf (capDb), yb = yOf (juce::jmax (shownBar, -80.0f));
+            const auto r = well.toFloat();
+            g.setColour (capDb > 0.0f ? overRed().brighter (0.15f) : capGreen());
+            g.fillRect (r.getX(), yc, r.getWidth(), juce::jmax (1.0f, yb - yc));
+        }
+        if (hold > 0.0f)                                                            // the peak-hold line
+        {
+            const float hdb = getHoldDb();
+            if (hdb > -79.9f)
+            {
+                g.setColour (hdb > 0.0f || latched ? overRed() : capGreen());
+                g.fillRect ((float) well.getX(), yOf (hdb) - 1.0f, (float) well.getWidth(), 2.0f);
+            }
+        }
+    }
+
+    bool isVertical;
+    bool faderScale = false;
+    float level = 0.0f, rmsLevel = 0.0f, hold = 0.0f;
+    float barDb = -100.0f, rmsBarDb = -100.0f, capDb = -100.0f;                  // the Pyramix-style meter's state, in dB
+    bool latched = false, clipped = false;
+    juce::uint32 holdTime = 0, lastTick = 0;
+};
+
+/** The dB numbers next to a vertical meter. Give it the same top and bottom as the meter. */
+class MeterScale : public juce::Component
+{
+public:
+    void paint (juce::Graphics& g) override
+    {
+        auto b = getLocalBounds().toFloat();
+        g.setFont (9.0f);
+        for (int db : LevelMeter::scaleDbs())
+        {
+            const float y = b.getBottom() - b.getHeight() * LevelMeter::frac ((float) db);
+            g.setColour (theme::dimText.brighter (0.3f));
+            g.drawText (juce::String (db), juce::Rectangle<float> (b.getX(), y - 6.0f, b.getWidth() - 1.0f, 12.0f), juce::Justification::centredRight, false);
+        }
+    }
+};
+
+inline juce::String formatTime (double seconds)
+{
+    const auto ms = (juce::int64) (seconds * 1000.0);
+    return juce::String::formatted ("%02d:%02d:%02d.%03d", (int) (ms / 3600000), (int) ((ms / 60000) % 60), (int) ((ms / 1000) % 60), (int) (ms % 1000));
+}
+
+/** A time as MM:SS (with 'decimals' digits after the seconds: 0, 2 or 3) under an hour, and HH:MM:SS from an hour on: the rulers and the
+    marks' readouts (they used to show MM:SS always, so an hour in they started again from 00:00). */
+inline juce::String formatTimeShort (double seconds, int decimals = 0)
+{
+    const auto full = formatTime (juce::jmax (0.0, seconds));                 // HH:MM:SS.mmm
+    const int tail = 8 + (decimals > 0 ? 1 + juce::jlimit (1, 3, decimals) : 0);   // HH:MM:SS + .d..
+    return seconds >= 3600.0 ? full.substring (0, tail) : full.substring (3, tail);
+}
+
+/** The little box in the top left corner of the take and edit windows (above the first track's name): while Ctrl, Alt, Shift or a mix of them is held,
+    it says what they do there. */
+namespace modhint
+{
+    enum { shift = 1, ctrl = 2, alt = 4 };
+    /** Which of them are held now, read from the keyboard itself (no key event needed): shift | ctrl | alt. */
+    inline int heldNow()
+    {
+        const auto m = juce::ModifierKeys::getCurrentModifiersRealtime();
+        return (m.isShiftDown() ? shift : 0) | (m.isCtrlDown() || m.isCommandDown() ? ctrl : 0) | (m.isAltDown() ? alt : 0);
+    }
+    /** Only for the window that has the keyboard, while Fermata is the program in front. */
+    inline int heldFor (const juce::Component& c)
+    {
+        auto* peer = c.getPeer();
+        return juce::Process::isForegroundProcess() && peer != nullptr && peer->isFocused() && c.isShowing() ? heldNow() : 0;
+    }
+    inline juce::String keysText (int bits)
+    {
+        juce::StringArray s;
+        if (bits & ctrl) s.add ("Ctrl");
+        if (bits & alt) s.add ("Alt");
+        if (bits & shift) s.add ("Shift");
+        return s.joinIntoString (" + ");
+    }
+    /** The box: the keys held along its top, then what they do here, one line each (or "nothing here" when the mix does nothing). */
+    inline void paint (juce::Graphics& g, juce::Rectangle<int> box, int bits, const juce::StringArray& lines)
+    {
+        if (bits == 0 || box.getWidth() < 40 || box.getHeight() < 24) return;
+        auto r = box.reduced (4, 3);
+        g.setColour (theme::accent.withAlpha (0.16f)); g.fillRoundedRectangle (r.toFloat(), 4.0f);
+        g.setColour (theme::accent.withAlpha (0.7f));  g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 4.0f, 1.0f);
+        r = r.reduced (6, 3);
+        g.setColour (theme::text); g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
+        g.drawText (keysText (bits), r.removeFromTop (15), juce::Justification::centredLeft, true);
+        g.setFont (juce::FontOptions (10.5f));
+        g.setColour (lines.isEmpty() ? theme::dimText : theme::text);
+        juce::StringArray shown;                                   // (a dot before each, so two hints that wrap are told apart)
+        for (auto& l : lines) shown.add (juce::String::fromUTF8 ("\xE2\x80\xA2 ") + l);
+        const auto body = lines.isEmpty() ? juce::String ("nothing different here") : shown.joinIntoString ("\n");
+        g.drawFittedText (body, r, juce::Justification::topLeft, juce::jmax (1, r.getHeight() / 12), 0.85f);
+    }
+}
+
+/** Shift + 4 (key 4 with Shift held: the key carries a different character then, so the key code is looked at too). */
+inline bool isShiftFour (const juce::KeyPress& k)
+{
+    const auto m = k.getModifiers();
+    if (! m.isShiftDown() || m.isCtrlDown() || m.isCommandDown() || m.isAltDown()) return false;
+    return k.getKeyCode() == '4' || k.getTextCharacter() == '$';
+}
+
+inline void showError (const juce::String& title, const juce::String& message)
+{
+    juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, title, message);
+}
+
+/** Asks "are you sure?" without blocking; runs onYes only if the person presses the first button ('noText' is the other one). */
+inline void confirmAsync (const juce::String& title, const juce::String& message, const juce::String& yesText, std::function<void()> onYes,
+                          const juce::String& noText = "Cancel")
+{
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon).withTitle (title).withMessage (message)
+                                      .withButton (yesText).withButton (noText),
+                                  [onYes = std::move (onYes)] (int r) { if (r == 1 && onYes) onYes(); });
+}
+
+/** Switches the whole program's look (set by the application: see ThemeSwitch.h). */
+inline std::function<void (bool dark)>& themeSwitchHook() { static std::function<void (bool)> f; return f; }
+
+/** The little sun / moon button that sits in the top-right corner of every window. */
+class ThemeToggleButton : public juce::Button
+{
+public:
+    ThemeToggleButton() : juce::Button ({})
+    {
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+        setWantsKeyboardFocus (false);
+        onClick = [] { if (themeSwitchHook()) themeSwitchHook() (! theme::isDark()); };
+        setSize (24, 22);
+    }
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        auto b = getLocalBounds().toFloat().reduced (0.5f);
+        g.setColour ((down ? theme::grid : over ? theme::button.brighter (0.15f) : theme::button).withAlpha (0.92f)); g.fillRoundedRectangle (b, 4.0f);
+        g.setColour (theme::border); g.drawRoundedRectangle (b, 4.0f, 1.0f);
+        g.setColour (theme::inkOn (theme::button));
+        auto c = b.getCentre();
+        if (theme::isDark())                                         // dark look on: a moon (click for light)
+        {
+            juce::Path moon; moon.addEllipse (c.x - 5.5f, c.y - 5.5f, 11.0f, 11.0f);
+            juce::Path bite; bite.addEllipse (c.x - 1.0f, c.y - 6.5f, 10.0f, 10.0f);
+            juce::Path both (moon); both.setUsingNonZeroWinding (false); both.addPath (bite);
+            g.saveState(); g.reduceClipRegion (moon);                // inside the moon only: the moon minus the bite is a crescent
+            g.fillPath (both);
+            g.restoreState();
+        }
+        else                                                         // light look on: a sun (click for dark)
+        {
+            g.fillEllipse (c.x - 3.4f, c.y - 3.4f, 6.8f, 6.8f);
+            for (int i = 0; i < 8; ++i)
+            {
+                const float a = juce::MathConstants<float>::twoPi * (float) i / 8.0f;
+                g.drawLine (c.x + std::cos (a) * 5.2f, c.y + std::sin (a) * 5.2f, c.x + std::cos (a) * 7.4f, c.y + std::sin (a) * 7.4f, 1.2f);
+            }
+        }
+    }
+    void mouseEnter (const juce::MouseEvent& e) override { setTooltip (theme::isDark() ? "Dark look is on (the desk a shade darker). Click for the light look." : "Light look is on. Click for the dark look (the same colours, a shade darker)."); juce::Button::mouseEnter (e); }
+};
+
+/** Keeps a ThemeToggleButton in the top-right corner of a window's content area. Call from the window's resized(). */
+inline void placeThemeToggle (juce::DocumentWindow& w, ThemeToggleButton& b)
+{
+    if (b.getParentComponent() != &w) w.addAndMakeVisible (b);
+    const auto area = w.getContentComponentBorder().subtractedFrom (w.getLocalBounds());
+    b.setTopRightPosition (area.getRight() - 6, area.getY() + 4);
+    b.toFront (false);
+}
+
+/** Puts a clear strip along the top of a window's content for the pin and sun / moon buttons that sit in its top-right corner, so they never cover anything. */
+class CornerStripHost : public juce::Component
+{
+public:
+    static constexpr int kStripH = 30;
+    explicit CornerStripHost (juce::Component* inner) : content (inner)
+    {
+        addAndMakeVisible (*content);
+        setWantsKeyboardFocus (content->getWantsKeyboardFocus());
+        setSize (content->getWidth(), content->getHeight() + kStripH);
+    }
+    void resized() override { content->setBounds (getLocalBounds().withTrimmedTop (kStripH)); }
+    void paint (juce::Graphics& g) override { g.fillAll (theme::window); }
+    void focusGained (FocusChangeType) override { content->grabKeyboardFocus(); }
+    std::unique_ptr<juce::Component> content;
+};
+
+/** A floating window that removes itself when closed. */
+/** Keys that work in every window (M = processing mixer, B = meter bridge, U = pitch pipe, I = click). Set by the application. */
+inline std::function<bool (const juce::KeyPress&)>& globalKeyHook() { static std::function<bool (const juce::KeyPress&)> f; return f; }
+/** Space and R belong to recording everywhere in the program (AppContext watches the keys themselves, so no window or button can swallow them):
+    while a take is recording, or while the Space that just stopped one is still held, a window's own Space does nothing. Set by AppContext. */
+inline std::function<bool()>& spaceBelongsToRecordingHook() { static std::function<bool()> f; return f; }
+inline bool spaceIsForRecording() { return spaceBelongsToRecordingHook() && spaceBelongsToRecordingHook()(); }
+/** A component (and everything inside it) whose R key has its own job (the edit window, the process windows) carries this property: R there does
+    not start a recording. */
+inline const juce::Identifier& ownsRKeyProperty() { static const juce::Identifier id ("fermataOwnsRKey"); return id; }
+
+/** The buttons and drop-downs in 'root' (and everything inside it) stop taking the keyboard when clicked, so the window's own keys (the arrows,
+    Space, Enter) keep working after a click on one of them. Text boxes and sliders are left alone: they need the keys. Call it once the children
+    have been made (3.1.2). */
+inline void keysStayWithWindow (juce::Component& root)
+{
+    for (auto* c : root.getChildren())
+    {
+        if (dynamic_cast<juce::Button*> (c) != nullptr || dynamic_cast<juce::ComboBox*> (c) != nullptr) c->setWantsKeyboardFocus (false);
+        keysStayWithWindow (*c);
+    }
+}
+
+/** The windows that were minimised: they are hidden and shown as title bars along the bottom of the main window. */
+class DockHub
+{
+public:
+    static DockHub& get() { static DockHub h; return h; }
+    void add (juce::DocumentWindow* w)
+    {
+        remove (w);
+        items.push_back (juce::Component::SafePointer<juce::DocumentWindow> (w));
+        changes.sendChangeMessage();
+    }
+    void remove (juce::DocumentWindow* w)
+    {
+        items.erase (std::remove_if (items.begin(), items.end(), [w] (const auto& p) { return p.getComponent() == nullptr || p.getComponent() == w; }), items.end());
+        changes.sendChangeMessage();
+    }
+    bool contains (juce::DocumentWindow* w) const { for (auto& p : items) if (p.getComponent() == w) return true; return false; }
+    /** Brings a window back from the bar (or just to the front if it was never minimised). */
+    void show (juce::DocumentWindow* w)
+    {
+        if (w == nullptr) return;
+        remove (w);
+        w->setVisible (true);
+        w->toFront (true);
+    }
+    std::vector<juce::DocumentWindow*> windows() const
+    {
+        std::vector<juce::DocumentWindow*> out;
+        for (auto& p : items) if (p.getComponent() != nullptr) out.push_back (p.getComponent());
+        return out;
+    }
+    juce::ChangeBroadcaster changes;
+private:
+    std::vector<juce::Component::SafePointer<juce::DocumentWindow>> items;
+};
+
+/** The area (screen coordinates) of the floating menu bar of the main window, or an empty rectangle when there is none. Tool windows keep their title bar out of it. */
+inline std::function<juce::Rectangle<int>()>& menuBarAvoidArea() { static std::function<juce::Rectangle<int>()> f; return f; }
+/** Brings the menu bar strip back in front of the other Fermata windows (not in front of other programs). Set by the main window. */
+inline std::function<void()>& menuBarRaise() { static std::function<void()> f; return f; }
+
+/** The little drawing-pin button next to the sun / moon: a pinned window stays in front of the other windows. Only one window is pinned at a time. */
+class PinButton : public juce::Button
+{
+public:
+    PinButton() : juce::Button ({})
+    {
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+        setWantsKeyboardFocus (false);
+        setClickingTogglesState (false);
+        setTooltip ("Pin: keeps this window in front of the others. Only one window can be pinned - pinning another one unpins this one.");
+        setSize (24, 22);
+    }
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        auto b = getLocalBounds().toFloat().reduced (0.5f);
+        const bool on = getToggleState();
+        g.setColour ((on ? juce::Colour (0xff2f7fd8) : down ? theme::grid : over ? theme::button.brighter (0.15f) : theme::button).withAlpha (0.92f)); g.fillRoundedRectangle (b, 4.0f);
+        g.setColour (on ? juce::Colour (0xff9fcbff) : theme::border); g.drawRoundedRectangle (b, 4.0f, 1.0f);
+        g.setColour (on ? juce::Colours::white : theme::inkOn (theme::button));
+        auto c = b.getCentre();
+        juce::Path pin;                                           // a drawing pin seen from the side, tilted
+        pin.addRoundedRectangle (-4.0f, -7.0f, 8.0f, 3.5f, 1.0f);   // the head
+        pin.addRectangle (-2.2f, -3.6f, 4.4f, 5.0f);                // the body
+        pin.addRectangle (-0.6f, 1.4f, 1.2f, 5.0f);                 // the needle
+        g.fillPath (pin, juce::AffineTransform::rotation (0.6f).translated (c.x, c.y));
+    }
+};
+
+/** The wood of the desk look: the side panels of every window and the rail along the bottom of the main window. */
+namespace wood
+{
+constexpr int kCheekW = 20;                       // the width of a wooden side panel
+constexpr int kBottomH = 16;                      // the wooden strip along the bottom of a window
+
+/** The Manuscript UI has no wood: the margins of its windows are the dark edge of the page, with a gilt rule towards the panel. */
+inline void paintManuscriptMargin (juce::Graphics& g, juce::Rectangle<int> r, int ruleSide)     // ruleSide: 0 right, 1 left, 2 top
+{
+    g.setColour (juce::Colour (0xff0b0c1a)); g.fillRect (r);
+    g.setColour (theme::border.withAlpha (0.9f));
+    if (ruleSide == 0) { g.fillRect (r.getRight() - 1, r.getY(), 1, r.getHeight()); g.setColour (theme::border.withAlpha (0.35f)); g.fillRect (r.getRight() - 4, r.getY(), 1, r.getHeight()); }
+    else if (ruleSide == 1) { g.fillRect (r.getX(), r.getY(), 1, r.getHeight()); g.setColour (theme::border.withAlpha (0.35f)); g.fillRect (r.getX() + 3, r.getY(), 1, r.getHeight()); }
+    else { g.fillRect (r.getX(), r.getY(), r.getWidth(), 1); g.setColour (theme::border.withAlpha (0.35f)); g.fillRect (r.getX(), r.getY() + 3, r.getWidth(), 1); }
+}
+
+inline void paintCheek (juce::Graphics& g, juce::Rectangle<int> r, bool leftSide)
+{
+    if (theme::manuscript()) { paintManuscriptMargin (g, r, leftSide ? 0 : 1); return; }
+    juce::ColourGradient gr (juce::Colour (0xff7a4a28), (float) r.getX(), 0.0f, juce::Colour (0xff6b3f20), (float) r.getRight(), 0.0f, false);
+    gr.addColour (0.45, juce::Colour (0xff8c5a32));
+    g.setGradientFill (gr); g.fillRect (r);
+    g.setColour (juce::Colour (0x33321808));
+    for (int x = r.getX() + 2; x < r.getRight(); x += 4) g.fillRect (x, r.getY(), 1, r.getHeight());           // the grain
+    g.setColour (juce::Colour (0x4dffe1b4)); g.fillRect (leftSide ? r.getRight() - 1 : r.getX(), r.getY(), 1, r.getHeight());   // a lit edge towards the panel
+    g.setColour (juce::Colour (0x59000000)); g.fillRect (leftSide ? r.getX() : r.getRight() - 1, r.getY(), 1, r.getHeight());
+    if (r.getHeight() < 60) return;
+    auto screw = [&] (float cy)
+    {
+        const float cx = (float) r.getCentreX();
+        g.setColour (juce::Colour (0xff8a6a1f)); g.fillEllipse (cx - 4.0f, cy - 4.0f, 8.0f, 8.0f);
+        g.setColour (juce::Colour (0xfff0dc9a)); g.fillEllipse (cx - 2.6f, cy - 2.6f, 5.2f, 5.2f);
+        g.setColour (juce::Colour (0xff8a6a1f)); g.drawLine (cx - 2.0f, cy + 1.0f, cx + 2.0f, cy - 1.0f, 1.0f);
+    };
+    screw ((float) r.getY() + 14.0f);
+    screw ((float) r.getBottom() - 14.0f);
+}
+/** The wooden strip along the bottom of a window: square along the top, rounded at the bottom corners, the grain running along it. */
+inline void paintBottom (juce::Graphics& g, juce::Rectangle<int> r, float corner = 6.0f)
+{
+    if (theme::manuscript()) { paintManuscriptMargin (g, r, 2); return; }
+    juce::Path shape; shape.addRoundedRectangle ((float) r.getX(), (float) r.getY() - corner - 2.0f, (float) r.getWidth(), (float) r.getHeight() + corner + 2.0f, corner);
+    g.saveState();
+    g.reduceClipRegion (r);
+    g.reduceClipRegion (shape);
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff8c5a32), 0.0f, (float) r.getY(), juce::Colour (0xff6b3f20), 0.0f, (float) r.getBottom(), false));
+    g.fillRect (r);
+    g.setColour (juce::Colour (0x33321808));
+    for (int y = r.getY() + 3; y < r.getBottom(); y += 4) g.fillRect (r.getX(), y, r.getWidth(), 1);
+    g.setColour (juce::Colour (0x61ffe1b4)); g.fillRect (r.getX(), r.getY(), r.getWidth(), 1);                  // a lit top edge
+    g.setColour (juce::Colour (0x47000000)); g.fillRect (r.getX(), r.getBottom() - 2, r.getWidth(), 2);
+    g.restoreState();
+}
+} // namespace wood
+
+class ToolWindow : public juce::DocumentWindow
+{
+public:
+    ToolWindow (const juce::String& title, std::function<void (ToolWindow*)> onClose)
+        : juce::DocumentWindow (title, theme::window, juce::DocumentWindow::allButtons), closeCallback (std::move (onClose))
+    {
+        setUsingNativeTitleBar (true);
+        setResizable (true, true);
+    }
+    ~ToolWindow() override { DockHub::get().remove (this); if (pinnedWindow().getComponent() == this) pinnedWindow() = nullptr; }
+    static juce::Component::SafePointer<ToolWindow>& pinnedWindow() { static juce::Component::SafePointer<ToolWindow> p; return p; }
+    /** Pins this window and unpins the one that was pinned before; false unpins it. A pinned window stays in front of the other FERMATA windows only -
+        it is not "always on top" of the whole desktop, so other programs can cover it like any window. */
+    void setPinned (bool on)
+    {
+        if (on)
+        {
+            if (auto* old = pinnedWindow().getComponent()) if (old != this) { old->pinTimer.stopTimer(); old->pinButton.setToggleState (false, juce::dontSendNotification); }
+            pinnedWindow() = this;
+            pinTimer.fn = [this] { keepInFront(); };
+            pinTimer.startTimer (250);
+            toFront (false);
+        }
+        else { if (pinnedWindow().getComponent() == this) pinnedWindow() = nullptr; pinTimer.stopTimer(); }
+        pinButton.setToggleState (on, juce::dontSendNotification);
+    }
+    /** While Fermata is the program in use and one of its own windows is active, the pinned window is brought back above it (without taking the keyboard). */
+    void keepInFront()
+    {
+        if (! isVisible() || ! juce::Process::isForegroundProcess()) return;
+        if (juce::ModalComponentManager::getInstance()->getNumModalComponents() > 0) return;
+        auto* active = juce::TopLevelWindow::getActiveTopLevelWindow();
+        if (active == nullptr || active == this) return;
+        auto* dw = dynamic_cast<juce::DocumentWindow*> (active);
+        if (dw == nullptr || ! dw->isUsingNativeTitleBar()) return;                  // an alert, a pop-up or a plug-in's own window stays in front
+        toFront (false);
+    }
+    struct PinTimer : public juce::Timer { std::function<void()> fn; void timerCallback() override { if (fn) fn(); } } pinTimer;
+    void resized() override
+    {
+        juce::DocumentWindow::resized(); placeThemeToggle (*this, themeToggle);
+        if (pinButton.getParentComponent() != this) { addAndMakeVisible (pinButton); pinButton.onClick = [this] { setPinned (! pinButton.getToggleState()); }; }
+        pinButton.setTopLeftPosition (themeToggle.getX() - pinButton.getWidth() - 4, themeToggle.getY()); pinButton.toFront (false);
+        keepTitleBarClear(); reportBounds();
+    }
+    void moved() override { juce::DocumentWindow::moved(); keepTitleBarClear(); reportBounds(); }
+    /** Set by the application once the window is in place: told the window's position and size whenever the user changes them (kept in the project). */
+    std::function<void (const juce::String&)> onBoundsChanged;
+    void reportBounds()
+    {
+        if (onBoundsChanged && ! adjusting && isShowing() && getPeer() != nullptr && ! isMinimised() && ! isFullScreen()) onBoundsChanged (getBounds().toString());
+    }
+    /** The menu bar floats above every window: if this window's title bar (close / minimise buttons) would end up under it, the window is moved down below the bar.
+        A maximised window is un-maximised and fitted to the screen below the bar instead. */
+    void keepTitleBarClear()
+    {
+        if (adjusting || ! isShowing() || getPeer() == nullptr || ! menuBarAvoidArea()) return;
+        const auto avoid = menuBarAvoidArea()();
+        if (avoid.isEmpty()) return;
+        const auto frame = getPeer()->getFrameSizeIfPresent();
+        const int titleH = juce::jmax (30, frame ? (*frame).getTop() : 0);
+        const auto b = getBounds();
+        const juce::Rectangle<int> title (b.getX(), b.getY() - titleH, b.getWidth(), titleH);
+        // a maximised window must not cover the bar at all (its title bar sits over the main window's, and its content over the menu bar);
+        // any other window only needs its title bar clear of it
+        const bool covers = isFullScreen() ? title.getUnion (b).intersects (avoid) || b.getY() < avoid.getBottom() : title.intersects (avoid);
+        if (! covers) return;
+        juce::Component::SafePointer<ToolWindow> safe (this);
+        juce::MessageManager::callAsync ([safe, avoid, titleH]
+        {
+            auto* w = safe.getComponent();
+            if (w == nullptr) return;
+            w->adjusting = true;
+            const int top = avoid.getBottom() + titleH;
+            if (w->isFullScreen())
+            {
+                w->setFullScreen (false);
+                auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (avoid)->userArea;
+                w->setBounds (area.getX(), top, area.getWidth(), juce::jmax (200, area.getBottom() - top));
+            }
+            else
+            {
+                // moved down below the bar; on a small screen (a laptop) it is also made shorter, so its bottom edge does not go off the screen
+                auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (w->getBounds())->userArea;
+                const int frameBottom = w->getPeer() != nullptr && w->getPeer()->getFrameSizeIfPresent() ? (*w->getPeer()->getFrameSizeIfPresent()).getBottom() : 8;
+                const int h = juce::jmin (w->getHeight(), juce::jmax (200, area.getBottom() - frameBottom - top));
+                w->setBounds (w->getX(), top, w->getWidth(), h);
+            }
+            w->adjusting = false;
+        });
+    }
+    ThemeToggleButton themeToggle;
+    PinButton pinButton;
+    bool adjusting = false;
+    /** Wooden side panels left and right of the content (the desk look only). */
+    bool woodSides = true;
+    juce::BorderSize<int> getContentComponentBorder() const override
+    {
+        auto b = juce::DocumentWindow::getContentComponentBorder();
+        if (woodSides) { b.setLeft (b.getLeft() + wood::kCheekW); b.setRight (b.getRight() + wood::kCheekW); b.setBottom (b.getBottom() + wood::kBottomH); }
+        return b;
+    }
+    void paint (juce::Graphics& g) override
+    {
+        g.saveState();
+        juce::DocumentWindow::paint (g);                  // (it narrows the drawing to the title bar and does not put that back)
+        g.restoreState();
+        if (! woodSides) return;
+        const auto inner = getContentComponentBorder().subtractedFrom (getLocalBounds());
+        wood::paintCheek (g, { inner.getX() - wood::kCheekW, inner.getY(), wood::kCheekW, inner.getHeight() }, true);
+        wood::paintCheek (g, { inner.getRight(), inner.getY(), wood::kCheekW, inner.getHeight() }, false);
+        wood::paintBottom (g, { inner.getX() - wood::kCheekW, inner.getBottom(), inner.getWidth() + 2 * wood::kCheekW, wood::kBottomH });
+    }
+    /** When this window was last the active one (a counter): used to put the windows back in the same order in front of the main window. */
+    int lastActive = 0;
+    void activeWindowStatusChanged() override
+    {
+        juce::DocumentWindow::activeWindowStatusChanged();
+        static int counter = 0;
+        if (isActiveWindow())
+        {
+            lastActive = ++counter; grabContentFocus();
+            keepTitleBarClear();                                                        // (also here: a window opened or put back where it covers the menu bar)
+            if (isTransportWindow) noteTransportWindow (this);
+            if (menuBarRaise()) juce::MessageManager::callAsync ([] { if (menuBarRaise()) menuBarRaise()(); });     // the menu bar stays in front of the Fermata windows
+        }
+    }
+    /** So the keyboard shortcuts (arrow-key zoom, C, Space ...) work as soon as the window is in front, without clicking in it first.
+        A text box that already has the keyboard keeps it. Only when this window really is the one in front on the desktop: JUCE still calls a
+        window "active" after the keyboard has gone to a window that is not a JUCE component - a plug-in's own editor, an ASIO driver's panel -
+        and taking the keyboard back then would pull this window over the plug-in and send the typing into it (R: a recording). */
+    void grabContentFocus()
+    {
+        juce::Component::SafePointer<ToolWindow> safe (this);
+        juce::MessageManager::callAsync ([safe]
+        {
+            auto* w = safe.getComponent();
+            if (w == nullptr || ! w->isShowing() || ! w->isActiveWindow() || ! isForegroundWindow (*w)) return;      // never pull a window forward just to give it the keyboard
+            auto* cur = juce::Component::getCurrentlyFocusedComponent();
+            if (cur != nullptr && w->isParentOf (cur) && dynamic_cast<juce::TextEditor*> (cur) != nullptr) return;
+            if (auto* c = w->getContentComponent()) if (c->getWantsKeyboardFocus()) c->grabKeyboardFocus();
+        });
+    }
+    /** Whenever the keyboard is left with nobody (a text box let go of it with Enter, a pop-up closed) while a Fermata window is in front, that
+        window's contents take it back at once, so its keys work straight away - no click needed, in the window or on its title bar. Without this,
+        JUCE hands the keys to the window frame, and a click on the title bar of a window that is in front already gives the keyboard to nothing
+        (or, in a window whose contents do not take the keyboard themselves, to its first text box: typing R then went into a name).
+        Installed once by the program; the main window's contents count too. Nothing is taken from a plug-in's window or a driver's own panel:
+        the window must be the one in front on the desktop (see grabContentFocus). */
+    class FocusKeeper : private juce::FocusChangeListener
+    {
+    public:
+        FocusKeeper() { juce::Desktop::getInstance().addFocusChangeListener (this); }
+        ~FocusKeeper() override { juce::Desktop::getInstance().removeFocusChangeListener (this); }
+    private:
+        void globalFocusChanged (juce::Component* focused) override
+        {
+            if (focused != nullptr) return;
+            juce::MessageManager::callAsync ([]
+            {
+                if (juce::Component::getCurrentlyFocusedComponent() != nullptr || ! juce::Process::isForegroundProcess()) return;
+                if (juce::ModalComponentManager::getInstance()->getNumModalComponents() > 0) return;
+                auto* active = juce::TopLevelWindow::getActiveTopLevelWindow();
+                if (active == nullptr || ! isForegroundWindow (*active)) return;
+                if (auto* tw = dynamic_cast<ToolWindow*> (active)) { tw->grabContentFocus(); return; }
+                if (auto* rw = dynamic_cast<juce::ResizableWindow*> (active))                 // (the main window)
+                    if (auto* c = rw->getContentComponent()) if (c->getWantsKeyboardFocus() && rw->isShowing()) c->grabKeyboardFocus();
+            });
+        }
+    };
+    void closeButtonPressed() override { if (closeCallback) closeCallback (this); }
+    /** Minimising does not send the window to the taskbar: it is hidden and appears as a title bar at the bottom of the main window. */
+    void minimisationStateChanged (bool nowMinimised) override
+    {
+        if (! nowMinimised) return;
+        juce::Component::SafePointer<ToolWindow> safe (this);
+        juce::MessageManager::callAsync ([safe]
+        {
+            if (auto* w = safe.getComponent()) { w->setMinimised (false); w->setVisible (false); DockHub::get().add (w); }
+        });
+    }
+    bool keyPressed (const juce::KeyPress& k) override
+    {
+        if (globalKeyHook() && globalKeyHook() (k)) return true;
+        // Tab with the keyboard on the window or its contents as a whole (not in a box or on a button) would hand it to the first text box in the
+        // window (JUCE's fallback for a Tab nobody used), and R or Space would then be typing: swallowed. Tab inside a box still moves to the next one.
+        if (k.getKeyCode() == juce::KeyPress::tabKey)
+            if (auto* f = juce::Component::getCurrentlyFocusedComponent(); f == nullptr || f == this || f == getContentComponent()) return true;
+        // Nothing inside this window has the keyboard (a name box let go of it with Enter, say): JUCE then hands every key to the window itself, which
+        // used to drop it, so the take / edit window's keys (Space to play, the arrows, 1 / 2 / 3 ...) were dead until something in it was clicked -
+        // clicking its title bar did not help, as the window was active already. The keys go to the contents, as if they had the keyboard.
+        if (! forwardKeys)
+            if (auto* c = getContentComponent(); c != nullptr && ! focusIsInside() && c->keyPressed (k)) { grabContentFocus(); return true; }
+        // e.g. a mixer: the keys (Space, R, 1, 2 ...) go on to the take / edit window that was last in use. From every other window (one whose own
+        // contents had no use for it: not the Mastering or Trim window, which play themselves) Space does too, so it always plays / stops the take or
+        // edit window you were last in, even one that is down in the bar
+        const bool space = isPlainSpace (k);
+        if (forwardKeys || (space && ! isTransportWindow))
+            if (auto* t = lastTransportWindow())
+                if (t != this && (t->isVisible() || space))
+                    if (auto* c = t->getContentComponent()) if (c->keyPressed (k)) return true;
+        return juce::DocumentWindow::keyPressed (k);
+    }
+    /** Whether the component that has the keyboard is inside this window's contents. */
+    bool focusIsInside() const
+    {
+        auto* f = juce::Component::getCurrentlyFocusedComponent();
+        auto* c = getContentComponent();
+        return f != nullptr && c != nullptr && (f == c || c->isParentOf (f));
+    }
+    static bool isPlainSpace (const juce::KeyPress& k) { return k.getKeyCode() == juce::KeyPress::spaceKey && ! k.getModifiers().isAnyModifierKeyDown(); }
+    bool isTransportWindow = false;                       // a take window or an edit window: it becomes the target of the keys of the windows that forward them
+    bool forwardKeys = false;                             // a mixer, meter bridge ...: keys that it does not use itself are passed to the last take / edit window
+    /** The take or edit window that was in front most recently and is still there (open, or down in the bar); if that one has been closed, the one before it. */
+    static ToolWindow* lastTransportWindow()
+    {
+        auto& list = recentTransportWindows();
+        for (auto it = list.rbegin(); it != list.rend(); ++it) if (auto* w = it->getComponent()) return w;
+        return nullptr;
+    }
+    static void noteTransportWindow (ToolWindow* w)
+    {
+        auto& list = recentTransportWindows();
+        list.erase (std::remove_if (list.begin(), list.end(), [w] (const juce::Component::SafePointer<ToolWindow>& p) { return p == nullptr || p.getComponent() == w; }), list.end());
+        list.emplace_back (w);
+    }
+private:
+    static std::vector<juce::Component::SafePointer<ToolWindow>>& recentTransportWindows() { static std::vector<juce::Component::SafePointer<ToolWindow>> v; return v; }
+    std::function<void (ToolWindow*)> closeCallback;
+};
+
+/** A click anywhere in 'root' outside the text box being typed in ends the typing there (the box keeps what was typed, as with Enter). In JUCE a click
+    on something that does not take the keyboard (a panel, a label, empty space) leaves the text box with the keyboard, so it looked as if it was still
+    being edited. Keep this alive as long as 'root'. */
+class ClickAwayEndsTyping : private juce::MouseListener
+{
+public:
+    explicit ClickAwayEndsTyping (juce::Component& r) : root (r) { root.addMouseListener (this, true); }
+    ~ClickAwayEndsTyping() override { root.removeMouseListener (this); }
+private:
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        auto* te = dynamic_cast<juce::TextEditor*> (juce::Component::getCurrentlyFocusedComponent());
+        if (te == nullptr || ! root.isParentOf (te)) return;
+        if (e.originalComponent == te || te->isParentOf (e.originalComponent)) return;        // a click in the box itself (or one that went to another box, which now has the keyboard)
+        te->giveAwayKeyboardFocus();
+    }
+    juce::Component& root;
+};
+
+/** Captions above their boxes, as one block of a top bar: the first caption and box are as tall as the Next Take box (the box in line with its bottom);
+    each further pair (addPair) goes under a thin line. Every box is as wide as the block.
+    Top-aligned (setTopAligned): the first caption starts at the very top and every pair is as close as it can be (the take window's column). */
+class StackedField : public juce::Component
+{
+public:
+    static constexpr int kFirstH = 58, kPairH = 54;          // the first pair, and each one after it (the line, the caption, the box)
+    static constexpr int kCapH = 18, kTightPairH = 44, kTightGap = 9;   // top-aligned: a caption, the box 2 under it; the space with the line between two pairs
+    StackedField (juce::Label& caption, juce::Component& field) { addPair (caption, field); }
+    void setTopAligned (bool on) { topAligned = on; resized(); repaint(); }
+    void addPair (juce::Label& caption, juce::Component& field)
+    {
+        caption.setFont (juce::FontOptions (13.0f));
+        caption.setBorderSize (juce::BorderSize<int> (0, 2, 0, 0));
+        caption.setJustificationType (juce::Justification::bottomLeft);
+        addAndMakeVisible (caption); addAndMakeVisible (field);
+        pairs.push_back ({ &caption, &field });
+        resized();
+    }
+    int idealHeight() const
+    {
+        const int n = (int) pairs.size();
+        return topAligned ? n * kTightPairH + (n - 1) * kTightGap : kFirstH + (n - 1) * kPairH;
+    }
+    void resized() override
+    {
+        const int fh = grid::btnH, w = getWidth();
+        if (topAligned)
+        {
+            for (size_t i = 0; i < pairs.size(); ++i)
+            {
+                const int top = (int) i * (kTightPairH + kTightGap);
+                pairs[i].first->setBounds (0, top, w, kCapH);
+                pairs[i].second->setBounds (0, top + kTightPairH - fh, w, fh);
+            }
+            return;
+        }
+        for (size_t i = 0; i < pairs.size(); ++i)
+        {
+            const int top = i == 0 ? 0 : kFirstH + (int) (i - 1) * kPairH + 6, bottom = i == 0 ? kFirstH : top + kPairH - 6;
+            pairs[i].second->setBounds (0, bottom - fh - 3, w, fh);       // the box at the bottom of its stretch
+            pairs[i].first->setBounds (0, top, w, bottom - fh - 6 - top); // the words just above it
+        }
+    }
+    void paint (juce::Graphics& g) override
+    {
+        g.setColour (theme::dimText.withAlpha (0.35f));
+        for (size_t i = 1; i < pairs.size(); ++i)                                                   // the line between two pairs
+            g.fillRect (0, topAligned ? (int) i * (kTightPairH + kTightGap) - kTightGap / 2 - 1 : kFirstH + (int) (i - 1) * kPairH + 2, getWidth(), 1);
+    }
+private:
+    std::vector<std::pair<juce::Label*, juce::Component*>> pairs;
+    bool topAligned = false;
+};
+
+/** The square "Next Take 4" / "This Take 4" box: green while idle, red while recording. Shown in the take window and on the main page.
+    A number of 0 (or less) while idle = no take window is open: a grey box with a dash (3.0.1). */
+class NextTakeBox : public juce::Component
+{
+public:
+    NextTakeBox() { setInterceptsMouseClicks (false, false); }
+    void set (bool isRecording, int takeNumber)
+    {
+        if (isRecording == recording && takeNumber == number) return;
+        recording = isRecording; number = takeNumber; repaint();
+    }
+    /** Compact: just the colour and the number (for the menu bar). */
+    void setCompact (bool c) { compact = c; repaint(); }
+    void paint (juce::Graphics& g) override
+    {
+        const bool none = ! recording && number <= 0;
+        const auto text = none ? juce::String::charToString (0x2013) : juce::String (number);          // (an en dash: no take window open)
+        auto r = getLocalBounds().toFloat().reduced (0.5f);
+        g.setColour (recording ? juce::Colour (0xffc62828) : none ? juce::Colour (0xff5c636e) : juce::Colour (0xff1f8f4e)); g.fillRoundedRectangle (r, compact ? 4.0f : 5.0f);
+        g.setColour (juce::Colours::white.withAlpha (none ? 0.35f : 0.55f)); g.drawRoundedRectangle (r, compact ? 4.0f : 5.0f, 1.0f);
+        g.setColour (juce::Colours::white.withAlpha (none ? 0.85f : 1.0f));
+        if (compact)
+        {
+            g.setFont (juce::FontOptions ((float) getHeight() * 0.62f, juce::Font::bold));
+            g.drawText (text, getLocalBounds(), juce::Justification::centred, false);
+            return;
+        }
+        auto top = getLocalBounds().removeFromTop (juce::jmax (14, getHeight() / 3));
+        g.setFont (juce::FontOptions ((float) top.getHeight() * 0.62f, juce::Font::bold));
+        g.drawText (recording ? "This Take" : "Next Take", top.withTrimmedTop (3), juce::Justification::centred, false);
+        g.setFont (juce::FontOptions ((float) getHeight() * 0.50f, juce::Font::bold));
+        g.drawText (text, getLocalBounds().withTrimmedTop (top.getHeight()), juce::Justification::centred, false);
+    }
+private:
+    bool recording = false, compact = false; int number = 1;
+};
+
+/** The playhead-mode button: a play triangle with a line to its left. Lit = the playhead moves with the time (stays where you stop). */
+class PlayheadModeButton : public juce::Button
+{
+public:
+    PlayheadModeButton() : juce::Button ({}) { setClickingTogglesState (false); }
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        auto b = getLocalBounds().toFloat().reduced (0.5f);
+        const bool on = getToggleState();
+        g.setColour (on ? theme::accent : down ? theme::button.brighter (0.2f) : over ? theme::button.brighter (0.1f) : theme::button); g.fillRoundedRectangle (b, 4.0f);
+        g.setColour (on ? theme::accent.brighter (0.4f) : theme::border); g.drawRoundedRectangle (b, 4.0f, 1.0f);
+        const auto c = b.getCentre();
+        g.setColour (on ? juce::Colours::white : theme::text);
+        g.fillRect (c.x - 8.0f, c.y - 6.0f, 2.0f, 12.0f);                                        // the line (where playback began)
+        juce::Path tri; tri.addTriangle (c.x - 3.5f, c.y - 6.0f, c.x - 3.5f, c.y + 6.0f, c.x + 7.0f, c.y);
+        g.fillPath (tri);
+    }
+};
+
+/** The small blue "i": click it and the explanation of the window or section appears in a box (click anywhere else to close it).
+    setText() takes the text, so it can replace a Label that used to show the explanation all the time. */
+class InfoNote : public juce::Button
+{
+public:
+    InfoNote() : juce::Button ({}) { setClickingTogglesState (false); setMouseCursor (juce::MouseCursor::PointingHandCursor); setWantsKeyboardFocus (false); setSize (20, 20); setTooltip ("Information"); }
+    void setText (const juce::String& t, juce::NotificationType = juce::dontSendNotification) { help = t; setVisible (help.isNotEmpty()); }
+    template <typename... A> void setJustificationType (A&&...) {}
+    template <typename... A> void setFont (A&&...) {}
+    template <typename... A> void setColour (A&&...) {}
+    /** Puts the button (20 x 20) at the right-hand end of 'area', vertically centred. */
+    void placeRightOf (juce::Rectangle<int> area) { setBounds (area.removeFromRight (22).withSizeKeepingCentre (20, 20)); }
+    void placeTopRight (juce::Component& parent, int margin = 4) { setBounds (parent.getWidth() - 20 - margin, margin, 20, 20); toFront (false); }
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        auto b = getLocalBounds().toFloat().reduced (0.5f);
+        g.setColour (down ? juce::Colour (0xff1c5cc0) : over ? juce::Colour (0xff4a8af0) : juce::Colour (0xff2f74e0)); g.fillRoundedRectangle (b, 4.0f);
+        g.setColour (juce::Colour (0xff9cc4ff)); g.drawRoundedRectangle (b, 4.0f, 1.0f);
+        g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+        g.drawText ("i", getLocalBounds(), juce::Justification::centred, false);
+    }
+    void clicked() override
+    {
+        if (help.isEmpty()) return;
+        struct Text : juce::Component
+        {
+            juce::TextLayout layout;
+            explicit Text (const juce::String& t)
+            {
+                juce::AttributedString as; as.setJustification (juce::Justification::topLeft);
+                as.append (t, juce::FontOptions (13.5f), juce::Colours::white);
+                layout.createLayout (as, 420.0f);
+                setSize (452, (int) std::ceil (layout.getHeight()) + 28);
+            }
+            void paint (juce::Graphics& g) override { layout.draw (g, getLocalBounds().reduced (16, 14).toFloat()); }
+        };
+        auto box = std::make_unique<Text> (help);
+        juce::CallOutBox::launchAsynchronously (std::move (box), getScreenBounds(), nullptr);
+    }
+private:
+    juce::String help;
+};
+
+/** The WaveColour button: a small rainbow. Dim = off; click and it brightens and the waveforms are coloured by their sound. */
+class RainbowButton : public juce::Button
+{
+public:
+    RainbowButton() : juce::Button ({}) { setClickingTogglesState (false); }
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        auto b = getLocalBounds().toFloat().reduced (0.5f);
+        const bool on = getToggleState();
+        g.setColour (on ? theme::button.brighter (0.35f) : down ? theme::button.brighter (0.2f) : over ? theme::button.brighter (0.1f) : theme::button); g.fillRoundedRectangle (b, 4.0f);
+        g.setColour (on ? theme::accent : theme::border); g.drawRoundedRectangle (b, 4.0f, on ? 1.6f : 1.0f);
+        const auto c = juce::Point<float> (b.getCentreX(), b.getCentreY() + 5.0f);
+        static const juce::uint32 cols[] = { 0xffe53935, 0xfffb8c00, 0xfffdd835, 0xff43a047, 0xff1e88e5, 0xff8e24aa };
+        for (int i = 0; i < 6; ++i)
+        {
+            const float r = 11.5f - 1.7f * (float) i;
+            juce::Path arc; arc.addCentredArc (c.x, c.y, r, r, 0.0f, -juce::MathConstants<float>::halfPi, juce::MathConstants<float>::halfPi, true);
+            arc.clear(); arc.addCentredArc (c.x, c.y, r, r, 0.0f, -juce::MathConstants<float>::halfPi, juce::MathConstants<float>::halfPi, true);
+            g.setColour (juce::Colour (cols[i]).withAlpha (on ? 1.0f : 0.38f));
+            g.strokePath (arc, juce::PathStrokeType (1.7f));
+        }
+    }
+};
+
+/** The Loop button: two arrows chasing each other round a circle. Grey when off, bright orange when on. */
+class LoopButton : public juce::Button
+{
+public:
+    LoopButton() : juce::Button ({}) { setClickingTogglesState (true); }
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        auto b = getLocalBounds().toFloat().reduced (0.5f);
+        const bool on = getToggleState();
+        const auto lit = juce::Colour (0xffffa000);
+        g.setColour (on ? lit : down ? theme::button.brighter (0.2f) : over ? theme::button.brighter (0.1f) : theme::button); g.fillRoundedRectangle (b, 4.0f);
+        g.setColour (on ? lit.brighter (0.5f) : theme::border); g.drawRoundedRectangle (b, 4.0f, on ? 1.6f : 1.0f);
+        const auto ink = on ? juce::Colour (0xff1a1a1a) : theme::text.withAlpha (0.85f);
+        const auto c = b.getCentre();
+        const float r = juce::jmin (b.getWidth(), b.getHeight()) * 0.27f;
+        const float pi = juce::MathConstants<float>::pi;
+        g.setColour (ink);
+        for (int k = 0; k < 2; ++k)                                   // two arcs, each ending in an arrow head, going round the same way
+        {
+            const float a0 = (float) k * pi + 0.45f, a1 = a0 + pi - 0.9f;
+            juce::Path arc; arc.addCentredArc (c.x, c.y, r, r, 0.0f, a0, a1, true);
+            g.strokePath (arc, juce::PathStrokeType (1.9f));
+            const float tx = c.x + r * std::sin (a1), ty = c.y - r * std::cos (a1);               // the arc's end point
+            const float dx = std::cos (a1), dy = std::sin (a1);                                    // the direction of travel there
+            const float nx = -dy, ny = dx;
+            juce::Path head; head.addTriangle (tx + dx * 4.2f, ty + dy * 4.2f, tx + nx * 3.2f, ty + ny * 3.2f, tx - nx * 3.2f, ty - ny * 3.2f);
+            g.fillPath (head);
+        }
+    }
+};
+
+/** The little pictures on the buttons of the edit and take windows. Each is drawn from a 24 x 24 grid so it stays sharp at any size. */
+enum class Icon { Start, Rewind, Play, Stop, Forward, End, Record, Trim, Bounce, Pitch, Repair, Reharm, Tracks, Feedback, Mixer, Earlier, Later, Delete, Undo, Automation,
+                  ExportProc, ImportMulti, Markers, FeedbackMarkers, SlipLeft, SlipRight, Shuffle, InsertFlag, NextAtEnd,
+                  Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search, Denoise, Align, TakeSheet, RoomTone, NoiseMode, ReTimEr, VideoExport, AafExport };
+
+inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area, juce::Colour ink = theme::text)
+{
+    using juce::Colour; using P = juce::Path;
+    const Colour W = ink, Rd (0xffe5484d), Bl (0xff6fb3ff), Ye (0xffe8b923), Dk (0xff2d3340);
+    const float sc = juce::jmin (area.getWidth(), area.getHeight()) / 24.0f;
+    g.saveState();
+    g.addTransform (juce::AffineTransform::scale (sc).translated (area.getCentreX() - 12.0f * sc, area.getCentreY() - 12.0f * sc));
+    const auto round = [] (float w) { return juce::PathStrokeType (w, juce::PathStrokeType::curved, juce::PathStrokeType::rounded); };
+    auto fill = [&] (const P& p, Colour c) { g.setColour (c); g.fillPath (p); };
+    auto stroke = [&] (const P& p, float w, Colour c) { g.setColour (c); g.strokePath (p, round (w)); };
+    auto seg = [&] (float x1, float y1, float x2, float y2, float w, Colour c) { P p; p.startNewSubPath (x1, y1); p.lineTo (x2, y2); stroke (p, w, c); };
+    auto tri = [&] (float a, float b, float c2, float d, float e, float f, Colour c) { P p; p.addTriangle (a, b, c2, d, e, f); fill (p, c); };
+    auto rect = [&] (float x, float y, float w, float h, float r, Colour c) { P p; p.addRoundedRectangle (x, y, w, h, r); fill (p, c); };
+    auto clock = [&] (float cx, float cy, float r)
+    {
+        g.setColour (Dk); g.fillEllipse (cx - r, cy - r, 2 * r, 2 * r);
+        g.setColour (W); g.drawEllipse (cx - r, cy - r, 2 * r, 2 * r, 1.5f);
+        P h; h.startNewSubPath (cx, cy - 3.6f); h.lineTo (cx, cy); h.lineTo (cx + 2.6f, cy + 1.6f); stroke (h, 1.3f, W);
+        P bl; bl.addCentredArc (cx - 4.8f, cy - 5.8f, 2.6f, 2.6f, 0, -2.6f, 0.2f, true); stroke (bl, 1.6f, W);
+        P br; br.addCentredArc (cx + 4.8f, cy - 5.8f, 2.6f, 2.6f, 0, -0.2f, 2.6f, true); stroke (br, 1.6f, W);
+        seg (cx - 4.5f, cy + 6.0f, cx - 6.1f, cy + 8.2f, 1.4f, W); seg (cx + 4.5f, cy + 6.0f, cx + 6.1f, cy + 8.2f, 1.4f, W);
+    };
+    auto shout = [&]
+    {
+        P h; h.startNewSubPath (10, 3.5f); h.cubicTo (6.7f, 3.5f, 4.6f, 5.8f, 4.6f, 8.7f); h.cubicTo (4.6f, 9.9f, 5, 10.7f, 5.4f, 11.5f); h.cubicTo (4.9f, 12.3f, 5.1f, 13, 5.7f, 13.3f);
+            h.cubicTo (5.3f, 14.1f, 5.7f, 14.7f, 6.4f, 14.9f); h.cubicTo (6.4f, 15.9f, 7.1f, 16.5f, 8.1f, 16.6f); h.lineTo (8.1f, 19); h.lineTo (13.5f, 19); h.lineTo (13.5f, 16.5f);
+            h.cubicTo (15.5f, 15.8f, 16.5f, 14.5f, 16.5f, 12.5f); h.lineTo (16.5f, 8.7f); h.cubicTo (16.5f, 5.8f, 14.1f, 3.5f, 10, 3.5f); h.closeSubPath();
+            fill (h, Colour (0xffe0b894)); g.setColour (Colour (0xff9c7a5c)); g.strokePath (h, juce::PathStrokeType (0.6f));
+            const Colour br (0xff6a4a30);
+            seg (12.4f, 8.3f, 14.6f, 7.5f, 0.9f, br); seg (12.6f, 9.5f, 14.8f, 9.7f, 0.9f, br); seg (7.6f, 8.2f, 9.6f, 9, 0.9f, br); seg (7.8f, 10.2f, 9.4f, 10.2f, 0.9f, br);
+            g.setColour (Colour (0xff3a1f1f)); g.fillEllipse (10.4f, 12.1f, 2.8f, 3.8f);
+            seg (17, 9.5f, 21, 8, 1.4f, Ye); seg (17.5f, 12.3f, 21.7f, 12.3f, 1.4f, Ye); seg (17, 15, 21, 16.5f, 1.4f, Ye);
+    };
+    auto arrowH = [&] (float x1, float x2, float y, Colour c, float sw)
+    {
+        const float d = x2 > x1 ? 1.0f : -1.0f;
+        P p; p.startNewSubPath (x1, y); p.lineTo (x2, y); p.startNewSubPath (x2 - d * 2.8f, y - 2.8f); p.lineTo (x2, y); p.lineTo (x2 - d * 2.8f, y + 2.8f); stroke (p, sw, c);
+    };
+    auto container = [&] (float x, float y, float w, float h)
+    {
+        const Colour ed (0xff8f3a24);
+        P r; r.addRoundedRectangle (x, y, w, h, 1.0f); fill (r, Colour (0xffd9623f)); g.setColour (ed); g.strokePath (r, juce::PathStrokeType (0.7f));
+        for (int i = 1; i <= 4; ++i) { const float xx = x + (float) i * w / 5.0f; seg (xx, y + 1.2f, xx, y + h - 1.2f, 0.9f, ed); }
+        g.setColour (ed); g.fillRect (x, y + h - 1.4f, w, 1.4f);
+    };
+    auto clipboard = [&] (float x, float y, float w, float h)
+    {
+        P r; r.addRoundedRectangle (x, y + 1.2f, w, h - 1.2f, 1.2f); fill (r, Dk); g.setColour (W); g.strokePath (r, juce::PathStrokeType (1.3f));
+        rect (x + w / 2 - 1.9f, y, 3.8f, 2.6f, 0.8f, W);
+        seg (x + 1.6f, y + 5.2f, x + w - 1.6f, y + 5.2f, 1.0f, W); seg (x + 1.6f, y + 7.6f, x + w - 1.6f, y + 7.6f, 1.0f, W); seg (x + 1.6f, y + 10.0f, x + w - 3.4f, y + 10.0f, 1.0f, W);
+    };
+    auto highlighter = [&] (const juce::AffineTransform& tr)
+    {
+        g.saveState(); g.addTransform (tr);
+        g.saveState(); g.addTransform (juce::AffineTransform::rotation (juce::degreesToRadians (40.0f), 12.0f, 11.0f));
+        rect (8.6f, 1.5f, 6.8f, 4, 1, W);
+        { P b; b.addRectangle (8.6f, 5.5f, 6.8f, 9.0f); fill (b, Ye); }
+        { P t; t.addQuadrilateral (8.6f, 14.5f, 15.4f, 14.5f, 13.9f, 18.5f, 10.1f, 18.5f); fill (t, Colour (0xfff4dc6a)); }
+        { P n; n.addQuadrilateral (10.6f, 18.5f, 13.4f, 18.5f, 12.9f, 20.5f, 11.1f, 20.5f); fill (n, Colour (0xff1b1e24)); }
+        g.restoreState();
+        seg (3, 21.6f, 14, 21.6f, 2.6f, Ye.withAlpha (0.85f));
+        g.restoreState();
+    };
+    auto peel = [&] (float ox, float oy)
+    {
+        const Colour E (0xffa9811a), C (0xfff6e7a8);
+        g.saveState(); g.addTransform (juce::AffineTransform::translation (ox, oy));
+        auto flap = [&] (const P& pp, Colour c, bool edge) { fill (pp, c); if (edge) { g.setColour (E); g.strokePath (pp, juce::PathStrokeType (0.7f)); } };
+        auto cb = [&] (float x0, float y0, float a1, float b1, float a2, float b2, float x1, float y1, float a3, float b3, float a4, float b4, float x2, float y2)
+        { P q; q.startNewSubPath (x0, y0); q.cubicTo (a1, b1, a2, b2, x1, y1); q.cubicTo (a3, b3, a4, b4, x2, y2); q.closeSubPath(); return q; };
+        flap (cb (7.5f, 7.5f, 4, 6.2f, 0.8f, 8.6f, 0.6f, 14.4f, 3.4f, 12.6f, 5.8f, 12.2f, 7.5f, 11.8f), Ye, true);
+        flap (cb (7.5f, 8, 4.5f, 7.4f, 2.4f, 9.4f, 2, 12.6f, 4.2f, 11.4f, 5.9f, 11, 7.5f, 10.8f), C, false);
+        flap (cb (7.5f, 7.5f, 11, 6.2f, 14.2f, 8.6f, 14.4f, 14.4f, 11.6f, 12.6f, 9.2f, 12.2f, 7.5f, 11.8f), Ye, true);
+        flap (cb (7.5f, 8, 10.5f, 7.4f, 12.6f, 9.4f, 13, 12.6f, 10.8f, 11.4f, 9.1f, 11, 7.5f, 10.8f), C, false);
+        flap (cb (5.2f, 11, 5.4f, 15, 6.6f, 18.6f, 7.5f, 19.8f, 8.4f, 18.6f, 9.6f, 15, 9.8f, 11), Ye, true);
+        flap (cb (6.6f, 11.4f, 6.8f, 14.6f, 7.2f, 16.6f, 7.5f, 17.4f, 7.8f, 16.6f, 8.2f, 14.6f, 8.4f, 11.4f), C, false);
+        seg (7.5f, 7.6f, 7.5f, 3.6f, 1.9f, Colour (0xff6a4a30));
+        g.restoreState();
+    };
+    auto stave = [&] (float x1, float x2, float yTop, float gap)               // five lines of a musical stave
+    {
+        for (int i = 0; i < 5; ++i) seg (x1, yTop + (float) i * gap, x2, yTop + (float) i * gap, 0.9f, W);
+    };
+    auto markText = [&] (const juce::String& t, Colour c)                       // "M1" / "M2"
+    {
+        g.setColour (c); g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
+        g.drawText (t, juce::Rectangle<float> (0.0f, 2.0f, 24.0f, 20.0f), juce::Justification::centred, false);
+    };
+    auto fist = [&] (float x, float y, float w, float h, Colour c, Colour dk)   // a clenched fist seen from the side: curled fingers facing left, the thumb across them
+    {
+        const Colour lt = c.brighter (0.25f);
+        P body; body.addRoundedRectangle (x, y, w, h, juce::jmin (w, h) * 0.32f); fill (body, c);
+        // the four curled fingers: rounded bumps down the left side, each with a crease
+        const float fh = h / 4.0f;
+        for (int i = 0; i < 4; ++i)
+        {
+            const float fy = y + (float) i * fh;
+            P f; f.addRoundedRectangle (x - w * 0.10f, fy + 0.15f, w * 0.62f, fh - 0.3f, fh * 0.48f); fill (f, c);
+            g.setColour (dk); g.strokePath (f, juce::PathStrokeType (0.55f));
+        }
+        // the thumb: folded across the front of the fingers, from the wrist side
+        P t; t.addRoundedRectangle (x + w * 0.18f, y + h * 0.50f, w * 0.72f, h * 0.30f, h * 0.14f); fill (t, lt);
+        g.setColour (dk); g.strokePath (t, juce::PathStrokeType (0.55f));
+        g.setColour (dk); g.strokePath (body, juce::PathStrokeType (0.7f));
+    };
+    auto arm = [&] (bool strong)                                                // an arm bent 90 degrees at the elbow: the upper arm level, the forearm up, a fist on top
+    {
+        const Colour c = strong ? Rd : Colour (0xff3fbf5f), dk = c.darker (0.45f);
+        if (strong)
+        {
+            P a; a.startNewSubPath (2.0f, 15.5f); a.lineTo (2.0f, 21.0f); a.cubicTo (8.0f, 21.5f, 13.0f, 21.5f, 16.5f, 20.5f);      // under the upper arm, to the elbow
+            a.cubicTo (20.5f, 19.5f, 21.0f, 15.5f, 20.0f, 11.0f); a.lineTo (19.0f, 7.0f);                                             // the forearm up the outside
+            a.lineTo (13.8f, 7.8f); a.lineTo (15.2f, 12.5f);                                                                            // the inside of the forearm
+            a.cubicTo (13.0f, 9.0f, 7.5f, 8.5f, 6.0f, 12.0f); a.cubicTo (5.0f, 14.0f, 3.5f, 15.0f, 2.0f, 15.5f); a.closeSubPath();    // the bicep: a big curve
+            fill (a, c); g.setColour (dk); g.strokePath (a, juce::PathStrokeType (0.8f));
+            P bl; bl.startNewSubPath (7.5f, 15.0f); bl.cubicTo (9.5f, 13.0f, 12.0f, 13.3f, 13.5f, 15.0f); stroke (bl, 0.9f, dk);       // the line of the muscle
+            fist (13.4f, 0.8f, 7.4f, 7.6f, c, dk);
+        }
+        else
+        {
+            P a; a.startNewSubPath (2.5f, 18.0f); a.lineTo (15.0f, 18.0f); a.lineTo (16.0f, 8.8f); stroke (a, 2.4f, c);              // thin as a stick
+            g.setColour (c); g.fillEllipse (13.6f, 17.0f, 2.6f, 2.6f);                                                                  // a bony elbow
+            fist (14.2f, 3.0f, 4.2f, 5.4f, c, dk);                                                                                      // a small fist
+        }
+    };
+    switch (ic)
+    {
+        case Icon::Overdub:
+            rect (1.5f, 6.5f, 21, 11, 1.5f, Colour (0xff2f6fc0));
+            rect (3.5f, 10.2f, 17, 3.6f, 1.0f, Colour (0xff9fd0ff));
+            break;
+        case Icon::Mark1: markText ("M1", Colour (0xff4a9cff)); break;
+        case Icon::Mark2: markText ("M2", Colour (0xffff9a1f)); break;
+        case Icon::ToEdit:     arrowH (1.5f, 11.0f, 12, W, 2); stave (12.5f, 22.5f, 7.0f, 2.5f); g.setColour (W); g.fillEllipse (16.0f, 11.0f, 3.2f, 2.4f); break;
+        case Icon::ToPlayhead: arrowH (1.5f, 11.0f, 12, W, 2); tri (13.0f, 5.0f, 13.0f, 19.0f, 22.5f, 12.0f, Colour (0xff3fbf5f)); break;
+        case Icon::Flag:
+            seg (6, 3, 6, 21.5f, 1.8f, W);
+            { P f; f.startNewSubPath (7, 3.5f); f.cubicTo (11, 1.8f, 14, 5.6f, 19.5f, 3.8f); f.lineTo (19.5f, 12.0f); f.cubicTo (14, 13.8f, 11, 10.0f, 7, 11.7f); f.closeSubPath(); fill (f, Ye); }
+            break;
+        case Icon::EditWin:
+        {
+            stave (2.0f, 22.0f, 6.0f, 3.0f);
+            P c;                                                                 // a treble clef: the curl round the G line, up to the top loop, down the stem to the tail
+            c.startNewSubPath (11.6f, 15.0f);
+            c.cubicTo (9.6f, 15.0f, 9.0f, 12.6f, 10.6f, 11.6f);
+            c.cubicTo (12.8f, 10.4f, 15.4f, 12.4f, 14.6f, 15.4f);
+            c.cubicTo (13.8f, 18.2f, 8.4f, 18.4f, 7.6f, 14.4f);
+            c.cubicTo (7.0f, 11.0f, 11.0f, 9.0f, 12.6f, 6.6f);
+            c.cubicTo (13.8f, 4.8f, 13.6f, 2.0f, 12.4f, 1.8f);
+            c.cubicTo (11.0f, 1.8f, 10.4f, 4.6f, 11.0f, 8.0f);
+            c.lineTo (12.6f, 20.6f);
+            c.cubicTo (12.8f, 22.6f, 10.6f, 23.0f, 10.0f, 21.4f);
+            stroke (c, 1.6f, Ye);
+            g.setColour (Ye); g.fillEllipse (9.3f, 20.3f, 2.4f, 2.4f);
+            break;
+        }
+        case Icon::ArmAll:  arm (true);  break;
+        case Icon::ArmNone: arm (false); break;
+        case Icon::ImportTakes: container (1, 8, 11, 10); clipboard (14.5f, 4.5f, 8, 15); break;
+        case Icon::Align:
+        {
+            // a spot's note (above) moved later to sit over the main pair's (below): two blips, a dashed line between them, an arrow
+            P top; top.startNewSubPath (2, 7); top.lineTo (5, 7); top.lineTo (6.5f, 3); top.lineTo (8, 11); top.lineTo (9.5f, 7); top.lineTo (12, 7); stroke (top, 1.6f, Ye);
+            arrowH (12.5f, 19.5f, 7, Ye, 1.6f);
+            P bot; bot.startNewSubPath (2, 17); bot.lineTo (14, 17); bot.lineTo (15.5f, 13); bot.lineTo (17, 21); bot.lineTo (18.5f, 17); bot.lineTo (22, 17); stroke (bot, 1.6f, Bl);
+            for (float y = 9.5f; y < 14.5f; y += 2.0f) seg (16.2f, y, 16.2f, y + 1.0f, 1.0f, W);
+            break;
+        }
+        case Icon::TakeSheet:
+        {
+            P page; page.startNewSubPath (5, 2.5f); page.lineTo (15, 2.5f); page.lineTo (19.5f, 7); page.lineTo (19.5f, 21.5f); page.lineTo (5, 21.5f); page.closeSubPath();
+            fill (page, Colour (0xfff4f1ea)); g.setColour (W); g.strokePath (page, juce::PathStrokeType (1.2f));
+            P fold; fold.startNewSubPath (15, 2.5f); fold.lineTo (15, 7); fold.lineTo (19.5f, 7); g.setColour (Colour (0xff9aa3ad)); g.strokePath (fold, juce::PathStrokeType (1.0f));
+            g.setColour (Rd); g.fillEllipse (7, 5, 4, 4);
+            for (float y : { 11.0f, 14.0f, 17.0f, 20.0f }) { seg (7.5f, y - 1.0f, 9.5f, y - 1.0f, 1.2f, Dk); seg (11, y - 1.0f, 17.5f, y - 1.0f, 1.0f, Colour (0xff6b7480)); }
+            break;
+        }
+        case Icon::RoomTone:
+        {
+            // a house: the room whose own sound is learned. A red roof with a chimney, light walls, a dark door and a little blue window.
+            rect (15.6f, 4.2f, 2.8f, 5.6f, 0.4f, Rd.darker (0.25f));
+            P walls; walls.addRectangle (5.0f, 11.0f, 14.0f, 10.5f); fill (walls, Colour (0xfff4f1ea)); g.setColour (W); g.strokePath (walls, juce::PathStrokeType (1.1f));
+            P roof; roof.startNewSubPath (2.2f, 12.4f); roof.lineTo (12.0f, 3.2f); roof.lineTo (21.8f, 12.4f); roof.closeSubPath (); fill (roof, Rd);
+            g.setColour (W); g.strokePath (roof, juce::PathStrokeType (1.1f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            rect (10.0f, 14.6f, 4.0f, 6.9f, 0.6f, Dk);
+            rect (6.4f, 14.0f, 2.6f, 2.8f, 0.3f, Bl); rect (15.0f, 14.0f, 2.6f, 2.8f, 0.3f, Bl);
+            break;
+        }
+        case Icon::NoiseMode:
+        {
+            // a point with its sound spreading out (round lines), inside a circle with a line through it: the noise taken out
+            const float cx = 8.2f, cy = 13.0f;
+            g.setColour (W); g.fillEllipse (cx - 2.0f, cy - 2.0f, 4.0f, 4.0f);
+            for (float r : { 4.6f, 7.6f })
+            {
+                P arc; arc.addCentredArc (cx, cy, r, r, 0.0f, 0.30f * juce::MathConstants<float>::pi, 0.70f * juce::MathConstants<float>::pi, true);
+                stroke (arc, 1.7f, W);
+            }
+            g.setColour (Rd); g.drawEllipse (2.6f, 2.6f, 18.8f, 18.8f, 2.0f);
+            seg (5.4f, 5.4f, 18.6f, 18.6f, 2.0f, Rd);
+            break;
+        }
+        case Icon::VideoExport:
+        {
+            // a clapperboard (the video edit) with a run of timecode under it: the three files for the picture editor (3.2.0)
+            P board; board.addRoundedRectangle (3, 9, 18, 11, 1.2f); fill (board, Dk); g.setColour (W); g.strokePath (board, juce::PathStrokeType (1.2f));
+            P top; top.addRoundedRectangle (3, 4.5f, 18, 4.5f, 0.8f); fill (top, W);
+            for (int i = 0; i < 4; ++i) { P st; st.addTriangle (4.5f + 4.5f * (float) i, 4.5f, 7.0f + 4.5f * (float) i, 4.5f, 5.5f + 4.5f * (float) i, 9.0f); fill (st, Dk); }
+            seg (6, 15, 18, 15, 1.6f, Ye);                                       // the timecode's line
+            for (int i = 0; i < 5; ++i) seg (6.5f + 2.8f * (float) i, 13.2f, 6.5f + 2.8f * (float) i, 16.8f, 0.9f, Ye);
+            break;
+        }
+        case Icon::AafExport:
+        {
+            // a page with "AAF" on it and an arrow out to the right: the edit handed to another program (3.3.0)
+            P page; page.addRoundedRectangle (1.5f, 2.5f, 15, 19, 1.2f); fill (page, W);
+            P fold; fold.addTriangle (12.5f, 2.5f, 16.5f, 2.5f, 16.5f, 6.5f); fill (fold, Dk);
+            g.setColour (Dk); g.setFont (juce::FontOptions (5.4f, juce::Font::bold)); g.drawText ("AAF", juce::Rectangle<float> (1.5f, 8, 15, 8), juce::Justification::centred, false);
+            seg (14, 17.5f, 22, 17.5f, 1.8f, Ye);
+            P head; head.addTriangle (19.2f, 14.8f, 22.8f, 17.5f, 19.2f, 20.2f); fill (head, Ye);
+            break;
+        }
+        case Icon::ReTimEr:
+        {
+            // a coiled spring pulled out between two bars (the music given more time, or less), |<- ->| under it
+            seg (2.5f, 5, 2.5f, 15, 2.0f, W); seg (21.5f, 5, 21.5f, 15, 2.0f, W);
+            P s; s.startNewSubPath (2.5f, 10); s.lineTo (5.0f, 10);
+            float x = 5.0f; bool up = true;
+            while (x < 18.5f) { x += 1.8f; s.lineTo (x, up ? 6.0f : 14.0f); up = ! up; }
+            s.lineTo (19.0f, 10); s.lineTo (21.5f, 10); stroke (s, 1.4f, Rd);
+            const float y = 19.5f;
+            seg (2.2f, y - 2.4f, 2.2f, y + 2.4f, 1.3f, W); seg (21.8f, y - 2.4f, 21.8f, y + 2.4f, 1.3f, W);
+            seg (4.0f, y, 9.0f, y, 1.4f, W); tri (3.4f, y, 6.2f, y - 2.0f, 6.2f, y + 2.0f, W);
+            seg (15.0f, y, 20.0f, y, 1.4f, W); tri (20.6f, y, 17.8f, y - 2.0f, 17.8f, y + 2.0f, W);
+            break;
+        }
+        case Icon::Search:
+            g.setColour (W); g.drawEllipse (3.0f, 3.0f, 12.0f, 12.0f, 2.2f);
+            g.setColour (Bl.withAlpha (0.25f)); g.fillEllipse (4.2f, 4.2f, 9.6f, 9.6f);
+            seg (13.6f, 13.6f, 20.5f, 20.5f, 3.0f, W);
+            break;
+        case Icon::Start:   rect (4, 5, 2.6f, 14, 0.3f, W); tri (19, 5, 19, 19, 8.5f, 12, W); break;
+        case Icon::Rewind:  tri (12, 5, 12, 19, 2.5f, 12, W); tri (21.5f, 5, 21.5f, 19, 12, 12, W); break;
+        case Icon::Play:    tri (7, 4.5f, 7, 19.5f, 20, 12, W); break;
+        case Icon::Stop:    rect (6, 6, 12, 12, 1, W); break;
+        case Icon::Forward: tri (2.5f, 5, 2.5f, 19, 12, 12, W); tri (12, 5, 12, 19, 21.5f, 12, W); break;
+        case Icon::End:     rect (17.4f, 5, 2.6f, 14, 0.3f, W); tri (5, 5, 5, 19, 15.5f, 12, W); break;
+        case Icon::Record:  g.setColour (Rd); g.fillEllipse (5, 5, 14, 14); break;
+        case Icon::Trim:
+        {
+            seg (3, 3.5f, 14, 3.5f, 2.2f, W); seg (8.5f, 3.5f, 8.5f, 9.5f, 2.2f, W);
+            g.setColour (W); g.drawEllipse (3.6f, 17.6f, 4.0f, 4.0f, 1.3f); g.drawEllipse (9.4f, 17.6f, 4.0f, 4.0f, 1.3f);
+            seg (6.6f, 17.9f, 12.5f, 10.5f, 1.3f, W); seg (10.4f, 17.9f, 4.5f, 10.5f, 1.3f, W);
+            seg (21, 4, 15.5f, 20.5f, 1.3f, Ye);
+            P th; th.startNewSubPath (20, 8.5f); th.cubicTo (17, 10, 22.5f, 11.5f, 19, 13.3f); th.cubicTo (16.5f, 14.8f, 21, 15.8f, 17.6f, 17.7f); stroke (th, 1.0f, Bl);
+            break;
+        }
+        case Icon::Bounce:
+        {
+            g.setColour (juce::Colours::white.withAlpha (0.13f)); g.fillEllipse (7, 19.7f, 10, 2.6f);
+            g.setColour (Rd); g.fillEllipse (5, 4, 14, 14);
+            P s1; s1.startNewSubPath (5.4f, 8.8f); s1.cubicTo (9, 9.8f, 15, 9.8f, 18.6f, 8.8f); stroke (s1, 1.0f, juce::Colours::white.withAlpha (0.85f));
+            P s2; s2.startNewSubPath (5.2f, 13.4f); s2.cubicTo (9, 12.4f, 15, 12.4f, 18.8f, 13.4f); stroke (s2, 1.0f, juce::Colours::white.withAlpha (0.85f));
+            seg (3, 4.5f, 5, 6, 1, W); seg (2.5f, 9, 4.7f, 9.3f, 1, W); seg (21, 4.5f, 19, 6, 1, W);
+            break;
+        }
+        case Icon::Pitch:
+        {
+            seg (2, 12, 22, 12, 1.6f, W);
+            P w; w.startNewSubPath (2, 15); w.cubicTo (4.5f, 7, 6.5f, 7, 8, 13); w.cubicTo (9.5f, 19, 11.5f, 21, 14, 14.5f); w.cubicTo (16.5f, 8, 17, 5.5f, 22, 8.5f); stroke (w, 2.0f, Rd);
+            break;
+        }
+        case Icon::Repair:
+        {
+            g.saveState(); g.addTransform (juce::AffineTransform::rotation (-0.698f, 12, 12));
+            rect (2, 7.5f, 20, 9, 4.5f, Colour (0xffe8c9a0)); g.setColour (Colour (0xfff3e2c7)); g.fillRect (8.0f, 7.5f, 8.0f, 9.0f);
+            g.setColour (Colour (0xffc9a577)); for (auto d : { std::pair<float, float> { 10.5f, 10 }, { 13.5f, 10 }, { 12, 12 }, { 10.5f, 14 }, { 13.5f, 14 } }) g.fillEllipse (d.first - 0.7f, d.second - 0.7f, 1.4f, 1.4f);
+            g.setColour (Colour (0xffb58d5c)); g.drawRoundedRectangle (2, 7.5f, 20, 9, 4.5f, 0.8f);
+            g.restoreState();
+            break;
+        }
+        case Icon::Denoise:
+        {
+            // hiss (little grey spikes) thinning out towards the right, under a clean wave
+            juce::Random rnd (7);
+            for (int i = 0; i < 16; ++i) { const float x = 2.5f + (float) i * 1.25f, h = 1.5f + rnd.nextFloat() * 4.0f * (1.0f - (float) i / 18.0f); seg (x, 20.5f - h, x, 20.5f, 0.9f, Colour (0xff9aa3ad).withAlpha (1.0f - (float) i / 20.0f)); }
+            P w; w.startNewSubPath (2, 10); w.cubicTo (5, 3, 8, 3, 11, 10); w.cubicTo (14, 17, 17, 17, 22, 10); stroke (w, 2.0f, Bl);
+            break;
+        }
+        case Icon::Reharm:
+        {
+            P a; a.startNewSubPath (3, 5); a.lineTo (9.5f, 5); a.lineTo (13.5f, 12); stroke (a, 1.8f, W);
+            seg (3, 12, 13.5f, 12, 1.8f, W);
+            P b; b.startNewSubPath (3, 19); b.lineTo (9.5f, 19); b.lineTo (13.5f, 12); stroke (b, 1.8f, W);
+            seg (13.5f, 12, 20.5f, 12, 2.6f, Bl); g.setColour (Bl); g.fillEllipse (11.8f, 10.3f, 3.4f, 3.4f);
+            break;
+        }
+        case Icon::Tracks:  seg (12, 4, 12, 20, 3, W); seg (4, 12, 20, 12, 3, W); break;
+        case Icon::Feedback: shout(); break;
+        case Icon::ExportProc: container (1, 7, 9, 10); arrowH (11, 15.4f, 12, W, 2); clipboard (16.3f, 5, 7, 13); break;
+        case Icon::ImportMulti:
+            for (float y : { 7.5f, 12.0f, 16.5f }) seg (1.5f, y, 8.5f, y, 2, W);
+            arrowH (13.4f, 9.6f, 12, W, 2); container (14.8f, 7, 8.2f, 10); break;
+        case Icon::Markers: highlighter ({}); break;
+        case Icon::FeedbackMarkers:
+            highlighter (juce::AffineTransform::scale (0.82f).translated (-1.5f, 1.0f));
+            g.saveState(); g.addTransform (juce::AffineTransform::scale (0.6f).translated (9.6f, 5.4f)); shout(); g.restoreState(); break;
+        case Icon::SlipLeft:  arrowH (8, 1.6f, 12, Rd, 2); peel (9, 1.6f); break;
+        case Icon::SlipRight: peel (1.4f, 1.6f); arrowH (16.4f, 22.4f, 12, Bl, 2); break;
+        case Icon::Shuffle:
+        {
+            g.saveState(); g.addTransform (juce::AffineTransform::rotation (juce::degreesToRadians (-14.0f), 9, 13));
+            { P r; r.addRoundedRectangle (3.0f, 5.0f, 10.0f, 14.0f, 1.6f); fill (r, Colour (0xff3d4a66)); g.setColour (W); g.strokePath (r, juce::PathStrokeType (1.0f)); }
+            g.restoreState();
+            g.saveState(); g.addTransform (juce::AffineTransform::rotation (juce::degreesToRadians (8.0f), 14, 12));
+            { P r; r.addRoundedRectangle (8.5f, 4.0f, 10.0f, 14.5f, 1.6f); fill (r, Colour (0xfff2f4f8)); g.setColour (Colour (0xff8a93a3)); g.strokePath (r, juce::PathStrokeType (0.8f)); }
+            { P h; h.startNewSubPath (13.5f, 8.2f); h.cubicTo (12.6f, 6.7f, 10.5f, 7.1f, 10.5f, 8.8f); h.cubicTo (10.5f, 10.3f, 13.5f, 12.4f, 13.5f, 12.4f);
+              h.cubicTo (13.5f, 12.4f, 16.5f, 10.3f, 16.5f, 8.8f); h.cubicTo (16.5f, 7.1f, 14.4f, 6.7f, 13.5f, 8.2f); h.closeSubPath(); fill (h, Rd); }
+            g.restoreState();
+            break;
+        }
+        case Icon::InsertFlag:
+        {
+            seg (5.5f, 2.5f, 5.5f, 21.5f, 2, W);
+            { P f; f.addTriangle (6.5f, 3.2f, 20, 3.2f, 17, 7.5f); f.addTriangle (6.5f, 3.2f, 17, 7.5f, 6.5f, 11.8f); f.addTriangle (17, 7.5f, 20, 11.8f, 6.5f, 11.8f); fill (f, Rd); }
+            { P a; a.startNewSubPath (12.6f, 4.6f); a.lineTo (12.6f, 9.6f); a.startNewSubPath (10.2f, 7.8f); a.lineTo (12.6f, 10.2f); a.lineTo (15, 7.8f); stroke (a, 1.5f, juce::Colours::white); }
+            break;
+        }
+        case Icon::NextAtEnd:
+            arrowH (2, 13.5f, 12, Bl, 2);
+            for (float y : { 6.0f, 9.0f, 12.0f, 15.0f, 18.0f }) seg (15, y, 22.5f, y, 0.7f, W.withAlpha (0.5f));
+            seg (17, 6, 17, 18, 1.3f, W); { P r; r.addRectangle (19.4f, 6, 2.8f, 12); fill (r, W); }
+            break;
+        case Icon::Mixer:
+        {
+            for (float x : { 6.0f, 12.0f, 18.0f }) seg (x, 3.5f, x, 20.5f, 1.6f, W.withAlpha (0.55f));
+            for (auto k : { std::pair<float, float> { 3.2f, 14 }, { 9.2f, 6.5f }, { 15.2f, 10.5f } }) { rect (k.first, k.second, 5.6f, 3.2f, 0.8f, Bl); g.setColour (Colour (0xff1b1e24)); g.drawRoundedRectangle (k.first, k.second, 5.6f, 3.2f, 0.8f, 0.6f); }
+            break;
+        }
+        case Icon::Earlier: clock (14.5f, 12.5f, 6); seg (8.5f, 17, 2, 17, 2, Rd); { P hd; hd.startNewSubPath (4.8f, 14.3f); hd.lineTo (2, 17); hd.lineTo (4.8f, 19.7f); stroke (hd, 2, Rd); } break;
+        case Icon::Later:   clock (9.5f, 12.5f, 6);  seg (15.5f, 17, 22, 17, 2, Bl); { P hd; hd.startNewSubPath (19.2f, 14.3f); hd.lineTo (22, 17); hd.lineTo (19.2f, 19.7f); stroke (hd, 2, Bl); } break;
+        case Icon::Delete:  g.setColour (Rd); g.drawEllipse (3.8f, 3.8f, 16.4f, 16.4f, 2.6f); seg (6.2f, 17.8f, 17.8f, 6.2f, 2.6f, Rd); break;
+        case Icon::Undo:
+        {
+            P h; h.startNewSubPath (8.5f, 4.5f); h.lineTo (3.5f, 9.5f); h.lineTo (8.5f, 14.5f); stroke (h, 2.2f, W);
+            P b; b.startNewSubPath (3.8f, 9.5f); b.lineTo (13.5f, 9.5f); b.addCentredArc (13.5f, 15, 5.5f, 5.5f, 0, 0, juce::MathConstants<float>::pi, false); b.lineTo (8.5f, 20.5f); stroke (b, 2.2f, W);
+            break;
+        }
+        case Icon::Automation:
+        {
+            P l; l.startNewSubPath (2.5f, 16); l.lineTo (8, 6.5f); l.lineTo (13, 15.5f); l.lineTo (17, 8.5f); l.lineTo (21.5f, 14.5f); stroke (l, 1.8f, Ye);
+            for (auto d : { std::pair<float, float> { 2.8f, 16 }, { 8, 6.5f }, { 13, 15.5f }, { 17, 8.5f }, { 21.2f, 14.5f } })
+            { g.setColour (juce::Colours::white); g.fillEllipse (d.first - 1.7f, d.second - 1.7f, 3.4f, 3.4f); g.setColour (Ye); g.drawEllipse (d.first - 1.7f, d.second - 1.7f, 3.4f, 3.4f, 1.3f); }
+            break;
+        }
+    }
+    g.restoreState();
+}
+
+/** A button that shows a picture instead of words. The name of the button (and its longer explanation) appears when the mouse rests on it. Colours: buttonColourId / buttonOnColourId as for any TextButton. */
+class IconButton : public juce::TextButton
+{
+public:
+    using juce::TextButton::TextButton;
+    void setIcon (Icon i, const juce::String& name) { icon = i; label = name; repaint(); }
+    /** Drawn like the Next Take box (corners of 5, a light outline) with its text in the top third and the picture below (the take window's big record button). */
+    void setBoxLook (bool on) { boxLook = on; repaint(); }
+    juce::String getTooltip() override
+    {
+        const auto t = juce::TextButton::getTooltip();
+        return label.isEmpty() ? t : (t.isEmpty() ? label : label + "\n" + t);
+    }
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        auto b = getLocalBounds().toFloat().reduced (0.5f);
+        const bool on = getToggleState();
+        const auto base = findColour (on ? juce::TextButton::buttonOnColourId : juce::TextButton::buttonColourId);
+        const float rad = boxLook ? 5.0f : 4.0f;
+        g.setColour (down ? base.brighter (0.2f) : over ? base.brighter (0.1f) : base); g.fillRoundedRectangle (b, rad);
+        g.setColour (boxLook ? juce::Colours::white.withAlpha (0.55f) : on ? base.brighter (0.4f) : theme::border); g.drawRoundedRectangle (b, rad, 1.0f);
+        auto ic = icon;
+        const auto txt = getButtonText();
+        if ((ic == Icon::Play || ic == Icon::Record) && (txt.startsWithIgnoreCase ("stop"))) ic = Icon::Stop;
+        const bool dim = ! isEnabled();
+        if (dim) g.beginTransparencyLayer (0.4f);
+        auto picture = b.reduced (3.0f, 2.0f);
+        if (boxLook && getHeight() >= 40)                    // as the Next Take box: the words in the top third, the picture under them
+        {
+            auto top = getLocalBounds().removeFromTop (juce::jmax (14, getHeight() / 3));
+            g.setColour (juce::Colours::white);
+            g.setFont (juce::FontOptions ((float) top.getHeight() * 0.62f, juce::Font::bold));
+            g.drawText (txt, top.withTrimmedTop (3), juce::Justification::centred, false);
+            picture = b.withTrimmedTop ((float) top.getHeight()).reduced (3.0f, 3.0f);
+        }
+        drawIcon (g, ic, picture, theme::inkOn (base));          // dark pictures on the light keys, light ones on a lit key
+        if (dim) g.endTransparencyLayer();
+    }
+private:
+    Icon icon = Icon::Play; juce::String label; bool boxLook = false;
+};
+
+/** The scroll bars (and the viewport) must never take the keyboard: after using one, the arrow keys still control the zoom / track heights of the window,
+    not the scroll bar. Whenever a bar is moved, the keyboard goes back to the timeline. */
+struct KeepKeysOnTimeline : private juce::ScrollBar::Listener
+{
+    KeepKeysOnTimeline (juce::Viewport& v, juce::Component& t) : vp (v), timeline (t)
+    {
+        vp.setWantsKeyboardFocus (false);
+        vp.getHorizontalScrollBar().setWantsKeyboardFocus (false);
+        vp.getVerticalScrollBar().setWantsKeyboardFocus (false);
+        vp.getHorizontalScrollBar().addListener (this);
+        vp.getVerticalScrollBar().addListener (this);
+    }
+    ~KeepKeysOnTimeline() override { vp.getHorizontalScrollBar().removeListener (this); vp.getVerticalScrollBar().removeListener (this); }
+private:
+    void scrollBarMoved (juce::ScrollBar*, double) override
+    {
+        if (timeline.hasKeyboardFocus (false)) return;
+        // Only when this window is the one being worked in. A bar that moves by itself (the timeline following the playhead while a take plays) must NEVER take the
+        // keyboard: with two windows both scrolling, each would activate itself in turn and they would fight for the front.
+        auto* top = timeline.getTopLevelComponent();
+        if (juce::TopLevelWindow::getActiveTopLevelWindow() != top || top == nullptr || ! isForegroundWindow (*top)) return;   // (and not while a plug-in's window has the keyboard: JUCE still calls this one active then)
+        if (dynamic_cast<juce::TextEditor*> (juce::Component::getCurrentlyFocusedComponent()) != nullptr) return;     // somebody is typing: leave them
+        timeline.grabKeyboardFocus();
+    }
+    juce::Viewport& vp; juce::Component& timeline;
+};
+} // namespace td
