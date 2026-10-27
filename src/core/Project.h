@@ -9,6 +9,7 @@
 #include "MasterDef.h"
 #include "Denoise.h"
 #include "ScreenLayout.h"
+#include "ConsonantData.h"
 #include <array>
 
 namespace td
@@ -231,6 +232,11 @@ public:
         const RoomToneTrack* forTrack (const juce::Uuid& id) const { for (auto& t : tracks) if (t.trackId == id) return &t; return nullptr; }
     };
     RoomTone roomTone;
+    /** The consonants kept for moving and re-use (3.6.0, the ReTouch window's Consonants tab): their audio is in consonantsFolder(), one float WAV per track.
+        Saved with the project; not an undo step (Ctrl+Z never takes one off the list). */
+    std::vector<ConsonantDef> consonants;
+    const ConsonantDef* findConsonant (const juce::Uuid& id) const { for (auto& c : consonants) if (c.id == id) return &c; return nullptr; }
+    juce::File consonantsFolder() const { return projectFolder().getChildFile ("Consonants"); }
     static juce::var roomToneToVar (const RoomTone&);
     static RoomTone roomToneFromVar (const juce::var&);
     std::vector<std::unique_ptr<MixerState>>   retiredMixers;   // removed mixers (and those of a project that was open before) stay alive until the audio thread has certainly left them: see freeRetiredMixers
@@ -385,7 +391,9 @@ public:
     /** The project's own folder (where the .fermata file is) and its three working folders:
           Recorded Media            every recording made by the program
           Bounced Media             what is bounced from the Take / Edit windows
-          Bounced Media/Mastered Audio   what is bounced from the Mastering window */
+          Bounced Media/Mastered Audio   what is bounced from the Mastering window
+          Analysis                  the takes' fingerprints for "the same place in another take" (3.4.0; made again if missing)
+          Waveforms                 the coloured waveforms' cache (made again if missing) */
     juce::File projectFolder() const;
     juce::File audioFolder() const;                  // Recorded Media
     /** The saved copy of the comments imported on an edit: <project folder>/comments/<edit name> [id]/ holds the files that were imported and comments.json (the notes, ready to reload).
@@ -497,6 +505,9 @@ public:
 
     /** A private, independent copy of the whole project (plug-ins re-created from their state) for offline rendering. */
     std::unique_ptr<Project> cloneForRender (double sampleRate, int maxBlock) const;
+    /** The plug-ins that are running (not bypassed) in this project's mixer 'mixerId' but could not be started in 'copy' (a render copy made by
+        cloneForRender): "<plug-in> on <strip>", one per slot. Empty: the copy has every one of them, and a render through it sounds like the mix. */
+    juce::StringArray pluginsMissingFrom (const Project& copy, const juce::Uuid& mixerId) const;
     double restoreSampleRate = 48000.0; int restoreBlock = 512;    // used when plug-ins are re-created by fromVar()
 
     /** The whole project as saved. withWindows false: without the take windows and edits (a save adds them as their own files: see planWindowFiles). */
@@ -550,6 +561,9 @@ public:
     void undoReset();
     /** Call a few times a second: once changes have stopped for half a second the previous state is kept as an undo level (if anything undoable changed). */
     void undoTick (bool recording, bool force = false);
+    /** The take window is snapshotted as it is now, without an undo step: for a change the person did not make and cannot undo - a take starting
+        (AudioEngine::startRecording, which first ticks the pending changes into a step of their own). The next tick then sees no change in it (3.1.4). */
+    void undoAbsorb (const juce::Uuid& takeWindowId);
     bool undo (const juce::Uuid& liveTake = {});         // false if there is nothing to undo; a take being recorded is never touched
     bool redo (const juce::Uuid& liveTake = {});
     int undoDepth() const { return (int) undoStack.size(); }
@@ -573,6 +587,9 @@ public:
     /** Tracks / effects channels / mixers / inputs / outputs / names changed: UI must rebuild, engine must re-plan. */
     void structureChanged() { resolveAllAutomation(); dirty = true; undoPending = true; undoDirtyAt = juce::Time::getMillisecondCounter(); structure.sendChangeMessage(); sendChangeMessage(); }
     void markDirty() noexcept { dirty = true; }          // value tweaks (faders etc.) that need saving but no UI refresh
+    /** A change that needs saving and is an undo step (the mastering list, which has its own hash), but tells no window: as markDirty, plus the undo
+        tick (3.1.4: the mastering window's edits only called markDirty, so Ctrl+Z straight after one undid the step before it instead). */
+    void markDirtyForUndo() noexcept { dirty = true; undoPending = true; undoDirtyAt = juce::Time::getMillisecondCounter(); }
     struct Trail : juce::Timer { Project& p; explicit Trail (Project& o) : p (o) {} void timerCallback() override { stopTimer(); p.lastLiveSend = juce::Time::getMillisecondCounter(); p.sendChangeMessage(); } };
     Trail trail { *this };
     juce::uint32 lastLiveSend = 0;

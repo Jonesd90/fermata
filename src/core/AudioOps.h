@@ -3,13 +3,14 @@
 #include "PitchShift.h"
 #include "SpectralRepair.h"
 #include "Denoise.h"
+#include "ConsonantData.h"
 
 namespace td
 {
 /** What a fix does to the audio. */
 struct FixSpec
 {
-    enum class Kind { Pitch, Patch, Declick, Reharmonise, Denoise } kind = Kind::Pitch;
+    enum class Kind { Pitch, Patch, Declick, Reharmonise, Denoise, Paste } kind = Kind::Pitch;
     double cents = 0.0;                     // Pitch: +100 = one semitone up
     bool useCurve = false;                  // Pitch: follow 'curve' instead of the fixed 'cents'
     PitchCurve curve;                       // Pitch curve: cents against time (seconds); time 0 is 'curveZero' samples after the first sample of the fixed part
@@ -32,8 +33,15 @@ struct FixSpec
     denoise::Params dn;
     double dnBoxT0 = -1.0, dnBoxT1 = -1.0;
     std::shared_ptr<const std::vector<denoise::Profile>> dnProfiles;
+    /** Paste (3.6.0): a kept consonant ADDED on top of the sound, its first sample at s0 (s1 = s0 + its length; s0 may lie before the audio handed over,
+        when a pasted consonant reaches across the start of a piece: only the part inside is added). 'paste' holds every track it was copied from; the
+        caller sets 'pasteChannels' to the channels of the track being processed before each call (resolvePaste), as it sets the denoise profiles. */
+    std::shared_ptr<const ConsonantAudio> paste;
+    double pasteGainDb = 0.0;
+    std::shared_ptr<const std::vector<std::vector<float>>> pasteChannels;
     juce::String shortName() const
     {
+        if (kind == Kind::Paste) return "consonant";
         if (kind == Kind::Pitch && useCurve) return "pitch curve";
         if (kind == Kind::Pitch) return "pitch " + juce::String (cents >= 0 ? "+" : "") + juce::String (cents, 0) + "c";
         if (kind == Kind::Reharmonise) return "reharmonised";
@@ -62,10 +70,26 @@ public:
         released = true;
         if (! isThreadRunning() || finished.load()) deleteSoon();
     }
-    /** onDone runs on the message thread with the error text. */
+    /** onDone runs on the message thread with the error text. A job still running from the last start() is asked to stop and waited for first,
+        and its own onDone is then dropped, so the window only hears about the job it asked for last. (3.1.2. Before, the old thread was killed
+        after 5 s - and that always happened, because a job looks at cancelled(), never at the thread's own stop request. A thread killed in the
+        middle of writing a file or asking for memory can hang the whole program for good. Reachable in the ReHarmoniSer: Isolate twice quickly.) */
     void start (Work w, std::function<void (const juce::String&)> onDone)
     {
-        stopThread (5000);                                   // a job that has just finished may still be winding its thread down
+        if (isThreadRunning())
+        {
+            cancel = true;                                   // (a job that has just finished is only winding its thread down: that is a moment)
+            const auto t0 = juce::Time::getMillisecondCounter();
+            if (! waitForThreadToExit (30000))
+            {
+                juce::Logger::writeToLog ("Audio job: the previous job has not stopped after 30 s; the new one was not started");
+                if (onDone) onDone ("The previous job is still running. Please wait for it to finish, then try again.");
+                return;
+            }
+            if (juce::Time::getMillisecondCounter() - t0 > 2000)
+                juce::Logger::writeToLog ("Audio job: waited " + juce::String ((juce::Time::getMillisecondCounter() - t0) / 1000) + " s for the previous job to stop");
+        }
+        ++*generation;                                       // (the replaced job's onDone, if it is still on its way, is dropped: see run)
         work = std::move (w); done = std::move (onDone); cancel = false; progressValue = 0.0f; finished = false;
         startThread();
     }
@@ -81,8 +105,8 @@ private:
         juce::String err;
         try { err = work (*this); } catch (...) { err = "Something went wrong while processing."; }
         if (cancel.load() && err.isEmpty()) err = "Cancelled.";
-        auto cb = done;
-        juce::MessageManager::callAsync ([cb, err] { if (cb) cb (err); });
+        auto cb = done; auto gen = generation; const int g = gen->load();
+        juce::MessageManager::callAsync ([cb, err, gen, g] { if (cb && gen->load() == g) cb (err); });     // (not when a newer start() has replaced this job)
         const juce::ScopedLock sl (endLock);
         finished = true;
         if (released) deleteSoon();                                  // (its owner has gone: nothing else will)
@@ -91,6 +115,7 @@ private:
     void deleteSoon() { juce::MessageManager::callAsync ([this] { delete this; }); }
     Work work; std::function<void (const juce::String&)> done;
     std::atomic<bool> cancel { false }, finished { false }; std::atomic<float> progressValue { 0.0f };
+    std::shared_ptr<std::atomic<int>> generation = std::make_shared<std::atomic<int>> (0);     // which start() the running job belongs to (shared: the posted onDone may outlive the job)
     juce::CriticalSection endLock; bool released = false;            // (release() and the end of run(): whichever comes second deletes the job)
 };
 
@@ -106,6 +131,31 @@ juce::File uniqueFile (const juce::File& wanted);
 std::unique_ptr<juce::AudioFormatWriter> makeWavWriter (const juce::File&, double sampleRate, int numChannels, bool floatData = false);
 /** Writes a 24-bit WAV (or 32-bit float when 'floatData'). */
 bool writeWav (const juce::File&, const std::vector<std::vector<float>>&, double sampleRate, bool floatData = false);
+/** After a writer has been closed: checks that the file holds exactly 'frames' sample frames. A full drive, or one that has gone away, can leave a
+    file short while every write said it went well (the last buffer only reaches the disk when the writer closes, where nothing can report it),
+    so every file Fermata makes is looked at once more before it is called done (3.1.3). A WAV is checked header against bytes (wavrepair::inspect:
+    a header that says more than the file holds is the mark of a file cut short); any other format by its reader's length, and for PCM by its size.
+    "" when all is well, else a sentence saying what is wrong. 'fm' may be null (a manager is made for the call). */
+juce::String checkWrittenLength (juce::AudioFormatManager* fm, const juce::File&, juce::int64 frames);
+
+/** A file for an AudioFormatWriter to write, kept here so that it can be checked once the writer has been closed: whether every byte reached the
+    disk. The writer's own stream can only report a failure while it is being written to; what its destructor flushes - the last buffer, the final
+    header - reports nothing, and a compressed file (FLAC) cut short that way keeps a header that says it is whole (3.1.3). */
+class CheckedAudioFile
+{
+public:
+    explicit CheckedAudioFile (const juce::File& f);
+    ~CheckedAudioFile();
+    bool failedToOpen() const { return out == nullptr || out->failedToOpen(); }
+    /** The stream to give the writer: it only forwards to the file kept here, which stays open when the writer lets go of it. */
+    std::unique_ptr<juce::OutputStream> stream();
+    /** After the writer has been closed: "" when every byte reached the disk and the file is as long as everything written to it, else what is wrong.
+        The file is closed here (so it can be renamed over or deleted afterwards, which Windows refuses while it is open). */
+    juce::String finish();
+private:
+    struct Forwarder;
+    juce::File file; std::unique_ptr<juce::FileOutputStream> out; juce::int64 maxPos = 0;
+};
 
 /** Writes the samples [a, b) of 'source' (the file's sample 0 is the take's sample 'fileStart') to a new WAV file with the same channels and sample rate (24-bit, no dither, nothing held open afterwards). */
 bool exportRange (juce::AudioFormatManager&, const juce::File& source, juce::int64 fileStart, juce::int64 a, juce::int64 b, const juce::File& dest, juce::String& error);
@@ -117,6 +167,13 @@ bool spliceFile (juce::AudioFormatManager&, const juce::File& source, const juce
 /** Applies a fix to the samples [s0, s1) of every channel (the rest of the buffer is context and is not changed, apart from the cross-fade at the edges and, for a de-click or a repair box of
     250 ms or less that reaches below 1 kHz: lost samples found inside [s0, s1) are put back, and the time squeeze that keeps the length reaches up to lostReach() each side). */
 void applyFix (std::vector<std::vector<float>>& channels, double sampleRate, long s0, long s1, const FixSpec&, long crossfade);
+
+/** Paste: adds 'clip' (channels) into 'chans' from sample 'at' on (which may be negative or past the end: only the overlap is added), at 'gainDb', with
+    2 ms fades at its two ends so it can never click. Channel c of the audio gets channel c of the clip (its last one when the clip has fewer); audio with one
+    channel and a clip with more (the ReTouch window's picture, which shows each track as one) gets their average. */
+void addClip (std::vector<std::vector<float>>& chans, juce::int64 at, const std::vector<std::vector<float>>& clip, double gainDb, double sampleRate);
+/** Sets spec.pasteChannels to the kept consonant's channels for 'track' (null when it was not copied from that track: nothing is added there). */
+void resolvePaste (FixSpec& spec, const juce::Uuid& track);
 
 /** A ReTouch box round 'the click itself' (250 ms or less) that reaches down below 1 kHz, with a strength above 0: lost samples inside it are put back before the box is treated. */
 bool boxRoundClick (const FixSpec&, double sampleRate, long s0, long s1);
@@ -160,7 +217,9 @@ struct TakeFixResult { std::vector<juce::File> newFiles; juce::String error; };
 TakeFixResult fixTakeFiles (juce::AudioFormatManager&, const std::vector<juce::File>& sources, const std::vector<juce::File>& dests,
                             juce::int64 s0, juce::int64 s1, const FixSpec&, AudioJob*);
 /** 'profilesFor' (optional): a denoise among the ops gets the room-tone profiles (one per channel) of each source file from it. */
+/** 'trackOf' (optional): the track of each source file, for a pasted consonant among the ops (each file gets its own track's channels of it). */
 TakeFixResult fixTakeFiles (juce::AudioFormatManager&, const std::vector<juce::File>& sources, const std::vector<juce::File>& dests,
-                            const std::vector<FixOp>& ops, AudioJob*, const std::function<std::shared_ptr<const std::vector<denoise::Profile>> (size_t, const FixSpec&)>& profilesFor = {});
+                            const std::vector<FixOp>& ops, AudioJob*, const std::function<std::shared_ptr<const std::vector<denoise::Profile>> (size_t, const FixSpec&)>& profilesFor = {},
+                            const std::vector<juce::Uuid>& trackOf = {});
 } // namespace audioops
 } // namespace td

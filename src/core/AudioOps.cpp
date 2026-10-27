@@ -2,6 +2,8 @@
 #include <mutex>
 #include <set>
 #include "Dither.h"
+#include "AudioFormats.h"
+#include "WavRepair.h"
 
 namespace td { namespace audioops
 {
@@ -70,7 +72,64 @@ bool writeWav (const juce::File& f, const std::vector<std::vector<float>>& ch, d
     DitherOut dout (*w, ! floatData);
     const bool ok = dout.write (ptrs.data(), (int) ch.size(), (int) ch[0].size());
     w.reset();
-    return ok;
+    if (! ok || checkWrittenLength (nullptr, f, (juce::int64) ch[0].size()).isNotEmpty()) { f.deleteFile(); return false; }     // (a short file is worse than none: whoever asked is told)
+    return true;
+}
+
+juce::String checkWrittenLength (juce::AudioFormatManager* fm, const juce::File& f, juce::int64 frames)
+{
+    auto holds = [&] (juce::int64 n) { return f.getFileName() + " holds " + juce::String (n) + " of the " + juce::String (frames) + " samples that were written to it: the drive did not take all of it (is it full?)."; };
+    if (f.hasFileExtension ("wav;wave;bwf;rf64"))
+    {
+        const auto r = wavrepair::inspect (f, false);                 // (looks only; its 'frames' is what the bytes hold, 'wasBroken' that the header claims more)
+        if (! r.ok) return f.getFileName() + " could not be read back after it was written (is the drive full, or gone?).";
+        if (r.wasBroken || r.frames != frames) return holds (r.frames);
+        return {};
+    }
+    juce::AudioFormatManager own;
+    if (fm == nullptr) { registerAudioFormats (own); fm = &own; }
+    auto rd = openReader (*fm, f);
+    if (rd == nullptr) return f.getFileName() + " could not be read back after it was written (is the drive full, or gone?).";
+    if (rd->lengthInSamples != frames) return holds (rd->lengthInSamples);
+    if (! rd->usesFloatingPointData && f.hasFileExtension ("aif;aiff;aifc"))              // uncompressed: the file is at least as long as its audio
+    {
+        const auto payload = frames * (juce::int64) rd->numChannels * (juce::int64) (rd->bitsPerSample / 8);
+        if (f.getSize() < payload) return holds (f.getSize() / juce::jmax ((juce::int64) 1, (juce::int64) rd->numChannels * (juce::int64) (rd->bitsPerSample / 8)));
+    }
+    return {};
+}
+
+struct CheckedAudioFile::Forwarder : public juce::OutputStream
+{
+    explicit Forwarder (CheckedAudioFile& o) : owner (o) {}
+    void flush() override { if (owner.out != nullptr) owner.out->flush(); }
+    bool setPosition (juce::int64 p) override { return owner.out != nullptr && owner.out->setPosition (p); }
+    juce::int64 getPosition() override { return owner.out != nullptr ? owner.out->getPosition() : 0; }
+    bool write (const void* d, size_t n) override
+    {
+        if (owner.out == nullptr) return false;
+        const bool ok = owner.out->write (d, n);
+        owner.maxPos = juce::jmax (owner.maxPos, owner.out->getPosition());
+        return ok;
+    }
+    CheckedAudioFile& owner;
+};
+
+CheckedAudioFile::CheckedAudioFile (const juce::File& f) : file (f), out (std::make_unique<juce::FileOutputStream> (f))
+{
+    if (! out->failedToOpen()) { out->setPosition (0); out->truncate(); }          // (a file stream opens an existing file at its end)
+}
+CheckedAudioFile::~CheckedAudioFile() = default;
+std::unique_ptr<juce::OutputStream> CheckedAudioFile::stream() { return std::make_unique<Forwarder> (*this); }
+juce::String CheckedAudioFile::finish()
+{
+    if (out == nullptr) return "Could not write " + file.getFileName() + ".";
+    out->flush();
+    const bool failed = out->getStatus().failed(); const auto why = out->getStatus().getErrorMessage();
+    out.reset();                                                                   // (closed: the file can be renamed over or deleted now)
+    if (failed) return "Could not write " + file.getFileName() + ": " + why;
+    if (file.getSize() != maxPos) return file.getFileName() + " is " + juce::String (file.getSize()) + " bytes on the disk but " + juce::String (maxPos) + " were written to it: the drive did not take all of it (is it full?).";
+    return {};
 }
 
 bool exportRange (juce::AudioFormatManager& fm, const juce::File& src, juce::int64 fileStart, juce::int64 a, juce::int64 b, const juce::File& dest, juce::String& error)
@@ -90,6 +149,7 @@ bool exportRange (juce::AudioFormatManager& fm, const juce::File& src, juce::int
     }
     w.reset();                                    // closed: no file stays open, so another program can open and overwrite it
     rd.reset();
+    if (const auto e = checkWrittenLength (&fm, dest, b - a); e.isNotEmpty()) { error = e; dest.deleteFile(); return false; }
     return true;
 }
 
@@ -133,6 +193,9 @@ bool spliceFile (juce::AudioFormatManager& fm, const juce::File& src, const juce
         std::vector<const float*> p; for (auto& c : a) p.push_back (c.data());
         if (! w->writeFromFloatArrays (p.data(), (int) p.size(), (int) n)) { error = "Could not write " + dest.getFileName() + " (is the disk full?)"; w.reset(); dest.deleteFile(); return false; }
     }
+    const auto frames = rs->lengthInSamples;
+    w.reset(); rs.reset(); rr.reset();
+    if (const auto e = checkWrittenLength (&fm, dest, frames); e.isNotEmpty()) { error = e; dest.deleteFile(); return false; }
     return true;
 }
 
@@ -197,8 +260,51 @@ static void denoiseBox (std::vector<float>& x, double sr, long a, long b, double
     }
 }
 
+void addClip (std::vector<std::vector<float>>& chans, juce::int64 at, const std::vector<std::vector<float>>& clip, double gainDb, double sr)
+{
+    if (chans.empty() || clip.empty()) return;
+    const juce::int64 n = (juce::int64) clip[0].size();
+    if (n <= 0) return;
+    const float g = (float) juce::Decibels::decibelsToGain (gainDb, -200.0);
+    const juce::int64 fade = juce::jlimit ((juce::int64) 1, juce::jmax ((juce::int64) 1, n / 4), (juce::int64) std::llround (0.002 * sr));
+    auto shape = [n, fade] (juce::int64 i)                                    // 2 ms raised-cosine fades at the clip's two ends
+    {
+        const juce::int64 d = juce::jmin (i, n - 1 - i);
+        if (d >= fade) return 1.0f;
+        return (float) (0.5 - 0.5 * std::cos (juce::MathConstants<double>::pi * (double) (d + 1) / (double) (fade + 1)));
+    };
+    const bool average = chans.size() == 1 && clip.size() > 1;
+    for (size_t c = 0; c < chans.size(); ++c)
+    {
+        auto& x = chans[c];
+        const juce::int64 L = (juce::int64) x.size();
+        const juce::int64 i0 = juce::jmax ((juce::int64) 0, -at), i1 = juce::jmin (n, L - at);
+        for (juce::int64 i = i0; i < i1; ++i)
+        {
+            float v;
+            if (average) { v = 0.0f; for (auto& cc : clip) v += i < (juce::int64) cc.size() ? cc[(size_t) i] : 0.0f; v /= (float) clip.size(); }
+            else { const auto& cc = clip[juce::jmin (c, clip.size() - 1)]; v = i < (juce::int64) cc.size() ? cc[(size_t) i] : 0.0f; }
+            x[(size_t) (at + i)] += g * shape (i) * v;
+        }
+    }
+}
+
+void resolvePaste (FixSpec& spec, const juce::Uuid& track)
+{
+    spec.pasteChannels = nullptr;
+    if (spec.kind != FixSpec::Kind::Paste || spec.paste == nullptr) return;
+    if (const auto* t = spec.paste->forTrack (track))
+        spec.pasteChannels = std::shared_ptr<const std::vector<std::vector<float>>> (spec.paste, t);     // (aliases the consonant: no copy, kept alive with it)
+}
+
 void applyFix (std::vector<std::vector<float>>& chans, double sr, long s0, long s1, const FixSpec& spec, long xfade)
 {
+    if (spec.kind == FixSpec::Kind::Paste)                                      // a kept consonant, added on top from s0 (s0 may be outside the audio: only the overlap)
+    {
+        juce::ignoreUnused (s1, xfade);
+        if (spec.pasteChannels != nullptr) addClip (chans, (juce::int64) s0, *spec.pasteChannels, spec.pasteGainDb, sr);
+        return;
+    }
     int lostDone = -1;
     if (! chans.empty() && findsLost (spec, sr, s0, s1))
     {
@@ -260,6 +366,7 @@ void applyFix (std::vector<std::vector<float>>& chans, double sr, long s0, long 
             case FixSpec::Kind::Patch: SpectralRepair::repair (x, sr, a, b, spec.f0, spec.f1, spec.repair); break;
             case FixSpec::Kind::Declick: SpectralRepair::declick (x, a, b, spec.sensitivity, nullptr, sr, juce::jmax (0, lostDone)); break;
             case FixSpec::Kind::Reharmonise: break;        // (made by the Re-HarmoniSer window, not here)
+            case FixSpec::Kind::Paste: break;              // (above)
         }
     }
 }
@@ -286,6 +393,14 @@ juce::File fixWholeFile (juce::AudioFormatManager& fm, const juce::File& source,
     juce::int64 lo = len, hi = 0, margin = 0;
     for (auto op : opsIn)
     {
+        if (op.spec.kind == FixSpec::Kind::Paste)                                  // a pasted consonant keeps its own start (only the part inside the file is added)
+        {
+            const auto a = juce::jlimit ((juce::int64) 0, len, op.s0), b = juce::jlimit ((juce::int64) 0, len, op.s1);
+            if (b <= a) continue;
+            lo = juce::jmin (lo, a); hi = juce::jmax (hi, b);
+            ops.push_back (op);
+            continue;
+        }
         op.s0 = juce::jlimit ((juce::int64) 0, len, op.s0); op.s1 = juce::jlimit ((juce::int64) 0, len, op.s1);
         if (op.s1 <= op.s0) continue;
         const auto reach = findsLost (op.spec, sr, op.s0, op.s1) ? lostReach (sr) : 0;            // (the time squeeze that puts lost samples back reaches past the part)
@@ -314,6 +429,7 @@ juce::File fixWholeFile (juce::AudioFormatManager& fm, const juce::File& source,
         if (! dout.write (ptrs.data(), nc, (int) cnt)) { error = "Disk full or write error."; w.reset(); dest.deleteFile(); return {}; }
     }
     w.reset();
+    if (const auto e = checkWrittenLength (&fm, dest, len); e.isNotEmpty()) { error = e; dest.deleteFile(); return {}; }
     return dest;
 }
 
@@ -336,6 +452,12 @@ PieceResult fixPiece (juce::AudioFormatManager& fm, const juce::File& source, ju
     std::vector<FixOp> ops; juce::int64 margin = 0;
     for (auto op : opsIn)
     {
+        if (op.spec.kind == FixSpec::Kind::Paste)                                  // a pasted consonant keeps its own start (only the part inside the piece is added)
+        {
+            if (juce::jmin (outTo, op.s1) <= juce::jmax (outFrom, op.s0)) continue;
+            ops.push_back (op);
+            continue;
+        }
         op.s0 = juce::jlimit (outFrom, outTo, op.s0); op.s1 = juce::jlimit (outFrom, outTo, op.s1);
         if (op.s1 <= op.s0) continue;
         margin = juce::jmax (margin, marginFor (op.spec, sr, 8.0, 0.5));
@@ -359,7 +481,8 @@ TakeFixResult fixTakeFiles (juce::AudioFormatManager& fm, const std::vector<juce
 }
 
 TakeFixResult fixTakeFiles (juce::AudioFormatManager& fm, const std::vector<juce::File>& sources, const std::vector<juce::File>& dests,
-                            const std::vector<FixOp>& ops, AudioJob* job, const std::function<std::shared_ptr<const std::vector<denoise::Profile>> (size_t, const FixSpec&)>& profilesFor)
+                            const std::vector<FixOp>& ops, AudioJob* job, const std::function<std::shared_ptr<const std::vector<denoise::Profile>> (size_t, const FixSpec&)>& profilesFor,
+                            const std::vector<juce::Uuid>& trackOf)
 {
     TakeFixResult r;
     for (size_t i = 0; i < sources.size(); ++i)
@@ -368,6 +491,7 @@ TakeFixResult fixTakeFiles (juce::AudioFormatManager& fm, const std::vector<juce
         juce::String err;
         auto mine = ops;
         for (auto& o : mine) if (o.spec.kind == FixSpec::Kind::Denoise) o.spec.dnProfiles = profilesFor ? profilesFor (i, o.spec) : nullptr;
+        for (auto& o : mine) if (o.spec.kind == FixSpec::Kind::Paste) resolvePaste (o.spec, i < trackOf.size() ? trackOf[i] : juce::Uuid::null());
         auto f = fixWholeFile (fm, sources[i], mine, dests[i], err);
         if (f == juce::File()) { r.error = err; break; }
         r.newFiles.push_back (f);

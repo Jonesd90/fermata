@@ -17,6 +17,11 @@
 #include "../src/core/TakeWriter.h"
 #include "../src/core/ProjectCopy.h"
 #include "../src/core/Ltc.h"
+#include "../src/core/VideoExport.h"
+#include "../src/core/AafWrite.h"
+#include "../src/core/AafExport.h"
+#include "../src/core/TakeMatch.h"
+#include "../src/core/Consonants.h"
 #include "../src/core/Aaf.h"
 #include "../src/core/SpectralPicture.h"
 #include "../src/core/EditFix.h"
@@ -46,6 +51,16 @@ using namespace td;
 static int failures = 0;
 #define CHECK(cond) do { if (! (cond)) { ++failures; std::printf ("  FAIL line %d: %s\n", __LINE__, #cond); } } while (0)
 #define SECTION(name) std::printf ("-- %s\n", name)
+
+/** The tests have no message loop of their own; this runs the messages posted so far (callAsync) for 'ms' milliseconds, through JUCE's own
+    dispatcher (an internal function, declared here because the public loop needs JUCE_MODAL_LOOPS_PERMITTED, which Fermata turns off). */
+namespace juce::detail { bool dispatchNextMessageOnSystemQueue (bool returnIfNoPendingMessages); }
+static void pumpMessages (int ms)
+{
+    const auto until = juce::Time::getMillisecondCounter() + (juce::uint32) ms;
+    while (juce::Time::getMillisecondCounter() < until)
+        if (! juce::detail::dispatchNextMessageOnSystemQueue (true)) juce::Thread::sleep (2);
+}
 
 struct Rig
 {
@@ -1611,6 +1626,26 @@ int main()
         CHECK (c.name == "talk" && c.down);
         CHECK (remote::parseCommand ("{\"cmd\":\"mixer\",\"index\":1}").index == 1);
         CHECK (remote::parseCommand ("not json").name.isEmpty() && remote::parseCommand ("{\"cmd\":\"format c\"}").name.isEmpty());
+        // 3.1.5: numbers from the wire are finite and within range - "nan" (which JUCE reads as a real NaN that passes every clamp) moves nothing,
+        // a huge index is not cast to int as it stands (undefined), and a monitor command with no input touches no track
+        CHECK (remote::parseCommand ("{\"cmd\":\"gain\",\"index\":2,\"delta\":\"nan\"}").delta == 0.0);
+        CHECK (remote::parseCommand ("{\"cmd\":\"gain\",\"index\":2,\"delta\":\"-inf\"}").delta == 0.0);
+        CHECK (remote::parseCommand ("{\"cmd\":\"gain\",\"index\":2,\"delta\":1e300}").delta == 100.0);
+        CHECK (remote::parseCommand ("{\"cmd\":\"gain\",\"index\":2,\"delta\":-2.5}").delta == -2.5);
+        CHECK (remote::parseCommand ("{\"cmd\":\"mixer\",\"index\":1e300}").index == 100000 && remote::parseCommand ("{\"cmd\":\"mixer\",\"index\":-7}").index == 0);
+        CHECK (remote::parseCommand ("{\"cmd\":\"monitor\",\"input\":\"nan\"}").input == -1 && remote::parseCommand ("{\"cmd\":\"monitor\"}").input == -1);
+        {
+            Project mp; mp.setInputCount (2); mp.setOutputCount (2); mp.tracks.clear();
+            auto& unfed = mp.addTrack ("no input", TrackFormat::Mono, 0);
+            unfed.inputs.fill (-1);                                                              // a track with no input
+            const auto before = unfed.monitor();
+            CHECK (remote::desk::monitorCycle (mp, -1) == -1 && unfed.monitor() == before);     // (-1 used to match every track without an input, and cycle them all)
+        }
+        {
+            juce::var pv = juce::JSON::parse ("{ \"format\": \"Fermata preamp memory\", \"inputs\": [ { \"input\": 3, \"gainDb\": \"nan\" }, { \"input\": 4, \"gainDb\": 500 }, { \"input\": -2, \"gainDb\": 10 } ] }");
+            PreampMemory pm;
+            CHECK (PreampMemory::fromVar (pv, pm) && pm.inputs.size() == 2 && pm.inputs[3].gainDb == 0.0f && pm.inputs[4].gainDb == 66.0f);
+        }
         remote::State st; st.recording = true; st.takeNumber = 7; st.timeOfDay = "12:00:01"; st.hasSession = true; st.sessionLeft = 3600; st.sessionText = "01:00:00";
         const auto json = st.toJson();
         CHECK (! json.containsAnyOf ("\n\r"));
@@ -3629,7 +3664,7 @@ int main()
         expectW ("take label", [&] { g.label = "Slate"; }, true);
         expectW ("take number", [&] { g.number = 7; }, true);
         expectW ("take start", [&] { g.startSeconds += 1.0; }, true);
-        expectW ("take length", [&] { g.lengthSamples += 10; }, true);
+        expectW ("take length", [&] { g.lengthSamples += 10; }, false);           // (3.1.4: the recorder's fields are saved, not undone - a take ending is no undo step)
         expectW ("take rate", [&] { g.sampleRate = 96000.0; }, true);
         expectW ("take time", [&] { g.recordedAt = juce::Time (5555); }, true);
         expectW ("fade in", [&] { g.fadeInSeconds = 0.5; }, true);
@@ -3637,12 +3672,13 @@ int main()
         expectW ("dud", [&] { g.dud = true; }, true);
         expectW ("bar in", [&] { g.barIn = 3; }, true);
         expectW ("bar out", [&] { g.barOut = 8; }, true);
-        expectW ("overruns", [&] { g.overruns = 2; g.lostSamples = 100; }, true);
-        expectW ("lost", [&] { g.lostSamples = 200; }, true);
-        expectW ("write failed", [&] { g.writeFailed = true; }, true);
-        expectW ("verified", [&] { g.verified = true; }, true);
+        expectW ("overruns", [&] { g.overruns = 2; g.lostSamples = 100; }, false);
+        expectW ("lost", [&] { g.lostSamples = 200; }, false);
+        expectW ("write failed", [&] { g.writeFailed = true; }, false);
+        expectW ("verified", [&] { g.verified = true; }, false);
         expectW ("room tone mark", [&] { g.roomTone = true; g.roomToneIn = 1.0; g.roomToneOut = 2.5; }, true);      // (2.98: it was saved only when something else changed)
         expectW ("file track name", [&] { g.files[0].trackName = "Z"; }, true);
+        expectW ("file track", [&] { g.files[0].trackId = juce::Uuid(); }, true);                      // (3.1.4: the track alone)
         expectW ("file path", [&] { g.files[0].file = tmp.getChildFile ("other.wav"); }, true);
         expectW ("file channels", [&] { g.files[0].numChannels = 2; }, true);
         expectW ("file orig", [&] { g.files[0].sourceName = "orig.wav"; }, true);
@@ -3650,6 +3686,7 @@ int main()
         expectW ("file removed", [&] { g.files.pop_back(); }, true);
         expectW ("waiting name", [&] { g.waiting[0].name = "bar 5"; }, true);
         expectW ("waiting range", [&] { g.waiting[0].to = 30; }, true);
+        expectW ("waiting from", [&] { g.waiting[0].from = 12; }, true);
         expectW ("waiting file", [&] { g.waiting[0].files[0] = tmp.getChildFile ("w2.wav"); }, true);
         expectW ("waiting track", [&] { g.waiting[0].tracks.clear(); }, true);
         expectW ("waiting removed", [&] { g.waiting.clear(); }, true);
@@ -3684,6 +3721,7 @@ int main()
         expectE ("region out curve", [&] { r.setOutCurve (FadeCurve::Slow); }, true);
         expectE ("region fix in / out", [&] { r.fixIn = true; r.fixOut = true; }, true);
         expectE ("region normalise in", [&] { r.normaliseIn = true; }, true);
+        expectE ("region snips", [&] { r.snipIn = true; r.snipOut = true; }, true);                     // (3.1.4)
         expectE ("region fades", [&] { r.inStart = 0.1; r.inEnd = 0.2; r.outStart = -0.2; r.outEnd = -0.1; }, true);
         expectE ("region file track", [&] { r.files[0].trackId = juce::Uuid(); r.files[0].trackName = "Q"; }, true);
         expectE ("region file path", [&] { r.files[0].file = tmp.getChildFile ("rf.wav"); }, true);
@@ -3692,6 +3730,7 @@ int main()
         expectE ("region file removed", [&] { r.files.pop_back(); }, true);
         expectE ("region waiting", [&] { r.waiting.name = "fix"; r.waiting.from = 1; r.waiting.to = 2; r.waiting.files.push_back (tmp.getChildFile ("rw.wav")); }, true);
         expectE ("region waiting range", [&] { r.waiting.to = 3; }, true);
+        expectE ("region waiting tracks", [&] { r.waiting.tracks.push_back (q.tracks[0].id); }, true);  // (3.1.4)
         expectE ("gain at", [&] { r.gains[0].at = 600; }, true);
         expectE ("gain ramp", [&] { r.gains[0].ramp = 0.2; }, true);
         expectE ("gain db", [&] { r.gains[0].db[0] = -5.0f; }, true);
@@ -9313,6 +9352,1111 @@ int main()
             const auto t0 = juce::Time::getMillisecondCounterHiRes();
             const auto r = readAaf (f);
             CHECK (r.error.isNotEmpty() && juce::Time::getMillisecondCounterHiRes() - t0 < 2000.0);
+        }
+    }
+
+    SECTION ("3.1.2 AudioJob: start() while the last job still runs asks it to stop and waits for it (never kills it); only the new job's onDone is heard");
+    {
+        auto* job = new AudioJob();
+        std::atomic<int> oldSawCancel { 0 }, oldFinished { 0 }, newRan { 0 }, oldDone { 0 }, newDone { 0 };
+        job->start ([&] (AudioJob& j) -> juce::String
+        {
+            // a long job that looks only at cancelled(), as every real one does (never at the thread's own stop request): 10 s if nobody cancels it
+            for (int i = 0; i < 2000 && ! j.cancelled(); ++i) juce::Thread::sleep (5);
+            if (j.cancelled()) ++oldSawCancel;
+            juce::Thread::sleep (50);                                                   // (still busy for a moment after the cancel: the wait has to cover that too)
+            ++oldFinished;
+            return {};
+        }, [&] (const juce::String&) { ++oldDone; });
+        juce::Thread::sleep (100);
+        CHECK (job->isRunning());
+        const auto t0 = juce::Time::getMillisecondCounter();
+        job->start ([&] (AudioJob&) -> juce::String { ++newRan; return {}; }, [&] (const juce::String&) { ++newDone; });
+        CHECK (oldSawCancel == 1 && oldFinished == 1);                                  // the old job was cancelled and finished properly before the new one began
+        CHECK (juce::Time::getMillisecondCounter() - t0 < 3000);                        // (before 3.1.2 start() sat out a 5 s timeout and then killed the thread)
+        for (int i = 0; i < 300 && ! job->isFinished(); ++i) juce::Thread::sleep (10);
+        CHECK (newRan == 1 && job->isFinished());
+        pumpMessages (300);
+        CHECK (oldDone == 0 && newDone == 1);                                           // the replaced job's onDone was dropped, the new one's delivered
+        job->release();                                                                 // (it deletes itself on the message thread)
+        pumpMessages (300);
+    }
+
+    SECTION ("3.1.3 checked file writes: a write the drive refuses is an error, not a short file that says it went well");
+    {
+        // the checked writers: bytes exact, line breaks as JUCE's writer made them (so the saved files come out as before)
+        const auto f = tmp.getChildFile ("checked.txt");
+        juce::String err;
+        CHECK (filesync::writeTextChecked (f, "a\nb", &err) && f.loadFileAsString() == "a\r\nb" && err.isEmpty());
+        CHECK (filesync::replaceTextSafely (f, "second", true, &err) && f.loadFileAsString() == "second" && filesync::backupOf (f).loadFileAsString() == "a\r\nb");
+        const char bytes[5] = { 1, 2, 3, 4, 5 };
+        CHECK (filesync::writeDataChecked (f, bytes, 5, &err) && f.getSize() == 5);
+        // a write that is refused (as a full drive refuses it): false, with a reason, and the target of a safe replace is left as it was with its .bak
+        CHECK (! filesync::detail::writeChecked (tmp.getChildFile ("refused.txt"), [] (juce::FileOutputStream& out) { out.write ("xy", 2); return false; }, &err) && err.contains ("refused.txt"));
+        if (juce::File ("/dev/full").exists())                                          // (Linux: a device that refuses every write with "no space left")
+        {
+            err.clear();
+            CHECK (! filesync::writeTextChecked (juce::File ("/dev/full"), "anything", &err) && err.isNotEmpty());
+            CHECK (! filesync::writeDataChecked (juce::File ("/dev/full"), bytes, 5, &err));
+        }
+        // the sync goes through JUCE's stream now: a file is still flushed and a missing one is simply reported
+        CHECK (filesync::syncToDisk (f) && ! filesync::syncToDisk (tmp.getChildFile ("not-there.txt")));
+
+        // every audio file Fermata makes is read back: the length check sees a file that came out short, and passes every format the exports write
+        juce::AudioFormatManager afm; td::registerAudioFormats (afm);
+        std::vector<std::vector<float>> tone (2, std::vector<float> (48000));
+        for (int i = 0; i < 48000; ++i) tone[0][(size_t) i] = tone[1][(size_t) i] = 0.5f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 440.0 * i / 48000.0);
+        const auto wav = tmp.getChildFile ("checked.wav");
+        CHECK (audioops::writeWav (wav, tone, 48000.0) && audioops::checkWrittenLength (&afm, wav, 48000).isEmpty() && audioops::checkWrittenLength (nullptr, wav, 48000).isEmpty());
+        CHECK (audioops::checkWrittenLength (&afm, wav, 47999).contains ("holds"));
+        {   // cut short by a drive that stopped taking data: the file says less than was written
+            juce::FileOutputStream cut (wav); cut.setPosition (wav.getSize() - 6000); cut.truncate(); cut.flush();
+        }
+        CHECK (audioops::checkWrittenLength (&afm, wav, 48000).contains ("holds") && audioops::checkWrittenLength (&afm, tmp.getChildFile ("never.wav"), 1).contains ("read back"));     // (the header says 48000, the bytes do not)
+        // a file written through CheckedAudioFile: what the writer's destructor flushes is checked too; a drive that refuses the bytes is reported
+        {
+            const auto flac = tmp.getChildFile ("checked-through.flac");
+            audioops::CheckedAudioFile cf (flac);
+            CHECK (! cf.failedToOpen());
+            auto os = cf.stream();
+            juce::FlacAudioFormat ff;
+            auto w = ff.createWriterFor (os, juce::AudioFormatWriterOptions().withSampleRate (48000.0).withNumChannels (2).withBitsPerSample (24).withQualityOptionIndex (5));
+            CHECK (w != nullptr);
+            if (w != nullptr) { const float* ptrs[2] = { tone[0].data(), tone[1].data() }; CHECK (w->writeFromFloatArrays (ptrs, 2, 48000)); w.reset(); }
+            CHECK (cf.finish().isEmpty() && audioops::checkWrittenLength (&afm, flac, 48000).isEmpty() && flac.getSize() > 1000);
+            CHECK (flac.deleteFile());                                                       // (closed by finish: it can go)
+            if (juce::File ("/dev/full").exists())
+            {
+                audioops::CheckedAudioFile bad (juce::File ("/dev/full"));
+                if (! bad.failedToOpen())
+                {
+                    auto os2 = bad.stream();
+                    juce::WavAudioFormat wf;
+                    auto w2 = wf.createWriterFor (os2, juce::AudioFormatWriterOptions().withSampleRate (48000.0).withNumChannels (2).withBitsPerSample (24));
+                    if (w2 != nullptr) { const float* ptrs[2] = { tone[0].data(), tone[1].data() }; w2->writeFromFloatArrays (ptrs, 2, 48000); w2.reset(); }
+                    CHECK (bad.finish().isNotEmpty());
+                }
+            }
+        }
+        struct Fmt { const char* ext; std::unique_ptr<juce::AudioFormat> af; int bits; };
+        std::vector<Fmt> fmts;
+        fmts.push_back ({ "wav", std::make_unique<juce::WavAudioFormat>(), 24 }); fmts.push_back ({ "aiff", std::make_unique<juce::AiffAudioFormat>(), 24 });
+        fmts.push_back ({ "flac", std::make_unique<juce::FlacAudioFormat>(), 24 }); fmts.push_back ({ "ogg", std::make_unique<juce::OggVorbisAudioFormat>(), 16 });
+        for (auto& fm : fmts)
+        {
+            const auto file = tmp.getChildFile (juce::String ("checked-fmt.") + fm.ext);
+            file.deleteFile();
+            std::unique_ptr<juce::OutputStream> os = std::make_unique<juce::FileOutputStream> (file);
+            auto w = fm.af->createWriterFor (os, juce::AudioFormatWriterOptions().withSampleRate (48000.0).withNumChannels (2).withBitsPerSample (fm.bits).withQualityOptionIndex (fm.ext[0] == 'o' ? 5 : 0));
+            CHECK (w != nullptr);
+            if (w != nullptr)
+            {
+                const float* ptrs[2] = { tone[0].data(), tone[1].data() };
+                CHECK (w->writeFromFloatArrays (ptrs, 2, 48000));
+                w.reset();
+                const auto e = audioops::checkWrittenLength (&afm, file, 48000);
+                if (e.isNotEmpty()) std::printf ("  (%s: %s)\n", fm.ext, e.toRawUTF8());
+                CHECK (e.isEmpty());
+            }
+        }
+    }
+
+    SECTION ("3.1.3 the second drive's copy is kept when the main recording fails: lag is judged by the main file's size, and a main file that cannot be read back at the end leaves the copy as it is");
+    {
+        BackupCopier bc;
+        bc.maxLagSeconds.store (0.2);
+        const auto src = tmp.getChildFile ("bc-src.wav"), dst = tmp.getChildFile ("bc copies").getChildFile ("bc-src.wav");
+        std::vector<std::vector<float>> part (1, std::vector<float> (24000, 0.25f));
+        CHECK (audioops::writeWav (src, part, 48000.0));                                     // (half a second: a take under way)
+        {   // the header of a file still being recorded says 0 frames (the length is written at the end)
+            juce::FileOutputStream o (src); o.setPosition (40); o.writeInt (0); o.setPosition (4); o.writeInt (0); o.flush();
+        }
+        auto job = bc.add (src, dst, 48000.0 * 3.0);
+        for (int w = 0; w < 300 && dst.getSize() < src.getSize(); ++w) juce::Thread::sleep (10);
+        CHECK (dst.getSize() == src.getSize());
+        juce::Thread::sleep (700);                                                           // far longer than the lag allowed: the main file has not grown, so the copy is NOT behind
+        CHECK (bc.busy() == 1 && bc.takeBinned().isEmpty() && dst.getSize() == src.getSize());     // (before 3.1.3 it was binned here as "could not keep up")
+        // the main drive goes before the take ends (here: the file's contents vanish - on Linux a deleted file can still be read through an open handle):
+        // the finished header cannot be re-read, and the copy is kept with a header of its own
+        { juce::FileOutputStream gone (src); gone.setPosition (0); gone.truncate(); gone.flush(); }
+        BackupCopier::finish (job);
+        for (int w = 0; w < 300 && bc.busy() > 0; ++w) juce::Thread::sleep (10);
+        const auto notes = bc.takeBinned();
+        CHECK (bc.busy() == 0 && notes.size() == 1 && notes[0].contains ("COULD NOT BE READ BACK") && notes[0].contains ("kept"));
+        const auto r = wavrepair::inspect (dst, false);
+        CHECK (r.ok && r.frames == 24000 && ! r.wasBroken);                                   // (a whole, readable file: every sample that had been copied)
+        // a second drive that really is behind is still binned: the main file is far ahead of the copy
+        const auto src2 = tmp.getChildFile ("bc-src2.wav"), dst2 = tmp.getChildFile ("bc copies").getChildFile ("bc-src2.wav");
+        std::vector<std::vector<float>> big (1, std::vector<float> (480000, 0.1f));
+        CHECK (audioops::writeWav (src2, big, 48000.0));
+        bc.maxLagSeconds.store (-1.0);                                                       // (nothing is ever near enough)
+        auto job2 = bc.add (src2, dst2, 48000.0 * 3.0);
+        for (int w = 0; w < 300 && bc.busy() > 0; ++w) juce::Thread::sleep (10);
+        const auto notes2 = bc.takeBinned();
+        CHECK (bc.busy() == 0 && notes2.size() == 1 && notes2[0].contains ("could not keep up") && notes2[0].contains ("not affected") && ! dst2.exists());
+        // a take that never started: its copy goes without a word
+        bc.maxLagSeconds.store (20.0);
+        auto job3 = bc.add (src2, tmp.getChildFile ("bc copies").getChildFile ("bc-src3.wav"), 48000.0 * 3.0);
+        BackupCopier::cancel (job3);
+        for (int w = 0; w < 300 && bc.busy() > 0; ++w) juce::Thread::sleep (10);
+        CHECK (bc.busy() == 0 && bc.takeBinned().isEmpty() && ! tmp.getChildFile ("bc copies").getChildFile ("bc-src3.wav").exists());
+    }
+
+    SECTION ("3.1.3 a take whose later track's file cannot be made leaves nothing behind: no header-only files, no second-drive copies, no notice");
+    {
+        Project q;
+        q.projectFile = tmp.getChildFile ("Partial").getChildFile ("Partial.fermata");
+        q.projectFile.getParentDirectory().createDirectory();
+        q.setInputCount (2); q.setOutputCount (2);
+        q.tracks.clear();
+        q.addTrack ("first", TrackFormat::Mono, 0).setArmed (true);
+        q.addTrack (juce::String::repeatedString ("x", 300), TrackFormat::Mono, 1).setArmed (true);     // (a file name that long cannot be made)
+        q.retireAllMixers(); q.addMixer ("M");
+        auto& qw = *q.takeWindows.front(); qw.name = "Partial";
+        AudioEngine e (q);
+        e.setMixerThreads (0);
+        e.setBackupFolder (tmp.getChildFile ("Partial second drive"));
+        e.prepare (48000.0, 64);
+        const auto err = e.startRecording (qw);
+        CHECK (err.startsWith ("Cannot create") && ! e.isRecording() && qw.groups.empty() && qw.nextNumber == 1);
+        const auto folder = q.takeFolder (qw);
+        CHECK (folder.getNumberOfChildFiles (juce::File::findFiles, "*.wav") == 0);         // (the first track's file, made before the second failed, is gone again)
+        for (int w = 0; w < 300 && e.backupCopiesGoing() > 0; ++w) juce::Thread::sleep (10);
+        CHECK (e.backupCopiesGoing() == 0 && e.takeBackupProblems().isEmpty());
+        CHECK (tmp.getChildFile ("Partial second drive").getNumberOfChildFiles (juce::File::findFilesAndDirectories, "*") <= 1);   // (at most the project's folder, empty)
+        // with a name that can be made, the same window records as before, and the take gets number 1
+        q.tracks[1].name = "second";
+        CHECK (e.startRecording (qw).isEmpty());
+        e.stopRecording(); e.waitForFinishedTakes (5000); e.reapFinishedTakes();
+        CHECK (qw.groups.size() == 1 && qw.groups[0].number == 1 && folder.getNumberOfChildFiles (juce::File::findFiles, "*.wav") == 2);
+        e.setBackupFolder ({});
+    }
+
+    SECTION ("3.1.4 a take is not an undo step: Ctrl+Z after a recording undoes the edit before it and leaves the take and its counter alone");
+    {
+        Project q;
+        q.projectFile = tmp.getChildFile ("UndoRec").getChildFile ("UndoRec.fermata");
+        q.projectFile.getParentDirectory().createDirectory();
+        q.setInputCount (2); q.setOutputCount (2);
+        q.tracks.clear();
+        q.addTrack ("solo", TrackFormat::Mono, 0).setArmed (true);
+        q.retireAllMixers(); q.addMixer ("M");
+        auto& qw = *q.takeWindows.front(); qw.name = "Rec";
+        AudioEngine e (q);
+        e.setMixerThreads (0);
+        e.prepare (48000.0, 64);
+        q.undoReset();
+        // an edit the person made, then a take: the edit is the step, the take is not
+        CHECK (qw.defaultLabel == "Take");                                                     // (what the history starts from)
+        qw.defaultLabel = "Before"; q.changed(); q.undoTick (false, true);
+        CHECK (q.undoDepth() == 1);
+        const int next = qw.nextNumber;
+        CHECK (e.startRecording (qw).isEmpty());
+        q.undoTick (true);                                                                      // (the tick while recording: looks again later)
+        e.stopRecording(); e.waitForFinishedTakes (5000); e.reapFinishedTakes();
+        q.undoTick (false, true);                                                               // the tick after the take
+        CHECK (qw.groups.size() == 1 && qw.nextNumber == next + 1 && q.undoDepth() == 1);       // (3.1.3 and before: a second step, the take's)
+        CHECK (q.undo (juce::Uuid::null()));                                                    // Ctrl+Z: the label change goes, the take and its counter stay
+        CHECK (qw.defaultLabel == "Take" && qw.groups.size() == 1 && qw.nextNumber == next + 1);
+        // a rename made before a later take, undone after it: the counter still never goes back (the snapshot is older than the take)
+        qw.defaultLabel = "Second"; q.changed(); q.undoTick (false, true);
+        CHECK (e.startRecording (qw).isEmpty());
+        e.stopRecording(); e.waitForFinishedTakes (5000); e.reapFinishedTakes();
+        q.undoTick (false, true);
+        CHECK (qw.groups.size() == 2 && qw.nextNumber == next + 2);
+        CHECK (q.undo (juce::Uuid::null()) && qw.defaultLabel == "Take" && qw.nextNumber == next + 2 && qw.groups.size() == 2);
+        CHECK (q.redo (juce::Uuid::null()) && qw.defaultLabel == "Second" && qw.nextNumber == next + 2);
+        // a change the person made just before Record (not yet settled into a step) is still a step of its own, not swallowed by the take
+        qw.defaultLabel = "Quick"; q.changed();
+        CHECK (e.startRecording (qw).isEmpty());
+        e.stopRecording(); e.waitForFinishedTakes (5000); e.reapFinishedTakes();
+        q.undoTick (false, true);
+        CHECK (q.undo (juce::Uuid::null()) && qw.defaultLabel == "Second" && qw.groups.size() == 3 && qw.nextNumber == next + 3);
+    }
+
+    SECTION ("3.1.4 undo puts a take's files back (a track's clips taken out of the window, a fix's files) when they are still on the disk, with its LTC row and waiting marks; a mastering edit is a step of its own");
+    {
+        Project q;
+        q.projectFile = tmp.getChildFile ("UndoFiles").getChildFile ("UndoFiles.fermata");
+        q.projectFile.getParentDirectory().createDirectory();
+        q.setInputCount (2); q.setOutputCount (2);
+        q.tracks.clear();
+        const auto tA = q.addTrack ("A", TrackFormat::Mono, 0).id, tB = q.addTrack ("B", TrackFormat::Mono, 1).id;
+        auto& qw = *q.takeWindows.front();
+        TakeGroup g; g.id = juce::Uuid(); g.number = 1; g.label = "One"; g.lengthSamples = 1000; g.sampleRate = 48000.0;
+        std::vector<std::vector<float>> mono (1, std::vector<float> (1000, 0.1f));
+        for (auto& tr : q.tracks)
+        {
+            TakeFile f; f.trackId = tr.id; f.trackName = tr.name; f.file = tmp.getChildFile ("undo-" + tr.name + ".wav"); f.numChannels = 1;
+            CHECK (audioops::writeWav (f.file, mono, 48000.0));
+            g.files.push_back (f);
+        }
+        qw.groups.push_back (g);
+        q.undoReset();
+        // a track's clips taken out of the window (and its row hidden with them): Ctrl+Z brings the clips back and shows the row again
+        qw.removeTrackClips (tB); q.changed(); q.undoTick (false, true);
+        CHECK (qw.groups[0].files.size() == 1 && qw.isHidden (tB) && q.undoDepth() == 1);
+        CHECK (q.undo (juce::Uuid::null()) && qw.groups[0].files.size() == 2 && qw.groups[0].files[1].trackId == tB && ! qw.isHidden (tB));
+        CHECK (q.redo (juce::Uuid::null()) && qw.groups[0].files.size() == 1);
+        CHECK (q.undo (juce::Uuid::null()) && qw.groups[0].files.size() == 2);
+        // a take-level fix: the take points at a new file; Ctrl+Z points it back at the original (which is still there)
+        const auto fixed = tmp.getChildFile ("undo-A (fixed).wav");
+        CHECK (audioops::writeWav (fixed, mono, 48000.0));
+        const auto original = qw.groups[0].files[0].file;
+        qw.groups[0].files[0].file = fixed; q.changed(); q.undoTick (false, true);
+        CHECK (q.undo (juce::Uuid::null()) && qw.groups[0].files[0].file == original);
+        CHECK (q.redo (juce::Uuid::null()) && qw.groups[0].files[0].file == fixed);
+        // a relink: the old path is gone, so undo leaves the files alone (never points at a missing file)
+        const auto moved = tmp.getChildFile ("undo-A (moved).wav");
+        CHECK (fixed.moveFileTo (moved));
+        qw.groups[0].files[0].file = moved; q.changed(); q.undoTick (false, true);
+        CHECK (q.undo (juce::Uuid::null()) && qw.groups[0].files[0].file == moved);
+        q.redo (juce::Uuid::null());
+        // the LTC row and an Export for Processing mark are undone too
+        qw.showLtc = true; q.changed(); q.undoTick (false, true);
+        CHECK (q.undo (juce::Uuid::null()) && ! qw.showLtc);
+        WaitingPiece wp; wp.name = "bar 3"; wp.from = 10; wp.to = 20; wp.files.push_back (moved);
+        qw.groups[0].waiting.push_back (wp); q.changed(); q.undoTick (false, true);
+        CHECK (q.undo (juce::Uuid::null()) && qw.groups[0].waiting.empty());
+        CHECK (q.redo (juce::Uuid::null()) && qw.groups[0].waiting.size() == 1);
+        // the mastering list: an edit there is a step of its own (3.1.3: it only marked the project dirty, and Ctrl+Z undid the step before it)
+        const int depthBefore = q.undoDepth();
+        q.mastering.tailSeconds = 2.5; q.markDirtyForUndo(); q.undoTick (false, true);
+        CHECK (q.undoDepth() == depthBefore + 1);
+        CHECK (q.undo (juce::Uuid::null()) && q.mastering.tailSeconds == 0.0);
+        CHECK (q.redo (juce::Uuid::null()) && q.mastering.tailSeconds == 2.5);
+    }
+
+    SECTION ("3.1.4 an Open that fails (a file that is not a Fermata project) leaves the open project as it was: its window files keep their names on the next save");
+    {
+        const auto folder = tmp.getChildFile ("OpenFails"); folder.createDirectory();
+        Project q;
+        q.projectFile = folder.getChildFile ("Kept.fermata");
+        q.setInputCount (2); q.setOutputCount (2);
+        q.takeWindows.front()->name = "Concert";
+        q.addEdit ("Edit one", q.takeWindows.front()->id);
+        juce::String err;
+        CHECK (q.save (err));
+        const auto filesBefore = q.windowFiles;
+        auto countFiles = [&] (const char* sub) { return folder.getChildFile (sub).getNumberOfChildFiles (juce::File::findFiles, "*"); };
+        CHECK (filesBefore.size() == q.edits.size() + q.takeWindows.size() + (size_t) q.cueEnd() && countFiles ("Take Windows") == 1 && countFiles ("Edit Windows") == 1);
+        // a .json of some other program's, renamed: not a project. Nothing of the open one may change
+        const auto other = folder.getChildFile ("Other.fermata");
+        CHECK (other.replaceWithText ("{ \"format\": \"Some other program\", \"takeWindowFiles\": [ { \"id\": \"x\", \"name\": \"Y\", \"file\": \"Take Windows/Concert.fmtake\" } ] }"));
+        juce::String e2;
+        CHECK (! q.load (other, e2) && e2.contains ("Other.fermata"));
+        CHECK (q.projectFile == folder.getChildFile ("Kept.fermata") && q.takeWindows.size() == 1 && q.edits.size() == 1 && q.name != "Other");
+        CHECK (q.windowFiles.size() == filesBefore.size() && q.missingWindowRefs.empty() && q.loadNotes.isEmpty());
+        for (auto& kv : filesBefore) CHECK (q.windowFiles.count (kv.first) == 1 && q.windowFiles[kv.first].rel == kv.second.rel);
+        // the next save writes the same files, not "(2)" copies, and lists no missing windows
+        q.changed();
+        CHECK (q.save (err));
+        CHECK (countFiles ("Take Windows") == 1 && countFiles ("Edit Windows") == 1);
+        juce::var saved; CHECK (! juce::JSON::parse (q.projectFile.loadFileAsString(), saved).failed());
+        CHECK (saved["takeWindowFiles"].size() == 1 && saved["editFiles"].size() == 1);
+        // a file that does not exist says so (and leaves the project alone just the same)
+        juce::String e3;
+        CHECK (! q.load (folder.getChildFile ("Nowhere.fermata"), e3) && e3.contains ("does not exist") && q.windowFiles.size() == filesBefore.size());
+    }
+
+    SECTION ("3.1.4 a bounce whose render copy could not start one of the mix's plug-ins is refused with its name (a bypassed one, or one the copy has, is no reason)");
+    {
+        struct NamedLat : LatencyInsert
+        {
+            NamedLat (const juce::String& n, int l) : LatencyInsert (l), nm (n) {}
+            juce::String getName() const override { return nm; }
+            juce::String getDescription() const override { return "named:" + nm + ":" + juce::String (lat); }
+            juce::String nm;
+        };
+        Project bq;
+        bq.projectFile = tmp.getChildFile ("BounceRefuse.fermata");
+        // the render copy's factory: "Fine" starts, "Broken" does not (a licence that allows one instance, a plug-in file gone since the project opened)
+        bq.insertFactory = [] (const juce::String& desc, const juce::String&) -> std::unique_ptr<InsertProcessor>
+        {
+            if (! desc.startsWith ("named:")) return nullptr;
+            const auto nm = desc.fromFirstOccurrenceOf ("named:", false, false).upToFirstOccurrenceOf (":", false, false);
+            if (nm == "Broken") return nullptr;
+            return std::make_unique<NamedLat> (nm, desc.fromLastOccurrenceOf (":", false, false).getIntValue());
+        };
+        bq.setInputCount (1); bq.setOutputCount (2);
+        bq.tracks.clear();
+        const auto tt = bq.addTrack ("Violin", TrackFormat::Mono, 0).id;
+        bq.retireAllMixers();
+        const auto bob = bq.addBus ("Out", true).id;
+        auto& bm = bq.addMixer ("M");
+        bq.setSendLevel (bm, tt, bob, 0.0f); bm.busFor (bob)->outFirst.store (0);
+        const auto src = makeConstWav (tmp.getChildFile ("bounce-refuse.wav"), 0.5, 1);
+        auto& ed = bq.addEdit ("E", juce::Uuid::null());
+        EditRegion r; r.srcIn = 0; r.srcOut = 48000; r.sampleRate = 48000.0; r.sourceLength = 48000;
+        RegionFile rf; rf.trackId = tt; rf.trackName = "Violin"; rf.file = src; r.files.push_back (rf);
+        ed.insertRegion (r);
+        bm.stripFor (tt)->slots[0].set (std::make_unique<NamedLat> ("Fine", 10), 48000.0, 512, 2);
+        bm.stripFor (tt)->slots[1].set (std::make_unique<NamedLat> ("Broken", 10), 48000.0, 512, 2);
+        BounceSettings bs;
+        bs.sampleRate = 48000.0; bs.mixerId = bm.id; bs.sources = { bob }; bs.folder = tmp.getChildFile ("bounce-refuse");
+        bs.segments = segmentsForEdit (bq, ed);
+        bs.items.push_back ({ "Piece", 0, 48000 });
+        {
+            Bouncer b (bq, bs);
+            CHECK (b.getPrepareError().contains ("Broken on Violin") && ! b.getPrepareError().contains ("Fine"));
+            auto res = b.render();
+            CHECK (res.error.isNotEmpty() && res.files.isEmpty());
+        }
+        {   // bypassed: the mix does not hear it either, so the bounce goes ahead (and the copy's own plug-in list says the same)
+            bm.stripFor (tt)->slots[1].bypass.set (true);
+            auto copy = bq.cloneForRender (48000.0, 512);
+            CHECK (bq.pluginsMissingFrom (*copy, bm.id).isEmpty());
+            Bouncer b (bq, bs);
+            CHECK (b.getPrepareError().isEmpty());
+            auto res = b.render();
+            CHECK (res.error.isEmpty() && res.files.size() == 1);
+            bm.stripFor (tt)->slots[1].bypass.set (false);
+        }
+        {   // removed: the same
+            bm.stripFor (tt)->slots[1].clear (48000.0, 512, 2);
+            Bouncer b (bq, bs);
+            CHECK (b.getPrepareError().isEmpty());
+        }
+    }
+
+    SECTION ("3.1.5 the audio device stops and starts again during a take: at the same rate the take goes on (and says so); at another rate the take is ended with what it has, its files at the old rate");
+    {
+        /** The device as the engine sees it when JUCE starts it again: only its rate and buffer size matter here. */
+        struct FakeDevice : juce::AudioIODevice
+        {
+            FakeDevice (double r, int b) : juce::AudioIODevice ("Fake", "Test"), rate (r), block (b) {}
+            juce::StringArray getOutputChannelNames() override { return { "Out 1", "Out 2" }; }
+            juce::StringArray getInputChannelNames() override { return { "In 1", "In 2" }; }
+            juce::Array<double> getAvailableSampleRates() override { return { rate }; }
+            juce::Array<int> getAvailableBufferSizes() override { return { block }; }
+            int getDefaultBufferSize() override { return block; }
+            juce::String open (const juce::BigInteger&, const juce::BigInteger&, double, int) override { return {}; }
+            void close() override {}
+            bool isOpen() override { return true; }
+            void start (juce::AudioIODeviceCallback*) override {}
+            void stop() override {}
+            bool isPlaying() override { return false; }
+            juce::String getLastError() override { return {}; }
+            int getCurrentBufferSizeSamples() override { return block; }
+            double getCurrentSampleRate() override { return rate; }
+            int getCurrentBitDepth() override { return 24; }
+            juce::BigInteger getActiveOutputChannels() const override { juce::BigInteger b; b.setRange (0, 2, true); return b; }
+            juce::BigInteger getActiveInputChannels() const override { juce::BigInteger b; b.setRange (0, 2, true); return b; }
+            int getOutputLatencyInSamples() override { return 0; }
+            int getInputLatencyInSamples() override { return 0; }
+            double rate; int block;
+        };
+        Project q;
+        q.projectFile = tmp.getChildFile ("DevRestart").getChildFile ("DevRestart.fermata");
+        q.projectFile.getParentDirectory().createDirectory();
+        q.setInputCount (2); q.setOutputCount (2);
+        q.tracks.clear();
+        q.addTrack ("solo", TrackFormat::Mono, 0).setArmed (true);
+        q.retireAllMixers(); q.addMixer ("M");
+        auto& qw = *q.takeWindows.front(); qw.name = "Rec";
+        AudioEngine e (q);
+        e.setMixerThreads (0);
+        FakeDevice d48 (48000.0, 256), d96 (96000.0, 256);
+        e.audioDeviceAboutToStart (&d48);
+        auto feed = [&] (int blocks)
+        {
+            std::vector<float> i0 (256, 0.25f), i1 (256, 0.0f), o0 (256, 0.0f), o1 (256, 0.0f);
+            const float* in[2] = { i0.data(), i1.data() }; float* out[2] = { o0.data(), o1.data() };
+            for (int b = 0; b < blocks; ++b) e.process (in, 2, out, 2, 256);
+        };
+        // Stop as the program does it: the device is running and its thread goes on delivering blocks while Stop waits for it to leave the
+        // session (here there is no such thread, so the blocks are fed from another one; without them Stop would take the stalled-driver path)
+        auto stopNow = [&]
+        {
+            std::atomic<bool> go { true };
+            std::thread pretendAudio ([&] { while (go.load()) { feed (1); juce::Thread::sleep (1); } });
+            e.stopRecording();
+            go.store (false); pretendAudio.join();
+            CHECK (e.waitForFinishedTakes (5000)); e.reapFinishedTakes();
+        };
+        // a restart at the same rate: the take goes on, the note says the sound meanwhile is missing
+        CHECK (e.startRecording (qw).isEmpty());
+        feed (100);
+        e.audioDeviceStopped();
+        CHECK (! e.isRunning() && e.isRecording());
+        e.audioDeviceAboutToStart (&d48);
+        CHECK (e.isRunning() && e.isRecording());
+        const auto note1 = e.takeDeviceNote();
+        CHECK (note1.contains ("STOPPED AND STARTED AGAIN") && note1.contains ("The take goes on") && e.takeDeviceNote().isEmpty());
+        feed (100);
+        stopNow();
+        CHECK (e.audioThreadNeverStalled());
+        CHECK (qw.groups.size() == 1 && qw.groups[0].lengthSamples >= 200 * 256 && std::abs (qw.groups[0].sampleRate - 48000.0) < 0.5);     // (the pretend thread's blocks at Stop add a few)
+        {
+            juce::AudioFormatManager fm; fm.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> rd (qw.groups[0].files.empty() ? nullptr : fm.createReaderFor (qw.groups[0].files[0].file));
+            CHECK (rd != nullptr && rd->lengthInSamples == qw.groups[0].lengthSamples);     // (a finished file: the header says what it holds)
+        }
+        // a restart at another rate: the take is ended with what it has; the file's header says the old rate and holds exactly that many samples
+        CHECK (e.startRecording (qw).isEmpty());
+        feed (120);
+        e.audioDeviceStopped();
+        e.audioDeviceAboutToStart (&d96);
+        CHECK (! e.isRecording() && e.isRunning() && std::abs (e.getSampleRate() - 96000.0) < 0.5);
+        const auto note2 = e.takeDeviceNote();
+        CHECK (note2.contains ("CAME BACK AT 96000 Hz") && note2.contains ("48000 Hz") && note2.contains ("ended"));
+        CHECK (e.waitForFinishedTakes (5000)); e.reapFinishedTakes();
+        CHECK (qw.groups.size() == 2 && std::abs (qw.groups[1].lengthSamples - 120 * 256) <= 2 * 256 && std::abs (qw.groups[1].sampleRate - 48000.0) < 0.5);
+        {
+            juce::AudioFormatManager fm; fm.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> rd (qw.groups[1].files.empty() ? nullptr : fm.createReaderFor (qw.groups[1].files[0].file));
+            CHECK (rd != nullptr && rd->lengthInSamples == qw.groups[1].lengthSamples && std::abs (rd->sampleRate - 48000.0) < 0.5);
+        }
+        // the next take is at the new rate, as before
+        CHECK (e.startRecording (qw).isEmpty());
+        feed (10);
+        stopNow();
+        CHECK (qw.groups.size() == 3 && std::abs (qw.groups[2].sampleRate - 96000.0) < 0.5);
+        e.audioDeviceStopped();
+    }
+
+    SECTION ("3.2.0 export for video edit: the gating rule, a generator that starts mid-frame, the timecode read at a sample, and the three files");
+    {
+        using namespace videoexport;
+        const double rate = 48000.0;
+        auto S = [rate] (double sec) { return (juce::int64) std::llround (sec * rate); };
+        {   // the rule: code from the fade-in to a gap before the next fade-in; a piece shorter than the gap to the next join goes; the last runs to its end
+            std::vector<PieceEdge> p = { { S (0.0), S (5.2) }, { S (4.9), S (10.3) }, { S (10.0), S (10.4) }, { S (10.1), S (13.1) } };
+            const auto runs = gateLtcRuns (p, S (0.25));
+            CHECK (runs.size() == 3);
+            if (runs.size() == 3)
+            {
+                CHECK (runs[0].piece == 0 && runs[0].from == S (0.0) && runs[0].to == S (4.65));
+                CHECK (runs[1].piece == 1 && runs[1].from == S (4.9) && runs[1].to == S (9.85));
+                CHECK (runs[2].piece == 3 && runs[2].from == S (10.1) && runs[2].to == S (13.1));
+            }
+            // two short pieces in a row both go; a gap between pieces (silence in the edit) ends the code at the piece's own end
+            std::vector<PieceEdge> q = { { S (0.0), S (3.0) }, { S (3.0), S (3.1) }, { S (3.1), S (3.2) }, { S (3.2), S (6.0) }, { S (9.0), S (12.0) } };
+            const auto r2 = gateLtcRuns (q, S (0.25));
+            CHECK (r2.size() == 3 && r2[0].piece == 0 && r2[0].to == S (2.95) && r2[1].piece == 3 && r2[1].from == S (3.2) && r2[1].to == S (6.0) && r2[2].piece == 4 && r2[2].to == S (12.0));
+            CHECK (gateLtcRuns ({}, S (0.25)).empty());
+            CHECK (formatCodeFor (25.0, false) == 1 && formatCodeFor (24.0, false) == 0 && formatCodeFor (30000.0 / 1001.0, true) == 2 && formatCodeFor (30000.0 / 1001.0, false) == 3 && formatCodeFor (30.0, false) == 4 && formatCodeFor (24000.0 / 1001.0, false) == 5);
+        }
+        {   // a generator started in the middle of a frame reads as a continuation of the time of day, to within a sample
+            for (double at : { 36001.0, 36009.9, 3600.0 + 0.123456, 82800.25 })
+            {
+                LtcGenerator gen; gen.prepare (rate); gen.startExact (1, at);
+                std::vector<float> sig ((size_t) S (3.0));
+                gen.fill (sig.data(), (int) sig.size());
+                LtcDecoder dec (rate); dec.feed (sig.data(), (int) sig.size());
+                const auto r = analyseLtc (dec.frames(), rate);
+                CHECK (r.found && std::abs (r.fps - 25.0) < 1.0e-6 && r.jumps == 0);
+                CHECK (r.found && std::abs (r.startSeconds - std::fmod (at, 86400.0)) < 2.0 / rate);
+                if (! r.found || std::abs (r.startSeconds - std::fmod (at, 86400.0)) >= 2.0 / rate) std::printf ("  (startExact at %.6f: found %d fps %.3f jumps %d start %.6f frames %d)\n", at, (int) r.found, r.fps, r.jumps, r.startSeconds, r.frameCount);
+            }
+        }
+        // a take: 20 s of a tone on "music", 20 s of 25 fps code from 10:00:00:00 on "LTC"
+        const auto folder = tmp.getChildFile ("video-export"); folder.deleteRecursively(); folder.createDirectory();
+        std::vector<std::vector<float>> music (1, std::vector<float> ((size_t) S (20.0)));
+        for (size_t i = 0; i < music[0].size(); ++i) music[0][i] = 0.3f * (float) std::sin (0.02 * (double) i);
+        std::vector<std::vector<float>> code (1, std::vector<float> ((size_t) S (20.0)));
+        { LtcGenerator gen; gen.prepare (rate); gen.start (1, 36000.0); gen.fill (code[0].data(), (int) code[0].size()); }
+        const auto musicFile = folder.getChildFile ("take-music.wav"), ltcFile = folder.getChildFile ("take-ltc.wav");
+        CHECK (audioops::writeWav (musicFile, music, rate) && audioops::writeWav (ltcFile, code, rate));
+        {
+            juce::AudioFormatManager fm; fm.registerBasicFormats();
+            const auto c = timecodeAt (fm, ltcFile, 0, S (5.0));
+            CHECK (c.found && std::abs (c.fps - 25.0) < 1.0e-6 && ! c.drop && std::abs (c.seconds - 36005.0) < 2.0 / rate);
+            const auto c2 = timecodeAt (fm, ltcFile, 0, S (0.3));                       // near the start: the window begins at the file's first sample
+            CHECK (c2.found && std::abs (c2.seconds - 36000.3) < 2.0 / rate);
+            CHECK (! timecodeAt (fm, musicFile, 0, S (5.0)).found);                       // a tone is not timecode
+        }
+        // the project: a music track and an LTC track, an edit of four pieces as in the rule's first case (B's fade-in begins 0.1 s before its start)
+        Project vp; vp.projectFile = folder.getChildFile ("Video.fermata");
+        vp.setInputCount (2); vp.setOutputCount (2); vp.tracks.clear();
+        const auto tm = vp.addTrack ("music", TrackFormat::Mono, 0).id;
+        auto& ltcTrack = vp.addTrack ("LTC", TrackFormat::Mono, 1); ltcTrack.isLtc = true; const auto tl = ltcTrack.id;
+        vp.buses.clear(); vp.retireAllMixers();                                               // (the default design's "Main" bus goes: the one made here is the main output)
+        const auto out = vp.addBus ("Out", true).id;
+        vp.addMixer ("M");
+        auto& ed = vp.addEdit ("Concert", juce::Uuid::null());
+        ed.sampleRate = rate;                                                                 // (insertRegion sets it in the program; the pieces are pushed straight in here)
+        vp.syncEditMixers();
+        auto* edMixer = vp.mixerOfEdit (ed.id);                                              // the edit's own mixer is what the export mixes through
+        auto& vm = edMixer != nullptr ? *edMixer : *vp.mixers.front();
+        vp.setSendLevel (vm, tm, out, 0.0f); vm.busFor (out)->outFirst.store (0); vm.busFor (out)->isMain.set (true);
+        auto piece = [&] (double srcInSec, double srcOutSec, double startSec, double inStart, const juce::String& nm)
+        {
+            EditRegion r; r.id = juce::Uuid(); r.takeName = nm; r.sampleRate = rate; r.sourceLength = S (20.0);
+            r.srcIn = S (srcInSec); r.srcOut = S (srcOutSec); r.startSample = S (startSec); r.inStart = inStart; r.inEnd = inStart + 0.05;
+            RegionFile a; a.trackId = tm; a.trackName = "music"; a.file = musicFile; r.files.push_back (a);
+            RegionFile b; b.trackId = tl; b.trackName = "LTC"; b.file = ltcFile; r.files.push_back (b);
+            ed.regions.push_back (r);
+        };
+        piece (1.0, 6.0, 0.0, 0.0, "A"); piece (10.0, 15.0, 5.0, -0.1, "B"); piece (7.0, 7.1, 10.0, 0.0, "C"); piece (16.0, 19.0, 10.1, 0.0, "D");
+        Settings st; st.folder = folder.getChildFile ("out"); st.name = "Concert mix"; st.gapSeconds = 0.25;
+        const auto plan = planFor (vp, ed, st);
+        CHECK (plan.error.isEmpty() && plan.pieces.size() == 4 && ! plan.noLtcTrack && plan.start == 0 && plan.end == S (13.1));
+        CHECK (plan.pieces.size() == 4 && plan.pieces[1].takeName == "B" && plan.pieces[1].ltcFile == ltcFile && plan.pieces[1].ltcSample == S (9.9));
+        auto bs = mixSettingsFor (vp, ed, plan, st);
+        CHECK (bs.mixerId == vm.id && bs.sources.size() == 1 && bs.sources[0] == out && bs.items.size() == 1);
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        Bouncer bouncer (vp, bs);
+        CHECK (bouncer.getPrepareError().isEmpty());
+        std::atomic<float> prog { 0.0f }; std::atomic<bool> cancel { false };
+        const auto res = exportForVideo (plan, bouncer, st, fm, &prog, &cancel);
+        CHECK (res.error.isEmpty());
+        std::printf ("  (video export: %d pieces, %d runs, %d without code, %d dropped, %.3g fps; notes: %s)\n", res.pieces, res.runs, res.withoutCode, res.dropped, res.fps, res.notes.joinIntoString (" | ").toRawUTF8());
+        CHECK (res.pieces == 4 && res.runs == 3 && res.withoutCode == 0 && res.dropped == 1 && std::abs (res.fps - 25.0) < 1.0e-6 && res.lengthSamples == S (13.1));
+        if (res.error.isEmpty())
+        {
+            std::unique_ptr<juce::AudioFormatReader> mix (fm.createReaderFor (res.mixFile)), ltc (fm.createReaderFor (res.ltcFile)), chk (fm.createReaderFor (res.checkFile));
+            CHECK (mix != nullptr && ltc != nullptr && chk != nullptr);
+            if (mix != nullptr && ltc != nullptr && chk != nullptr)
+            {
+                CHECK (mix->lengthInSamples == S (13.1) && ltc->lengthInSamples == S (13.1) && chk->lengthInSamples == S (13.1) && mix->numChannels == 2 && ltc->numChannels == 2 && chk->numChannels == 2);
+                juce::AudioBuffer<float> L (2, (int) S (13.1)), M (2, (int) S (13.1)), K (2, (int) S (13.1));
+                ltc->read (&L, 0, (int) S (13.1), 0, true, true); mix->read (&M, 0, (int) S (13.1), 0, true, true); chk->read (&K, 0, (int) S (13.1), 0, true, true);
+                auto silent = [&] (double a, double b) { return L.getMagnitude (0, (int) S (a), (int) (S (b) - S (a))) < 1.0e-4f; };
+                auto loud = [&] (double a, double b) { return L.getMagnitude (0, (int) S (a), (int) (S (b) - S (a))) > 0.2f; };
+                CHECK (loud (0.0, 4.65) && silent (4.65, 4.9) && loud (4.9, 9.85) && silent (9.85, 10.1) && loud (10.1, 13.1));
+                // the code in each run reads as the take's time at that moment: A from 10:00:01:00, B from 9.9 s into the take (its fade-in), D from 16 s
+                auto codeAt = [&] (double a, double b, double expect)
+                {
+                    LtcDecoder dec (rate); dec.feed (L.getReadPointer (0) + S (a), (int) (S (b) - S (a)));
+                    const auto r = analyseLtc (dec.frames(), rate);
+                    return r.found && r.jumps == 0 && std::abs (r.startSeconds - expect) < 2.0 / rate;
+                };
+                CHECK (codeAt (0.0, 4.65, 36001.0) && codeAt (4.9, 9.85, 36009.9) && codeAt (10.1, 13.1, 36016.0));
+                // both channels of the LTC file carry the code; the check file is the mix summed on the left and the code on the right
+                float worst = 0.0f;
+                for (int i = 0; i < (int) S (13.1); i += 97)
+                {
+                    worst = juce::jmax (worst, std::abs (L.getSample (0, i) - L.getSample (1, i)), std::abs (K.getSample (1, i) - L.getSample (0, i)),
+                                        std::abs (K.getSample (0, i) - 0.5f * (M.getSample (0, i) + M.getSample (1, i))));
+                }
+                CHECK (worst < 2.0e-4f);
+                CHECK (M.getMagnitude (0, 0, (int) S (13.1)) > 0.05f);                 // the mix has the music in it
+            }
+        }
+        // a piece whose take has no LTC file gets silence and a note; no LTC track at all: said once
+        {
+            auto ed2 = ed; ed2.regions[0].files.pop_back();
+            const auto plan2 = planFor (vp, ed2, st);
+            CHECK (plan2.pieces.size() == 4 && plan2.pieces[0].ltcFile == juce::File());
+            for (auto& t : vp.tracks) t.isLtc = false;
+            CHECK (planFor (vp, ed, st).noLtcTrack);
+            ltcTrack.isLtc = true;
+        }
+    }
+
+    SECTION ("3.3.0 export AAF: the compound file and its objects read back (Fermata's own reader), the clips, crossfades, links and source timecode");
+    {
+        const double rate = 48000.0;
+        auto S = [&] (double sec) { return (juce::int64) std::llround (sec * rate); };
+        const auto folder = tmp.getChildFile ("aaf-export"); folder.deleteRecursively(); folder.createDirectory();
+        // ---- the writer on its own: a document of two files and a crossfade
+        {
+            aafwrite::Document d;
+            d.name = "My Edit"; d.sampleRate = rate; d.fps = 25.0; d.length = S (20.0); d.productVersion = "test";
+            aafwrite::SourceFile a; a.file = folder.getChildFile ("Take 003_Omni-L.wav"); a.name = "Take 003 (1) Omni-L"; a.lengthSamples = S (60.0); a.startSeconds = 36001.0; d.files.push_back (a);
+            aafwrite::SourceFile b = a; b.file = folder.getChildFile ("Take 004_Omni-L.wav"); b.name = "Take 004 (1) Omni-L"; b.startSeconds = 36300.5; d.files.push_back (b);
+            aafwrite::SourceFile c = a; c.file = folder.getChildFile ("Take 003_Main.wav"); c.name = "Take 003 (2) Main"; c.channels = 2; d.files.push_back (c);
+            aafwrite::Track t; t.name = "Omni-L";
+            aafwrite::Clip c1; c1.file = 0; c1.at = S (1.0); c1.length = S (5.0); c1.sourceStart = S (1.0); c1.fadeIn = 480; t.clips.push_back (c1);
+            aafwrite::Clip c2; c2.file = 1; c2.at = S (6.0) - 4800; c2.length = S (5.0); c2.sourceStart = S (10.0) - 2400; c2.cutPoint = 2400; c2.fadeOut = 9600; t.clips.push_back (c2);
+            d.tracks.push_back (t);
+            aafwrite::Track u; u.name = "Main L"; aafwrite::Clip c3 = c1; c3.file = 2; u.clips.push_back (c3); d.tracks.push_back (u);
+            aafwrite::Track v; v.name = "Main R"; aafwrite::Clip c4 = c1; c4.file = 2; c4.channel = 1; v.clips.push_back (c4); d.tracks.push_back (v);
+            const auto out = folder.getChildFile ("writer.aaf");
+            CHECK (aafwrite::writeAaf (d, out).isEmpty() && out.getSize() > 100000 && out.getSize() % 4096 == 0);     // (whole 4096-byte sectors)
+            const auto r = readAaf (out, 10.0);
+            CHECK (r.error.isEmpty() && r.pieces.size() == 1 && r.trackNames.size() == 3 && r.clips == 4 && std::abs (r.sampleRate - rate) < 0.5);
+            CHECK (r.trackNames.size() == 3 && r.trackNames[0] == "Omni-L" && r.trackNames[1] == "Main L" && r.trackNames[2] == "Main R");
+            if (r.pieces.size() == 1)
+            {
+                const auto& p = r.pieces[0];
+                CHECK (p.regions.size() == 3 && p.startSeconds == 0.0 && std::abs (p.lengthSeconds - 9.9) < 1.0e-6);
+                const AafRegion* omni3 = nullptr; const AafRegion* omni4 = nullptr; const AafRegion* main3 = nullptr;
+                for (auto& g : p.regions)
+                {
+                    if (g.files.size() == 1 && g.takeName == "Take 003") omni3 = &g;
+                    if (g.takeName == "Take 004") omni4 = &g;
+                    if (g.files.size() == 2) main3 = &g;
+                }
+                CHECK (omni3 != nullptr && omni4 != nullptr && main3 != nullptr);
+                if (omni3 != nullptr && omni4 != nullptr && main3 != nullptr)
+                {
+                    // the first clip: 1 s in, 5 s long, a 0.01 s fade from silence, and the crossfade out (0.05 s either side of the join)
+                    CHECK (omni3->startSample == 0 && omni3->srcIn == S (1.0) && omni3->srcOut == S (6.0) - 2400 && std::abs (omni3->inEnd - 0.01) < 1.0e-9 && std::abs (omni3->outStart + 0.05) < 1.0e-9 && std::abs (omni3->outEnd - 0.05) < 1.0e-9);
+                    CHECK (omni3->files[0].fileName == "Take 003_Omni-L.wav" && omni3->files[0].trackName == "Omni-L" && omni3->files[0].url.startsWith ("file://"));
+                    // the second: its nominal start is the join (6 s - 1 s into the timeline = 5 s... the clip began at 5.9 s with the cut 0.05 s later)
+                    CHECK (omni4->startSample == S (6.0) - 4800 + 2400 - S (1.0) && omni4->srcIn == S (10.0) && std::abs (omni4->inStart + 0.05) < 1.0e-9 && std::abs (omni4->inEnd - 0.05) < 1.0e-9 && std::abs (omni4->outStart + 0.2) < 1.0e-9);
+                    // the stereo file: one region with two files (its two channels on two tracks)
+                    CHECK (main3->files[0].fileName == "Take 003_Main.wav" && main3->files[1].fileName == "Take 003_Main.wav" && main3->files[0].trackName == "Main L" && main3->files[1].trackName == "Main R");
+                }
+            }
+            // a clip referring to a file the document has not got is refused; an empty document too
+            aafwrite::Document bad = d; bad.tracks[0].clips[0].file = 9;
+            CHECK (aafwrite::writeAaf (bad, folder.getChildFile ("bad.aaf")).isNotEmpty());
+        }
+        // ---- the export of an edit: files, a crossfade, source timecode from the LTC track
+        {
+            std::vector<std::vector<float>> music (1, std::vector<float> ((size_t) S (20.0)));
+            for (size_t i = 0; i < music[0].size(); ++i) music[0][i] = 0.3f * (float) std::sin (0.02 * (double) i);
+            std::vector<std::vector<float>> code (1, std::vector<float> ((size_t) S (20.0)));
+            { LtcGenerator gen; gen.prepare (rate); gen.start (1, 36000.0); gen.fill (code[0].data(), (int) code[0].size()); }
+            std::vector<std::vector<float>> code2 (1, std::vector<float> ((size_t) S (20.0)));
+            { LtcGenerator gen; gen.prepare (rate); gen.startExact (1, 39600.5); gen.fill (code2[0].data(), (int) code2[0].size()); }     // (start() would begin at the frame before: 39600.48)
+            const auto musicA = folder.getChildFile ("A-music.wav"), ltcA = folder.getChildFile ("A-ltc.wav"), musicB = folder.getChildFile ("B-music.wav"), ltcB = folder.getChildFile ("B-ltc.wav");
+            CHECK (audioops::writeWav (musicA, music, rate) && audioops::writeWav (ltcA, code, rate) && audioops::writeWav (musicB, music, rate) && audioops::writeWav (ltcB, code2, rate));
+            Project vp; vp.projectFile = folder.getChildFile ("Aaf.fermata");
+            vp.setInputCount (2); vp.setOutputCount (2); vp.tracks.clear();
+            const auto tm = vp.addTrack ("music", TrackFormat::Mono, 0).id;
+            auto& ltcTrack = vp.addTrack ("LTC", TrackFormat::Mono, 1); ltcTrack.isLtc = true; const auto tl = ltcTrack.id;
+            auto& ed = vp.addEdit ("Concert", juce::Uuid::null());
+            ed.sampleRate = rate;
+            auto piece = [&] (double srcInSec, double srcOutSec, double startSec, double inStart, double inEnd, double outStart, double outEnd, const juce::String& nm, const juce::File& mf, const juce::File& lf)
+            {
+                EditRegion r; r.id = juce::Uuid(); r.takeName = nm; r.sampleRate = rate; r.sourceLength = S (20.0);
+                r.srcIn = S (srcInSec); r.srcOut = S (srcOutSec); r.startSample = S (startSec); r.inStart = inStart; r.inEnd = inEnd; r.outStart = outStart; r.outEnd = outEnd;
+                RegionFile a; a.trackId = tm; a.trackName = "music"; a.file = mf; r.files.push_back (a);
+                RegionFile b; b.trackId = tl; b.trackName = "LTC"; b.file = lf; r.files.push_back (b);
+                ed.regions.push_back (r);
+            };
+            // A: 1 - 6 s of take A at 0 with a 0.02 s fade-in, crossfading 0.1 s (symmetric) into B: 10 - 15 s of take B at 5 s, with a 0.3 s fade-out
+            piece (1.0, 6.0, 0.0, 0.0, 0.02, -0.05, 0.05, "Take A", musicA, ltcA);
+            piece (10.0, 15.0, 5.0, -0.05, 0.05, -0.3, 0.0, "Take B", musicB, ltcB);
+            aafexport::Settings st; st.file = folder.getChildFile ("out").getChildFile ("Concert.aaf");
+            auto plan = aafexport::planFor (vp, ed, st);
+            CHECK (plan.error.isEmpty() && plan.doc.files.size() == 2 && plan.doc.tracks.size() == 1 && plan.clips == 2 && ! plan.noLtcTrack);
+            CHECK (plan.doc.tracks.size() == 1 && plan.doc.tracks[0].name == "music" && plan.doc.tracks[0].clips.size() == 2 && plan.doc.length == S (10.0));
+            CHECK (plan.doc.files.size() == 2 && plan.doc.files[0].name == "Take A (1) music" && plan.files[0].ltcFile == ltcA && plan.files[0].ltcSample == 0);
+            juce::AudioFormatManager fm; fm.registerBasicFormats();
+            std::atomic<float> prog { 0.0f }; std::atomic<bool> cancel { false };
+            const auto res = aafexport::exportAaf (plan, st, fm, &prog, &cancel);
+            std::printf ("  (AAF export: %d files, %d clips, %d tracks, %d without code, %.3g fps; notes: %s)\n", res.files, res.clips, res.tracks, res.withoutCode, res.fps, res.notes.joinIntoString (" | ").toRawUTF8());
+            CHECK (res.error.isEmpty() && res.files == 2 && res.clips == 2 && res.tracks == 1 && res.withoutCode == 0 && std::abs (res.fps - 25.0) < 1.0e-6 && ! res.drop);
+            CHECK (plan.doc.files.size() == 2 && std::abs (plan.doc.files[0].startSeconds - 36000.0) < 2.0 / rate && std::abs (plan.doc.files[1].startSeconds - 39600.5) < 2.0 / rate);
+            CHECK (plan.doc.files.size() == 2 && plan.doc.files[0].lengthSamples == S (20.0) && plan.doc.files[0].channels == 1 && plan.doc.files[0].bits == 24);
+            // read back: the same two pieces with the same crossfade, linked to the same files
+            const auto r = readAaf (st.file, 10.0);
+            CHECK (r.error.isEmpty() && r.pieces.size() == 1 && r.clips == 2 && r.trackNames.size() == 1);
+            if (r.pieces.size() == 1 && r.pieces[0].regions.size() == 2)
+            {
+                const auto& a = r.pieces[0].regions[0]; const auto& b = r.pieces[0].regions[1];
+                CHECK (a.takeName == "Take A" && a.startSample == 0 && a.srcIn == S (1.0) && a.srcOut == S (6.0) && std::abs (a.inEnd - 0.02) < 1.0e-9 && std::abs (a.outStart + 0.05) < 1.0e-9 && std::abs (a.outEnd - 0.05) < 1.0e-9);
+                CHECK (b.takeName == "Take B" && b.startSample == S (5.0) && b.srcIn == S (10.0) && b.srcOut == S (15.0) && std::abs (b.inStart + 0.05) < 1.0e-9 && std::abs (b.inEnd - 0.05) < 1.0e-9 && std::abs (b.outStart + 0.3) < 1.0e-9);
+                CHECK (a.files.size() == 1 && a.files[0].fileName == "A-music.wav" && b.files.size() == 1 && b.files[0].fileName == "B-music.wav");
+            }
+            else CHECK (false);
+            // no LTC track: the files are written with no source timecode, said once
+            for (auto& t : vp.tracks) t.isLtc = false;
+            auto plan2 = aafexport::planFor (vp, ed, st);
+            CHECK (plan2.noLtcTrack && plan2.doc.tracks.size() == 2);          // (the LTC track is an audio track like any other then)
+            const auto res2 = aafexport::exportAaf (plan2, st, fm, nullptr, nullptr);
+            CHECK (res2.error.isEmpty() && res2.files == 4 && res2.withoutCode == 4 && res2.notes.size() == 1);     // (the LTC files are audio files like any other then)
+        }
+    }
+
+    SECTION ("3.4.0 take matching: the same place found in other takes of a made-up piece - slower, partial, rubato, transposed, in a wet room; saved and read back");
+    {
+        // the piece: 60 bars of chords (a bass note and a four-note arpeggio each), played at any tempo, from any bar, in any key
+        struct Bar { int root; bool minor; int pattern; };
+        std::vector<Bar> bars;
+        { const int prog[16] = { 0, 5, 7, 0, 9, 2, 7, 0, 4, 9, 5, 7, 0, 7, 5, 0 }; for (int b = 0; b < 60; ++b) bars.push_back ({ prog[b % 16], (b % 16) == 4 || (b % 16) == 5 || (b % 16) == 9, b % 5 }); }
+        const double rate = 48000.0;
+        auto play = [&] (const std::function<double (int)>& barSeconds, int firstBar, int lastBar, int transpose, unsigned seed)
+        {
+            std::vector<float> out; std::mt19937 rng (seed); std::uniform_real_distribution<double> ph (0.0, 6.28);
+            auto note = [&] (int midi, double seconds, double level, size_t at)
+            {
+                const double f = 440.0 * std::pow (2.0, (midi - 69) / 12.0); const size_t n = (size_t) (seconds * rate);
+                if (out.size() < at + n) out.resize (at + n, 0.0f);
+                const double p0 = ph (rng);
+                for (size_t i = 0; i < n; ++i)
+                {
+                    const double t = (double) i / rate, env = std::min (1.0, t * 50.0) * std::exp (-t * 1.2) * std::min (1.0, (seconds - t) * 30.0);
+                    double v = 0.0; for (int h = 1; h <= 8; ++h) v += std::sin (2.0 * 3.14159265 * f * h * t + p0 * h) / (h * h);
+                    out[at + i] += (float) (level * env * v);
+                }
+            };
+            double t = 0.0;
+            for (int b = firstBar; b <= lastBar; ++b)
+            {
+                const double len = barSeconds (b); const auto& bar = bars[(size_t) b];
+                const int root = 48 + bar.root + transpose, third = root + (bar.minor ? 3 : 4), fifth = root + 7;
+                const int arp[5][4] = { { root + 12, third + 12, fifth + 12, third + 12 }, { fifth + 12, third + 12, root + 12, third + 12 }, { root + 12, fifth + 12, root + 24, fifth + 12 }, { third + 12, root + 12, third + 12, fifth + 12 }, { root + 24, fifth + 12, third + 12, root + 12 } };
+                note (root - 12, len, 0.25, (size_t) (t * rate));
+                for (int k = 0; k < 4; ++k) note (arp[bar.pattern][k], len / 4.0, 0.18, (size_t) ((t + k * len / 4.0) * rate));
+                t += len;
+            }
+            return out;
+        };
+        auto roomed = [&] (const std::vector<float>& dry, unsigned seed, double tail)      // a reverb (a decaying noise tail) and noise at -35 dB
+        {
+            std::mt19937 rng (seed); std::normal_distribution<double> g (0.0, 1.0);
+            const size_t irLen = (size_t) (tail * rate);
+            std::vector<float> ir (irLen); for (size_t i = 0; i < irLen; ++i) ir[i] = (float) (g (rng) * std::exp (-3.0 * (double) i / (double) irLen) * 0.02);
+            std::vector<float> out (dry.size() + irLen, 0.0f);
+            for (size_t k = 0; k < irLen; k += 8) { const float w = k == 0 ? 1.0f : ir[k] * 8.0f; if (std::abs (w) < 1.0e-5f) continue; for (size_t i = 0; i < dry.size(); ++i) out[i + k] += dry[i] * w; }
+            for (auto& v : out) v += (float) (g (rng) * 0.018);
+            return out;
+        };
+        auto steady = [] (double len) { return std::function<double (int)> ([len] (int) { return len; }); };
+        std::function<double (int)> rubato = [] (int b) { return 2.0 * (1.0 + 0.12 * std::sin (b * 0.7)); };
+        struct Take { juce::String name; std::vector<float> audio; std::function<double (int)> barSeconds; int firstBar, lastBar; double tolerance; };
+        std::vector<Take> takes;
+        takes.push_back ({ "full", play (steady (2.0), 0, 59, 0, 1), steady (2.0), 0, 59, 0.25 });
+        takes.push_back ({ "5 % slower", play (steady (2.1), 0, 59, 0, 2), steady (2.1), 0, 59, 0.25 });
+        takes.push_back ({ "from bar 16", play (steady (2.0), 15, 59, 0, 3), steady (2.0), 15, 59, 0.25 });
+        takes.push_back ({ "bars 10 - 40, faster", play (steady (1.9), 9, 39, 0, 4), steady (1.9), 9, 39, 0.25 });
+        takes.push_back ({ "rubato", play (rubato, 0, 59, 0, 5), rubato, 0, 59, 0.25 });
+        takes.push_back ({ "up 3 semitones", play (steady (2.0), 0, 59, 3, 8), steady (2.0), 0, 59, 0.25 });
+        takes.push_back ({ "wet room", roomed (play (steady (2.0), 0, 59, 0, 6), 7, 2.0), steady (2.0), 0, 59, 0.8 });               // (a dry take against a wet one: the tail drags the match later)
+        takes.push_back ({ "wet room 2, slower", roomed (play (steady (2.08), 0, 59, 0, 9), 10, 2.3), steady (2.08), 0, 59, 0.8 });
+        std::vector<takematch::Fingerprint> fps;
+        for (auto& t : takes) fps.push_back (takematch::analyseSamples (t.audio.data(), (juce::int64) t.audio.size(), rate));
+        CHECK (std::abs (fps[0].frames() - takes[0].audio.size() / rate * 20.0) < 12.0 && std::abs (fps[0].fps - 20.0) < 1.0e-9);     // (20 frames a second, less the half-second window)
+        auto barStart = [&] (const Take& t, int bar) { double s = 0.0; for (int b = t.firstBar; b < bar; ++b) s += t.barSeconds (b); return s; };
+        auto check = [&] (size_t from, size_t to, const std::vector<int>& atBars, double tolerance)
+        {
+            const auto al = takematch::align (fps[from], fps[to]);
+            double worst = 0.0; int wrong = 0;
+            for (int bar : atBars)
+            {
+                const bool covered = bar >= takes[to].firstBar && bar <= takes[to].lastBar;
+                const double here = barStart (takes[from], bar) + 0.5;
+                const auto m = takematch::locate (al, here);
+                if (covered)
+                {
+                    const double expect = barStart (takes[to], bar) + 0.5 * takes[to].barSeconds (bar) / takes[from].barSeconds (bar);
+                    worst = juce::jmax (worst, std::abs (m.seconds - expect));
+                    if (! m.found || std::abs (m.seconds - expect) > tolerance) ++wrong;
+                }
+                else if (m.found) ++wrong;        // a bar the other take has not got must not be "found"
+            }
+            std::printf ("  (take matching %s -> %s: %zu path points, rotation %d, worst error %.3f s, %d wrong)\n", takes[from].name.toRawUTF8(), takes[to].name.toRawUTF8(), al.a.size(), al.rotation, worst, wrong);
+            return wrong == 0;
+        };
+        const std::vector<int> probe { 2, 12, 20, 30, 41, 55 };
+        for (size_t j = 1; j < takes.size(); ++j) CHECK (check (0, j, probe, takes[j].tolerance));
+        CHECK (check (3, 0, { 12, 20, 30 }, 0.25));                 // the partial take as the source
+        CHECK (check (6, 7, { 3, 25, 50 }, 0.25));                  // two wet takes of the same room: a session as it really is
+        {   // the transposed take: its notes were turned back into the first take's key
+            const auto al = takematch::align (fps[0], fps[5]);
+            CHECK (al.rotation == 9 && ! al.empty());
+        }
+        {   // nothing in common: two unrelated signals, or an empty fingerprint
+            std::vector<float> hiss ((size_t) (rate * 40.0)); std::mt19937 rng (3); std::normal_distribution<double> g (0.0, 0.1);
+            for (auto& v : hiss) v = (float) g (rng);
+            const auto fh = takematch::analyseSamples (hiss.data(), (juce::int64) hiss.size(), rate);
+            const auto al = takematch::align (fps[0], fh);
+            const auto m = takematch::locate (al, 30.0);
+            CHECK (! m.found && m.why.isNotEmpty());
+            CHECK (takematch::align (fps[0], takematch::Fingerprint()).empty());
+        }
+        {   // saved and read back: the same fingerprint; a damaged file is refused
+            const auto f = tmp.getChildFile ("take-match").getChildFile ("a.fpr");
+            auto fp = fps[1]; fp.sourceKey = "k";
+            CHECK (takematch::save (fp, f));
+            takematch::Fingerprint back;
+            CHECK (takematch::load (back, f) && back.frames() == fp.frames() && back.chroma == fp.chroma && back.loudness == fp.loudness && back.sourceKey == "k" && std::abs (back.fps - fp.fps) < 1.0e-12);
+            CHECK (! takematch::load (back, tmp.getChildFile ("take-match").getChildFile ("none.fpr")));
+            f.replaceWithText ("FMFPjunk");
+            CHECK (! takematch::load (back, f));
+            // from files: the take's files mixed, with the key of what was read
+            const auto wav = tmp.getChildFile ("take-match").getChildFile ("take.wav");
+            std::vector<std::vector<float>> chans (2, takes[0].audio);
+            CHECK (audioops::writeWav (wav, chans, rate));
+            juce::AudioFormatManager fm; fm.registerBasicFormats();
+            const auto ff = takematch::analyseFiles (fm, { wav });
+            CHECK (ff.frames() == fps[0].frames() && ff.sourceKey == takematch::sourceKeyFor ({ wav }) && ff.sourceKey.isNotEmpty());
+            const auto al = takematch::align (ff, fps[1]);
+            const auto m = takematch::locate (al, 40.5);
+            CHECK (m.found && std::abs (m.seconds - 42.525) < 0.25);
+        }
+    }
+
+    SECTION ("3.5.0 the ripple moves everything (markers, flags, overdubs, guide, marks, playhead, fixed automation) on insert and on replace; every version of a passage found; joins refined");
+    {
+        const double rate = 48000.0; const juce::int64 S = 48000;
+        auto piece = [&] (juce::int64 in, juce::int64 out, const juce::String& take)
+        {
+            EditRegion r; r.srcIn = in; r.srcOut = out; r.sampleRate = rate; r.sourceLength = 60 * S; r.takeName = take; r.takeId = juce::Uuid();
+            RegionFile rf; rf.trackId = juce::Uuid(); rf.trackName = "t"; rf.file = juce::File ("/nowhere/" + take + ".wav"); r.files.push_back (rf);
+            return r;
+        };
+        auto furnish = [&] (EditDef& e)       // things along the timeline, before and after the 4 s mark
+        {
+            e.markers = { { juce::Uuid(), "a", 1.0 }, { juce::Uuid(), "b", 6.0 } };
+            FeedbackNote f1, f2; f1.seconds = 2.0; f2.seconds = 7.0; e.feedback = { f1, f2 };
+            e.overdubs = { piece (0, S, "od") }; e.overdubs[0].startSample = 8 * S;
+            e.guide.file = juce::File ("/nowhere/g.wav"); e.guide.sampleRate = rate; e.guide.srcIn = 0; e.guide.srcOut = S; e.guide.start = 5 * S;
+            e.fixIn = 3.5; e.fixOut = 9.0; e.playheadSeconds = 4.5;
+            AutoLane lane; lane.trackId = e.regions[0].files[0].trackId;
+            AutoPoint p1, p2, p3; p1.time = 1 * S; p2.time = 9 * S; p3.region = e.regions[1].id; p3.take = e.regions[1].takeId; p3.srcPos = e.regions[1].srcIn + S; p3.time = 7 * S;
+            lane.pts = { p1, p2, p3 }; e.lanes = { lane };
+        };
+        // three pieces of 4 s: 0-4, 4-8, 8-12
+        EditDef e; e.insertRegion (piece (0, 4 * S, "A")); e.insertRegion (piece (10 * S, 14 * S, "B")); e.insertRegion (piece (20 * S, 24 * S, "C"));
+        furnish (e);
+        // insert 2 s at 4 s: everything from 4 s moves 2 s later, everything before stays
+        e.insertRegionAt (piece (30 * S, 32 * S, "D"), 4 * S);
+        CHECK (e.regions.size() == 4 && e.regions[1].takeName == "D" && e.regions[2].startSample == 6 * S && e.regions[3].startSample == 10 * S);
+        CHECK (e.markers[0].seconds == 1.0 && e.markers[1].seconds == 8.0);
+        CHECK (e.feedback[0].seconds == 2.0 && e.feedback[1].seconds == 9.0);
+        CHECK (e.overdubs[0].startSample == 10 * S && e.guide.start == 7 * S);
+        CHECK (e.fixIn == 3.5 && e.fixOut == 11.0 && e.playheadSeconds == 6.5);
+        auto fixedAt = [] (const AutoLane& l, juce::int64 t) { for (auto& p : l.pts) if (p.region.isNull() && p.time == t) return true; return false; };
+        auto anchoredAt = [] (const AutoLane& l, juce::int64 t) { for (auto& p : l.pts) if (! p.region.isNull() && p.time == t) return true; return false; };
+        CHECK (fixedAt (e.lanes[0], 1 * S) && fixedAt (e.lanes[0], 11 * S));                        // the fixed points
+        CHECK (anchoredAt (e.lanes[0], 7 * S));                                                     // the point on B's audio: left to the settle, which follows the audio
+        // replace 5 s .. 7 s (inside D's neighbour B, now at 6 - 10 s... take 2 s out of the middle of 4 - 10 s) with a 3 s piece: a ripple of +1 s after 7 s
+        EditDef e2; e2.insertRegion (piece (0, 4 * S, "A")); e2.insertRegion (piece (10 * S, 14 * S, "B")); e2.insertRegion (piece (20 * S, 24 * S, "C"));
+        furnish (e2);
+        const int at = e2.replaceRangeRippled (piece (40 * S, 43 * S, "V"), 5 * S, 7 * S);
+        CHECK (at == 2 && e2.regions.size() == 5);                                                 // A | B(4-5) | V(5-8) | B(8-9) | C(9-13)
+        CHECK (e2.regions[1].startSample == 4 * S && e2.regions[1].srcOut == 11 * S);
+        CHECK (e2.regions[2].startSample == 5 * S && e2.regions[2].length() == 3 * S && e2.regions[2].takeName == "V");
+        CHECK (e2.regions[3].startSample == 8 * S && e2.regions[3].srcIn == 13 * S && e2.regions[3].takeName == "B");
+        CHECK (e2.regions[4].startSample == 9 * S && e2.regions[4].takeName == "C");
+        CHECK (e2.markers[0].seconds == 1.0 && e2.markers[1].seconds == 6.0 && e2.feedback[1].seconds == 8.0 && e2.overdubs[0].startSample == 9 * S && e2.guide.start == 5 * S);
+        CHECK (e2.fixIn == 3.5 && e2.fixOut == 10.0 && e2.playheadSeconds == 4.5 && fixedAt (e2.lanes[0], 10 * S));
+        CHECK (e2.regions[1].outStart < 0.0 && e2.regions[2].inEnd > 0.0 && e2.regions[2].outStart < 0.0 && e2.regions[3].inEnd > 0.0);   // crossfades at both new joins
+        // a replacement the same length: nothing after moves; a replacement covering whole pieces takes them out
+        EditDef e3; e3.insertRegion (piece (0, 4 * S, "A")); e3.insertRegion (piece (10 * S, 14 * S, "B")); e3.insertRegion (piece (20 * S, 24 * S, "C"));
+        furnish (e3);
+        e3.replaceRangeRippled (piece (40 * S, 46 * S, "V"), 3 * S, 9 * S);
+        CHECK (e3.regions.size() == 3 && e3.regions[1].takeName == "V" && e3.regions[2].takeName == "C" && e3.regions[2].startSample == 9 * S && e3.regions[2].srcIn == 21 * S);
+        CHECK (e3.markers[1].seconds == 6.0 && e3.overdubs[0].startSample == 8 * S);
+        // a shorter replacement: the rest comes earlier, nothing goes below 0
+        EditDef e4; e4.insertRegion (piece (0, 4 * S, "A")); e4.insertRegion (piece (10 * S, 14 * S, "B")); e4.insertRegion (piece (20 * S, 24 * S, "C"));
+        furnish (e4);
+        e4.replaceRangeRippled (piece (40 * S, 41 * S, "V"), 4 * S, 8 * S);
+        CHECK (e4.regions.size() == 3 && e4.regions[2].startSample == 5 * S && e4.markers[1].seconds == 6.0 && e4.overdubs[0].startSample == 5 * S && e4.guide.start == 5 * S && e4.fixOut == 6.0);
+        // the version search, on the piece of the 3.4.0 section: the messy take has a false start (bars 0-2), bars 0-19, bars 10-19 again, then 20-29
+        {
+            struct Bar { int root; bool minor; int pattern; };
+            std::vector<Bar> bars; { std::mt19937 rng (77); for (int b = 0; b < 60; ++b) bars.push_back ({ (int) (rng() % 12), (rng() % 3) == 0, (int) (rng() % 5) }); }
+            auto play = [&] (const std::vector<int>& order, double len, unsigned seed, std::vector<double>& starts)
+            {
+                std::vector<float> out; std::mt19937 rng (seed); std::uniform_real_distribution<double> ph (0.0, 6.28);
+                auto note = [&] (int midi, double seconds, double level, size_t at)
+                {
+                    const double f = 440.0 * std::pow (2.0, (midi - 69) / 12.0); const size_t n = (size_t) (seconds * rate);
+                    if (out.size() < at + n) out.resize (at + n, 0.0f);
+                    const double p0 = ph (rng);
+                    for (size_t i = 0; i < n; ++i) { const double t = (double) i / rate, env = std::min (1.0, t * 50.0) * std::exp (-t * 1.2) * std::min (1.0, (seconds - t) * 30.0); double v = 0.0; for (int h = 1; h <= 8; ++h) v += std::sin (2.0 * 3.14159265 * f * h * t + p0 * h) / (h * h); out[at + i] += (float) (level * env * v); }
+                };
+                double t = 0.0;
+                for (int b : order)
+                {
+                    starts.push_back (t);
+                    if (b < 0) { t += len; continue; }
+                    const auto& bar = bars[(size_t) b]; const int root = 48 + bar.root, third = root + (bar.minor ? 3 : 4), fifth = root + 7;
+                    const int arp[5][4] = { { root + 12, third + 12, fifth + 12, third + 12 }, { fifth + 12, third + 12, root + 12, third + 12 }, { root + 12, fifth + 12, root + 24, fifth + 12 }, { third + 12, root + 12, third + 12, fifth + 12 }, { root + 24, fifth + 12, third + 12, root + 12 } };
+                    note (root - 12, len, 0.25, (size_t) (t * rate));
+                    for (int k = 0; k < 4; ++k) note (arp[bar.pattern][k], len / 4.0, 0.18, (size_t) ((t + k * len / 4.0) * rate));
+                    t += len;
+                }
+                out.resize ((size_t) ((t + 1.0) * rate), 0.0f);
+                return out;
+            };
+            std::vector<int> straight; for (int b = 0; b < 30; ++b) straight.push_back (b);
+            std::vector<int> messy = { 0, 1, 2, -1 }; for (int b = 0; b < 20; ++b) messy.push_back (b); for (int b = 10; b < 20; ++b) messy.push_back (b); for (int b = 20; b < 30; ++b) messy.push_back (b);
+            std::vector<int> other; for (int b = 40; b < 60; ++b) other.push_back (b);
+            std::vector<double> s0, s1, s2;
+            const auto a = play (straight, 2.0, 1, s0), b = play (messy, 2.0, 2, s1), c = play (other, 2.0, 3, s2);
+            const auto fa = takematch::analyseSamples (a.data(), (juce::int64) a.size(), rate), fb = takematch::analyseSamples (b.data(), (juce::int64) b.size(), rate), fc = takematch::analyseSamples (c.data(), (juce::int64) c.size(), rate);
+            auto passage = [&] (int fromBar, int toBar)
+            {
+                takematch::Fingerprint pf; pf.fps = fa.fps;
+                const int f0 = (int) std::lround (fromBar * 2.0 * fa.fps), f1 = (int) std::lround (toBar * 2.0 * fa.fps);
+                pf.chroma.assign (fa.chroma.begin() + f0 * 12, fa.chroma.begin() + f1 * 12); pf.loudness.assign (fa.loudness.begin() + f0, fa.loudness.begin() + f1);
+                return pf;
+            };
+            auto near = [] (const std::vector<takematch::Version>& vs, double start) { for (auto& v : vs) if (std::abs (v.start - start) < 0.3) return true; return false; };
+            auto vs = takematch::findVersions (passage (12, 15), fb);
+            CHECK (vs.size() == 2 && near (vs, s1[16]) && near (vs, s1[26]));                       // the first pass and the repeat
+            for (auto& v : vs) CHECK (v.cost < 0.1 && std::abs (v.stretch - 1.0) < 0.1 && std::abs ((v.end - v.start) - 6.0) < 0.3);
+            vs = takematch::findVersions (passage (1, 3), fb);
+            CHECK (vs.size() == 2 && near (vs, s1[1]) && near (vs, s1[5]));                         // the false start and the real one
+            vs = takematch::findVersions (passage (25, 27), fb);
+            CHECK (vs.size() == 1 && near (vs, s1[39]));
+            CHECK (takematch::findVersions (passage (12, 15), fc).empty());                          // other music: nothing
+            // analyseRange: the passage's fingerprint from files, one of them starting later in the take (a corrected piece)
+            const auto dir = tmp.getChildFile ("versions"); dir.createDirectory();
+            const auto wa = dir.getChildFile ("a.wav"), wb = dir.getChildFile ("b.wav"), wlate = dir.getChildFile ("late.wav");
+            CHECK (audioops::writeWav (wa, { a }, rate) && audioops::writeWav (wb, { b }, rate));
+            std::vector<float> late (a.begin() + 20 * S, a.end());
+            CHECK (audioops::writeWav (wlate, { late }, rate));
+            juce::AudioFormatManager fm; fm.registerBasicFormats();
+            const auto pr = takematch::analyseRange (fm, { { wa, 0 } }, 24 * S, 30 * S);              // bars 12-14 of the straight take
+            CHECK (std::abs (pr.frames() - 120) <= 12);
+            vs = takematch::findVersions (pr, fb);
+            CHECK (vs.size() == 2 && near (vs, s1[16]) && near (vs, s1[26]));
+            const auto pr2 = takematch::analyseRange (fm, { { wlate, 20 * S } }, 24 * S, 30 * S);     // the same bars from the file that starts at 20 s
+            vs = takematch::findVersions (pr2, fb);
+            CHECK (vs.size() == 2 && near (vs, s1[16]) && near (vs, s1[26]));
+            // a take of eight files (more than the four that are mixed): its fingerprint's key is the key of ALL eight, the one the service compares against
+            // (3.4.0 bug: it was the key of the four mixed, so such a take was never "ready" and was analysed again and again)
+            {
+                std::vector<juce::File> eight;
+                for (int k = 0; k < 8; ++k)
+                {
+                    const auto f = dir.getChildFile ("track" + juce::String (k) + ".wav");
+                    std::vector<float> part (a.begin(), a.begin() + 10 * S);
+                    for (auto& v : part) v *= 0.5f + 0.05f * (float) k;
+                    CHECK (audioops::writeWav (f, { part }, rate));
+                    eight.push_back (f);
+                }
+                const auto f8 = takematch::analyseFiles (fm, eight);
+                CHECK (! f8.empty() && f8.sourceKey == takematch::sourceKeyFor (eight) && f8.sourceKey != takematch::sourceKeyFor ({ eight[0], eight[1], eight[2], eight[3] }));
+            }
+            // the join: a guess 37 samples out is put right - exactly on the same audio, within a few ms between two performances
+            const juce::int64 sa = (juce::int64) std::llround (s0[12] * rate), sbTrue = (juce::int64) std::llround (s1[26] * rate);
+            double sim = 0.0;
+            CHECK (takematch::refineJoin (fm, { wa, 0 }, sa, { wa, 0 }, sa + 37, 0.1, 0.06, &sim) == sa && sim > 0.9);
+            CHECK (takematch::refineJoin (fm, { wlate, 20 * S }, sa, { wa, 0 }, sa + 37) == sa);                // through a file that starts later
+            const auto got = takematch::refineJoin (fm, { wa, 0 }, sa, { wb, 0 }, sbTrue + 37, 0.1, 0.06, &sim);
+            CHECK (std::abs (got - sbTrue) <= 240 && sim > 0.7);
+        }
+    }
+
+    SECTION ("3.6.0 consonants: copied per track and channel (the consonant itself, not the vowel), kept as files, pasted on top at the right sample - in a take file and across a piece's start");
+    {
+        const double rate = 48000.0;
+        const long N = (long) (1.2 * rate);
+        std::mt19937 rng (5); std::normal_distribution<float> gauss (0.0f, 1.0f);
+        // a sung vowel (200 Hz and its harmonics up to 5 kHz, falling off) and, at 0.50 s, a 't': 40 ms of noise above about 3 kHz, sharp start, quick decay
+        std::vector<float> vowel ((size_t) N), burst ((size_t) N, 0.0f);
+        for (long n = 0; n < N; ++n) { double v = 0.0; for (int h = 1; h <= 25; ++h) v += std::sin (2.0 * juce::MathConstants<double>::pi * 200.0 * h * n / rate + h) * 0.3 / h; vowel[(size_t) n] = (float) v; }
+        {
+            float y1 = 0.0f, x1 = 0.0f;                                     // (a first-order high-pass at about 3 kHz on white noise)
+            const float a = (float) std::exp (-2.0 * juce::MathConstants<double>::pi * 3000.0 / rate);
+            const long t0 = (long) (0.50 * rate), len = (long) (0.04 * rate);
+            for (long n = 0; n < len; ++n)
+            {
+                const float x = gauss (rng); const float y = a * (y1 + x - x1); x1 = x; y1 = y;
+                burst[(size_t) (t0 + n)] = 0.35f * y * (float) std::exp (-3.0 * n / (double) len);
+            }
+        }
+        auto withBurst = [&] (float level) { std::vector<float> v (vowel); for (long n = 0; n < N; ++n) v[(size_t) n] += level * burst[(size_t) n]; return v; };
+        const juce::Uuid tA, tB; const std::vector<juce::Uuid> ids { tA, tB };
+        // track A stereo (the t louder on the left), track B mono (a distant mic: the t quieter)
+        const std::vector<std::vector<std::vector<float>>> tracks { { withBurst (1.0f), withBurst (0.6f) }, { withBurst (0.3f) } };
+        FixSpec ws; ws.kind = FixSpec::Kind::Patch; ws.f0 = 2000.0; ws.f1 = 24000.0; ws.repair.mode = RepairMode::Replace; ws.repair.strength = 0.5;   // (the copy uses consonant mode at full strength whatever the window says)
+        ws.repair.bands = 1024; ws.repair.multiRes = true; ws.repair.linkChannels = true; ws.repair.weighting = 0.5;
+        const long s0 = (long) (0.49 * rate), s1 = (long) (0.56 * rate);
+        const auto c = consonants::extract (ids, { "A", "B" }, tracks, rate, s0, s1, ws);
+        CHECK (c.tracks.size() == 2 && c.tracks[0].size() == 2 && c.tracks[1].size() == 1);
+        CHECK (c.length() > (juce::int64) (0.03 * rate) && c.length() < (juce::int64) (0.12 * rate));
+        CHECK (c.lead >= 0 && c.lead < (juce::int64) (0.04 * rate));                         // (the ReTouch reaches a frame before the box, very quietly)
+        std::printf ("  consonant copied: %.1f ms, lead %.1f ms\n", 1000.0 * (double) c.length() / rate, 1000.0 * (double) c.lead / rate);
+        auto energy = [] (const std::vector<float>& v) { double e = 0.0; for (auto x : v) e += (double) x * x; return e; };
+        auto burstPart = [&] (float level) { std::vector<float> v ((size_t) c.length()); for (size_t i = 0; i < v.size(); ++i) { const long n = s0 - (long) c.lead + (long) i; v[i] = n >= 0 && n < N ? level * burst[(size_t) n] : 0.0f; } return v; };
+        auto corr = [] (const std::vector<float>& a, const std::vector<float>& b) { double ab = 0, aa = 0, bb = 0; for (size_t i = 0; i < a.size() && i < b.size(); ++i) { ab += (double) a[i] * b[i]; aa += (double) a[i] * a[i]; bb += (double) b[i] * b[i]; } return aa > 0 && bb > 0 ? ab / std::sqrt (aa * bb) : 0.0; };
+        if (c.tracks.size() == 2 && c.tracks[0].size() == 2)
+        {
+            const auto ref = burstPart (1.0f);
+            const double eRef = energy (ref), eCopy = energy (c.tracks[0][0]);
+            CHECK (eCopy > 0.4 * eRef && eCopy < 1.3 * eRef);                                   // most of the t, and not much else
+            CHECK (corr (c.tracks[0][0], ref) > 0.8);                                            // it IS the t (the vowel stayed behind)
+            // each channel and track as it heard it: left / right about 1 : 0.6, the distant mic about 0.3
+            const double lr = std::sqrt (energy (c.tracks[0][1]) / juce::jmax (1e-12, eCopy)), distant = std::sqrt (energy (c.tracks[1][0]) / juce::jmax (1e-12, eCopy));
+            CHECK (lr > 0.45 && lr < 0.75 && distant > 0.18 && distant < 0.45);
+        }
+        // nothing in the box: nothing copied
+        CHECK (consonants::extract (ids, { "A", "B" }, { { vowel, vowel }, { vowel } }, rate, (long) (0.2 * rate), (long) (0.27 * rate), ws).tracks.empty());
+
+        // addClip: at the sample, gain, 2 ms fades, partly outside, mono target gets the average
+        {
+            std::vector<std::vector<float>> clip { std::vector<float> (480, 1.0f), std::vector<float> (480, 0.5f) };
+            std::vector<std::vector<float>> x { std::vector<float> (2000, 0.0f), std::vector<float> (2000, 0.0f) };
+            audioops::addClip (x, 1000, clip, 0.0, rate);
+            CHECK (x[0][999] == 0.0f && std::abs (x[0][1240] - 1.0f) < 1e-6f && std::abs (x[1][1240] - 0.5f) < 1e-6f && x[0][1480] == 0.0f);
+            CHECK (x[0][1000] > 0.0f && x[0][1000] < 0.05f && x[0][1479] > 0.0f && x[0][1479] < 0.05f);               // (faded in and out)
+            std::vector<std::vector<float>> y { std::vector<float> (300, 0.0f) };
+            audioops::addClip (y, -200, clip, -6.0206, rate);                                    // starts 200 samples before the audio; mono: the average, at half
+            CHECK (std::abs (y[0][0] - 0.375f) < 1e-3f && y[0][279] > 0.0f && y[0][279] < 0.002f && y[0][280] == 0.0f && y[0][299] == 0.0f);
+        }
+
+        // kept as files and read back exactly (every channel, float)
+        const auto dir = tmp.getChildFile ("consonants"); dir.deleteRecursively(); dir.createDirectory();
+        ConsonantDef def; def.id = juce::Uuid(); def.name = "t"; def.from = "take 3, 0:00.49";
+        CHECK (consonants::save (c, def, dir.getChildFile ("Consonants")).isEmpty() && def.tracks.size() == 2 && def.tracks[0].numChannels == 2 && def.length == c.length() && def.lead == c.lead);
+        juce::AudioFormatManager fm; registerAudioFormats (fm);
+        juce::String err;
+        auto back = consonants::load (def, fm, err);
+        CHECK (back != nullptr && err.isEmpty());
+        if (back != nullptr && back->tracks.size() == 2 && c.tracks.size() == 2)
+            CHECK (back->tracks[0].size() == 2 && back->tracks[0][1] == c.tracks[0][1] && back->tracks[1][0] == c.tracks[1][0] && back->forTrack (tB) != nullptr && back->forTrack (juce::Uuid()) == nullptr);
+        // with the project: saved and read back, the files found from the project folder when it has moved
+        {
+            Project pc; pc.projectFile = dir.getChildFile ("p.fermata");
+            pc.consonants.push_back (def);
+            Project q; CHECK (q.fromVar (pc.toVar()) && q.consonants.size() == 1);
+            if (q.consonants.size() == 1)
+                CHECK (q.consonants[0].name == "t" && q.consonants[0].tracks.size() == 2 && q.consonants[0].tracks[0].file == def.tracks[0].file && q.consonants[0].tracks[1].numChannels == 1
+                       && q.consonants[0].lead == def.lead && q.consonants[0].length == def.length && std::abs (q.consonants[0].sampleRate - rate) < 0.1 && q.findConsonant (def.id) != nullptr);
+            const auto moved = tmp.getChildFile ("consonants-moved"); moved.deleteRecursively();
+            CHECK (dir.copyDirectoryTo (moved));
+            Project r; r.readingFrom = moved;
+            CHECK (r.fromVar (pc.toVar()) && r.consonants.size() == 1 && r.consonants[0].tracks[0].file.isAChildOf (moved));
+            std::vector<juce::var> objs; projectcopy::detail::collect (pc.toVar(), objs);
+            int found = 0; for (auto& o : objs) if (o["file"].toString() == def.tracks[0].file.getFullPathName()) ++found;
+            CHECK (found == 1);                                                                   // (a project copy takes the files along)
+        }
+
+        // pasted into a take file: track B's channel only on B's file, at the right sample, nothing else changed
+        {
+            auto shared = std::make_shared<const ConsonantAudio> (c);
+            FixSpec ps; ps.kind = FixSpec::Kind::Paste; ps.paste = shared; ps.pasteGainDb = 0.0;
+            const auto fa = dir.getChildFile ("A.wav"), fb = dir.getChildFile ("B.wav");
+            CHECK (audioops::writeWav (fa, { vowel, vowel }, rate, true) && audioops::writeWav (fb, { vowel }, rate, true));
+            const juce::int64 at = (juce::int64) (0.80 * rate);
+            const auto res = audioops::fixTakeFiles (fm, { fa, fb }, { dir.getChildFile ("A2.wav"), dir.getChildFile ("B2.wav") }, { audioops::FixOp { ps, at, at + c.length() } }, nullptr, {}, { tA, tB });
+            CHECK (res.error.isEmpty() && res.newFiles.size() == 2);
+            if (res.newFiles.size() == 2)
+            {
+                auto ra = audioops::openReader (fm, res.newFiles[0]), rb = audioops::openReader (fm, res.newFiles[1]);
+                std::vector<std::vector<float>> a2, b2;
+                CHECK (ra != nullptr && rb != nullptr && audioops::readRange (*ra, 0, N, a2) && audioops::readRange (*rb, 0, N, b2));
+                if (a2.size() == 2 && b2.size() == 1)
+                {
+                    // outside the consonant: untouched; inside (past the 2 ms fades): the vowel plus exactly the consonant's own channel of its own track
+                    double outside = 0.0, insideA = 0.0, insideB = 0.0;
+                    for (long n = 0; n < N; ++n)
+                    {
+                        const double dA = (double) a2[1][(size_t) n] - vowel[(size_t) n], dB = (double) b2[0][(size_t) n] - vowel[(size_t) n];
+                        const juce::int64 i = (juce::int64) n - at;
+                        if (i < 0 || i >= c.length()) { outside = juce::jmax (outside, std::abs (dA), std::abs (dB)); continue; }
+                        if (i < 100 || i >= c.length() - 100) continue;
+                        insideA = juce::jmax (insideA, std::abs (dA - c.tracks[0][1][(size_t) i]));
+                        insideB = juce::jmax (insideB, std::abs (dB - c.tracks[1][0][(size_t) i]));
+                    }
+                    CHECK (outside < 1e-6 && insideA < 1e-5 && insideB < 1e-5);
+                }
+            }
+            // a track the consonant was not copied from: left alone
+            const auto res2 = audioops::fixTakeFiles (fm, { fb }, { dir.getChildFile ("C2.wav") }, { audioops::FixOp { ps, at, at + c.length() } }, nullptr, {}, { juce::Uuid() });
+            CHECK (res2.error.isEmpty() && res2.newFiles.size() == 1);
+            if (res2.newFiles.size() == 1) { auto rc = audioops::openReader (fm, res2.newFiles[0]); std::vector<std::vector<float>> c2; CHECK (rc != nullptr && audioops::readRange (*rc, 0, N, c2) && c2.size() == 1);
+                                               float worst = 0.0f; if (c2.size() == 1) for (long n = 0; n < N; ++n) worst = juce::jmax (worst, std::abs (c2[0][(size_t) n] - vowel[(size_t) n])); CHECK (worst < 1e-5f); }
+            // a piece that starts in the middle of the pasted consonant (an edit point under it): only its own part, at the right place
+            const juce::int64 pieceStart = at + c.length() / 2;
+            juce::String perr;
+            auto ps2 = ps; audioops::resolvePaste (ps2, tA);
+            const auto pr = audioops::fixPiece (fm, fa, 0, pieceStart, pieceStart + (juce::int64) (0.1 * rate), { audioops::FixOp { ps2, at, at + c.length() } }, dir.getChildFile ("piece.wav"), perr);
+            CHECK (pr.ok && pr.from == pieceStart);
+            if (pr.ok)
+            {
+                auto rp = audioops::openReader (fm, pr.file); std::vector<std::vector<float>> pc;
+                CHECK (rp != nullptr && audioops::readRange (*rp, 0, rp->lengthInSamples, pc) && pc.size() == 2);
+                if (pc.size() == 2)
+                {
+                    const auto k = (size_t) (c.length() / 2 + 10);                              // a sample of the consonant's second half
+                    CHECK (std::abs (pc[0][10] - (vowel[(size_t) (pieceStart + 10)] + c.tracks[0][0][k])) < 1e-5f);
+                    CHECK (std::abs (pc[0][(size_t) (c.length() - c.length() / 2 + 50)] - vowel[(size_t) (pieceStart + c.length() - c.length() / 2 + 50)]) < 1e-6f);   // past its end: untouched
+                }
+            }
+            CHECK (ps.shortName() == "consonant");
         }
     }
 

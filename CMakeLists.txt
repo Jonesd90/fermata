@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-set(FERMATA_VERSION 3.1.1)        # the ONE place the version number is changed (see CHANGELOG.md)
+set(FERMATA_VERSION 3.6.0)        # the ONE place the version number is changed (see CHANGELOG.md)
 project(Fermata VERSION ${FERMATA_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -37,6 +37,9 @@ target_sources(Fermata PRIVATE
     src/core/DenoiseFft.cpp
     src/core/ImportPlan.cpp
     src/core/Aaf.cpp
+    src/core/AafWrite.cpp
+    src/core/AafExport.cpp
+    src/core/TakeMatch.cpp
     src/core/Ltc.cpp
     src/core/MasterDef.cpp
     src/core/Ddp.cpp
@@ -46,6 +49,7 @@ target_sources(Fermata PRIVATE
     src/core/Ravenna.cpp
     src/core/CoreReservation.cpp
     src/core/Retime.cpp
+    src/core/VideoExport.cpp
     src/reharmoniser/Dsp.cpp
     src/reharmoniser/Engine.cpp
     src/reharmoniser/Spectrogram.cpp

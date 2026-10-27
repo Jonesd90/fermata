@@ -15,6 +15,8 @@ namespace
 using juce::var; using juce::DynamicObject; using juce::String;
 
 var obj() { return var (new DynamicObject()); }
+/** The "format" a project file says it is: a Fermata project, or one from before the rename. */
+bool isProjectFormat (const String& format) { return format == "Fermata project" || format == "TakeDAW project"; }
 var markersToVar (const std::vector<Marker>& list)
 {
     juce::Array<var> a;
@@ -154,7 +156,12 @@ void slotsFromVar (InsertSlot* slots, const var& v, const InsertFactory& factory
         std::unique_ptr<InsertProcessor> p;
         if (factory) p = factory (desc, state);
         if (p != nullptr) slots[i].set (std::move (p), sr, maxBlock, 2);
-        else { slots[i].savedDescription = desc; slots[i].savedState = state; }
+        else
+        {
+            // the plug-in could not be started (or is on the ignored list): the slot keeps it, settings and all, so it is saved again as it was
+            slots[i].savedDescription = desc; slots[i].savedState = state;
+            if (auto xml = juce::XmlDocument::parse (desc)) slots[i].savedName = xml->getStringAttribute ("name");
+        }
     }
 }
 
@@ -322,7 +329,7 @@ Project::Project() { createDefaultDesign(); }
 
 void Project::createDefaultDesign()
 {
-    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); preampDevices.clear(); pitchPipe = PitchPipeDef(); click = ClickDef(); alignEnabled = true; alignSets.clear(); alignActive.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); consonants.clear(); preampDevices.clear(); pitchPipe = PitchPipeDef(); click = ClickDef(); alignEnabled = true; alignSets.clear(); alignActive.clear();
     windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear(); oldWindowFiles.clear();     // (nothing of the project that was open before: its missing files are not this one's)
     layouts.clear();                                                                                  // (nor its saved Display Organiser layouts)
     setInputCount (8);
@@ -1173,7 +1180,8 @@ void Project::saveCommentsCopy (const EditDef& e, const std::vector<juce::File>&
     if (! dir.createDirectory().wasOk()) return;
     for (auto& f : importedFiles) f.copyFileTo (dir.getChildFile (f.getFileName()));
     auto json = dir.getChildFile ("comments.json");
-    json.replaceWithText (juce::JSON::toString (feedbackToVar (e.feedback)));
+    juce::String err;
+    if (! filesync::writeTextChecked (json, juce::JSON::toString (feedbackToVar (e.feedback)), &err)) juce::Logger::writeToLog ("Comments copy: " + err);     // (3.1.3: checked; the comments themselves are in the edit)
 }
 void Project::restoreSavedComments()
 {
@@ -1535,6 +1543,27 @@ var Project::toVar (bool withWindows) const
     if (withWindows) addWindowsToVar (root);
     put (root, "mastering", mastering.toVar());
     if (roomTone.valid()) put (root, "roomTone", roomToneToVar (roomTone));
+    if (! consonants.empty())
+    {
+        const auto base = projectFile.getParentDirectory();
+        juce::Array<var> cs;
+        for (auto& c : consonants)
+        {
+            var co = obj();
+            put (co, "id", c.id.toString()); put (co, "name", c.name); put (co, "from", c.from); put (co, "rate", c.sampleRate);
+            put (co, "length", (juce::int64) c.length); put (co, "lead", (juce::int64) c.lead); put (co, "made", (juce::int64) c.made.toMilliseconds());
+            juce::Array<var> ts;
+            for (auto& t : c.tracks)
+            {
+                var to = obj(); put (to, "track", t.trackId.toString()); put (to, "trackName", t.trackName);
+                putFilePath (to, t.file, base); put (to, key::k_channels, t.numChannels);          // ("file" + "channels": the project copy takes it along)
+                ts.add (to);
+            }
+            put (co, "tracks", ts);
+            cs.add (co);
+        }
+        put (root, "consonants", cs);
+    }
     return root;
 }
 
@@ -1601,10 +1630,10 @@ void Project::addWindowsToVar (var& root) const
 
 bool Project::fromVar (const var& root)
 {
-    if (! root.isObject() || (root.getProperty ("format", {}).toString() != "Fermata project" && root.getProperty ("format", {}).toString() != "TakeDAW project"))
+    if (! root.isObject() || ! isProjectFormat (root.getProperty ("format", {}).toString()))
         return false;
 
-    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone();
+    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); consonants.clear();
     filesMoved = false;
     name = root.getProperty ("name", "Untitled").toString();
     windowBounds.clear();
@@ -1904,6 +1933,27 @@ bool Project::fromVar (const var& root)
 
     mastering.fromVar (root["mastering"]);
     roomTone = roomToneFromVar (root["roomTone"]);
+    consonants.clear();
+    if (auto* ca = root["consonants"].getArray())
+    {
+        const auto base = loadBase();
+        for (auto& co : *ca)
+        {
+            ConsonantDef c;
+            c.id = juce::Uuid (co["id"].toString()); c.name = co["name"].toString(); c.from = co["from"].toString();
+            c.sampleRate = (double) co["rate"]; c.length = (juce::int64) co["length"]; c.lead = (juce::int64) co["lead"];
+            c.made = juce::Time ((juce::int64) co["made"]);
+            if (auto* ta = co["tracks"].getArray())
+                for (auto& to : *ta)
+                {
+                    ConsonantTrack t; t.trackId = juce::Uuid (to["track"].toString()); t.trackName = to["trackName"].toString();
+                    t.file = getFilePath (to, base); t.numChannels = juce::jmax (1, (int) to[key::k_channels]);
+                    c.tracks.push_back (t);
+                }
+            if (c.id.isNull() || c.sampleRate <= 0.0 || c.tracks.empty()) continue;
+            consonants.push_back (std::move (c));
+        }
+    }
     mastering.sync (edits);
     std::stable_partition (mixers.begin(), mixers.end(), [] (const std::unique_ptr<MixerState>& m) { return m->editId.isNull(); });     // the Edit mixers come last
     syncMixers();
@@ -1926,7 +1976,24 @@ struct UndoHasher
     void add (juce::int64 i) noexcept { mix ((juce::uint64) i ^ 0xe7037ed1a0b428dbull); }
     void add (double d) noexcept { juce::uint64 b; std::memcpy (&b, &d, sizeof b); mix (b ^ 0x8ebc6af09c88c6e3ull); }
     void add (float f) noexcept { add ((double) f); }
-    void add (const juce::String& s) noexcept { mix ((juce::uint64) s.hashCode64()); mix ((juce::uint64) s.length() + 0x589965cc75374cc3ull); }
+    void add (const juce::String& s) noexcept
+    {
+        // The string's bytes as they are stored (UTF-8), eight at a time. This used to be hashCode64() + length(): two walks of the text, each
+        // decoding every character, and a big project hashes 47,000 file entries (four strings each) at every undo tick and every save
+        // snapshot - most of their 20 ms on the message thread (3.1.6: measured in scratchpad/savebench, see the notes).
+        const auto* p = reinterpret_cast<const juce::uint8*> (s.toRawUTF8());
+        juce::uint64 acc = 0x9e3779b97f4a7c15ull; size_t n = 0;
+        for (;;)
+        {
+            juce::uint64 chunk = 0; int k = 0;
+            for (; k < 8 && p[k] != 0; ++k) chunk |= (juce::uint64) p[k] << (8 * k);
+            acc = (acc ^ chunk) * 0x9fb21c651e98df25ull; acc ^= acc >> 29;          // (multiply and fold: every byte moves every bit of the result)
+            n += (size_t) k;
+            if (k < 8) break;
+            p += 8;
+        }
+        mix (acc); mix ((juce::uint64) n + 0x589965cc75374cc3ull);
+    }
     void add (const juce::Uuid& u) noexcept { juce::uint64 a, b; std::memcpy (&a, u.getRawData(), 8); std::memcpy (&b, u.getRawData() + 8, 8); mix (a); mix (b ^ 0x1d8e4e27c47d124full); }
     void add (const juce::File& f) noexcept { add (f.getFullPathName()); }
     void add (const juce::Time& t) noexcept { add (t.toMilliseconds()); }
@@ -1947,10 +2014,11 @@ juce::uint64 Project::undoHash (const TakeWindowDef& w)
     h.count (w.groups.size());
     for (auto& g : w.groups)
     {
-        h.add (g.id); h.add (g.number); h.add (g.label); h.add (g.startSeconds); h.add (g.lengthSamples); h.add (g.sampleRate); h.add (g.recordedAt);
+        h.add (g.id); h.add (g.number); h.add (g.label); h.add (g.startSeconds); h.add (g.sampleRate); h.add (g.recordedAt);
         h.add (g.fadeInSeconds); h.add (g.fadeOutSeconds); h.add (g.dud); h.add (g.barIn); h.add (g.barOut); h.add (g.notes);
         h.add (g.roomTone); h.add (g.roomToneIn); h.add (g.roomToneOut);
-        h.add (g.overruns); h.add (g.lostSamples); h.add (g.writeFailed); h.add (g.verified);
+        // (not here: lengthSamples, overruns, lostSamples, writeFailed, verified - what the recorder and the recovery write, never the person; they are
+        //  saved (saveHash) but a take ending is not an undo step: 3.1.4)
         h.count (g.files.size());
         for (auto& f : g.files) { h.add (f.trackId); h.add (f.trackName); h.add (f.file); h.add (f.numChannels); h.add (f.sourceName); h.add (f.sourceName2); }
         h.count (g.waiting.size());
@@ -2004,6 +2072,7 @@ juce::uint64 Project::undoHash (const MasteringDef& m)
 juce::uint64 Project::saveHash (const TakeWindowDef& w)
 {
     UndoHasher h; h.mix (undoHash (w));                    // everything the history looks at, plus the view state that is saved with the window
+    for (auto& g : w.groups) { h.add (g.lengthSamples); h.add (g.overruns); h.add (g.lostSamples); h.add (g.writeFailed); h.add (g.verified); }     // (the recorder's fields: saved, not undone)
     h.add (w.editTake); h.add (w.editIn); h.add (w.editOut); h.count (w.editTracks.size()); for (auto& t : w.editTracks) h.add (t);
     h.add (w.cursorTake); h.add (w.cursorSeconds); h.add (w.playheadSeconds); h.add (w.overdub); h.add (w.showMarkers);
     h.count (w.hiddenTracks.size()); for (auto& t : w.hiddenTracks) h.add (t);
@@ -2031,6 +2100,7 @@ void strip (const var& o, std::initializer_list<const char*> keys)
     if (auto* d = o.getDynamicObject()) for (auto* k : keys) d->removeProperty (juce::Identifier (k));
 }
 const std::initializer_list<const char*> kTakeViewKeys = { "editTake", "editIn", "editOut", "editTracks", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub", "markers", "showMarkers" };
+const std::initializer_list<const char*> kTakeMachineKeys = { "length", "overruns", "lost", "writeFailed", "verified" };     // per take: the recorder's, not the person's (3.1.4)
 const std::initializer_list<const char*> kEditViewKeys = { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex", "markers", "feedback", "showFeedback", "showMarkers", "laneRows", "showGuide" };
 }
 
@@ -2038,6 +2108,7 @@ juce::String Project::undoText (const TakeWindowDef& w) const
 {
     var v = takeWindowToVar (w);                           // (one window's var, by the same code that saves it)
     strip (v, kTakeViewKeys);
+    if (auto* takes = v["groups"].getArray()) for (auto& t : *takes) strip (t, kTakeMachineKeys);
     return juce::JSON::toString (v, true);
 }
 
@@ -2072,6 +2143,11 @@ void Project::undoReset()
     for (auto& w : takeWindows) undoTakes[w->id] = snapOf (*w);
     for (auto& e : edits)       undoEdits[e->id] = snapOf (*e);
     undoMastering = masteringSnap();
+}
+
+void Project::undoAbsorb (const juce::Uuid& takeWindowId)
+{
+    if (auto* w = findTakeWindow (takeWindowId)) undoTakes[w->id] = snapOf (*w);
 }
 
 void Project::undoTick (bool recording, bool force)
@@ -2202,18 +2278,38 @@ bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid
             lg->label = tg.label; lg->startSeconds = tg.startSeconds; lg->fadeInSeconds = tg.fadeInSeconds; lg->fadeOutSeconds = tg.fadeOutSeconds;
             lg->dud = tg.dud; lg->barIn = tg.barIn; lg->barOut = tg.barOut; lg->number = tg.number; lg->notes = tg.notes;
             lg->roomTone = tg.roomTone; lg->roomToneIn = tg.roomToneIn; lg->roomToneOut = tg.roomToneOut;
-            // the track each file is on (clips moved onto another track, 2.99): matched by the file, so the files themselves - recorded, fixed,
-            // relinked, which have undo steps of their own or none - are never put back by this. A track deleted since then is not gone back to
-            // (the clip would vanish): the clip stays where it is
-            for (auto& tf : tg.files)
-                for (auto& lf : lg->files)
-                    if (lf.file == tf.file && lf.trackId != tf.trackId && p.findTrack (tf.trackId) != nullptr) { lf.trackId = tf.trackId; lf.trackName = tf.trackName; }
+            lg->waiting = tg.waiting;                                        // (Export for Processing's marks on the take: 3.1.4)
+            // The take's files as the snapshot has them (3.1.4): a track's clips taken out of the window, a fix's files, a pitch curve - put back when
+            // every file the snapshot names is still on the disk and on a track that still exists (a relink's old paths are not pointed at again; a
+            // clip on a track deleted since stays where it is). Until 3.1.4 only the track of each file was put back (clips moved to another track),
+            // so those steps said "Undone" and changed nothing.
+            auto sameFiles = [] (const std::vector<TakeFile>& a, const std::vector<TakeFile>& b)
+            {
+                if (a.size() != b.size()) return false;
+                for (size_t i = 0; i < a.size(); ++i) if (a[i].file != b[i].file || a[i].trackId != b[i].trackId || a[i].numChannels != b[i].numChannels) return false;
+                return true;
+            };
+            if (! sameFiles (lg->files, tg.files))
+            {
+                const bool allThere = std::all_of (tg.files.begin(), tg.files.end(), [&p] (const TakeFile& f) { return p.findTrack (f.trackId) != nullptr && f.file.existsAsFile(); });
+                if (allThere)
+                {
+                    for (auto& tf : tg.files)                                // a track whose clips come back is shown again (removing them hid its row)
+                        if (std::none_of (lg->files.begin(), lg->files.end(), [&tf] (const TakeFile& lf) { return lf.trackId == tf.trackId; })) live->unhide (tf.trackId);
+                    lg->files = tg.files;
+                }
+                else                                                         // as before: only the track each file is on
+                    for (auto& tf : tg.files)
+                        for (auto& lf : lg->files)
+                            if (lf.file == tf.file && lf.trackId != tf.trackId && p.findTrack (tf.trackId) != nullptr) { lf.trackId = tf.trackId; lf.trackName = tf.trackName; }
+            }
         }
         else live->groups.push_back (tg);                    // a take that was removed from the window comes back
     }
     std::stable_sort (live->groups.begin(), live->groups.end(), [] (const TakeGroup& a, const TakeGroup& b) { return a.number < b.number; });
-    live->targetEdit = tw->targetEdit;
-    live->name = tw->name; live->defaultLabel = tw->defaultLabel; live->nextNumber = tw->nextNumber;
+    live->targetEdit = tw->targetEdit; live->showLtc = tw->showLtc;
+    live->name = tw->name; live->defaultLabel = tw->defaultLabel;
+    live->nextNumber = juce::jmax (live->nextNumber, tw->nextNumber);     // (never back: a take recorded since the snapshot keeps its number to itself - 3.1.4)
     return false;
 }
 }
@@ -2322,6 +2418,39 @@ std::unique_ptr<Project> Project::cloneForRender (double sampleRate, int maxBloc
     return c;
 }
 
+juce::StringArray Project::pluginsMissingFrom (const Project& copy, const juce::Uuid& mixerId) const
+{
+    juce::StringArray out;
+    const MixerState* live = nullptr; const MixerState* other = nullptr;
+    for (auto& m : mixers) if (m->id == mixerId) live = m.get();
+    for (auto& m : copy.mixers) if (m->id == mixerId) other = m.get();
+    if (live == nullptr) return out;
+    auto compare = [&] (const InsertSlot* a, const InsertSlot* b, const juce::String& where)       // b null: the copy has no such strip at all
+    {
+        for (int i = 0; i < kNumSlots; ++i)
+            if (a[i].isLoaded() && ! a[i].bypass.get() && (b == nullptr || ! b[i].isLoaded())
+                && a[i].getProcessorUnsafe()->getDescription().isNotEmpty())                      // (one with no description is not saved and not re-created: nothing was asked for)
+                out.add (a[i].getName() + " on " + where);
+    };
+    for (auto& s : live->stripPool)
+    {
+        const StripState* o = nullptr;
+        if (other != nullptr) for (auto& c : other->stripPool) if (c->trackId == s->trackId) o = c.get();
+        juce::String nm = "a track";
+        for (auto& t : tracks) if (t.id == s->trackId) nm = t.name;
+        compare (s->slots, o != nullptr ? o->slots : nullptr, nm);
+    }
+    for (auto& b : live->busPool)
+    {
+        const BusState* o = nullptr;
+        if (other != nullptr) for (auto& c : other->busPool) if (c->busId == b->busId) o = c.get();
+        juce::String nm = "a bus";
+        for (auto& d : buses) if (d.id == b->busId) nm = d.name;
+        compare (b->slots, o != nullptr ? o->slots : nullptr, nm);
+    }
+    return out;
+}
+
 juce::StringArray Project::repairInterruptedRecordings()
 {
     juce::StringArray report;
@@ -2388,7 +2517,13 @@ bool Project::load (const juce::File& f, juce::String& error)
     const int read = filesync::readJsonWithBackup (f, v, [] (const juce::var& x) { return x.isObject(); });
     tMain = juce::Time::getMillisecondCounterHiRes() - t0;
     readingFrom = f.getParentDirectory();
-    bool ok = read > 0;
+    // (a file that reads as an object but is not a Fermata project - some other program's .json renamed, say - is turned away here, before anything of
+    // the open project is touched; fromVar checks the same thing again)
+    bool ok = read > 0 && isProjectFormat (v["format"].toString());
+    // The lists of window files are the open project's until the new one has been read whole: a load that fails after this point puts them back
+    // (with the other file's lists in place, the next save of the project that stayed open would write every window under a new "(2)" name and
+    // list the other project's missing windows as its own).
+    const auto keptWindowFiles = windowFiles; const auto keptMissing = missingWindowRefs; const auto keptNotes = loadNotes; const auto keptOld = oldWindowFiles;
     if (ok) { windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear(); oldWindowFiles.clear(); }    // (only once the file has been read: a failed Open leaves the open project's files list alone)
     if (read == 2)
         loadNotes.add ("The project file " + f.getFileName() + " could not be read, so the save before it (" + filesync::backupOf (f).getFileName() + ") was used. "
@@ -2419,7 +2554,13 @@ bool Project::load (const juce::File& f, juce::String& error)
         }
     }
     readingFrom = juce::File();
-    if (! ok) { error = "Not a valid Fermata project file"; return false; }
+    if (! ok)
+    {
+        windowFiles = keptWindowFiles; missingWindowRefs = keptMissing; loadNotes = keptNotes; oldWindowFiles = keptOld;     // (the open project's again: see above)
+        error = read == 0 && ! f.existsAsFile() && ! filesync::backupOf (f).existsAsFile() ? "The file does not exist: " + f.getFullPathName()
+              : "Not a valid Fermata project file: " + f.getFileName();
+        return false;
+    }
     projectFile = f;
     restoreSavedComments();
     const auto t3 = juce::Time::getMillisecondCounterHiRes();

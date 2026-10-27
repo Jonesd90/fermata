@@ -11,6 +11,7 @@ struct RegionJob
     juce::int64 outFrom = 0, outTo = 0, fixFrom = 0, fixTo = 0;
     std::vector<juce::File> src, dest; std::vector<juce::int64> fileStart;
     std::vector<size_t> idx;                                  // which files of the region these are (all of them, or just the tracks chosen with Alt + drag)
+    std::vector<juce::Uuid> trackOf;                          // the track of each of those files (a pasted consonant gives each file its own track's channels)
     std::vector<audioops::FixOp> ops;                         // the changes made to this piece, in take samples (one, or several accepted in the repair window)
     /** A denoise among the ops: the room-tone profiles (one per channel) for file 'src[fileIndex]' and that op - the project's for the file's track, or learned from a box
         of the loaded area on the real files; set into the Denoise ops as each file is made. Null = none (the op leaves that file alone). */
