@@ -6,6 +6,18 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.7.0
+**Find other versions and J tuned on real takes** (a choir, 20 tracks, two pieces: the MHP takes with bars 1-5, 6-10 and 101-104, false starts, and two takes of the Salve). Before this, a 2 - 3 s marked part was matched rightly only about half the time, and bars 1-2 scored as near-identical to the start of bars 6 and 11, whose inner voices differ. Now, on those takes, 93 - 96 % of the right versions are found and no wrong ones, the other piece never comes near, and verses that differ only in the inner parts are told apart.
+- **The fingerprint hears the inner voices.** Every note keeps its octave (five octaves, 60 notes) instead of being folded into 12 note names, so an alto line that moves under the same melody and bass counts.
+- **It follows the choir's tuning.** An unaccompanied choir sinks: take 1 went from 26 to 55 cents flat, the Salve takes sat a quarter-tone flat all the way. The notes are now read against the choir's own tuning, measured as it goes, and read leaning flat - a choir 50 cents flat is never taken for one 50 cents sharp (which had put two takes of the same music a semitone apart).
+- **The marked part is searched for with the music either side** (8 s in all, from its own take): a few seconds can sound alike in two places, eight rarely do. The marked part on its own then says exactly where it starts and ends in each version found.
+- **False starts are listed as "possible"**: a false start is shorter than 8 s, so the marked part on its own is also looked for in the rest of each take. Those places are shown dimmed as "possible (a false start, or the same notes elsewhere: check by ear)".
+- **Silence says nothing**: a marked part that is mostly silence is not searched, and silence is never "found" in silence (the quiet before one take matched the end of another).
+- **Fingerprints come from the main microphones**: the tracks given the role Main in the Align window, or else the tracks named MAIN, AB, ORTF, Decca tree and the like - before, the first four tracks of a take, often spots, which hear only part of the choir.
+- **Bars help**: where the takes' bars are entered (the bars and notes box), takes whose bars lie away from the marked part's are left out of the search.
+- Tempo limits for a version tightened to 0.8 - 1.25 times, and two versions in one take can no longer overlap. J (the same place in another take) uses the same fingerprint and benefits from all of it.
+- The fingerprints a project already has in its Analysis folder are made again once, by themselves, in the background (a minute of music takes about a second).
+
 ## 3.6.0
 **Consonants: move an early or late one instead of removing it, and keep good ones to put in where one is missing.** A new **Consonants [C]** tab in the ReTouch window (Spectral Repair, from a take window or an edit window).
 - **Copy and remove.** Draw the box round an early or late consonant (as for the stray-consonant ReTouch) and press *Copy and remove*: it is taken out where it is, exactly as the stray-consonant ReTouch does (at full strength), and kept. Click the time ruler where it should sound and press **Paste here [P]**: it goes back in there, so every singer's consonant sounds together instead of one singer seeming to leave it out. The start of the box you drew lands exactly on the playhead.
