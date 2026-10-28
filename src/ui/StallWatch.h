@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_events/juce_events.h>
 #include <atomic>
+#include "../core/CoreReservation.h"
 
 namespace td
 {
@@ -19,13 +20,17 @@ struct BusyLabel
 /** Watches the message thread (2.102): a timer on it beats 20 times a second, and a thread of its own notices when the beats stop. Whenever the
     message thread is held up for 150 ms or more - nothing on the screen moves, Space and Stop wait - a line goes into the log once it is free
     again: how long, at what time, and what it was doing (the labels seen meanwhile, see BusyLabel). So a stall the person notices can be found
-    in the log afterwards, with its cause. At most 30 lines a minute. */
+    in the log afterwards, with its cause. At most 30 lines a minute.
+    Since 3.13.0 each line also says how hard the main thread itself was working through the stall, how much of the processor Fermata and the whole
+    PC were using, and whether a laptop was on battery - so a stall with no label can be told apart: Fermata's own drawing (main thread working),
+    a PC that is flat out (something else, or too few cores left), or the main thread waiting on Windows or a driver. */
 class StallWatch : private juce::Timer, private juce::Thread
 {
 public:
     StallWatch() : juce::Thread ("Fermata stall watch")
     {
         beat.store (juce::Time::getMillisecondCounterHiRes());
+        SystemLoad::rememberMessageThread();                                // (constructed on the message thread)
         startTimerHz (20);
         startThread (juce::Thread::Priority::low);
     }
@@ -47,6 +52,7 @@ private:
         const char* seen[4] = {};
         int nSeen = 0, linesThisMinute = 0, suppressed = 0;
         double minuteStart = juce::Time::getMillisecondCounterHiRes();
+        SystemLoad::Snapshot atStart;
         while (! threadShouldExit())
         {
             wait (20);
@@ -54,7 +60,7 @@ private:
             const double b = beat.load();
             if (t - b > kPeriodMs + kReportMs * 0.5)                 // the beats have stopped: the message thread is busy
             {
-                if (! inStall) { inStall = true; lastBeatBefore = b; nSeen = 0; }
+                if (! inStall) { inStall = true; lastBeatBefore = b; nSeen = 0; atStart = SystemLoad::take(); }
                 if (const char* l = messageThreadLabel().load())
                 {
                     bool have = false;
@@ -79,6 +85,8 @@ private:
             else
                 line << "Stall watch: main thread busy for " << juce::roundToInt (busy) << " ms at " << juce::Time::getCurrentTime().formatted ("%H:%M:%S")
                      << " (" << (what.isNotEmpty() ? what : juce::String ("nothing labelled: drawing or Windows")) << ")";
+            if (busy <= 30000.0)
+                if (const auto load = SystemLoad::describe (atStart, SystemLoad::take(), true); load.isNotEmpty()) line << "; " << load;
             if (suppressed > 0) { line << "; " << suppressed << " more in the minute before were not logged"; suppressed = 0; }
             juce::Logger::writeToLog (line);
         }

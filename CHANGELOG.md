@@ -6,6 +6,13 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.13.0
+**A laptop is no longer slowed to a crawl by the CPU core reservation.** On a CPU with big (fast) and small (slow) cores - Intel Core Ultra, 12th generation and later - the reservation could take every big core for the audio (a laptop Core Ultra 5 has only two) and, with "ask other programs to stay off", leave Windows, the other programs and Fermata's own windows on the slow cores only.
+- **At most half of the big cores are kept for the audio** (two big cores: one; eight: four), whatever is ticked; the CPU cores window says which core was left to the PC. "Find the quietest cores" picks big cores only, within the same limit. A CPU with only one big core keeps none.
+- **On a laptop, "Also ask other programs to stay off these cores" is switched off once**, the first time 3.13.0 starts (it can be ticked again), and Fermata runs at "above normal" priority instead of "high" while cores are reserved. The audio threads keep Windows' "Pro Audio" class either way.
+- **Programs left off the cores by a crash are set free.** If Fermata crashed, or was ended from the Task Manager, while it kept the other programs off its cores, they stayed squeezed until they were restarted. Now Fermata notes the cores it gave them, and the next start sets them free (also those left by an older version) and says so in the log.
+- **The log says more about freezes.** Each "Stall watch" line now adds how hard Fermata's main thread was working through the freeze, how much of the processor Fermata and the whole PC were using, and whether a laptop was on battery or battery saver - with a few words on what that means (Fermata's own drawing, the PC flat out, or the main thread waiting on Windows or a driver). The minute "Timing" lines add the PC's load too, and the log's start names the CPU (big and small cores) and whether it is a laptop.
+
 ## 3.12.1
 - **The ALL line is at the top of the take chart**, above the bar numbers, in Fermata and in the printed take sheet: top to bottom it is now ALL, the bar numbers, then the takes. Clicking it still goes to that bar.
 

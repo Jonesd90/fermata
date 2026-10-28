@@ -36,19 +36,61 @@ void CoreReservationSettings::setReservedText (const juce::String& text)
 
 static bool contains (const std::vector<int>& v, int x) { return std::find (v.begin(), v.end(), x) != v.end(); }
 
-CorePlan makeCorePlan (const std::vector<CpuCore>& cores, const CoreReservationSettings& s)
+bool isHybridCpu (const std::vector<CpuCore>& cores)
+{
+    for (auto& c : cores) if (c.efficiency != cores.front().efficiency) return true;
+    return false;
+}
+
+static int bestEfficiency (const std::vector<CpuCore>& cores)
+{
+    int best = 0;
+    for (auto& c : cores) best = std::max (best, c.efficiency);
+    return best;
+}
+
+int maxFastCoresForAudio (const std::vector<CpuCore>& cores)
+{
+    if (! isHybridCpu (cores)) return (int) cores.size();
+    const int best = bestEfficiency (cores);
+    int fast = 0;
+    for (auto& c : cores) if (c.efficiency == best) ++fast;
+    return fast / 2;
+}
+
+CorePlan makeCorePlan (const std::vector<CpuCore>& cores, const CoreReservationSettings& s, bool limitFastCores)
 {
     CorePlan p;
     if (cores.size() < 2) { p.problem = "This PC has only one CPU core, so there is nothing to keep apart."; return p; }
+    // the big cores that may be kept for the audio (3.13.0): on a hybrid CPU at most half of them, the higher-numbered first (Windows tends to put its own work on the low ones)
+    std::vector<int> ticked;
+    for (auto& c : cores) if (contains (s.reserved, c.number)) ticked.push_back (c.number);
+    std::vector<int> leftFast;
+    if (limitFastCores && isHybridCpu (cores))
+    {
+        const int best = bestEfficiency (cores), allowed = maxFastCoresForAudio (cores);
+        std::vector<int> fastTicked;
+        for (auto& c : cores) if (c.efficiency == best && contains (ticked, c.number)) fastTicked.push_back (c.number);
+        std::sort (fastTicked.begin(), fastTicked.end(), [] (int a, int b) { return a > b; });
+        for (size_t i = (size_t) std::max (0, allowed); i < fastTicked.size(); ++i) leftFast.push_back (fastTicked[i]);
+        std::sort (leftFast.begin(), leftFast.end());
+    }
     for (auto& c : cores)
     {
-        if (contains (s.reserved, c.number)) { p.audioCores.push_back (c.number); p.audioLogical.insert (p.audioLogical.end(), c.logical.begin(), c.logical.end()); }
-        else                                 { p.generalCores.push_back (c.number); p.generalLogical.insert (p.generalLogical.end(), c.logical.begin(), c.logical.end()); }
+        if (contains (ticked, c.number) && ! contains (leftFast, c.number)) { p.audioCores.push_back (c.number); p.audioLogical.insert (p.audioLogical.end(), c.logical.begin(), c.logical.end()); }
+        else                                                                { p.generalCores.push_back (c.number); p.generalLogical.insert (p.generalLogical.end(), c.logical.begin(), c.logical.end()); }
     }
-    if (p.audioCores.empty())   { p.problem = "No core is ticked: tick at least one core to keep for the audio."; return p; }
+    if (ticked.empty())         { p.problem = "No core is ticked: tick at least one core to keep for the audio."; return p; }
+    if (p.audioCores.empty())   { p.problem = "This CPU has too few big (fast) cores to keep one for the audio: Windows and the other programs need them. Leave this off."; return p; }
     if (p.generalCores.empty()) { p.problem = "Every core is ticked: leave at least one core for Windows and the rest of the program."; return p; }
     p.valid = true;
-    if (p.generalCores.size() < 2 && cores.size() >= 4)
+    if (! leftFast.empty())
+    {
+        juce::StringArray a; for (int c : leftFast) a.add (juce::String (c));
+        p.warning = "This CPU has few big (fast) cores, so at most " + juce::String (maxFastCoresForAudio (cores)) + " of them can be kept for the audio: core"
+                    + (a.size() == 1 ? " " : "s ") + a.joinIntoString (", ") + (a.size() == 1 ? " is" : " are") + " left to Windows and the other programs, or the whole PC would crawl.";
+    }
+    else if (p.generalCores.size() < 2 && cores.size() >= 4)
         p.warning = "Only one core is left for Windows and everything else. The program and the PC may feel slow; reserve fewer cores if they do.";
     else if (p.audioCores.size() * 2 > cores.size() + 1)
         p.warning = "More than half of the cores are reserved. The audio engine cannot use that many; reserving one or two is usually enough.";
@@ -82,8 +124,17 @@ std::vector<int> pickQuietCores (const std::vector<CpuCore>& cores, const std::v
         if (std::abs (a.noise - b.noise) > 1.0e-9) return a.noise < b.noise;
         return a.number > b.number;
     });
+    // a hybrid CPU (3.13.0): big cores only, and at most half of them - the small ones are too slow for the audio, and the other big ones are needed by everything else
+    const bool hybrid = isHybridCpu (cores);
+    const int fastLimit = maxFastCoresForAudio (cores);
     std::vector<int> out;
-    for (int i = 0; i < count && i < (int) cands.size() && i < (int) cores.size() - 1; ++i) out.push_back (cands[(size_t) i].number);     // never every core
+    int fastTaken = 0;
+    for (size_t i = 0; i < cands.size() && (int) out.size() < count && (int) out.size() < (int) cores.size() - 1; ++i)     // never every core
+    {
+        if (hybrid && (cands[i].efficiency != bestEff || fastTaken >= fastLimit)) continue;
+        if (cands[i].efficiency == bestEff) ++fastTaken;
+        out.push_back (cands[i].number);
+    }
     std::sort (out.begin(), out.end());
     return out;
 }
@@ -134,49 +185,82 @@ struct CoreReservation::Impl
     /** SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION (48 bytes) */
     struct ProcPerf { long long idle, kernel, user, dpc, interrupt; ULONG interruptCount; ULONG pad; };
 
+    /** apply: programs with no CPU set of their own are given 'ids'. Otherwise: programs that have exactly those cores are set free again.
+        (A program that someone else - Process Lasso, say - has given its own cores is never touched.) Returns how many programs were changed. */
+    int sweepPrograms (const std::vector<ULONG>& ids, bool apply, juce::Thread* stopper)
+    {
+        if (getProcessDefaultCpuSets == nullptr || setProcessDefaultCpuSets == nullptr || ids.empty()) return 0;
+        HANDLE snap = CreateToolhelp32Snapshot (TH32CS_SNAPPROCESS, 0);
+        if (snap == INVALID_HANDLE_VALUE) return 0;
+        int changed = 0;
+        PROCESSENTRY32W pe {}; pe.dwSize = sizeof (pe);
+        const DWORD self = GetCurrentProcessId();
+        for (BOOL more = Process32FirstW (snap, &pe); more; more = Process32NextW (snap, &pe))
+        {
+            if (apply && stopper != nullptr && stopper->threadShouldExit()) break;
+            if (pe.th32ProcessID == 0 || pe.th32ProcessID == 4 || pe.th32ProcessID == self) continue;
+            HANDLE h = OpenProcess (PROCESS_SET_LIMITED_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+            if (h == nullptr) continue;                          // protected, or another user's: leave it alone
+            ULONG need = 0;
+            std::vector<ULONG> cur;
+            bool ok = getProcessDefaultCpuSets (h, nullptr, 0, &need) != FALSE;
+            if (! ok && GetLastError() == ERROR_INSUFFICIENT_BUFFER && need > 0 && need < 1024)
+            {
+                cur.resize (need);
+                ok = getProcessDefaultCpuSets (h, cur.data(), need, &need) != FALSE;
+                cur.resize (need);
+                std::sort (cur.begin(), cur.end());
+            }
+            else if (ok) need = 0;
+            if (ok)
+            {
+                if (apply && need == 0)                    { if (setProcessDefaultCpuSets (h, ids.data(), (ULONG) ids.size())) ++changed; }
+                else if (! apply && need > 0 && cur == ids) { if (setProcessDefaultCpuSets (h, nullptr, 0)) ++changed; }
+            }
+            CloseHandle (h);
+        }
+        CloseHandle (snap);
+        return changed;
+    }
+
+    /** Where a running Fermata writes down the cores it gave the other programs (3.13.0), so that the next start can set them free after a crash. */
+    static juce::File fenceNoteFile()
+    {
+        return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("Fermata").getChildFile ("cpu-fence.txt");
+    }
+    static juce::String idsText (const std::vector<ULONG>& ids)
+    {
+        juce::StringArray a; for (auto id : ids) a.add (juce::String ((juce::uint64) id));
+        return a.joinIntoString (",");
+    }
+    static std::vector<ULONG> idsFromText (const juce::String& t)
+    {
+        std::vector<ULONG> v;
+        for (auto& x : juce::StringArray::fromTokens (t, ",; \r\n", "")) if (x.isNotEmpty() && x.containsOnly ("0123456789")) v.push_back ((ULONG) x.getLargeIntValue());
+        std::sort (v.begin(), v.end());
+        return v;
+    }
+
     /** Holds the other programs off the reserved cores for as long as it runs (looks again every few seconds, for programs started later). */
     struct Fence : public juce::Thread
     {
         Fence (Impl& o, std::vector<ULONG> general) : juce::Thread ("CPU ring-fence"), owner (o), ids (std::move (general))
-        { std::sort (ids.begin(), ids.end()); startThread (juce::Thread::Priority::low); }
-        ~Fence() override { stopThread (4000); sweep (false); }
+        {
+            std::sort (ids.begin(), ids.end());
+            const auto f = fenceNoteFile();                      // written down first: if Fermata dies from here on, the next start sets the programs free
+            f.getParentDirectory().createDirectory();
+            f.replaceWithText (idsText (ids));
+            startThread (juce::Thread::Priority::low);
+        }
+        ~Fence() override
+        {
+            stopThread (4000);
+            owner.sweepPrograms (ids, false, nullptr);
+            fenceNoteFile().deleteFile();
+        }
         void run() override
         {
-            while (! threadShouldExit()) { sweep (true); wait (5000); }
-        }
-        /** apply: programs with no CPU set of their own are given the general cores. Otherwise: programs that have exactly those cores are set free again.
-            (A program that someone else - Process Lasso, say - has given its own cores is never touched.) */
-        void sweep (bool apply)
-        {
-            if (owner.getProcessDefaultCpuSets == nullptr || owner.setProcessDefaultCpuSets == nullptr || ids.empty()) return;
-            HANDLE snap = CreateToolhelp32Snapshot (TH32CS_SNAPPROCESS, 0);
-            if (snap == INVALID_HANDLE_VALUE) return;
-            PROCESSENTRY32W pe {}; pe.dwSize = sizeof (pe);
-            const DWORD self = GetCurrentProcessId();
-            for (BOOL more = Process32FirstW (snap, &pe); more; more = Process32NextW (snap, &pe))
-            {
-                if (apply && threadShouldExit()) break;
-                if (pe.th32ProcessID == 0 || pe.th32ProcessID == 4 || pe.th32ProcessID == self) continue;
-                HANDLE h = OpenProcess (PROCESS_SET_LIMITED_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
-                if (h == nullptr) continue;                          // protected, or another user's: leave it alone
-                ULONG need = 0;
-                std::vector<ULONG> cur;
-                bool ok = owner.getProcessDefaultCpuSets (h, nullptr, 0, &need) != FALSE;
-                if (! ok && GetLastError() == ERROR_INSUFFICIENT_BUFFER && need > 0 && need < 1024)
-                {
-                    cur.resize (need);
-                    ok = owner.getProcessDefaultCpuSets (h, cur.data(), need, &need) != FALSE;
-                    std::sort (cur.begin(), cur.end());
-                }
-                else if (ok) need = 0;
-                if (ok)
-                {
-                    if (apply && need == 0) owner.setProcessDefaultCpuSets (h, ids.data(), (ULONG) ids.size());
-                    else if (! apply && need > 0 && cur == ids) owner.setProcessDefaultCpuSets (h, nullptr, 0);
-                }
-                CloseHandle (h);
-            }
-            CloseHandle (snap);
+            while (! threadShouldExit()) { owner.sweepPrograms (ids, true, this); wait (5000); }
         }
         Impl& owner;
         std::vector<ULONG> ids;
@@ -277,7 +361,10 @@ struct CoreReservation::Impl
         struct PowerThrottling { ULONG version, controlMask, stateMask; } st { 1, 0, 0 };
         if (on) st.controlMask = 0x1 | 0x4;               // execution speed + timer resolution: switched off (the program is not slowed down to save power)
         if (setProcessInformation != nullptr) setProcessInformation (GetCurrentProcess(), 4 /* ProcessPowerThrottling */, &st, (DWORD) sizeof (st));
-        juce::Process::setPriority (on ? juce::Process::HighPriority : juce::Process::NormalPriority);
+        // the whole of Fermata (its windows too) at high priority starves everything else on a laptop's few fast cores (3.13.0): above normal there.
+        // The audio threads do not depend on it: they are in Windows' "Pro Audio" class (MMCSS) either way.
+        if (on && CoreReservation::isLaptop()) SetPriorityClass (GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+        else juce::Process::setPriority (on ? juce::Process::HighPriority : juce::Process::NormalPriority);
     }
 
     void applyNow()
@@ -446,6 +533,136 @@ void CoreReservation::shutdown()
         configure (off);
     }
 }
+int CoreReservation::releaseLeftovers (const CoreReservationSettings& saved)
+{
+#if FERMATA_CPU_WINDOWS
+    if (! impl->available) return 0;
+    int freed = 0;
+    std::set<std::vector<ULONG>> sets;
+    const auto note = Impl::fenceNoteFile();
+    if (note.existsAsFile())
+    {
+        if (auto ids = Impl::idsFromText (note.loadFileAsString()); ! ids.empty()) sets.insert (ids);
+        note.deleteFile();
+    }
+    if (saved.enabled && saved.keepOthersOff)                                  // what an older version (or this one) gave them with these settings
+        for (bool limited : { false, true })
+        {
+            const auto plan = makeCorePlan (impl->coreList, saved, limited);
+            if (! plan.valid) continue;
+            std::array<ULONG, 64> g {}; int ng = 0;
+            impl->copyIds (plan.generalLogical, g, ng);
+            std::vector<ULONG> ids (g.begin(), g.begin() + ng);
+            std::sort (ids.begin(), ids.end());
+            if (! ids.empty()) sets.insert (ids);
+        }
+    for (auto& ids : sets) freed += impl->sweepPrograms (ids, false, nullptr);
+    return freed;
+#else
+    juce::ignoreUnused (saved);
+    return 0;
+#endif
+}
+
+bool CoreReservation::isLaptop() noexcept
+{
+#if FERMATA_CPU_WINDOWS
+    SYSTEM_POWER_STATUS ps {};
+    if (! GetSystemPowerStatus (&ps)) return false;
+    return ps.BatteryFlag != 128 && ps.BatteryFlag != 255;                 // 128 = no system battery, 255 = unknown
+#else
+    return false;
+#endif
+}
+
+juce::String CoreReservation::describeMachine() const
+{
+    const auto& c = impl->coreList;
+    if (c.empty()) return {};
+    int logical = 0; for (auto& x : c) logical += (int) x.logical.size();
+    juce::String t; t << (int) c.size() << " cores, " << logical << " processors";
+    if (isHybridCpu (c))
+    {
+        const int best = bestEfficiency (c);
+        int big = 0; for (auto& x : c) if (x.efficiency == best) ++big;
+        juce::StringArray bigList; for (auto& x : c) if (x.efficiency == best) bigList.add (juce::String (x.number));
+        t << " (" << big << " big: core" << (big == 1 ? " " : "s ") << bigList.joinIntoString (", ") << "; " << ((int) c.size() - big) << " small)";
+    }
+    if (isLaptop()) t << ", laptop";
+    if (const auto p = SystemLoad::powerText(); p.isNotEmpty()) t << ", " << p;
+    return t;
+}
+
+// ======================================================================================================= SystemLoad (3.13.0)
+#if FERMATA_CPU_WINDOWS
+static std::atomic<HANDLE> messageThreadHandle { nullptr };
+static bool messageThreadKnown() noexcept { return messageThreadHandle.load() != nullptr; }
+static unsigned long long fileTimeValue (const FILETIME& f) noexcept { return ((unsigned long long) f.dwHighDateTime << 32) | f.dwLowDateTime; }
+#else
+static bool messageThreadKnown() noexcept { return false; }
+#endif
+
+void SystemLoad::rememberMessageThread()
+{
+#if FERMATA_CPU_WINDOWS
+    if (messageThreadHandle.load() == nullptr)
+        messageThreadHandle.store (OpenThread (THREAD_QUERY_LIMITED_INFORMATION, FALSE, GetCurrentThreadId()));
+#endif
+}
+
+SystemLoad::Snapshot SystemLoad::take()
+{
+    Snapshot s;
+    s.atMs = juce::Time::getMillisecondCounterHiRes();
+#if FERMATA_CPU_WINDOWS
+    FILETIME idle {}, kernel {}, user {};
+    if (! GetSystemTimes (&idle, &kernel, &user)) return s;
+    s.pcIdle = fileTimeValue (idle);
+    s.pcTotal = fileTimeValue (kernel) + fileTimeValue (user);            // (the kernel time includes the idle time)
+    FILETIME c {}, e {}, k {}, u {};
+    if (GetProcessTimes (GetCurrentProcess(), &c, &e, &k, &u)) s.process = fileTimeValue (k) + fileTimeValue (u);
+    if (HANDLE h = messageThreadHandle.load())
+        if (GetThreadTimes (h, &c, &e, &k, &u)) s.mainThread = fileTimeValue (k) + fileTimeValue (u);
+    s.ok = true;
+#endif
+    return s;
+}
+
+juce::String SystemLoad::describe (const Snapshot& a, const Snapshot& b, bool forStall)
+{
+    if (! a.ok || ! b.ok) return {};
+    const double wall = (b.atMs - a.atMs) * 10000.0;                       // milliseconds -> 100 ns units
+    if (wall <= 0.0) return {};
+    const double total = (double) (b.pcTotal - a.pcTotal), idle = (double) (b.pcIdle - a.pcIdle);
+    const double pcBusy = total > 0.0 ? juce::jlimit (0.0, 100.0, 100.0 * (total - idle) / total) : 0.0;
+    const double fermataCores = (double) (b.process - a.process) / wall;
+    const double mainShare = juce::jlimit (0.0, 100.0, 100.0 * (double) (b.mainThread - a.mainThread) / wall);
+    juce::String t;
+    if (forStall && messageThreadKnown()) t << "main thread working " << juce::roundToInt (mainShare) << "% of it, ";
+    t << "Fermata using " << juce::String (fermataCores, 1) << (std::abs (fermataCores - 1.0) < 0.05 ? " core" : " cores") << ", whole PC " << juce::roundToInt (pcBusy) << "% busy";
+    if (const auto p = powerText(); p.isNotEmpty()) t << ", " << p;
+    if (forStall)
+    {
+        if (pcBusy >= 85.0)                             t << " - the PC was flat out";
+        else if (messageThreadKnown() && mainShare >= 70.0) t << " - Fermata's own drawing or work";
+        else if (messageThreadKnown() && mainShare < 30.0)  t << " - the main thread was mostly waiting (for Windows, a driver, the disk or a free core)";
+    }
+    return t;
+}
+
+juce::String SystemLoad::powerText()
+{
+#if FERMATA_CPU_WINDOWS
+    SYSTEM_POWER_STATUS ps {};
+    if (! GetSystemPowerStatus (&ps) || ps.BatteryFlag == 128 || ps.BatteryFlag == 255) return {};
+    juce::String t = ps.ACLineStatus == 0 ? "on battery" : ps.ACLineStatus == 1 ? "on mains" : "";
+    if (ps.SystemStatusFlag == 1) t << (t.isNotEmpty() ? ", " : "") << "battery saver on";
+    return t;
+#else
+    return {};
+#endif
+}
+
 void CoreReservation::makeThisThreadBackground() noexcept
 {
 #if FERMATA_CPU_WINDOWS

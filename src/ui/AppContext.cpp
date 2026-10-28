@@ -715,6 +715,7 @@ void AppContext::tickLoad()
     const bool rec = engine.isRecording();
     const bool takeEnded = loadWasRecording && ! rec;
     loadWasRecording = rec;
+    if (minuteSeconds == 0) minuteSys = SystemLoad::take();                  // (3.13.0: the PC's load over the same minute)
     if (++minuteSeconds >= 60 || takeEnded)
     {
         auto* dev = devices.getCurrentAudioDevice();
@@ -728,6 +729,7 @@ void AppContext::tickLoad()
         if (minuteLoad.recordBufferPeak > 0.0f || rec || takeEnded) line << ", recording buffer peak " << juce::String (minuteLoad.recordBufferPeak, 1) << "% full";
         if (engine.isPlaying()) line << ", playback underruns " << engine.playbackUnderruns();
         if (CoreReservation::get().active()) line << ", " << CoreReservation::get().reservedLogicalProcessors() << " reserved processors";
+        if (const auto sys = SystemLoad::describe (minuteSys, SystemLoad::take(), false); sys.isNotEmpty()) line << "; " << sys;
         juce::Logger::writeToLog (line);
         minuteSeconds = 0; minuteLoad = {};
     }

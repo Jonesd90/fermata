@@ -49,11 +49,22 @@ struct CorePlan
     std::vector<int> audioLogical, generalLogical;      // logical processor numbers
 };
 
-CorePlan makeCorePlan (const std::vector<CpuCore>& cores, const CoreReservationSettings& s);
+/** 'limitFastCores' (3.13.0): on a CPU with big (fast) and small (slow) cores, at most half of the big ones are kept for the audio - the others are left
+    to Windows, the rest of Fermata and the other programs, whatever is ticked (a laptop CPU with two fast cores keeps one of them for the audio). Without
+    this, a laptop with two fast cores had both taken away from everything else, which made the whole PC painfully slow. 'false' only to work out what
+    an older version did (to set its programs free again: see CoreReservation::releaseLeftovers). */
+CorePlan makeCorePlan (const std::vector<CpuCore>& cores, const CoreReservationSettings& s, bool limitFastCores = true);
+
+/** True when the cores are not all alike (big and small cores: Intel 12th generation and later, Core Ultra). */
+bool isHybridCpu (const std::vector<CpuCore>& cores);
+/** How many of a hybrid CPU's big cores may be kept for the audio: half of them, rounded down (2 -> 1, 4 -> 2, 6 -> 3). Every core, when the CPU is not hybrid. */
+int maxFastCoresForAudio (const std::vector<CpuCore>& cores);
 
 /** The 'count' quietest physical cores, from the busy-ness (percent of time in interrupts and DPCs) of each logical processor. A core is as noisy as its noisiest thread; ties go to the higher core number
     (Windows tends to put its own work on the low numbers). */
 std::vector<int> pickQuietCores (const std::vector<CpuCore>& cores, const std::vector<double>& loadOfLogical, int count);
+/** (3.13.0) On a hybrid CPU it picks big cores only, and no more than maxFastCoresForAudio (so a laptop with two big cores gets one): fewer than 'count'
+    is then the right answer, as the small cores are too slow for the audio. */
 /** How many cores are sensible to reserve on a PC with this many physical cores. */
 int suggestedReserveCount (int physicalCores);
 
@@ -90,6 +101,17 @@ public:
     /** Puts everything back as it was (the programs that were moved, this program's own settings). Called when Fermata closes. */
     void shutdown();
 
+    /** (3.13.0) Call once at start-up, before configure(). A Fermata that crashed or was ended from the Task Manager while it kept the other programs
+        off its cores could not set them free again, and Windows does not do it either: they stayed on the remaining cores until they were restarted.
+        This sets them free: the programs that still have exactly the cores a Fermata gave them (written down in "cpu-fence.txt" while it runs, and -
+        for versions before 3.13.0, which did not write it down - the cores the saved settings would have given them). Returns how many were set free. */
+    int releaseLeftovers (const CoreReservationSettings& saved);
+
+    /** True on a PC with a battery (a laptop). */
+    static bool isLaptop() noexcept;
+    /** "12 cores (2 big, 10 small), laptop, on battery" - for the log. */
+    juce::String describeMachine() const;
+
     /** The calling thread's disk and CPU work gets Windows' "background" priority (the copy to the second recording drive), so the main drive's
         writes always come first. Does nothing on other systems. */
     static void makeThisThreadBackground() noexcept;
@@ -101,5 +123,26 @@ private:
     std::unique_ptr<Impl> impl;
     std::atomic<bool> isActive { false };
     std::atomic<int> audioLogicalCount { 0 };
+};
+/** What the PC and Fermata were doing with the processor over a stretch of time (3.13.0, for the stall watch and the timing lines): take a snapshot
+    before and after, and describe the difference. Windows only; elsewhere the snapshots are empty and the description is too. */
+struct SystemLoad
+{
+    struct Snapshot
+    {
+        bool ok = false;
+        double atMs = 0.0;                                  // juce::Time::getMillisecondCounterHiRes
+        unsigned long long pcIdle = 0, pcTotal = 0;         // the whole PC, all cores together (100 ns units)
+        unsigned long long process = 0;                     // Fermata, all its threads
+        unsigned long long mainThread = 0;                  // Fermata's main (message) thread
+    };
+    /** Call once on the message thread, so that its working time can be read from other threads. */
+    static void rememberMessageThread();
+    /** Any thread. */
+    static Snapshot take();
+    /** "main thread working 95% of it, Fermata using 1.2 cores, whole PC 88% busy, on battery", plus a few words on what that means. Empty if unknown. */
+    static juce::String describe (const Snapshot& before, const Snapshot& after, bool forStall);
+    /** "on battery" / "on mains" (+ ", battery saver on"); empty on a desktop or when unknown. */
+    static juce::String powerText();
 };
 } // namespace td

@@ -118,7 +118,28 @@ public:
         if (auto* st = ctx->props.getUserSettings()) if (const int us = st->getIntValue ("uiStyle", 0); us != 0) applyStyle (us);          // Project > UI style (the Manuscript UI)
         if (auto* st = ctx->props.getUserSettings()) if (const int dc = st->getIntValue ("deskColour", 0); dc != 0) applyDeskColour (dc);   // Project > Colour theme
         if (auto* st = ctx->props.getUserSettings()) if (st->getBoolValue ("deskDark", false)) switchTheme (true);     // the dark look (the desk a shade darker)
-        if (auto* st = ctx->props.getUserSettings()) CoreReservation::get().configure (loadCoreReservationSettings (*st));      // the CPU cores kept for the audio (off unless switched on)
+        if (auto* st = ctx->props.getUserSettings())
+        {
+            auto& cr = CoreReservation::get();
+            juce::Logger::writeToLog ("CPU: " + cr.describeMachine());
+            auto saved = loadCoreReservationSettings (*st);
+            // 3.13.0: programs that a Fermata which crashed (or was ended from the Task Manager) left off its cores are set free first
+            if (const int freed = cr.releaseLeftovers (saved); freed > 0)
+                juce::Logger::writeToLog ("CPU cores: " + juce::String (freed) + (freed == 1 ? " program was" : " programs were") + " still kept off the audio cores by a Fermata that did not close properly - set free again");
+            // 3.13.0: on a laptop, "ask other programs to stay off these cores" is switched off once (it left them too little of the PC); it can be ticked again
+            if (CoreReservation::isLaptop() && ! st->containsKey ("cpuLaptopChecked"))
+            {
+                st->setValue ("cpuLaptopChecked", true);
+                if (saved.keepOthersOff)
+                {
+                    saved.keepOthersOff = false;
+                    saveCoreReservationSettings (*st, saved);
+                    juce::Logger::writeToLog ("CPU cores: this is a laptop, so the other programs are no longer kept off the audio cores (Audio settings > CPU cores to change it)");
+                }
+                st->saveIfNeeded();
+            }
+            cr.configure (saved);                                                // the CPU cores kept for the audio (off unless switched on)
+        }
         juce::Logger::writeToLog ("CPU cores: " + CoreReservation::get().statusText().replace ("\n", " "));
         ctx->showTakeWindow = [this] (const juce::Uuid& id) { openTakeWindow (id); };
         ctx->showMixer = [this] (const juce::Uuid& id) { openMixer (id); };

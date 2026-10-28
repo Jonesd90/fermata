@@ -33,7 +33,8 @@ public:
                        "the other programs too - on the remaining cores. That stops ordinary programs from taking the processor away in the middle of a take.\n\n"
                        "It cannot stop Windows' own driver work (DPCs and interrupts from the network, USB, graphics or Wi-Fi) on a core that the driver has chosen for it. "
                        "So pick the QUIETEST cores: 'Find the quietest cores' measures how much interrupt work each core is doing for three seconds and ticks the best ones. "
-                       "Also close the programs you do not need, and switch off Wi-Fi and Bluetooth during a recording on a laptop.", juce::dontSendNotification);
+                       "Also close the programs you do not need, and switch off Wi-Fi and Bluetooth during a recording on a laptop.\n\n"
+                       "On a CPU with big and small cores (Intel Core Ultra, 12th generation and later) at most half of the big cores are kept for the audio, whatever is ticked: the rest of the PC needs them.", juce::dontSendNotification);
         intro.setFont (juce::FontOptions (12.5f)); intro.setColour (juce::Label::textColourId, theme::dimText); intro.setJustificationType (juce::Justification::topLeft);
         addAndMakeVisible (intro);
 
@@ -43,7 +44,8 @@ public:
         othersBox.setButtonText ("Also ask other programs to stay off these cores (like Process Lasso)");
         othersBox.setToggleState (cur.keepOthersOff, juce::dontSendNotification);
         othersBox.setTooltip ("Every few seconds Fermata gives the programs that have no core choice of their own (only those, and only ones it is allowed to change) the other cores to run on. "
-                              "They are set free again when you untick this or close Fermata. If Fermata ever crashes, restart Fermata and close it again, or restart those programs.");
+                              "They are set free again when you untick this or close Fermata - and, if Fermata crashed or was ended from the Task Manager, the next time Fermata starts. "
+                              "Best left off on a laptop: its few fast cores are needed by everything else.");
         for (auto* b : { static_cast<juce::Button*> (&enableBox), static_cast<juce::Button*> (&othersBox) }) { b->onClick = [this] { commit(); }; addAndMakeVisible (b); }
 
         for (auto& c : cr.cores())

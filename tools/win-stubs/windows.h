@@ -35,6 +35,19 @@ HANDLE OpenProcess (DWORD, BOOL, DWORD); HANDLE OpenThread (DWORD, BOOL, DWORD);
 BOOL SetThreadPriority (HANDLE, int);
 HANDLE CreateToolhelp32Snapshot (DWORD, DWORD); BOOL Process32FirstW (HANDLE, PROCESSENTRY32W*); BOOL Process32NextW (HANDLE, PROCESSENTRY32W*);
 DWORD GetActiveProcessorCount (WORD);
+// processor times, power and priority (3.13.0)
+struct FILETIME { DWORD dwLowDateTime, dwHighDateTime; };
+typedef FILETIME* LPFILETIME;
+BOOL GetSystemTimes (LPFILETIME, LPFILETIME, LPFILETIME);
+BOOL GetProcessTimes (HANDLE, LPFILETIME, LPFILETIME, LPFILETIME, LPFILETIME);
+BOOL GetThreadTimes (HANDLE, LPFILETIME, LPFILETIME, LPFILETIME, LPFILETIME);
+DWORD GetCurrentThreadId();
+#define THREAD_QUERY_LIMITED_INFORMATION 0x0800
+struct SYSTEM_POWER_STATUS { BYTE ACLineStatus, BatteryFlag, BatteryLifePercent, SystemStatusFlag; DWORD BatteryLifeTime, BatteryFullLifeTime; };
+typedef SYSTEM_POWER_STATUS* LPSYSTEM_POWER_STATUS;
+BOOL GetSystemPowerStatus (LPSYSTEM_POWER_STATUS);
+#define ABOVE_NORMAL_PRIORITY_CLASS 0x00008000
+BOOL SetPriorityClass (HANDLE, DWORD);
 // file API (src/core/FileSync.h)
 typedef void* LPSECURITY_ATTRIBUTES;
 #define GENERIC_WRITE 0x40000000

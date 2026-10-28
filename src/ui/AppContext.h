@@ -425,6 +425,7 @@ public:
     void noteTransport() noexcept { lastTransportMs = juce::Time::getMillisecondCounter(); }
     juce::uint32 lastTransportMs = 0;
     double lastPlayStartMs = 0.0;                     // how long the last Play took on the message thread (for the log)
+    SystemLoad::Snapshot minuteSys;                    // the PC's processor times at the start of the timing line's minute (3.13.0)
     std::unique_ptr<StallWatch> stallWatch;           // logs every moment the message thread is held up (see StallWatch)
     bool skipFinalSave = false;                       // "Quit without saving": the last save when closing is left out
     void restoreLastProject();

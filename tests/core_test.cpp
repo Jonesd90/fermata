@@ -4194,7 +4194,7 @@ int main()
         CHECK (pickQuietCores (cores, load, 2) == V ({ 2, 3 }));
         CHECK (pickQuietCores (cores, load, 9).size() == 3);                                                            // never every core
         for (auto& c : cores) c.efficiency = c.number < 2 ? 0 : 1;                                                       // cores 0 and 1 are the slow ones of a hybrid CPU
-        CHECK (pickQuietCores (cores, std::vector<double> (8, 0.0), 2) == V ({ 2, 3 }));
+        CHECK (pickQuietCores (cores, std::vector<double> (8, 0.0), 2) == V ({ 3 }));                                 // (3.13.0: only half of the two big cores - the other is left to the PC)
         auto& cr = CoreReservation::get();                                                                              // (not Windows here: nothing happens, nothing breaks)
         cr.configure (s); cr.audioThreadCheck(); cr.registerAudioThread (juce::Thread::getCurrentThreadId()); cr.unregisterAudioThread (juce::Thread::getCurrentThreadId());
         CHECK (! cr.supported() && ! cr.active() && cr.statusText().isNotEmpty() && cr.measureInterruptLoad (200).empty());
@@ -10972,6 +10972,48 @@ int main()
         const double yAll = yOf ("ALL"), yRuler = yOf ("10"), yTake = yOf ("Take 1"), yKey = yOf ("Takes per bar:");
         CHECK (yAll > 0.0 && yRuler > 0.0 && yTake > 0.0 && yKey > 0.0);
         CHECK (yAll > yRuler && yRuler > yTake && yTake > yKey);                 // top to bottom: ALL, the bar numbers, the takes, the key
+    }
+    SECTION ("3.13.0 a hybrid CPU's big cores: at most half of them are kept for the audio");
+    {
+        auto V = [] (std::initializer_list<int> l) { return std::vector<int> (l); };
+        // a laptop Core Ultra 5: 2 big cores with hyper-threading (logical 0-3), 10 small ones (logical 4-13)
+        std::vector<CpuCore> cores;
+        for (int i = 0; i < 12; ++i)
+        {
+            CpuCore c; c.number = i; c.efficiency = i < 2 ? 1 : 0;
+            if (i < 2) c.logical = { 2 * i, 2 * i + 1 }; else c.logical = { i + 2 };
+            cores.push_back (c);
+        }
+        CHECK (isHybridCpu (cores) && maxFastCoresForAudio (cores) == 1);
+        // what this laptop had ticked: both big cores and a small one - only one big core stays with the audio now
+        CoreReservationSettings s; s.enabled = true; s.keepOthersOff = true; s.reserved = { 0, 1, 9 };
+        auto plan = makeCorePlan (cores, s);
+        CHECK (plan.valid && plan.audioCores == V ({ 1, 9 }) && plan.audioLogical == V ({ 2, 3, 11 }));
+        CHECK (std::find (plan.generalCores.begin(), plan.generalCores.end(), 0) != plan.generalCores.end() && plan.warning.contains ("core 0"));
+        // the older plan (to set free the programs an older version fenced) still takes both
+        auto old = makeCorePlan (cores, s, false);
+        CHECK (old.valid && old.audioCores == V ({ 0, 1, 9 }) && old.warning.isEmpty());
+        // the quietest-cores button picks one big core, never a small one
+        CHECK (pickQuietCores (cores, std::vector<double> (14, 0.0), 3) == V ({ 1 }));
+        // a hybrid CPU with a single big core: none can be kept
+        auto one = cores; one[0].efficiency = 0;
+        CHECK (maxFastCoresForAudio (one) == 0 && pickQuietCores (one, std::vector<double> (14, 0.0), 2).empty());
+        s.reserved = { 1 };
+        CHECK (! makeCorePlan (one, s).valid && makeCorePlan (one, s).problem.contains ("big"));
+        // small cores alone may still be ticked by hand
+        s.reserved = { 10, 11 }; CHECK (makeCorePlan (cores, s).valid);
+        // a desktop with 8 big and 16 small cores keeps up to 4 big ones
+        std::vector<CpuCore> desk;
+        for (int i = 0; i < 24; ++i) { CpuCore c; c.number = i; c.efficiency = i < 8 ? 1 : 0; c.logical = { i }; desk.push_back (c); }
+        CHECK (maxFastCoresForAudio (desk) == 4);
+        s.reserved = { 5, 6, 7 }; CHECK (makeCorePlan (desk, s).valid && makeCorePlan (desk, s).audioCores.size() == 3 && makeCorePlan (desk, s).warning.isEmpty());
+        // a CPU with all its cores alike is not limited
+        for (auto& c : desk) c.efficiency = 0;
+        CHECK (! isHybridCpu (desk) && maxFastCoresForAudio (desk) == 24);
+        // not Windows here: nothing to set free, no snapshot, no description, not a laptop
+        CHECK (CoreReservation::get().releaseLeftovers (s) == 0 && ! CoreReservation::isLaptop());
+        const auto a = SystemLoad::take(), b = SystemLoad::take();
+        CHECK (! a.ok && SystemLoad::describe (a, b, true).isEmpty() && SystemLoad::powerText().isEmpty());
     }
 
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
