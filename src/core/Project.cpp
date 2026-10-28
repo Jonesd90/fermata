@@ -330,6 +330,7 @@ Project::Project() { createDefaultDesign(); }
 void Project::createDefaultDesign()
 {
     inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); consonants.clear(); preampDevices.clear(); pitchPipe = PitchPipeDef(); click = ClickDef(); alignEnabled = true; alignSets.clear(); alignActive.clear();
+    sampleRate = 0.0;                                                                                 // (3.9.0: chosen for the new project by the one making it)
     windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear(); oldWindowFiles.clear();     // (nothing of the project that was open before: its missing files are not this one's)
     layouts.clear();                                                                                  // (nor its saved Display Organiser layouts)
     setInputCount (8);
@@ -1565,6 +1566,7 @@ var Project::toVar (bool withWindows) const
         }
         put (root, "consonants", cs);
     }
+    if (const double r = audioRate(); r > 0.0) put (root, "sampleRate", r);      // (3.9.0; a project from before it gets the rate of its takes written once it is saved)
     return root;
 }
 
@@ -1635,6 +1637,7 @@ bool Project::fromVar (const var& root)
         return false;
 
     inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); consonants.clear();
+    sampleRate = juce::jmax (0.0, (double) root.getProperty ("sampleRate", 0.0));
     filesMoved = false;
     name = root.getProperty ("name", "Untitled").toString();
     windowBounds.clear();
@@ -2984,6 +2987,7 @@ struct QuickAudioCheck
 
 double Project::audioRate() const
 {
+    if (sampleRate > 0.0) return sampleRate;                   // (3.9.0: chosen with the project)
     std::vector<std::pair<long long, int>> votes;              // rate (Hz), how many takes / edits are at it
     auto vote = [&votes] (double r)
     {

@@ -1554,11 +1554,16 @@ juce::String AudioEngine::startRecording (TakeWindowDef& window)
 {
     if (isRecording()) return "Already recording";
     if (zeros.empty()) return "The audio device has not been started";
-    if (converting.load())                         // 3.8.0: a take is always recorded at the device's own rate, and the engine is at the project's
     {
         auto khz = [] (double r) { return juce::String (r / 1000.0, std::fmod (r, 1000.0) == 0.0 ? 0 : 1) + " kHz"; };
-        return "This project is " + khz (sampleRate) + " but the audio device runs at " + khz (deviceRateNow.load()) + ". Fermata converts the sound so that you "
-               "can listen, but it cannot record like this. To record into this project, set the device to " + khz (sampleRate) + " (Audio settings).";
+        if (converting.load())                     // 3.8.0: a take is always recorded at the device's own rate, and the engine is at the project's
+            return "This project is " + khz (sampleRate) + " but the audio device runs at " + khz (deviceRateNow.load()) + ". Fermata converts the sound so that you "
+                   "can listen, but it cannot record like this. To record into this project, set the device to " + khz (sampleRate) + " (Audio settings).";
+        // 3.9.0: the project has a rate of its own, and the device runs at another that the converter cannot bridge - a take at the device's rate would
+        // not belong in this project
+        if (const double pr = projectRate.load(); pr > 0.0 && std::abs (pr - sampleRate) > 0.5)
+            return "This project is " + khz (pr) + " but the audio device runs at " + khz (sampleRate) + ". To record into this project, set the device to "
+                   + khz (pr) + " (Audio settings).";
     }
 
     std::vector<const TrackDef*> armed;

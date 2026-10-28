@@ -68,6 +68,10 @@ inline const std::vector<Line>& lines()
         { "Take window: a take's bars and notes box", "Tab", "On to the next box (IN, OUT, Notes, the buttons)." },
         { "Take window: a take's bars and notes box", "Ctrl+Enter", "In Notes: save (Enter there starts a new line)." },
         { "Take window: a take's bars and notes box", "Esc", "Close without saving." },
+        // ---------------------------------------------------------------------------------------------------- the project's sample rate (3.9.0)
+        { "Project sample rate box", "", "Comes up when a project is made (after its folder and name), before the first take of a project that has no rate yet, and from Project > Project sample rate." },
+        { "Project sample rate box", "Enter", "OK, once a rate is picked (nothing is picked to begin with)." },
+        { "Project sample rate box", "Esc", "Cancel: no project is made / nothing changes." },
         // ---------------------------------------------------------------------------------------------------- the take chart (3.8.0)
         { "Take chart", "", "Drops down from BARS at the left of a take window's bar strip (click it), or Shift+B. No take / Only 1 / 2 takes / 3+ light those bars up and list them." },
         { "Take chart", "BARS / Shift+B / Esc", "Put it away (also its Close button)." },

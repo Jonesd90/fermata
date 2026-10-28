@@ -367,8 +367,17 @@ public:
     /** Asks ANEMAN (in the background) which mic inputs are patched to which ASIO inputs, and follows it if that differs from what is set up. Quietly does nothing if ANEMAN is not there. */
     void refreshPreampsFromAneman();
     void rebuildPreampDriver();
-    bool newProject (const juce::File& projectFile);
+    /** rate: the project's sample rate (3.9.0: chosen in ProjectRateChooser; 0 = not chosen yet - it is asked for before the first recording). */
+    bool newProject (const juce::File& projectFile, double rate = 0.0);
     bool openProject (const juce::File& projectFile);
+    /** 3.9.0: puts up the sample-rate chooser for the open project (why: the sentence above the buttons) and, when a rate is picked, makes it the project's
+        (only while it has no takes), the engine follows and the device is offered the rate (offerDeviceRate). */
+    void askProjectRate (const juce::String& why, bool fromMenu = false);
+    /** 3.9.0: the project's rate differs from the audio device's: asks whether to switch the device to it (when the device offers that rate), or says once
+        per session that this device cannot run at it (the project then plays through the converter and cannot record). Nothing when they match. */
+    void offerDeviceRate();
+    /** Switches the audio device to this rate (Audio settings' setup, saved). "" or what went wrong (said to the person as well). */
+    juce::String switchDeviceRate (double rate);
     /** A project file's backup (Name.fermata.bak: the project as it was saved the time before) put back as the project file and opened. The file it
         replaces is kept beside it as "Name (replaced <date> <time>).fermata.bak"; the take and edit windows' own files are left as they are. */
     bool openBackupProject (const juce::File& bakFile);
@@ -403,6 +412,7 @@ public:
     std::function<void()> showRecordMonitor;          // (set by the application) opens the Recording monitor window
     int quietSeconds = 0;                             // how many seconds in a row the device has been "running" but delivered no block (a hung driver: see tickLoad)
     bool wasConverting = false;                       // (matchEngineRate: the converter was on at the last look)
+    juce::StringArray rateToldCannot;                 // (offerDeviceRate: "device|rate" pairs already told that the device cannot run at the rate, this session)
     /** quick: an automatic save - a snapshot here, written on the saver's thread (see BackgroundSaver). Save from the menu, closing, Save and
         quit: a full one, written there and then (after the saver has finished what it was given).
         True when the project was written (or handed to the saver), or there was nothing to write (no project file yet). False when the save

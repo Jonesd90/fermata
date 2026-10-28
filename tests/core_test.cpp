@@ -10782,6 +10782,48 @@ int main()
         Project back0; CHECK (back0.fromVar (q.toVar()) && back0.takeWindows.front()->pieceBars == 0);
     }
 
+    SECTION ("3.9.0 the project's own sample rate: chosen, saved, it wins over the takes', an old project goes by its takes, and Record refuses another rate");
+    {
+        CHECK (Project::kProjectRates[0] == 44100.0 && Project::kProjectRates[1] == 48000.0 && Project::kProjectRates[2] == 96000.0 && Project::kProjectRates[3] == 192000.0);
+        Project q; q.projectFile = tmp.getChildFile ("Rate.fermata");
+        CHECK (q.sampleRate == 0.0 && q.audioRate() == 0.0 && ! q.hasTakes());
+        q.sampleRate = 96000.0;
+        CHECK (q.audioRate() == 96000.0);
+        { Project back; CHECK (back.fromVar (q.toVar()) && back.sampleRate == 96000.0 && back.audioRate() == 96000.0); }
+        // the chosen rate wins over what the takes are at (a take at another rate is refused when played, as before)
+        TakeGroup g48; g48.sampleRate = 48000.0; q.takeWindows.front()->groups.push_back (g48);
+        CHECK (q.hasTakes() && q.audioRate() == 96000.0);
+        // a project from before 3.9.0 (no rate saved) goes by its takes, and the rate is written when it is saved
+        auto v = q.toVar();
+        if (auto* d = v.getDynamicObject()) d->removeProperty ("sampleRate");
+        {
+            Project old; CHECK (old.fromVar (v) && old.sampleRate == 0.0 && old.audioRate() == 48000.0);
+            const auto again = old.toVar();
+            CHECK ((double) again["sampleRate"] == 48000.0);
+        }
+        // nothing at all: 0 (the program asks)
+        { Project empty; CHECK (empty.audioRate() == 0.0 && ! empty.toVar().hasProperty ("sampleRate")); }
+        // a new design forgets the rate (the new project gets the one chosen for it)
+        q.createDefaultDesign();
+        CHECK (q.sampleRate == 0.0);
+
+        // Record refuses when the engine runs at another rate than the project's and nothing converts (here: no device at all, the engine at 48 kHz)
+        Project r; r.projectFile = tmp.getChildFile ("RateRec.fermata");
+        r.setInputCount (2); r.setOutputCount (2); r.tracks.clear();
+        r.addTrack ("A", TrackFormat::Mono, 0);
+        AudioEngine e (r);
+        e.prepare (48000.0, 256);
+        e.setProjectRate (96000.0);
+        {
+            const auto err = e.startRecording (*r.takeWindows.front());
+            CHECK (err.contains ("This project is 96 kHz") && err.contains ("48 kHz") && ! e.isRecording());
+        }
+        e.setProjectRate (48000.0);
+        CHECK (e.startRecording (*r.takeWindows.front()) == "No tracks are record-armed");     // (the rate is not what stops it now)
+        e.setProjectRate (0.0);
+        CHECK (e.startRecording (*r.takeWindows.front()) == "No tracks are record-armed");
+    }
+
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;
 }

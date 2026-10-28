@@ -6,6 +6,14 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.9.0
+**Every project has its own sample rate, chosen on purpose.**
+- **New project asks for the rate.** After you choose the project's folder and name, a box asks for its sample rate: **44.1, 48, 96 or 192 kHz**. Nothing is picked to begin with and the Create button stays greyed until you click one, so a project is never made at 48 kHz by accident when it was meant to be 96 kHz. Cancel makes no project.
+- **The project keeps it.** The rate is saved with the project. The engine runs at it from the first second (behind the 3.8.0 rate converter when the audio device runs at another rate), and **every take is recorded at it**: Record is refused while the device runs at another rate, with a message saying which.
+- **The device is offered the project's rate.** When a project is made or opened and the audio device runs at another rate, Fermata asks: "Switch the device to 96 kHz?" - Switch, or leave it (the project then plays through the converter and cannot record until the device runs at the project's rate). A device that cannot run at that rate at all (a laptop's own sound at 48 kHz only) is said so, once per session, and the project plays through the converter.
+- **Project > Project sample rate** shows the rate and changes it while the project has no takes (once it has takes, the rate is fixed).
+- **Projects from before 3.9.0** take their rate from their takes and keep it from the next save; one with no takes asks for its rate when it opens (Later is allowed) and again before its first take.
+
 ## 3.8.0
 **A 96 kHz project plays on a 48 kHz device (a laptop's own sound), and the take chart.**
 - **Live sample-rate conversion.** When the audio device runs at another rate than the project's takes (a laptop's Realtek sound at 48 kHz, a 96 kHz project), Fermata no longer refuses to play. Everything runs at the project's rate - playback, the mixers, the plug-ins, automation, LTC, the click and the pitch pipe - and what goes to the device is converted to its rate on the way out (and the device's inputs to the project's rate on the way in, so meters, monitoring and the talkback mic still work). It is switched on by itself whenever the two rates differ, and off again when they match. The conversion is clean (everything 120 dB down, flat to 20.6 kHz on a 48 kHz device) and adds about 1.2 ms. It is a whole-device converter: one device has one clock, so every output is converted, never only some.

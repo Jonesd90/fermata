@@ -5,6 +5,7 @@
 #include "TalkbackGlow.h"
 #include "BusyWindow.h"
 #include "TimeReadout.h"
+#include "ProjectRateDialog.h"
 
 namespace td
 {
@@ -439,6 +440,98 @@ void AppContext::matchEngineRate()
         juce::Logger::writeToLog (conv ? "Rate converter on: " + converterNote() : juce::String ("Rate converter off: the engine runs at the device's rate"));
         if (refreshTitles) refreshTitles();
     }
+}
+
+void AppContext::askProjectRate (const juce::String& why, bool fromMenu)
+{
+    if (! hasProject()) return;
+    if (project.hasTakes())
+    {
+        const double r = project.audioRate();
+        showError ("Project sample rate", "This project is " + kHzText (r) + " and already has takes, so its rate stays as it is. (To work at another rate, convert "
+                                          "the audio into a new project made at that rate.)");
+        return;
+    }
+    const double now = project.sampleRate;
+    chooseProjectRate (*this, "Sample rate for \"" + project.name + "\"", why, fromMenu ? now : 0.0, "Use this rate", true,
+                       [this] (double rate)
+    {
+        if (rate <= 0.0 || ! hasProject() || project.hasTakes()) return;
+        const bool changed = std::abs (rate - project.sampleRate) > 0.5;
+        project.sampleRate = rate;
+        if (changed)
+        {
+            project.markDirty();
+            saveNow (true);
+            juce::Logger::writeToLog ("Project sample rate set to " + juce::String (rate, 0) + " Hz");
+        }
+        matchEngineRate();
+        offerDeviceRate();
+        if (refreshTitles) refreshTitles();
+    });
+}
+
+void AppContext::offerDeviceRate()
+{
+    const double want = project.audioRate();
+    auto* dev = devices.getCurrentAudioDevice();
+    if (want <= 0.0 || dev == nullptr || ! hasProject() || engine.isRecording()) return;
+    const double have = dev->getCurrentSampleRate();
+    if (std::abs (want - have) < 0.5) return;
+    bool offered = false;
+    juce::StringArray rates;
+    for (auto r : dev->getAvailableSampleRates()) { rates.add (kHzText (r)); offered = offered || std::abs (r - want) < 0.5; }
+    const auto devName = dev->getName();
+    if (! offered)
+    {   // (a laptop's own sound at 48 kHz only: said once per session for this device and rate; the project plays through the converter)
+        const auto key = devName + "|" + juce::String (want, 0);
+        if (rateToldCannot.contains (key)) return;
+        rateToldCannot.add (key);
+        juce::Logger::writeToLog ("Sample rate: " + devName + " cannot run at " + juce::String (want, 0) + " Hz (it offers " + rates.joinIntoString (", ") + ")");
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon).withTitle ("Sample rate")
+                                          .withMessage (devName + " cannot run at " + kHzText (want) + " (it offers " + rates.joinIntoString (", ") + ").\n\nThis "
+                                                        + kHzText (want) + " project plays through Fermata's rate converter - what you hear is converted to "
+                                                        + kHzText (have) + " - and it cannot record on this device. To record, use an audio device that runs at "
+                                                        + kHzText (want) + ".")
+                                          .withButton ("OK"), nullptr);
+        return;
+    }
+    const double rate = want;
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon).withTitle ("Sample rate")
+                                      .withMessage ("The audio device (" + devName + ") is running at " + kHzText (have) + ", and this project is " + kHzText (want)
+                                                    + ".\n\nSwitch the device to " + kHzText (want) + "? (If not, the project plays through the rate converter and "
+                                                    "cannot record until the device runs at " + kHzText (want) + ".)")
+                                      .withButton ("Switch to " + kHzText (want)).withButton ("Leave it at " + kHzText (have)),
+                                  [this, rate] (int r)
+    {
+        if (r == 1) switchDeviceRate (rate);
+        else juce::Logger::writeToLog ("Sample rate: the device was left at its own rate (the project plays through the converter)");
+    });
+}
+
+juce::String AppContext::switchDeviceRate (double rate)
+{
+    if (engine.isRecording()) return "Stop recording first.";
+    stopPlayback();
+    auto setup = devices.getAudioDeviceSetup();
+    setup.sampleRate = rate;
+    auto err = devices.setAudioDeviceSetup (setup, true);
+    auto* dev = devices.getCurrentAudioDevice();
+    if (err.isEmpty() && dev == nullptr) err = "the device did not start again";
+    if (err.isEmpty() && std::abs (dev->getCurrentSampleRate() - rate) > 0.5) err = "the driver stayed at " + kHzText (dev->getCurrentSampleRate());
+    if (err.isNotEmpty())
+    {
+        juce::Logger::writeToLog ("Sample rate: could not switch the device to " + juce::String (rate, 0) + " Hz: " + err);
+        showError ("Sample rate", "The audio device could not be switched to " + kHzText (rate) + ": " + err + ".\n\nThe project plays through the rate converter. "
+                                  "To record, set the device to " + kHzText (rate) + " in its own control panel (MADPanel, say) or in Audio settings.");
+        matchEngineRate();
+        return err;
+    }
+    juce::Logger::writeToLog ("Sample rate: the audio device now runs at " + juce::String (rate, 0) + " Hz, the project's rate");
+    applyAudioSettings();                                                   // (the channels follow, and the device's setup is remembered)
+    matchEngineRate();
+    setNotice ("The audio device now runs at " + kHzText (rate) + ", the project's rate.");
+    return {};
 }
 
 void AppContext::timerCallback()
@@ -912,7 +1005,7 @@ void AppContext::refreshPreampsFromAneman()
     });
 }
 
-bool AppContext::newProject (const juce::File& file)
+bool AppContext::newProject (const juce::File& file, double rate)
 {
     if (engine.isRecording()) { showError ("Recording", "Stop recording first."); return false; }
     stopPlayback();
@@ -926,11 +1019,14 @@ bool AppContext::newProject (const juce::File& file)
     project.addDefaultMainBus();                     // an Ext Bus "Main" on outputs 1-2, so a new project is heard at once
     project.name = file.getFileNameWithoutExtension();
     project.projectFile = file;
+    project.sampleRate = rate > 0.0 ? rate : 0.0;    // (3.9.0: chosen on purpose in the sample-rate box; 0 = asked for before the first take)
     juce::String err;
     if (! project.save (err)) { showError ("Could not create project", err); return false; }
     project.createFolders();                         // Recorded Media, Bounced Media, Bounced Media/Mastered Audio
     afterProjectReplaced();
     props.getUserSettings()->setValue ("lastProject", file.getFullPathName());
+    juce::Logger::writeToLog ("New project " + file.getFullPathName() + (rate > 0.0 ? " at " + juce::String (rate, 0) + " Hz" : juce::String (", sample rate not chosen yet")));
+    juce::MessageManager::callAsync ([this] { offerDeviceRate(); });      // (the device at another rate: switch it?)
     return true;
 }
 
@@ -1052,6 +1148,14 @@ bool AppContext::openProject (const juce::File& file)
                                   + " ms (" + juce::String ((int) project.takeWindows.size()) + " take windows, " + juce::String ((int) takes) + " takes, " + juce::String ((int) project.edits.size()) + " edits)");
     }
     props.getUserSettings()->setValue ("lastProject", file.getFullPathName());
+    // 3.9.0: a project from before 3.9.0 with no takes has no rate yet: asked for (it can wait: Record asks again). Otherwise the device is offered the
+    // project's rate when it runs at another.
+    juce::MessageManager::callAsync ([this]
+    {
+        if (! hasProject()) return;
+        if (project.audioRate() <= 0.0) askProjectRate ("This project has no sample rate yet. Choose the rate its takes will be recorded at.");
+        else offerDeviceRate();
+    });
     return true;
 }
 
@@ -1304,6 +1408,11 @@ void AppContext::toggleRecord (const juce::Uuid& takeWindowId)
         return;
     }
     if (! hasProject()) { setNotice ("First choose where the project is saved (New project or Open project)."); return; }
+    if (project.audioRate() <= 0.0)                 // 3.9.0: the rate is chosen on purpose before the first take, never taken from whatever the device runs at
+    {
+        askProjectRate ("Choose this project's sample rate before the first take: every take in it is recorded at this rate.");
+        return;
+    }
     stopPlayback();
     auto* w = project.findTakeWindow (takeWindowId);
     if (w == nullptr) { showError ("Record", "Choose a take window to record into."); return; }

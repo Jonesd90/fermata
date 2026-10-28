@@ -7,6 +7,7 @@
 #include "FixTools.h"
 #include "PreampSetup.h"
 #include "TakeSheetExport.h"
+#include "ProjectRateDialog.h"
 #include "ThemeSwitch.h"
 
 namespace td
@@ -985,6 +986,11 @@ void MainComponent::showProjectMenu()
     m.addSeparator();
     m.addItem (4, "Show project folder");
     m.addItem (5, "Rename project...");
+    {
+        const double pr = app.project.audioRate();
+        m.addItem (18, "Project sample rate" + (pr > 0.0 ? ": " + juce::String (pr / 1000.0, std::fmod (pr, 1000.0) == 0.0 ? 0 : 1) + " kHz" : juce::String (" (not chosen yet)"))
+                       + (app.project.hasTakes() ? juce::String() : juce::String ("...")), app.hasProject());
+    }
     m.addSeparator();
     const auto workKey = app.lastWorkWindowKey ? app.lastWorkWindowKey() : juce::String();
     m.addItem (9, "Import AAF as edit windows...");
@@ -1017,6 +1023,7 @@ void MainComponent::showProjectMenu()
         if (r == 14) { if (app.showSurfacePanel) app.showSurfacePanel(); return; }
         if (r == 16) { if (app.showHotKeys) app.showHotKeys(); return; }
         if (r == 17) { if (app.showRecordMonitor) app.showRecordMonitor(); return; }
+        if (r == 18) { app.askProjectRate ("Choose the sample rate this project records and plays at (it can be changed only while the project has no takes).", true); return; }
         if (r == 15) { exportTakeSheet (app, juce::Uuid::null()); return; }
         if (r == 13)
         {
@@ -1127,7 +1134,15 @@ void MainComponent::newProjectDialog()
         if (f == juce::File()) return;
         const auto name = f.getFileNameWithoutExtension();
         auto folder = f.getParentDirectory().getChildFile (name);
-        app.newProject (folder.getChildFile (name + ".fermata"));
+        // 3.9.0: the sample rate is chosen on purpose, nothing picked to begin with (a 48 kHz project made by accident instead of a 96 kHz one)
+        juce::Component::SafePointer<MainComponent> safe (this);
+        chooseProjectRate (app, "Sample rate for \"" + name + "\"", "Choose the sample rate this project records and plays at. Every take in it is recorded at this "
+                           "rate; it cannot be changed once the project has takes.", 0.0, "Create the project", true,
+                           [safe, folder, name] (double rate)
+        {
+            if (safe == nullptr || rate <= 0.0) return;                      // (Cancel: no project is made)
+            safe->app.newProject (folder.getChildFile (name + ".fermata"), rate);
+        }, this);
     });
 }
 

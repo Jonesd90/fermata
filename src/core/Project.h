@@ -237,6 +237,14 @@ public:
     std::vector<ConsonantDef> consonants;
     const ConsonantDef* findConsonant (const juce::Uuid& id) const { for (auto& c : consonants) if (c.id == id) return &c; return nullptr; }
     juce::File consonantsFolder() const { return projectFolder().getChildFile ("Consonants"); }
+    /** The project's sample rate (3.9.0): chosen when the project is made (44.1, 48, 96 or 192 kHz: see kProjectRates), saved with it. The engine
+        runs at it (behind the live converter when the audio device runs at another) and every take is recorded at it - Record is refused while the
+        engine is at another rate. 0 = not chosen: a project from before 3.9.0, whose rate audioRate() then takes from its takes (and saves); one with no
+        takes is asked for it. Changed only while the project has no takes. Saved in the project file; not an undo step. */
+    double sampleRate = 0.0;
+    static constexpr double kProjectRates[4] = { 44100.0, 48000.0, 96000.0, 192000.0 };
+    /** At least one take in any take window (the rate can then no longer be changed). */
+    bool hasTakes() const { for (auto& w : takeWindows) if (! w->groups.empty()) return true; return false; }
     static juce::var roomToneToVar (const RoomTone&);
     static RoomTone roomToneFromVar (const juce::var&);
     std::vector<std::unique_ptr<MixerState>>   retiredMixers;   // removed mixers (and those of a project that was open before) stay alive until the audio thread has certainly left them: see freeRetiredMixers
@@ -463,8 +471,9 @@ public:
         the files of takes found whole at the last open (verified) are not asked about - unless the project has moved since - so a big project is not
         slowed down: a file that went missing since then is found out when it is played, or by missingAudioCount() in full. */
     int missingAudioCount (bool quick = false) const;
-    /** The sample rate of the project's audio: the rate most of its takes and edits are at (a tie: the first found); 0 while it has none (3.8.0: the engine
-        runs at this rate, behind a live converter when the audio device runs at another - see AudioEngine::setProjectRate). Quick: no disk. */
+    /** The project's rate: the one chosen for it (sampleRate, 3.9.0), or for a project from before that, the rate most of its takes and edits are at (a
+        tie: the first found); 0 when neither is known (3.8.0: the engine runs at this rate, behind a live converter when the audio device runs at another
+        - see AudioEngine::setProjectRate). Quick: no disk. */
     double audioRate() const;
     /** The missing audio files, each once, with where it is used ("Takes - Mass in B minor, 003 - Kyrie, ORTF L"). With 'quick', as missingAudioCount (true):
         the files of verified takes are not asked about (opening a big project with one file missing used to ask about every file of it again). */
