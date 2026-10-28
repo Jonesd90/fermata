@@ -73,7 +73,7 @@ inline const std::vector<Line>& lines()
         { "Project sample rate box", "Enter", "OK, once a rate is picked (nothing is picked to begin with)." },
         { "Project sample rate box", "Esc", "Cancel: no project is made / nothing changes." },
         // ---------------------------------------------------------------------------------------------------- the take chart (3.8.0)
-        { "Take chart", "", "Drops down from BARS at the left of a take window's bar strip (click it), or Shift+B. No take / Only 1 / 2 takes / 3+ light those bars up and list them." },
+        { "Take chart", "", "Drops down from BARS at the left of a take window's bar strip (click it), or Shift+B. No take / Only 1 / 2 takes / 3 takes / 4+ light those bars up and list them (crimson, bright red, red-orange, yellow, light to dark green)." },
         { "Take chart", "BARS / Shift+B / Esc", "Put it away (also its Close button)." },
         { "Take chart", "click", "A take's line: that bar in that take. The ALL line, or a line of the list: that bar (the take window goes there)." },
         { "Take chart", "drag", "Its bottom-right corner: bigger or smaller (it keeps the size)." },

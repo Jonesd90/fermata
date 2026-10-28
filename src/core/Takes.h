@@ -225,6 +225,24 @@ inline std::vector<Run> runs (const TakeWindowDef& w)
     }
     return out;
 }
+/** The colour of a bar that n takes cover (3.11.0), on the take chart, the bar strip and the printed sheet alike: no take crimson, one take bright red,
+    two red-orange, three a darkish yellow, then green from four takes (very light) getting darker with every take up to ten (dark green), and the same
+    dark green beyond. Red-green-blue, 0 - 255. */
+struct Rgb { int r = 0, g = 0, b = 0; };
+inline Rgb colourFor (int takes)
+{
+    if (takes <= 0) return { 165, 14, 42 };                  // crimson
+    if (takes == 1) return { 255, 45, 35 };                  // bright red
+    if (takes == 2) return { 255, 112, 28 };                 // red-orange
+    if (takes == 3) return { 204, 158, 18 };                 // darkish yellow
+    const float t = juce::jlimit (0.0f, 1.0f, (float) (takes - 4) / 6.0f);       // 4 takes: 0 (very light) ... 10 or more: 1 (dark)
+    const Rgb light { 200, 240, 194 }, dark { 18, 98, 40 };
+    auto mix = [t] (int a, int b) { return (int) std::lround ((float) a + (float) (b - a) * t); };
+    return { mix (light.r, dark.r), mix (light.g, dark.g), mix (light.b, dark.b) };
+}
+/** True when text on that colour should be dark (the light greens). */
+inline bool isLight (const Rgb& c) { return 0.299 * c.r + 0.587 * c.g + 0.114 * c.b > 150.0; }
+
 /** "Bars 51 - 58: only take 3", "Bar 12: no take", "Bars 1 - 20: 2 takes (1, 4)". */
 inline juce::String describe (const Run& r)
 {

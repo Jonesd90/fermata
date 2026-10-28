@@ -4,10 +4,25 @@
 
 namespace td
 {
+/** The no-take pinstripe (3.12.0): thin diagonal lines across a crimson area, like the stripe in a suit, so a bar with no take never looks like the
+    bright red of a bar with one. The lines are placed by the component's own coordinates, so neighbouring cells and runs join up into one pattern. */
+inline void drawNoTakeStripes (juce::Graphics& g, juce::Rectangle<float> r, juce::Colour line = juce::Colours::white.withAlpha (0.55f),
+                               float spacing = 7.0f, float thickness = 0.8f)
+{
+    if (r.isEmpty()) return;
+    juce::Graphics::ScopedSaveState keep (g);
+    juce::Path clip; clip.addRectangle (r);
+    g.reduceClipRegion (clip);
+    g.setColour (line);
+    const float h = r.getHeight();
+    for (float x = std::floor ((r.getX() - h) / spacing) * spacing; x < r.getRight(); x += spacing)
+        g.drawLine (x, r.getBottom(), x + h, r.getY(), thickness);
+}
+
 /** The bar strip (3.4.0, always there since 3.8.0): a strip along the piece's bars, under the take window's head.
     Until the piece's bars are entered it is red: right-click it and type how many bars the piece has. Then it runs from bar 1 to the piece's last bar
-    (or further, when a take's bars go beyond it) and shows how many takes cover each bar - dark where no take has it, brighter the more takes do,
-    duds not counted - so the producer sees at a glance which passages still need another take. It is drawn from the bars each take says it starts
+    (or further, when a take's bars go beyond it) and shows how many takes cover each bar in the coverage colours (3.11.0: crimson no take - with a thin
+    diagonal pinstripe since 3.12.0 - bright red one, red-orange two, darkish yellow three, green from four - light - to ten - dark), duds not counted - so the producer sees at a glance which passages still need another take. It is drawn from the bars each take says it starts
     and ends in (the bars and notes box: Ctrl+B, or double-click a take); a take with no bars entered is not on it. The playhead's take is outlined,
     the bar being searched for (the magnifying glass) marked. Click a bar: the takes that have it are framed and the playhead goes to it (where it is
     in the take is estimated from the take's bar range: evenly spread). The BARS label at its left end is a button: it drops the take chart down
@@ -83,10 +98,23 @@ public:
         {
             const auto r = juce::Rectangle<float> (area.getX() + (float) (b - first) * cell, area.getY(), cell, area.getHeight());
             const int c = b - 1 < (int) count.size() ? count[(size_t) (b - 1)] : 0;
-            // dark = nobody has it; the teal of the bar search, deeper the more takes have it
-            const auto fill = c == 0 ? theme::field : juce::Colour (0xff19a08a).withAlpha (juce::jlimit (0.35f, 1.0f, 0.35f + 0.25f * (float) c));
-            g.setColour (fill); g.fillRect (r.reduced (cell > 4.0f ? 0.5f : 0.0f, 0.0f));
-            if (b == searchBar) { g.setColour (juce::Colours::white); g.drawRect (r.expanded (0.0f, 1.0f), 1.5f); }
+            // the coverage colours (3.11.0): crimson no take, bright red one, red-orange two, darkish yellow three, light to dark green from four
+            const auto rgb = coverage::colourFor (c);
+            g.setColour (juce::Colour ((juce::uint8) rgb.r, (juce::uint8) rgb.g, (juce::uint8) rgb.b)); g.fillRect (r.reduced (cell > 4.0f ? 0.5f : 0.0f, 0.0f));
+        }
+        // the bars with no take: the pinstripe over each run of them (3.12.0), then the searched bar's frame on top
+        for (int b = first; b <= last;)
+        {
+            const auto cnt = [&] (int bar) { return bar - 1 < (int) count.size() ? count[(size_t) (bar - 1)] : 0; };
+            if (cnt (b) > 0) { ++b; continue; }
+            int e = b; while (e + 1 <= last && cnt (e + 1) == 0) ++e;
+            drawNoTakeStripes (g, juce::Rectangle<float> (area.getX() + (float) (b - first) * cell, area.getY(), (float) (e - b + 1) * cell, area.getHeight()));
+            b = e + 1;
+        }
+        if (searchBar >= first && searchBar <= last)
+        {
+            const auto r = juce::Rectangle<float> (area.getX() + (float) (searchBar - first) * cell, area.getY(), cell, area.getHeight());
+            g.setColour (juce::Colours::white); g.drawRect (r.expanded (0.0f, 1.0f), 1.5f);
         }
         // the playhead's take: its bars outlined
         if (cur != nullptr && cur->barIn > 0)
@@ -97,12 +125,13 @@ public:
         }
         // bar numbers: every few bars, as the room allows
         const int step = cell >= 28.0f ? 1 : cell >= 14.0f ? 2 : cell >= 6.0f ? 5 : cell >= 3.0f ? 10 : cell >= 1.5f ? 20 : 50;
-        g.setColour (juce::Colours::white.withAlpha (0.85f));
         g.setFont (juce::FontOptions (9.0f, juce::Font::bold));
         for (int b = first; b <= last; ++b)
             if (b == first || b % step == 0)
             {
                 const auto r = juce::Rectangle<float> (area.getX() + (float) (b - first) * cell, area.getY(), juce::jmax (cell, 24.0f), area.getHeight());
+                const int c = b - 1 < (int) count.size() ? count[(size_t) (b - 1)] : 0;
+                g.setColour (coverage::isLight (coverage::colourFor (c)) ? juce::Colours::black.withAlpha (0.8f) : juce::Colours::white.withAlpha (0.9f));     // (dark numbers on the light greens)
                 g.drawText (juce::String (b), r.toNearestInt(), juce::Justification::centredLeft, false);
             }
         g.setColour (theme::border); g.drawRect (getLocalBounds(), 1);

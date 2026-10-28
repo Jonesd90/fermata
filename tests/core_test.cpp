@@ -11,6 +11,7 @@
 #include "../src/core/MasterExport.h"
 #include "../src/core/Resampler.h"
 #include "../src/core/RateBridge.h"
+#include <sstream>
 #include "../src/core/Ravenna.h"
 #include "../src/core/Dither.h"
 #include "../src/core/CoreReservation.h"
@@ -10822,6 +10823,155 @@ int main()
         CHECK (e.startRecording (*r.takeWindows.front()) == "No tracks are record-armed");     // (the rate is not what stops it now)
         e.setProjectRate (0.0);
         CHECK (e.startRecording (*r.takeWindows.front()) == "No tracks are record-armed");
+    }
+
+    SECTION ("3.10.0 the take chart in the take sheet: drawn after each piece's takes in the PDF, its runs of bars as a CSV, a piece with no bars says so");
+    {
+        Project q; q.projectFile = tmp.getChildFile ("Chart sheet.fermata");
+        q.addTakeWindow ("Requiem");
+        auto& w = *q.takeWindows.back();
+        const int ins[] = { 1, 21, 51, 1, 30 }, outs[] = { 50, 60, 58, 20, 40 };
+        for (int i = 0; i < 5; ++i)
+        {
+            TakeGroup g; g.id = juce::Uuid(); g.number = i + 1; g.sampleRate = 48000.0; g.lengthSamples = 48000 * 30; g.startSeconds = i * 40.0;
+            g.recordedAt = juce::Time (2026, 9, 28, 10, i, 0); g.barIn = ins[i]; g.barOut = outs[i]; g.dud = i == 4;
+            w.groups.push_back (g);
+        }
+        w.pieceBars = 100;
+        auto secs = takesheet::collect (q, w.id);
+        CHECK (secs.size() == 1);
+        if (secs.size() == 1)
+        {
+            const auto& sec = secs[0];
+            CHECK (sec.lastBar == 100 && sec.pieceBars == 100 && (int) sec.counts.size() == 100 && sec.counts[34] == 2 && sec.counts[59] == 1 && sec.counts[60] == 0);
+            CHECK (takesheet::chartSummary (sec) == "100 bars: 40 with no take, 2 with only one, 58 with two, 0 with three, 0 with four or more.");
+        }
+        const auto chart = takesheet::chartCsv (secs);
+        CHECK (chart.startsWith ("Piece,From bar,To bar,Takes,Which takes\r\n") && chart.contains ("Requiem,1,20,2,1; 4\r\n") && chart.contains ("Requiem,59,60,1,2\r\n") && chart.contains ("Requiem,61,100,0,\r\n"));
+        {
+            const auto doc = takesheet::makePdf (secs, "Brahms Requiem", "3.10.0", juce::Time::getCurrentTime());
+            const auto mb = doc.toPdf(); const std::string s2 ((const char*) mb.getData(), mb.getSize());
+            CHECK (s2.find ("(Take chart)") != std::string::npos && s2.find ("(Bars with no take or only one:)") != std::string::npos);
+            CHECK (s2.find ("(Bars 61 - 100: no take)") != std::string::npos && s2.find ("(Bars 59 - 60: only take 2)") != std::string::npos);
+            CHECK (s2.find ("(30 - 40  \\(dud\\))") != std::string::npos || s2.find ("30 - 40") != std::string::npos);
+            CHECK (doc.pageCount() == 1);
+        }
+        // every bar covered twice: the list says so
+        w.groups[2].barIn = 51; w.groups[2].barOut = 100; w.groups.back().dud = false; w.groups.back().barIn = 51; w.groups.back().barOut = 100;
+        w.groups[0].barOut = 50; w.groups[1].barIn = 1; w.groups[1].barOut = 50;
+        {
+            const auto doc = takesheet::makePdf (takesheet::collect (q, w.id), "Brahms Requiem", "3.10.0", juce::Time::getCurrentTime());
+            const auto mb = doc.toPdf(); const std::string s2 ((const char*) mb.getData(), mb.getSize());
+            CHECK (s2.find ("(Every bar has at least two takes.)") != std::string::npos);
+        }
+        // no bars at all: one line, no chart, no chart CSV
+        for (auto& g : w.groups) g.barIn = g.barOut = 0;
+        w.pieceBars = 0;
+        secs = takesheet::collect (q, w.id);
+        CHECK (takesheet::chartCsv (secs).isEmpty());
+        {
+            const auto doc = takesheet::makePdf (secs, "Brahms Requiem", "3.10.0", juce::Time::getCurrentTime());
+            const auto mb = doc.toPdf(); const std::string s2 ((const char*) mb.getData(), mb.getSize());
+            CHECK (s2.find ("Take chart: no bars entered") != std::string::npos && s2.find ("(Take chart)") == std::string::npos);
+        }
+        // a long session: 90 takes, the chart's lines thinner, onto a page of its own, nothing past the bottom
+        Project big; big.addTakeWindow ("Mass in B minor");
+        auto& bw = *big.takeWindows.back();
+        for (int i = 1; i <= 90; ++i)
+        {
+            TakeGroup g; g.id = juce::Uuid(); g.number = i; g.sampleRate = 48000.0; g.lengthSamples = 48000 * 60; g.startSeconds = i * 100.0;
+            g.recordedAt = juce::Time (2026, 9, 22, 10, i % 60, 0); g.barIn = 1 + (i * 7) % 300; g.barOut = g.barIn + 40;
+            bw.groups.push_back (g);
+        }
+        bw.pieceBars = 400;
+        const auto bigDoc = takesheet::makePdf (takesheet::collect (big), "Bach", "3.10.0", juce::Time::getCurrentTime());
+        const auto mb = bigDoc.toPdf(); const std::string s3 ((const char*) mb.getData(), mb.getSize());
+        CHECK (s3.find ("(Take chart)") != std::string::npos && bigDoc.pageCount() >= 4);
+        // (every drawing on the page stays above the footer: no y below the footer line in the page's own coordinates)
+        bool inside = true;
+        for (size_t at = s3.find (" re f"); at != std::string::npos; at = s3.find (" re f", at + 1))
+        {
+            const size_t ls = s3.rfind ('\n', at);
+            std::istringstream ln (s3.substr (ls + 1, at - ls - 1));
+            std::vector<double> v; double x; std::string tok;
+            while (ln >> tok) { try { x = std::stod (tok); v.push_back (x); } catch (...) {} }
+            if (v.size() >= 4 && v[v.size() - 3] < 34.0) inside = false;          // (the rect's bottom edge, measured from the page's foot)
+        }
+        CHECK (inside);
+    }
+
+    SECTION ("3.11.0 the coverage colours: crimson none, bright red one, red-orange two, darkish yellow three, green from four (light) to ten (dark), the same beyond");
+    {
+        auto c = [] (int n) { return coverage::colourFor (n); };
+        auto same = [] (coverage::Rgb a, coverage::Rgb b) { return a.r == b.r && a.g == b.g && a.b == b.b; };
+        auto sum = [] (coverage::Rgb a) { return a.r + a.g + a.b; };
+        CHECK (c (0).r > 120 && c (0).r > 3 * c (0).g && c (0).b > c (0).g);                     // crimson: deep red with a little blue
+        CHECK (c (1).r == 255 && c (1).g < 80 && sum (c (1)) > sum (c (0)));                     // bright red: brighter than the crimson
+        CHECK (c (2).r == 255 && c (2).g > c (1).g && c (2).g < 160);                             // red-orange
+        CHECK (c (3).r > 180 && c (3).g > 130 && c (3).b < 60 && c (3).r < 230);                  // darkish yellow
+        for (int n = 4; n <= 10; ++n) CHECK (c (n).g > c (n).r && c (n).g > c (n).b);            // green all the way
+        for (int n = 4; n < 10; ++n) CHECK (sum (c (n + 1)) < sum (c (n)));                       // darker with every take
+        CHECK (same (c (10), c (11)) && same (c (10), c (40)) && same (c (-1), c (0)));
+        CHECK (coverage::isLight (c (4)) && ! coverage::isLight (c (10)) && ! coverage::isLight (c (0)) && ! coverage::isLight (c (1)));
+        // the printed chart uses them: the key and a light shade behind the takes
+        Project q; q.addTakeWindow ("Kyrie");
+        auto& w = *q.takeWindows.back();
+        for (int i = 0; i < 6; ++i) { TakeGroup g; g.id = juce::Uuid(); g.number = i + 1; g.sampleRate = 48000.0; g.lengthSamples = 48000 * 20; g.barIn = 1; g.barOut = 10 + i * 5; w.groups.push_back (g); }
+        w.pieceBars = 50;
+        const auto secs = takesheet::collect (q, w.id);
+        CHECK (! secs.empty() && takesheet::chartSummary (secs[0]) == "50 bars: 15 with no take, 5 with only one, 5 with two, 5 with three, 20 with four or more.");
+        const auto doc = takesheet::makePdf (secs, "Mass", "3.11.0", juce::Time::getCurrentTime());
+        const auto mb = doc.toPdf(); const std::string s4 ((const char*) mb.getData(), mb.getSize());
+        CHECK (s4.find ("(Takes per bar:)") != std::string::npos && s4.find ("(10 or more)") != std::string::npos);
+        const auto crimson = takesheet::coverageColour (0);
+        char want[64]; std::snprintf (want, sizeof (want), "%.2f", (double) crimson.r);
+        CHECK (s4.find (want) != std::string::npos);
+    }
+
+    SECTION ("3.12.0 the no-take pinstripe on the printed chart: clipped to the crimson boxes (balanced), only where a bar has no take");
+    {
+        Project q; q.addTakeWindow ("Gloria");
+        auto& w = *q.takeWindows.back();
+        for (int i = 0; i < 3; ++i) { TakeGroup g; g.id = juce::Uuid(); g.number = i + 1; g.sampleRate = 48000.0; g.lengthSamples = 48000 * 20; g.barIn = 1; g.barOut = 20 + 10 * i; w.groups.push_back (g); }
+        auto countOf = [] (const std::string& s, const std::string& what) { int n = 0; for (size_t at = s.find (what); at != std::string::npos; at = s.find (what, at + 1)) ++n; return n; };
+        w.pieceBars = 60;                                                         // bars 41 - 60: no take
+        {
+            const auto doc = takesheet::makePdf (takesheet::collect (q, w.id), "Mass", "3.12.0", juce::Time::getCurrentTime());
+            const auto mb = doc.toPdf(); const std::string s5 ((const char*) mb.getData(), mb.getSize());
+            const int clips = countOf (s5, " re W n\n");
+            CHECK (clips == 3);                                                   // the shading behind the takes, the ALL line, the key's "none"
+            CHECK (countOf (s5, "\nQ\n") == clips);                               // every clip ended
+            CHECK (countOf (s5, "q ") >= clips);
+        }
+        w.pieceBars = 40;                                                         // every bar has a take: only the key's swatch is striped
+        {
+            const auto doc = takesheet::makePdf (takesheet::collect (q, w.id), "Mass", "3.12.0", juce::Time::getCurrentTime());
+            const auto mb = doc.toPdf(); const std::string s5 ((const char*) mb.getData(), mb.getSize());
+            CHECK (countOf (s5, " re W n\n") == 1 && countOf (s5, "\nQ\n") == 1);
+        }
+    }
+
+    SECTION ("3.12.1 the printed chart's ALL line is at the top, above the bar numbers and the takes");
+    {
+        Project q; q.addTakeWindow ("Sanctus");
+        auto& w = *q.takeWindows.back();
+        for (int i = 0; i < 2; ++i) { TakeGroup g; g.id = juce::Uuid(); g.number = i + 1; g.sampleRate = 48000.0; g.lengthSamples = 48000 * 20; g.barIn = 1; g.barOut = 30; w.groups.push_back (g); }
+        w.pieceBars = 40;
+        const auto doc = takesheet::makePdf (takesheet::collect (q, w.id), "Mass", "3.12.1", juce::Time::getCurrentTime());
+        const auto mb = doc.toPdf(); const std::string s6 ((const char*) mb.getData(), mb.getSize());
+        auto yOf = [&] (const std::string& text) -> double                       // the baseline of a text, from the foot of the page (PDF's own y)
+        {
+            const auto at = s6.find ("(" + text + ") Tj");
+            if (at == std::string::npos) return -1.0;
+            const auto tm = s6.rfind (" Tm", at);
+            const auto ls = s6.rfind ("1 0 0 1 ", tm);
+            std::istringstream in (s6.substr (ls + 8, tm - ls - 8));
+            double x = 0.0, y = -1.0; in >> x >> y;
+            return y;
+        };
+        const double yAll = yOf ("ALL"), yRuler = yOf ("10"), yTake = yOf ("Take 1"), yKey = yOf ("Takes per bar:");
+        CHECK (yAll > 0.0 && yRuler > 0.0 && yTake > 0.0 && yKey > 0.0);
+        CHECK (yAll > yRuler && yRuler > yTake && yTake > yKey);                 // top to bottom: ALL, the bar numbers, the takes, the key
     }
 
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

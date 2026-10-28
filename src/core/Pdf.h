@@ -161,6 +161,13 @@ public:
         if (current < 0) newPage();
         pages[(size_t) current] += rgb (fill) + " rg " + num (x) + " " + num (kHeight - y - h) + " " + num (w) + " " + num (h) + " re f\n";
     }
+    /** Everything drawn until endClip() is cut to this box (3.12.0: the take chart's no-take pinstripe). Pairs must not cross a newPage(). */
+    void beginClip (float x, float y, float w, float h)
+    {
+        if (current < 0) newPage();
+        pages[(size_t) current] += "q " + num (x) + " " + num (kHeight - y - h) + " " + num (w) + " " + num (h) + " re W n\n";
+    }
+    void endClip() { if (current >= 0) pages[(size_t) current] += "Q\n"; }
 
     /** The whole file. */
     juce::MemoryBlock toPdf() const

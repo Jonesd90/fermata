@@ -26,6 +26,10 @@ struct Section
     juce::String piece;                // the take window's name
     juce::StringArray tracks;          // the tracks its takes recorded, in project order
     std::vector<Row> rows;
+    // the take chart (3.10.0), from the bars entered for the takes and the piece's bars (see coverage:: in Takes.h)
+    int pieceBars = 0, lastBar = 0;
+    std::vector<int> counts;                // per bar from bar 1: how many takes have it (duds never count)
+    std::vector<coverage::Run> runs;        // the piece cut where the set of takes changes
     int duds() const { int n = 0; for (auto& r : rows) n += r.dud ? 1 : 0; return n; }
     double seconds() const { double s = 0.0; for (auto& r : rows) s += r.lengthSeconds; return s; }
 };
@@ -89,6 +93,7 @@ inline std::vector<Section> collect (const Project& p, const juce::Uuid& onlyWin
             if (! g->waiting.empty()) r.problems.add ("waiting for corrected audio");
             sec.rows.push_back (r);
         }
+        sec.pieceBars = w.pieceBars; sec.lastBar = coverage::lastBar (w); sec.counts = coverage::counts (w); sec.runs = coverage::runs (w);
         out.push_back (sec);
     }
     return out;
@@ -121,7 +126,52 @@ inline juce::String csv (const std::vector<Section>& sections)
     return out;
 }
 
-/** The printed sheet: A4 portrait, a heading on every page, one section per piece (its tracks, then a table of its takes), page numbers. */
+/** The take chart as CSV (3.10.0): every run of bars that the same takes cover, piece by piece - from bar, to bar, how many takes, which (duds left out).
+    Empty when no piece has any bars entered. */
+inline juce::String chartCsv (const std::vector<Section>& sections)
+{
+    auto q = [] (const juce::String& s)
+    {
+        if (s.containsAnyOf (",\"\r\n")) return "\"" + s.replace ("\"", "\"\"") + "\"";
+        return s;
+    };
+    juce::String out;
+    for (auto& sec : sections)
+        for (auto& r : sec.runs)
+        {
+            juce::StringArray n; for (int t : r.takes) n.add (juce::String (t));
+            out << q (sec.piece) << "," << r.from << "," << r.to << "," << r.count() << "," << q (n.joinIntoString ("; ")) << "\r\n";
+        }
+    return out.isEmpty() ? out : "Piece,From bar,To bar,Takes,Which takes\r\n" + out;
+}
+
+/** "100 bars: 12 with no take, 20 with only one, 30 with two, 10 with three, 28 with four or more." */
+inline juce::String chartSummary (const Section& sec)
+{
+    int k[5] = { 0, 0, 0, 0, 0 };
+    for (int c : sec.counts) ++k[juce::jlimit (0, 4, c)];
+    return juce::String (sec.lastBar) + " bars: " + juce::String (k[0]) + " with no take, " + juce::String (k[1]) + " with only one, " + juce::String (k[2])
+           + " with two, " + juce::String (k[3]) + " with three, " + juce::String (k[4]) + " with four or more.";
+}
+/** The no-take pinstripe on the printed chart (3.12.0): thin diagonal lines across a box, placed by the page's own coordinates so neighbouring boxes join
+    up into one pattern. */
+inline void noTakeStripes (pdf::Document& d, float x, float y, float w, float h, pdf::Colour line, float spacing = 4.5f, float thickness = 0.35f)
+{
+    if (w <= 0.0f || h <= 0.0f) return;
+    d.beginClip (x, y, w, h);
+    for (float sx = std::floor ((x - h) / spacing) * spacing; sx < x + w; sx += spacing)
+        d.line (sx, y + h, sx + h, y, thickness, line);
+    d.endClip();
+}
+/** A bar's coverage colour for the PDF (coverage::colourFor), and the same mixed with white (share: how much of the colour is left). */
+inline pdf::Colour coverageColour (int takes, float share = 1.0f)
+{
+    const auto c = coverage::colourFor (takes);
+    auto ch = [share] (int v) { return 1.0f + ((float) v / 255.0f - 1.0f) * share; };
+    return { ch (c.r), ch (c.g), ch (c.b) };
+}
+
+/** The printed sheet: A4 portrait, a heading on every page, one section per piece (its tracks, a table of its takes, then its take chart), page numbers. */
 inline pdf::Document makePdf (const std::vector<Section>& sections, const juce::String& projectName, const juce::String& version, juce::Time printed)
 {
     using namespace pdf;
@@ -216,6 +266,107 @@ inline pdf::Document makePdf (const std::vector<Section>& sections, const juce::
             }
             y += rowH;
             d.line (L, y - 10.5f, R, y - 10.5f, 0.4f, rule);
+        }
+        // the take chart (3.10.0): the piece's bars across the page, every take a line from its IN Bar to its OUT Bar, every bar shaded in its coverage
+        // colour (3.11.0: crimson no take - with a thin diagonal pinstripe since 3.12.0 - bright red one, red-orange two, darkish yellow three, green from four - light - to ten - dark), the ALL line in
+        // the full colours, a key, and the list of the bars with no take or one - the producer's list of what still needs recording
+        {
+            const Colour teal { 0.10f, 0.40f, 0.62f }, white { 1.0f, 1.0f, 1.0f };
+            y += 8.0f;
+            if (sec.lastBar <= 0)
+            {
+                if (y + 12.0f > bottom) pageHead();
+                d.text (L, y + 4.0f, "Take chart: no bars entered for these takes (Ctrl+B in the take window; right-click the bar strip for the piece's bars).", Italic, 8.0f, dim);
+                y += 14.0f;
+            }
+            else
+            {
+                juce::StringArray todo;                                       // the bars with no take or only one
+                for (auto& rn : sec.runs) if (rn.count() <= 1) todo.add (coverage::describe (rn));
+                if (todo.isEmpty()) todo.add ("Every bar has at least two takes.");
+                const int nRows = juce::jmax (1, (int) sec.rows.size());
+                const float fixedH = 18.0f + 11.0f + 12.0f + 12.0f + 16.0f + 14.0f;     // title, ALL, ruler, gap, key, the list's heading
+                float rowH = 10.0f;
+                const float listH = 10.5f * (float) todo.size();
+                if (y + fixedH + rowH * (float) nRows + juce::jmin (listH, 60.0f) > bottom)
+                {
+                    pageHead();
+                    d.text (L, y + 2.0f, Document::fit (sec.piece, Bold, 10.0f, R - L) + "  (continued)", Bold, 10.0f, ink);
+                    y += 16.0f;
+                }
+                rowH = juce::jlimit (4.0f, 10.0f, (bottom - y - fixedH - juce::jmin (listH, 60.0f)) / (float) nRows);
+                const float labelW = 50.0f, x0 = L + labelW, x1 = R;
+                const float cell = (x1 - x0) / (float) sec.lastBar;
+                auto xOf = [&] (int bar) { return x0 + (float) (bar - 1) * cell; };
+                d.text (L, y + 8.0f, "Take chart", Bold, 10.0f, ink);
+                d.textRight (R, y + 8.0f, chartSummary (sec), Regular, 7.5f, dim);
+                y += 18.0f;
+                // top to bottom (3.12.1): the ALL line, the bar numbers, the takes - the ALL line first, where it is seen at once
+                const float allTop = y, allH = 9.0f, rulerY = allTop + allH + 2.0f, rowsTop = rulerY + 12.0f, rowsBottom = rowsTop + rowH * (float) nRows;
+                // the shading behind the takes: every bar in a light shade of its coverage colour
+                for (auto& rn : sec.runs)
+                {
+                    d.rect (xOf (rn.from), rowsTop, (float) (rn.to - rn.from + 1) * cell, rowsBottom - rowsTop, coverageColour (rn.count(), 0.22f));
+                    if (rn.count() == 0) noTakeStripes (d, xOf (rn.from), rowsTop, (float) (rn.to - rn.from + 1) * cell, rowsBottom - rowsTop, coverageColour (0, 0.45f), 6.0f, 0.3f);
+                }
+                // the ruler: bar numbers as the room allows, a faint line at each
+                const int step = cell >= 18.0f ? 1 : cell >= 9.0f ? 2 : cell >= 3.6f ? 5 : cell >= 1.8f ? 10 : cell >= 0.9f ? 20 : cell >= 0.36f ? 50 : 100;
+                for (int b = 1; b <= sec.lastBar; ++b)
+                    if (b == 1 || b % step == 0)
+                    {
+                        const float x = xOf (b);
+                        d.line (x, rulerY + 9.0f, x, rowsBottom, 0.3f, grey (0.84f));
+                        const auto t = juce::String (b);
+                        if (x + 1.0f + width (t, Regular, 6.5f) <= R) d.text (x + 1.0f, rulerY + 7.0f, t, Regular, 6.5f, dim);
+                    }
+                // the takes, in number order
+                const float fs = juce::jmin (7.5f, rowH * 0.85f);
+                for (int i = 0; i < (int) sec.rows.size(); ++i)
+                {
+                    const auto& r = sec.rows[(size_t) i];
+                    const float ry = rowsTop + rowH * (float) i;
+                    d.text (L, ry + rowH * 0.78f, "Take " + juce::String (r.number), r.dud ? Regular : Bold, fs, r.dud ? grey (0.6f) : ink);
+                    if (r.barIn <= 0) { if (rowH >= 6.0f) d.text (x0 + 2.0f, ry + rowH * 0.78f, "no bars entered", Italic, juce::jmin (6.5f, fs), grey (0.6f)); continue; }
+                    const int out = juce::jmax (r.barIn, r.barOut);
+                    const float bx = xOf (r.barIn), bw = (float) (out - r.barIn + 1) * cell;
+                    d.rect (bx, ry + rowH * 0.12f, bw, rowH * 0.76f, r.dud ? grey (0.72f) : teal);
+                    const auto lab = r.bars + (r.dud ? "  (dud)" : "");
+                    if (rowH >= 7.0f && width (lab, Bold, juce::jmin (6.5f, rowH - 2.5f)) + 4.0f <= bw)
+                        d.text (bx + 2.0f, ry + rowH * 0.74f, lab, Bold, juce::jmin (6.5f, rowH - 2.5f), white);
+                }
+                // ALL: how many takes have each bar, in the full coverage colours
+                d.text (L, allTop + 7.0f, "ALL", Bold, 7.5f, ink);
+                for (auto& rn : sec.runs)
+                {
+                    d.rect (xOf (rn.from), allTop, (float) (rn.to - rn.from + 1) * cell, allH, coverageColour (rn.count()));
+                    if (rn.count() == 0) noTakeStripes (d, xOf (rn.from), allTop, (float) (rn.to - rn.from + 1) * cell, allH, coverageColour (0, 0.35f));
+                }
+                d.line (x0, allTop + allH, x1, allTop + allH, 0.4f, rule);
+                d.line (x0, rowsBottom, x1, rowsBottom, 0.4f, rule);
+                y = rowsBottom + 12.0f;
+                // the key: takes per bar in their colours, then the takes' own lines
+                float kx = L;
+                d.text (kx, y, "Takes per bar:", Regular, 7.0f, dim); kx += width ("Takes per bar:", Regular, 7.0f) + 6.0f;
+                auto key = [&] (Colour c, const juce::String& t, float gap)
+                {
+                    d.rect (kx, y - 6.5f, 9.0f, 7.0f, c);
+                    if (t == "none") noTakeStripes (d, kx, y - 6.5f, 9.0f, 7.0f, coverageColour (0, 0.35f), 3.0f, 0.3f);      // (the no-take pinstripe)
+                    d.text (kx + 11.0f, y, t, Regular, 7.0f, dim); kx += 11.0f + width (t, Regular, 7.0f) + gap;
+                };
+                key (coverageColour (0), "none", 7.0f); key (coverageColour (1), "1", 7.0f); key (coverageColour (2), "2", 7.0f); key (coverageColour (3), "3", 7.0f);
+                key (coverageColour (4), "4", 7.0f); key (coverageColour (7), "7", 7.0f); key (coverageColour (10), "10 or more", 18.0f);
+                key (teal, "a take", 10.0f); key (grey (0.72f), "a dud (not counted)", 0.0f);
+                y += 16.0f;
+                // the bars with no take or only one, as a list
+                d.text (L, y, "Bars with no take or only one:", Bold, 8.0f, ink);
+                y += 12.0f;
+                for (auto& t : todo)
+                {
+                    if (y > bottom) { pageHead(); d.text (L, y + 2.0f, Document::fit (sec.piece, Bold, 10.0f, R - L) + "  (continued)", Bold, 10.0f, ink); y += 16.0f; }
+                    d.text (L + 8.0f, y, Document::fit (t, Regular, 8.0f, R - L - 8.0f), Regular, 8.0f, t.contains ("no take") ? coverageColour (0) : t.contains ("only take") ? coverageColour (1) : ink);
+                    y += 10.5f;
+                }
+            }
         }
     }
     // page numbers and the footer on every page

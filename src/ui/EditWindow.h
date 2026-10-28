@@ -76,8 +76,9 @@ private:
                leftButton { "Move earlier" }, rightButton { "Move later" }, bounceButton { "Bounce Out..." }, videoButton { "Export for video edit..." }, aafButton { "Export AAF..." }, mixerButton { "Edit Mixer" }, automationButton { "Automation" },
                pitchButton { "Pitch..." }, repairButton { "Repair & DeClick..." }, reharmoniserButton { "ReHarmoniSer..." }, retimerButton { "ReTimEr..." }, undoFixButton { "Undo fix" }, tracksButton { "Tracks..." }, feedbackButton { "Feedback..." },
                endButton { "Next goes at end" }, exportProcButton { "Export for Processing..." }, importButton { "Import..." }, alignButton { "Align spot mics" }, roomToneButton { "Room tone" }, noiseModeButton { "Noise mode" },
-               slipLeftToggle { "Slip Left" }, slipRightToggle { "Slip Right" }, shuffleToggle { "Shuffle" }, insertFlagToggle { "Insert flag" }, markersToggle { "Markers" }, feedbackToggle { "Feedback markers" };
-    juce::TextButton zoomInButton { "+" }, zoomOutButton { "-" }, ltcButton { juce::String::fromUTF8 ("\xE2\x96\xB6 LTC") }, guideToggle { "Guide" };
+               slipLeftToggle { "Slip Left" }, slipRightToggle { "Slip Right" }, shuffleToggle { "Shuffle" }, insertFlagToggle { "Insert flag" }, markersToggle { "Markers" }, feedbackToggle { "Feedback markers" },
+               guideToggle { "Guide" };                     // (3.10.0: a picture - a tour guide with a flag - instead of the word)
+    juce::TextButton zoomInButton { "+" }, zoomOutButton { "-" }, ltcButton { juce::String::fromUTF8 ("\xE2\x96\xB6 LTC") };
     LoopButton loopToggle;
     PlayheadModeButton playheadMode;
     RainbowButton waveColourBtn;

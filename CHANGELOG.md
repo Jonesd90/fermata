@@ -6,6 +6,25 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.12.1
+- **The ALL line is at the top of the take chart**, above the bar numbers, in Fermata and in the printed take sheet: top to bottom it is now ALL, the bar numbers, then the takes. Clicking it still goes to that bar.
+
+## 3.12.0
+**No take now has a pinstripe.** Every bar that no take covers is still crimson, but now with thin diagonal lines through it, like the pinstripe of a suit, so it can never be mistaken for the bright red of a bar with one take - on the bar strip under the take window's head, in the take chart (the ALL line, the bars lit up by No take, the No take button and the list's swatch) and in the printed take sheet (the shading behind the takes, the ALL line and the key's "none"). The lines run on unbroken across neighbouring bars.
+
+## 3.11.0
+**The take chart's colours: how many takes cover each bar, at a glance.** The same colours on the bar strip under the take window's head, in the take chart that drops down from BARS, and in the printed take sheet:
+- **No take: crimson. One take: bright red. Two takes: red-orange. Three takes: a darkish yellow. Four takes or more: green** - very light at four, darker with every take, dark green from ten takes on.
+- The take chart's buttons are now **No take / Only 1 / 2 takes / 3 takes / 4+** (each in its colour); its ALL line, its list and the summary ("... 10 with three, 28 with four or more") follow. The takes' own lines are blue now, so they never look like the coverage greens.
+- The printed chart shades every bar lightly in its colour behind the takes, draws the ALL line in the full colours, and its key shows the scale (none, 1, 2, 3, 4, 7, 10 or more). In the list, the bars with no take are in crimson and those with only one in bright red.
+- The bar numbers on the strip are dark on the light greens, so they can still be read.
+
+## 3.10.0
+**The take chart goes into the take sheet, and the Guide button gets its picture.**
+- **Take sheet (take window button, or Project > Take sheet of every take window):** after each piece's list of takes, its **take chart** is printed: the piece's bars across the page, every take a line from its IN Bar to its OUT Bar (duds grey, not counted), the bars that **no take** has shaded red and those **only one take** has shaded amber, the ALL line, a key, and the list **"Bars with no take or only one"** (e.g. "Bars 61 - 72: only take 6", "Bars 91 - 100: no take" in red) - the list of what still needs recording. A chart too tall for what is left of the page starts a new page; with many takes its lines get thinner so it stays on one page. A piece with no bars entered gets one line saying so.
+- **The take chart as a spreadsheet too:** next to the take sheet's CSV, "<piece> - take chart <date>.csv" with every run of bars the same takes cover: Piece, From bar, To bar, Takes (how many), Which takes. Written whenever any bars are entered.
+- **The Guide button** in the edit window (shows / hides the visual guide) is a picture now - a tour guide holding up a red flag - instead of the word, the same size as the buttons around it. It works as before: lit while the guide shows, greyed when no guide is set.
+
 ## 3.9.0
 **Every project has its own sample rate, chosen on purpose.**
 - **New project asks for the rate.** After you choose the project's folder and name, a box asks for its sample rate: **44.1, 48, 96 or 192 kHz**. Nothing is picked to begin with and the Create button stays greyed until you click one, so a project is never made at 48 kHz by accident when it was meant to be 96 kHz. Cancel makes no project.

@@ -1293,7 +1293,7 @@ public:
 /** The little pictures on the buttons of the edit and take windows. Each is drawn from a 24 x 24 grid so it stays sharp at any size. */
 enum class Icon { Start, Rewind, Play, Stop, Forward, End, Record, Trim, Bounce, Pitch, Repair, Reharm, Tracks, Feedback, Mixer, Earlier, Later, Delete, Undo, Automation,
                   ExportProc, ImportMulti, Markers, FeedbackMarkers, SlipLeft, SlipRight, Shuffle, InsertFlag, NextAtEnd,
-                  Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search, Denoise, Align, TakeSheet, RoomTone, NoiseMode, ReTimEr, VideoExport, AafExport };
+                  Overdub, Mark1, Mark2, ToEdit, ToPlayhead, Flag, EditWin, ArmAll, ArmNone, ImportTakes, Search, Denoise, Align, TakeSheet, RoomTone, NoiseMode, ReTimEr, VideoExport, AafExport, Guide };
 
 inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area, juce::Colour ink = theme::text)
 {
@@ -1529,6 +1529,17 @@ inline void drawIcon (juce::Graphics& g, Icon ic, juce::Rectangle<float> area, j
             seg (2.2f, y - 2.4f, 2.2f, y + 2.4f, 1.3f, W); seg (21.8f, y - 2.4f, 21.8f, y + 2.4f, 1.3f, W);
             seg (4.0f, y, 9.0f, y, 1.4f, W); tri (3.4f, y, 6.2f, y - 2.0f, 6.2f, y + 2.0f, W);
             seg (15.0f, y, 20.0f, y, 1.4f, W); tri (20.6f, y, 17.8f, y - 2.0f, 17.8f, y + 2.0f, W);
+            break;
+        }
+        case Icon::Guide:
+        {
+            // a tour guide holding up a flag: the edit window's visual guide, the take to follow (3.10.0)
+            seg (17.0f, 21.6f, 17.0f, 2.6f, 1.4f, W);                         // the flag's pole
+            tri (17.0f, 2.6f, 23.2f, 5.2f, 17.0f, 7.8f, Rd);                  // the flag
+            g.setColour (W); g.fillEllipse (5.3f, 3.3f, 6.2f, 6.2f);           // the head
+            rect (4.6f, 10.6f, 7.6f, 11.0f, 3.3f, W);                          // the body
+            seg (11.4f, 12.6f, 16.3f, 8.9f, 2.2f, W);                          // the arm holding the pole up
+            rect (7.2f, 13.4f, 2.6f, 3.2f, 0.6f, Ye);                          // the guide's badge
             break;
         }
         case Icon::Search:
