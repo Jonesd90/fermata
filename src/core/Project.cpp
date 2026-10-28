@@ -1392,6 +1392,7 @@ var Project::takeWindowToVarIn (const TakeWindowDef& w, const juce::File& base)
     if (w.showLtc) put (o, "showLtc", true);
     if (! w.markers.empty()) put (o, "markers", markersToVar (w.markers));
     if (! w.showMarkers) put (o, "showMarkers", false);
+    if (w.pieceBars > 0) put (o, "pieceBars", w.pieceBars);                // (3.8.0: the take chart)
     juce::Array<var> gs;
     for (auto& g : w.groups)
     {
@@ -1802,6 +1803,7 @@ bool Project::fromVar (const var& root)
             if (v.hasProperty ("playhead")) w->playheadSeconds = juce::jmax (0.0, (double) v["playhead"]);
             w->showLtc = v.hasProperty ("showLtc") && (bool) v["showLtc"];
             markersFromVar (v["markers"], w->markers); w->showMarkers = v["showMarkers"].isVoid() ? true : (bool) v["showMarkers"];
+            w->pieceBars = juce::jmax (0, (int) v["pieceBars"]);
             if (auto* hid = v["hiddenTracks"].getArray()) for (auto& h : *hid) w->hiddenTracks.push_back (juce::Uuid (h.toString()));
             if (auto* gs = v["groups"].getArray())
                 for (auto& gv : *gs)
@@ -2010,7 +2012,7 @@ struct UndoHasher
 juce::uint64 Project::undoHash (const TakeWindowDef& w)
 {
     UndoHasher h;
-    h.add (w.id); h.add (w.name); h.add (w.defaultLabel); h.add (w.nextNumber); h.add (w.targetEdit); h.add (w.showLtc);
+    h.add (w.id); h.add (w.name); h.add (w.defaultLabel); h.add (w.nextNumber); h.add (w.targetEdit); h.add (w.showLtc); h.add (w.pieceBars);
     h.count (w.groups.size());
     for (auto& g : w.groups)
     {
@@ -2979,6 +2981,23 @@ struct QuickAudioCheck
     }
 };
 } // namespace
+
+double Project::audioRate() const
+{
+    std::vector<std::pair<long long, int>> votes;              // rate (Hz), how many takes / edits are at it
+    auto vote = [&votes] (double r)
+    {
+        if (r <= 0.0) return;
+        const auto k = std::llround (r);
+        for (auto& v : votes) if (v.first == k) { ++v.second; return; }
+        votes.push_back ({ k, 1 });
+    };
+    for (auto& w : takeWindows) for (auto& g : w->groups) vote (g.sampleRate);
+    for (auto& e : edits) if (! e->isEmpty()) vote (e->sampleRate);
+    long long best = 0; int most = 0;
+    for (auto& v : votes) if (v.second > most) { most = v.second; best = v.first; }
+    return (double) best;
+}
 
 int Project::missingAudioCount (bool quick) const
 {

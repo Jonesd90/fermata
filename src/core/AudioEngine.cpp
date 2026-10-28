@@ -123,9 +123,73 @@ void AudioEngine::audioDeviceAboutToStart (juce::AudioIODevice* d)
         if (juce::MessageManager::getInstance()->isThisTheMessageThread()) deviceRestartedWhileRecording (newRate);
         else juce::MessageManager::callAsync ([this, newRate] { deviceRestartedWhileRecording (newRate); });     // (JUCE restarts a device on the message thread; this is only in case)
     }
-    prepare (d->getCurrentSampleRate(), juce::jmax (64, d->getCurrentBufferSizeSamples()));
+    startForDevice (d->getCurrentSampleRate(), juce::jmax (64, d->getCurrentBufferSizeSamples()), deviceInputs, deviceOutputs);
     running = true;
     juce::Logger::writeToLog ("Engine: device started OK");
+}
+
+double AudioEngine::rateFor (double devRate) const noexcept
+{
+    const double pr = projectRate.load();
+    if (pr <= 0.0 || devRate <= 0.0 || std::abs (pr - devRate) <= 0.5) return devRate;
+    return RateConverter::canConvert (pr, devRate) && RateConverter::canConvert (devRate, pr) ? pr : devRate;
+}
+
+void AudioEngine::startForDevice (double devRate, int devBlock, int ins, int outs)
+{
+    // 3.8.0: the engine runs at the project's rate. When the device runs at another (a laptop's own sound at 48 kHz, a 96 kHz project), the converter
+    // goes between them: the engine is prepared for the project's rate and the blocks it will be asked for, the device gets the converted sound.
+    deviceInputs = ins; deviceOutputs = outs;
+    deviceRateNow.store (devRate);
+    bridge.reset(); converting = false; converterMs = 0.0;
+    const double want = rateFor (devRate);
+    preparingForDevice = true;
+    if (std::abs (want - devRate) > 0.5)
+    {
+        auto b = std::make_unique<RateBridge>();
+        if (b->prepare (want, devRate, ins, outs, devBlock))
+        {
+            prepare (want, b->engineBlock());
+            converterMs = 1000.0 * b->outputDelaySeconds();
+            juce::Logger::writeToLog ("Engine: the project is " + juce::String (want, 0) + " Hz and the device runs at " + juce::String (devRate, 0)
+                                      + " Hz - the engine runs at " + juce::String (want, 0) + " Hz (blocks of up to " + juce::String (b->engineBlock())
+                                      + ") and the sound is converted live to the device's rate (" + juce::String (converterMs.load(), 2) + " ms later); recording is not possible like this");
+            bridge = std::move (b);
+            converting = true;
+            preparingForDevice = false;
+            return;
+        }
+        juce::Logger::writeToLog ("Engine: cannot convert between " + juce::String (want, 0) + " Hz and " + juce::String (devRate, 0) + " Hz - the engine runs at the device's rate");
+    }
+    prepare (devRate, devBlock);
+    preparingForDevice = false;
+}
+
+void AudioEngine::deviceBlock (const float* const* in, int numIn, float* const* out, int numOut, int numSamples)
+{
+    auto* b = bridge.get();
+    if (b == nullptr) { process (in, numIn, out, numOut, numSamples); return; }
+    // the input meters: what the device delivered, every input (process() is only given the inputs that are converted)
+    for (int c = 0; c < numIn && c < kMaxInputs; ++c)
+    {
+        if (in[c] == nullptr) continue;
+        const auto mag = juce::FloatVectorOperations::findMinAndMax (in[c], numSamples);
+        const float pk = juce::jmax (std::abs (mag.getStart()), std::abs (mag.getEnd()));
+        if (pk > inputPeak[c].load (std::memory_order_relaxed)) inputPeak[c].store (pk, std::memory_order_relaxed);
+    }
+    // the inputs the engine listens to (only those are converted): the tracks' inputs, the CR mic's, the LTC input. (The plan read here is not freed
+    // under this block: a replaced plan waits for two of process()'s blocks, and this block's comes after this.)
+    wantIn.fill (false);
+    if (const auto* pl = plan.load (std::memory_order_acquire))
+        for (auto& tp : pl->tracks)
+            for (int c = 0; c < tp.numCh && c < kMaxTrackChannels; ++c)
+                if (tp.inputs[c] >= 0 && tp.inputs[c] < kMaxInputs) wantIn[(size_t) tp.inputs[c]] = true;
+    for (int c = 0; c < kMaxInputs; ++c) if (crSel[(size_t) c].load (std::memory_order_relaxed)) wantIn[(size_t) c] = true;
+    if (const int lc = ltcInCh.load (std::memory_order_relaxed); lc >= 0 && lc < kMaxInputs) wantIn[(size_t) lc] = true;
+    bridgedBlock = true;
+    b->run (in, numIn, out, numOut, numSamples, wantIn.data(),
+            [this] (const float* const* i, int ni, float* const* o, int no, int n) { process (i, ni, o, no, n); });
+    bridgedBlock = false;
 }
 
 void AudioEngine::deviceRestartedWhileRecording (double newRate)
@@ -161,10 +225,11 @@ void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* in, int 
     mixerWorkers.setLimit (reserved > 0 ? reserved - 1 : 1 << 20);
     juce::ScopedNoDenormals noDenormals;
     const auto t0 = juce::Time::getHighResolutionTicks();
-    process (in, numIn, out, numOut, numSamples);
-    // the load meter: time spent here as a share of how long the block lasts
+    deviceBlock (in, numIn, out, numOut, numSamples);
+    // the load meter: time spent here as a share of how long the block lasts (at the device's rate: with the converter the engine's blocks are longer)
     const double busy = juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - t0);
-    const double span = sampleRate > 0.0 ? (double) numSamples / sampleRate : 0.0;
+    const double devRate = deviceRateNow.load (std::memory_order_relaxed);
+    const double span = devRate > 0.0 ? (double) numSamples / devRate : 0.0;
     if (span > 0.0)
     {
         const float pct = (float) (100.0 * busy / span);
@@ -189,6 +254,10 @@ AudioEngine::LoadStats AudioEngine::takeLoadStats() noexcept
 
 void AudioEngine::prepare (double sr, int block)
 {
+    if (! preparingForDevice)                      // (prepared without a device - the tests, an offline render: no converter)
+    {
+        bridge.reset(); converting = false; converterMs = 0.0; deviceRateNow.store (sr);
+    }
     stopPlayback();
     lastPlanSeen.store (nullptr);                  // (the audio thread is not running here: the plan it last saw may already be gone)
     sampleRate = sr;
@@ -704,8 +773,8 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
     for (int c = 0; c < numOut; ++c)
         if (out[c] != nullptr) juce::FloatVectorOperations::clear (out[c], numSamples);
 
-    // input meters
-    for (int c = 0; c < numIn && c < kMaxInputs; ++c)
+    // input meters (with the converter they were read from the device's own inputs: see deviceBlock)
+    for (int c = 0; c < numIn && c < kMaxInputs && ! bridgedBlock; ++c)
     {
         if (in[c] == nullptr) continue;
         const auto mag = juce::FloatVectorOperations::findMinAndMax (in[c], numSamples);
@@ -1436,7 +1505,8 @@ juce::String AudioEngine::startPlayback (std::unique_ptr<PlaybackSession> s, boo
     if (! waitForFinishedTakes (15000)) return "The last take's files are still being written to the disk: try again in a moment";
     stopPlayback();
     if (std::abs (s->getSampleRate() - sampleRate) > 0.5)
-        return "The take was recorded at " + juce::String (s->getSampleRate(), 0) + " Hz but the audio device runs at " + juce::String (sampleRate, 0) + " Hz";
+        return converting.load() ? "The take was recorded at " + juce::String (s->getSampleRate(), 0) + " Hz but this project plays at " + juce::String (sampleRate, 0) + " Hz (the rate of most of its takes)"
+                                 : "The take was recorded at " + juce::String (s->getSampleRate(), 0) + " Hz but the audio device runs at " + juce::String (sampleRate, 0) + " Hz";
     auto err = s->open();
     if (err.isNotEmpty()) return err;
     if (s->automation != nullptr && s->automation->begin()) rebuildPlan();      // sends the automation moves are put in the plan (see SendState::autoHeld)
@@ -1484,6 +1554,12 @@ juce::String AudioEngine::startRecording (TakeWindowDef& window)
 {
     if (isRecording()) return "Already recording";
     if (zeros.empty()) return "The audio device has not been started";
+    if (converting.load())                         // 3.8.0: a take is always recorded at the device's own rate, and the engine is at the project's
+    {
+        auto khz = [] (double r) { return juce::String (r / 1000.0, std::fmod (r, 1000.0) == 0.0 ? 0 : 1) + " kHz"; };
+        return "This project is " + khz (sampleRate) + " but the audio device runs at " + khz (deviceRateNow.load()) + ". Fermata converts the sound so that you "
+               "can listen, but it cannot record like this. To record into this project, set the device to " + khz (sampleRate) + " (Audio settings).";
+    }
 
     std::vector<const TrackDef*> armed;
     for (auto& t : project.tracks) if (t.isArmed()) armed.push_back (&t);

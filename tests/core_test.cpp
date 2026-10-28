@@ -10,6 +10,7 @@
 #include "../src/core/ImportPlan.h"
 #include "../src/core/MasterExport.h"
 #include "../src/core/Resampler.h"
+#include "../src/core/RateBridge.h"
 #include "../src/core/Ravenna.h"
 #include "../src/core/Dither.h"
 #include "../src/core/CoreReservation.h"
@@ -10140,7 +10141,7 @@ int main()
         CHECK (check (6, 7, { 3, 25, 50 }, 0.25));                  // two wet takes of the same room: a session as it really is
         {   // the transposed take: its notes were turned back into the first take's key
             const auto al = takematch::align (fps[0], fps[5]);
-            CHECK (al.rotation == 9 && ! al.empty());
+            CHECK (al.rotation == -3 && ! al.empty());                  // (3.7.0: notes in their octaves, moved down 3 semitones; before, 12 note classes turned by 9)
         }
         {   // nothing in common: two unrelated signals, or an empty fingerprint
             std::vector<float> hiss ((size_t) (rate * 40.0)); std::mt19937 rng (3); std::normal_distribution<double> g (0.0, 0.1);
@@ -10268,7 +10269,7 @@ int main()
             {
                 takematch::Fingerprint pf; pf.fps = fa.fps;
                 const int f0 = (int) std::lround (fromBar * 2.0 * fa.fps), f1 = (int) std::lround (toBar * 2.0 * fa.fps);
-                pf.chroma.assign (fa.chroma.begin() + f0 * 12, fa.chroma.begin() + f1 * 12); pf.loudness.assign (fa.loudness.begin() + f0, fa.loudness.begin() + f1);
+                pf = fa.slice (f0, f1);
                 return pf;
             };
             auto near = [] (const std::vector<takematch::Version>& vs, double start) { for (auto& v : vs) if (std::abs (v.start - start) < 0.3) return true; return false; };
@@ -10458,6 +10459,327 @@ int main()
             }
             CHECK (ps.shortName() == "consonant");
         }
+    }
+
+    SECTION ("3.7.0 take matching on real-choir terms: notes in their octaves, the choir's tuning followed (a quarter-tone flat either side of the line), silence says nothing, the marked part placed exactly");
+    {
+        const double rate = 48000.0;
+        struct Bar { int root; bool minor; int pattern; };
+        std::vector<Bar> bars; { std::mt19937 rng (91); for (int b = 0; b < 40; ++b) bars.push_back ({ (int) (rng() % 12), (rng() % 3) == 0, (int) (rng() % 5) }); }
+        // the piece played from 'first' to 'last' bar, 'len' s a bar, 'cents' off A440 (sinking by 'sink' cents over the take), with 'pre' s of silence first
+        auto play = [&] (int first, int last, double len, double cents, double sink, double pre, unsigned seed)
+        {
+            std::vector<float> out ((size_t) (pre * rate), 0.0f); std::mt19937 rng (seed); std::uniform_real_distribution<double> ph (0.0, 6.28);
+            const double total = (last - first + 1) * len;
+            auto note = [&] (int midi, double seconds, double level, size_t at)
+            {
+                const double t0 = (double) at / rate - pre, c = cents + sink * juce::jlimit (0.0, 1.0, t0 / total);
+                const double f = 440.0 * std::pow (2.0, (midi - 69 + c / 100.0) / 12.0); const size_t n = (size_t) (seconds * rate);
+                if (out.size() < at + n) out.resize (at + n, 0.0f);
+                const double p0 = ph (rng);
+                for (size_t i = 0; i < n; ++i) { const double t = (double) i / rate, env = std::min (1.0, t * 50.0) * std::exp (-t * 1.2) * std::min (1.0, (seconds - t) * 30.0); double v = 0.0; for (int h = 1; h <= 6; ++h) v += std::sin (2.0 * 3.14159265 * f * h * t + p0 * h) / (h * h); out[at + i] += (float) (level * env * v); }
+            };
+            double t = pre;
+            for (int b = first; b <= last; ++b)
+            {
+                const auto& bar = bars[(size_t) b]; const int root = 48 + bar.root, third = root + (bar.minor ? 3 : 4), fifth = root + 7;
+                const int arp[5][4] = { { root + 12, third + 12, fifth + 12, third + 12 }, { fifth + 12, third + 12, root + 12, third + 12 }, { root + 12, fifth + 12, root + 24, fifth + 12 }, { third + 12, root + 12, third + 12, fifth + 12 }, { root + 24, fifth + 12, third + 12, root + 12 } };
+                note (root - 12, len, 0.25, (size_t) (t * rate));
+                for (int k = 0; k < 4; ++k) note (arp[bar.pattern][k], len / 4.0, 0.18, (size_t) ((t + k * len / 4.0) * rate));
+                t += len;
+            }
+            out.resize ((size_t) ((t + 1.0) * rate), 0.0f);
+            return out;
+        };
+        auto fpOf = [&] (const std::vector<float>& a) { return takematch::analyseSamples (a.data(), (juce::int64) a.size(), rate); };
+        // three takes of bars 0-19 (2 s a bar): in tune; 40 cents flat sinking to 60 (it crosses the half-semitone line); 45 cents flat all the way
+        const auto inTune = fpOf (play (0, 19, 2.0, 0.0, 0.0, 1.0, 1)), sinking = fpOf (play (0, 19, 2.0, -40.0, -20.0, 1.0, 2)), quarter = fpOf (play (0, 19, 2.0, -45.0, 0.0, 1.0, 3));
+        CHECK (inTune.bins == takematch::Fingerprint::kNotes && inTune.frames() == inTune.loudness.size() && inTune.chroma.size() == (size_t) inTune.frames() * (size_t) inTune.bins);
+        auto passageAt = [&] (const takematch::Fingerprint& f, double a, double b) { return f.slice ((int) std::lround (a * f.fps), (int) std::lround (b * f.fps)); };
+        auto best = [] (const std::vector<takematch::Version>& vs) { const takematch::Version* b = nullptr; for (auto& v : vs) if (b == nullptr || v.cost < b->cost) b = &v; return b; };
+        for (double a : { 3.0, 13.0, 31.0 })                                  // bars 1, 6 and 15 (+ the second of silence before)
+        {
+            const double want = a;                                            // (all three takes start their bar 0 at 1 s and keep 2 s a bar)
+            for (auto* other : { &sinking, &quarter })
+            {
+                const auto vs = takematch::findVersions (passageAt (inTune, a, a + 4.0), *other);
+                const auto* b = best (vs);
+                CHECK (b != nullptr && std::abs (b->start - want) < 0.3 && b->cost <= takematch::kVersionCost);
+            }
+            const auto vs2 = takematch::findVersions (passageAt (sinking, a, a + 4.0), quarter);   // the flat takes against each other
+            CHECK (best (vs2) != nullptr && std::abs (best (vs2)->start - want) < 0.3);
+        }
+        // a different stretch of the same piece is not this one (notes in their octaves: bars with other chords never pass)
+        {
+            const auto vs = takematch::findVersions (passageAt (inTune, 3.0, 7.0), *(&quarter));
+            int wrong = 0; for (auto& v : vs) if (std::abs (v.start - 3.0) > 0.5) ++wrong;
+            CHECK (wrong == 0);
+        }
+        // silence says nothing: a silent passage finds nothing, and a passage is not found in a take's silence
+        {
+            CHECK (takematch::findVersions (passageAt (inTune, 0.0, 0.9), quarter).empty());
+            CHECK (takematch::mostlySilent (inTune, 0, 18) && ! takematch::mostlySilent (inTune, 40, 120));
+            const auto vs = takematch::findVersions (passageAt (inTune, 0.2, 3.2), quarter, 1.0);
+            for (auto& v : vs) CHECK (! takematch::mostlySilent (quarter, (int) std::lround (v.start * 20.0), (int) std::lround (v.end * 20.0)));
+        }
+        // the marked part with the music either side (8 s in all): found, and placed exactly by the part on its own
+        {
+            const double a = 21.0, L = 2.0;                                   // bar 10, 2 s
+            const int c0 = (int) std::lround ((a - 3.0) * 20.0), c1 = (int) std::lround ((a + L + 3.0) * 20.0);
+            const auto ctx = inTune.slice (c0, c1);
+            const auto vs = takematch::findVersions (ctx, sinking, takematch::kVersionCost, (int) std::lround (a * 20.0) - c0, (int) std::lround ((a + L) * 20.0) - c0);
+            const auto* b = best (vs);
+            CHECK (b != nullptr && std::abs (b->start - a) < 0.5 && std::abs ((b->end - b->start) - L) < 0.5);
+            if (b != nullptr)
+            {
+                const auto placed = takematch::placePart (passageAt (inTune, a, a + L), sinking, *b);
+                CHECK (std::abs (placed.start - a) < 0.15 && std::abs (placed.end - (a + L)) < 0.15 && placed.cost == b->cost);
+            }
+        }
+        // saved as version 2 and read back; a version 1 file (12 note classes) is refused, so it is made again
+        {
+            const auto f = tmp.getChildFile ("take-match").getChildFile ("v2.fpr");
+            takematch::Fingerprint back;
+            CHECK (takematch::save (quarter, f) && takematch::load (back, f) && back.bins == quarter.bins && back.chroma == quarter.chroma && back.loudness == quarter.loudness);
+            juce::MemoryOutputStream mo; mo.write ("FMFP", 4); mo.writeInt (1); mo.writeDouble (20.0); mo.writeInt (1); mo.writeString ("k");
+            for (int i = 0; i < 13; ++i) mo.writeFloat (0.1f);
+            CHECK (f.replaceWithData (mo.getData(), mo.getDataSize()) && ! takematch::load (back, f));
+        }
+    }
+
+    SECTION ("3.8.0 live sample-rate conversion: a 96 kHz project plays on a 48 kHz device - the engine at the project's rate, the device's sound converted (clean, a fixed delay), recording refused");
+    {
+        const double PI2 = 2.0 * juce::MathConstants<double>::pi;
+        // the converter on its own: a tone comes through (error far below the tone), what is above the new half rate goes, nothing is mirrored up
+        auto through = [&] (double inRate, double outRate, double f, std::vector<float>& outv)
+        {
+            RateConverter rc; if (! rc.prepare (inRate, outRate, 1, 500)) return -1.0;
+            std::vector<float> in (500), o ((size_t) rc.maxOutputFor (500) + 2);
+            outv.clear();
+            for (juce::int64 pos = 0; pos < (juce::int64) inRate; pos += 500)
+            {
+                for (int i = 0; i < 500; ++i) in[(size_t) i] = (float) (0.5 * std::sin (PI2 * f * (double) (pos + i) / inRate));
+                const float* ip[1] = { in.data() }; float* op[1] = { o.data() };
+                const int got = rc.process (ip, 500, op, 1);
+                outv.insert (outv.end(), o.begin(), o.begin() + got);
+            }
+            return rc.delaySeconds();
+        };
+        auto errDb = [&] (const std::vector<float>& v, double outRate, double f, double delay, double amp)
+        {
+            double se = 0.0, ss = 0.0;
+            for (size_t j = (size_t) (0.1 * outRate); j < v.size() - (size_t) (0.1 * outRate); ++j)
+            {
+                const double ideal = amp * std::sin (PI2 * f * ((double) j / outRate - delay));
+                se += (v[j] - ideal) * (v[j] - ideal); ss += 0.125;
+            }
+            return 10.0 * std::log10 (se / ss + 1.0e-30);
+        };
+        std::vector<float> v;
+        for (auto pr : std::vector<std::pair<double, double>> { { 96000.0, 48000.0 }, { 48000.0, 96000.0 }, { 88200.0, 48000.0 }, { 48000.0, 44100.0 }, { 44100.0, 96000.0 } })
+            for (double f : { 100.0, 1000.0, 15000.0 })
+            {
+                const double d = through (pr.first, pr.second, f, v);
+                CHECK (d > 0.0 && d < 0.0015);                                                      // (about 1.2 ms)
+                CHECK (errDb (v, pr.second, f, d, 0.5) < -110.0);
+            }
+        {
+            through (96000.0, 48000.0, 30000.0, v);                                                 // above 24 kHz: must not fold back to 18 kHz
+            double ss = 0.0; for (size_t j = 4800; j < v.size(); ++j) ss += (double) v[j] * v[j];
+            CHECK (10.0 * std::log10 (ss / (double) (v.size() - 4800) / 0.125 + 1.0e-30) < -110.0);
+        }
+        CHECK (RateConverter::canConvert (96000.0, 48000.0) && RateConverter::canConvert (44100.0, 192000.0) && ! RateConverter::canConvert (48000.0, 47999.0));
+
+        // the bridge: device blocks of any size (some bigger than the device said), the engine's never above engineBlock, no input ever missing, and a
+        // loop from an input to an output comes back as it went in, a fixed time later
+        for (auto pr : std::vector<std::pair<double, double>> { { 96000.0, 48000.0 }, { 44100.0, 48000.0 }, { 48000.0, 96000.0 } })
+        {
+            RateBridge br; CHECK (br.prepare (pr.first, pr.second, 1, 1, 480));
+            if (pr.first == 96000.0) CHECK (br.engineBlock() == 960);
+            juce::Random rnd (3);
+            std::vector<float> in (2000), out (2000);
+            juce::int64 dev = 0; int tooBig = 0; double se = 0.0, ss = 0.0;
+            const double dly = br.inputDelaySeconds() + br.outputDelaySeconds();
+            for (int k = 0; k < 600; ++k)
+            {
+                const int n = k % 5 == 0 ? 1 + rnd.nextInt (1500) : 470 + rnd.nextInt (11);
+                for (int i = 0; i < n; ++i) in[(size_t) i] = (float) (0.3 * std::sin (PI2 * 440.0 * (double) (dev + i) / pr.second));
+                const float* ip[1] = { in.data() }; float* op[1] = { out.data() };
+                br.run (ip, 1, op, 1, n, nullptr, [&] (const float* const* ei, int, float* const* eo, int, int K)
+                {
+                    if (K > br.engineBlock()) ++tooBig;
+                    for (int i = 0; i < K; ++i) eo[0][i] = ei[0] != nullptr ? ei[0][i] : 0.0f;
+                });
+                for (int i = 0; i < n; ++i)
+                {
+                    const double t = (double) (dev + i) / pr.second;
+                    if (t < 0.05) continue;
+                    const double ideal = 0.3 * std::sin (PI2 * 440.0 * (t - dly));
+                    se += (out[(size_t) i] - ideal) * (out[(size_t) i] - ideal); ss += ideal * ideal;
+                }
+                dev += n;
+            }
+            CHECK (tooBig == 0 && br.inputShortfalls() == 0);
+            CHECK (10.0 * std::log10 (se / ss + 1.0e-30) < -100.0);
+            CHECK (br.inputFifoFill() <= 8 && br.outputFifoFill() <= 4);
+        }
+
+        // the project's rate: what most of its takes are at
+        {
+            Project q;
+            CHECK (q.audioRate() == 0.0);
+            auto& w = *q.takeWindows.front();
+            TakeGroup a; a.sampleRate = 96000.0; TakeGroup b = a; TakeGroup c; c.sampleRate = 48000.0;
+            w.groups.push_back (c); w.groups.push_back (a); w.groups.push_back (b);
+            CHECK (q.audioRate() == 96000.0);
+        }
+
+        // the engine: a 96 kHz take on a 48 kHz device
+        Project q; q.projectFile = tmp.getChildFile ("Src.fermata");
+        q.setInputCount (2); q.setOutputCount (2); q.tracks.clear();
+        const auto ta = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        q.retireAllMixers();
+        const auto ob = q.addBus ("Out", true).id;
+        auto& mq = q.addMixer ("M");
+        q.setSendLevel (mq, ta, ob, 0.0f); mq.busFor (ob)->outFirst.store (0);
+        const auto f96 = tmp.getChildFile ("tone96.wav");
+        {
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::OutputStream> os (f96.createOutputStream().release());
+            std::unique_ptr<juce::AudioFormatWriter> wr (wav.createWriterFor (os.get(), 96000.0, 1, 32, {}, 0));
+            if (wr != nullptr) os.release();
+            juce::AudioBuffer<float> b (1, 96000 * 3);
+            for (int i = 0; i < b.getNumSamples(); ++i) b.setSample (0, i, (float) (0.25 * std::sin (PI2 * 1000.0 * i / 96000.0)));
+            if (wr != nullptr) wr->writeFromAudioSampleBuffer (b, 0, b.getNumSamples());
+        }
+        AudioEngine e (q);
+        e.setMixerThreads (0);
+        CHECK (e.rateFor (48000.0) == 48000.0);                                     // no project rate yet: the device's own
+        e.setProjectRate (96000.0);
+        CHECK (e.rateFor (48000.0) == 96000.0 && e.rateFor (96000.0) == 96000.0 && e.rateFor (47999.0) == 47999.0);
+        e.startForDevice (48000.0, 480, 2, 2);
+        CHECK (e.isConverting() && e.getSampleRate() == 96000.0 && e.getDeviceRate() == 48000.0 && e.getMaxBlock() == 960);
+        CHECK (q.restoreSampleRate == 96000.0 && q.restoreBlock == 960);            // the plug-ins are prepared for the project's rate
+        CHECK (e.converterDelayMs() > 0.5 && e.converterDelayMs() < 1.5);
+        // recording is refused, and says why
+        q.findTrack (ta)->setArmed (true);
+        {
+            const auto err = e.startRecording (*q.takeWindows.front());
+            CHECK (err.contains ("96 kHz") && err.contains ("48 kHz") && err.contains ("cannot record") && ! e.isRecording());
+        }
+        q.findTrack (ta)->setArmed (false);
+        auto playAll = [&] (int deviceBlock, double devRate, std::vector<float>& outL)
+        {
+            outL.clear();
+            PlaySegment sg; sg.trackIndex = 0; sg.file = f96; sg.rate = 96000.0; sg.begin = 0; sg.end = 96000 * 3;
+            auto ses = std::make_unique<PlaybackSession> (std::vector<int> { 1 }, std::vector<PlaySegment> { sg }, 0, 96000 * 3, 96000.0, e.getMaxBlock());
+            const auto err = e.startPlayback (std::move (ses));
+            CHECK (err.isEmpty());
+            std::vector<float> i0 (deviceBlock, 0.0f), i1 (deviceBlock, 0.0f), o0 (deviceBlock), o1 (deviceBlock);
+            for (int i = 0; i < deviceBlock; ++i) i1[(size_t) i] = 0.5f * (float) std::sin (0.05 * i);       // an input nothing is patched to
+            const float* in[2] = { i0.data(), i1.data() }; float* out[2] = { o0.data(), o1.data() };
+            for (int k = 0; k < (int) (devRate * 1.5) / deviceBlock; ++k)
+            {
+                e.deviceBlock (in, 2, out, 2, deviceBlock);
+                outL.insert (outL.end(), o0.begin(), o0.end());
+            }
+            e.stopPlayback();
+        };
+        std::vector<float> conv, direct;
+        playAll (480, 48000.0, conv);
+        CHECK (e.converterShortfalls() == 0);
+        {
+            const float pk = e.takeInputPeak (1);
+            CHECK (pk > 0.45f && pk <= 0.5f);                                       // the input meters still read every input of the device
+        }
+        e.startForDevice (96000.0, 960, 2, 2);                                       // the same project on a 96 kHz device: no converter
+        CHECK (! e.isConverting() && e.getSampleRate() == 96000.0 && e.getMaxBlock() == 960);
+        playAll (960, 96000.0, direct);
+        auto rms = [] (const std::vector<float>& x, size_t a, size_t b) { double s2 = 0.0; for (size_t i = a; i < b; ++i) s2 += (double) x[i] * x[i]; return std::sqrt (s2 / (double) (b - a)); };
+        auto crossings = [] (const std::vector<float>& x, size_t a, size_t b) { int n = 0; for (size_t i = a + 1; i < b; ++i) if ((x[i - 1] < 0.0f) != (x[i] < 0.0f)) ++n; return n; };
+        if (conv.size() >= 48000 && direct.size() >= 96000)
+        {
+            const double rc = rms (conv, 24000, 72000), rd = rms (direct, 48000, 144000);
+            CHECK (rd > 0.05 && std::abs (20.0 * std::log10 (rc / rd)) < 0.05);       // the same level
+            CHECK (std::abs (crossings (conv, 24000, 72000) - 2000) <= 2);             // still 1 kHz at 48 kHz: 2000 crossings a second
+            std::printf ("   (96 kHz take on a 48 kHz device: level %.4f against %.4f direct, %d crossings in a second)\n", rc, rd, crossings (conv, 24000, 72000));
+        }
+        // a take at another rate than the project's is still refused (one rate at a time), with the project's rate in the message
+        e.startForDevice (48000.0, 480, 2, 2);
+        {
+            const auto f48 = makeConstWav (tmp.getChildFile ("const48.wav"), 0.1, 1);
+            PlaySegment sg; sg.trackIndex = 0; sg.file = f48; sg.rate = 48000.0; sg.begin = 0; sg.end = 48000;
+            const auto err = e.startPlayback (std::make_unique<PlaybackSession> (std::vector<int> { 1 }, std::vector<PlaySegment> { sg }, 0, 48000, 48000.0, e.getMaxBlock()));
+            CHECK (err.contains ("this project plays at 96000 Hz"));
+        }
+        // live monitoring through both converters: input 1 of the device to output 1, a fixed 2-3 ms later, at the strip's level
+        {
+            std::vector<float> i0 (480), i1 (480, 0.0f), o0 (480), o1 (480), got;
+            const float* in[2] = { i0.data(), i1.data() }; float* out[2] = { o0.data(), o1.data() };
+            for (int k = 0; k < 100; ++k)
+            {
+                for (int i = 0; i < 480; ++i) i0[(size_t) i] = (float) (0.3 * std::sin (PI2 * 440.0 * (double) (k * 480 + i) / 48000.0));
+                e.deviceBlock (in, 2, out, 2, 480);
+                got.insert (got.end(), o0.begin(), o0.end());
+            }
+            // find the delay and gain by fitting the input to the output over the last half second
+            double bestErr = 1.0e9, bestD = 0.0, bestG = 0.0;
+            for (double d = 0.0; d < 0.005; d += 1.0 / 480000.0)
+            {
+                double num = 0.0, den = 0.0;
+                for (size_t j = 24000; j < got.size(); j += 3) { const double ref = 0.3 * std::sin (PI2 * 440.0 * ((double) j / 48000.0 - d)); num += got[j] * ref; den += ref * ref; }
+                const double g = num / den; double err = 0.0;
+                for (size_t j = 24000; j < got.size(); j += 3) { const double ref = g * 0.3 * std::sin (PI2 * 440.0 * ((double) j / 48000.0 - d)); err += (got[j] - ref) * (got[j] - ref); }
+                if (err < bestErr) { bestErr = err; bestD = d; bestG = g; }
+            }
+            CHECK (bestD > 0.0018 && bestD < 0.0035 && bestG > 0.3);
+            std::printf ("   (input to output through both converters: %.2f ms, gain %.3f)\n", bestD * 1000.0, bestG);
+        }
+        // prepared without a device (an offline render, the tests): no converter
+        e.prepare (48000.0, 256);
+        CHECK (! e.isConverting() && e.getDeviceRate() == 48000.0);
+    }
+
+    SECTION ("3.8.0 the take chart: the piece's bars, which bars how many takes have (duds never count), the runs and their wording, saved with the window");
+    {
+        TakeWindowDef w;
+        auto add = [&] (int number, int in, int out, bool dud = false) { TakeGroup g; g.id = juce::Uuid(); g.number = number; g.barIn = in; g.barOut = out; g.dud = dud; w.groups.push_back (g); };
+        CHECK (coverage::lastBar (w) == 0 && coverage::runs (w).empty());
+        add (1, 1, 50); add (2, 21, 60); add (3, 51, 58); add (4, 1, 20); add (5, 30, 40, true); add (6, 0, 0); add (7, 59, 0);   // 7: one bar only (OUT not given)
+        CHECK (coverage::lastBar (w) == 60);                                      // nothing about the piece entered: to the last bar any take reaches
+        w.pieceBars = 100;
+        CHECK (coverage::lastBar (w) == 100);
+        const auto c = coverage::counts (w);
+        CHECK (c.size() == 100 && c[0] == 2 && c[19] == 2 && c[20] == 2 && c[34] == 2 && c[50] == 2 && c[58] == 2 && c[59] == 1 && c[60] == 0 && c[99] == 0);   // (the dud adds nothing at bar 35)
+        const auto rs = coverage::runs (w);
+        // 1-20: takes 1, 4; 21-50: 1, 2; 51-58: 2, 3; 59: 2, 7; 60: 2; 61-100: none
+        CHECK (rs.size() == 6);
+        if (rs.size() == 6)
+        {
+            CHECK (rs[0].from == 1 && rs[0].to == 20 && rs[0].takes == std::vector<int> ({ 1, 4 }));
+            CHECK (rs[1].from == 21 && rs[1].to == 50 && rs[1].takes == std::vector<int> ({ 1, 2 }));
+            CHECK (rs[2].from == 51 && rs[2].to == 58 && rs[2].takes == std::vector<int> ({ 2, 3 }));
+            CHECK (rs[3].from == 59 && rs[3].to == 59 && rs[3].takes == std::vector<int> ({ 2, 7 }));
+            CHECK (rs[4].from == 60 && rs[4].to == 60 && rs[4].count() == 1);
+            CHECK (rs[5].from == 61 && rs[5].to == 100 && rs[5].count() == 0);
+            CHECK (coverage::describe (rs[5]) == "Bars 61 - 100: no take");
+            CHECK (coverage::describe (rs[4]) == "Bar 60: only take 2");
+            CHECK (coverage::describe (rs[0]) == "Bars 1 - 20: 2 takes (1, 4)");
+            int bars = 0; for (auto& r : rs) bars += r.to - r.from + 1;
+            CHECK (bars == 100);                                                  // every bar in exactly one run
+        }
+        // a piece shorter than a take's bars: the chart still reaches the take's last bar
+        w.pieceBars = 40;
+        CHECK (coverage::lastBar (w) == 60);
+        // saved with the take window, and an undo step
+        Project q; q.projectFile = tmp.getChildFile ("Chart.fermata");
+        auto& tw2 = *q.takeWindows.front();
+        const auto h0 = Project::undoHash (tw2);
+        tw2.pieceBars = 120;
+        CHECK (Project::undoHash (tw2) != h0);
+        Project back; CHECK (back.fromVar (q.toVar()) && back.takeWindows.front()->pieceBars == 120);
+        tw2.pieceBars = 0;
+        Project back0; CHECK (back0.fromVar (q.toVar()) && back0.takeWindows.front()->pieceBars == 0);
     }
 
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

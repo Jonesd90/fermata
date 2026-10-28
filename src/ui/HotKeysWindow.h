@@ -58,14 +58,21 @@ inline const std::vector<Line>& lines()
         { "Take window", "Shift+Left / Shift+Right", "Move the playhead 10 ms earlier / later." },
         { "Take window", "Up / Down", "All tracks smaller / bigger." },
         { "Take window", ". / ,", "Bigger / smaller waveforms (the take and edit windows share the size)." },
+        { "Take window", "Ctrl+B", "The bars and notes box of the take clicked last - also the take being recorded: type its IN Bar, Tab, its OUT Bar, Enter." },
+        { "Take window", "Shift+B", "Open or close the take chart: every take as a line along the piece's bars, the bars with no take / only one / two / three or more lit up and listed." },
         { "Take window", "Ctrl+A", "Select every take." },
 
         // ---------------------------------------------------------------------------------------------------- take window: a take's bars and notes box
-        { "Take window: a take's bars and notes box", "", "Opened by double-clicking a take's audio or right-clicking the strip above its tracks (also while it records)." },
+        { "Take window: a take's bars and notes box", "", "Opened by Ctrl+B (the take clicked last), double-clicking a take's audio or right-clicking the strip above its tracks (also while it records)." },
         { "Take window: a take's bars and notes box", "Enter", "In IN Bar: on to OUT Bar. In OUT Bar: save." },
         { "Take window: a take's bars and notes box", "Tab", "On to the next box (IN, OUT, Notes, the buttons)." },
         { "Take window: a take's bars and notes box", "Ctrl+Enter", "In Notes: save (Enter there starts a new line)." },
         { "Take window: a take's bars and notes box", "Esc", "Close without saving." },
+        // ---------------------------------------------------------------------------------------------------- the take chart (3.8.0)
+        { "Take chart", "", "Drops down from BARS at the left of a take window's bar strip (click it), or Shift+B. No take / Only 1 / 2 takes / 3+ light those bars up and list them." },
+        { "Take chart", "BARS / Shift+B / Esc", "Put it away (also its Close button)." },
+        { "Take chart", "click", "A take's line: that bar in that take. The ALL line, or a line of the list: that bar (the take window goes there)." },
+        { "Take chart", "drag", "Its bottom-right corner: bigger or smaller (it keeps the size)." },
 
         // ---------------------------------------------------------------------------------------------------- take window: with the mouse
         { "Take window: with the mouse", "Ctrl+click", "A take: add it to the selected takes, or take it out (the selection Bounce Out's \"Selected takes\" uses). Ctrl + Shift + click does the same." },
@@ -74,7 +81,8 @@ inline const std::vector<Line>& lines()
         { "Take window: with the mouse", "Alt+click", "Select only the take under the mouse (or none)." },
         { "Take window: with the mouse", "Ctrl+Alt+drag", "Across a take: marks 1 and 2 on only the tracks the drag covers." },
         { "Take window: with the mouse", "Ctrl+Shift+drag", "A take's clip up or down: move the clips on that track to another track (those of all the selected takes, if this take is one of them)." },
-        { "Take window: with the mouse", "click", "A bar on the bar-coverage map (the strip under the head, there once a take has bars): the takes that have it are framed and the playhead goes to it." },
+        { "Take window: with the mouse", "click", "A bar on the bar strip (under the head): the takes that have it are framed and the playhead goes to it. BARS at its left: the take chart." },
+        { "Take window: with the mouse", "right-click", "The bar strip: how many bars the piece has (the strip is red until you enter it)." },
         { "Take window: with the mouse", "double-click", "A take's audio: its bars and notes box." },
         { "Take window: with the mouse", "double-click", "The strip above a take's tracks: Take settings (rename the take and its files)." },
         { "Take window: with the mouse", "right-click", "A take's audio: re-draw the waveform, bars and notes, room tone, or use it as the edit window's visual guide." },
@@ -120,7 +128,7 @@ inline const std::vector<Line>& lines()
         { "Edit window: with the mouse", "double-click", "A piece: the Trim window, on the join before it." },
         { "Edit window: with the mouse", "double-click", "A numbered flag: the Trim window, on that join." },
         { "Edit window: with the mouse", "right-click", "A piece: volume changes (to the next edit, between marks 1 and 2, between the fades), remove them, delete an overdub, re-draw the waveform." },
-        { "Edit window: with the mouse", "right-click", "A piece, with marks 1 and 2 inside it: Find other versions - every place in the take window's takes where the marked music was played; Audition plays each in place, Use this one puts it in (everything after moves to fit; Ctrl+Z takes it out)." },
+        { "Edit window: with the mouse", "right-click", "A piece, with marks 1 and 2 inside it: Find other versions - every place in the take window's takes where the marked music was played (\"possible\" ones: a false start, or the same notes elsewhere); Audition plays each in place, Use this one puts it in (everything after moves to fit; Ctrl+Z takes it out)." },
         { "Edit window: with the mouse", "right-click", "A track name: colour, remove tracks from this edit." },
         { "Edit window: with the mouse", "right-click", "The visual guide: move its start (to 0:00 or the playhead), hide it, remove it." },
         { "Edit window: with the mouse", "right-click or Shift+click or Ctrl+click", "An automation point (Automation on): delete it." },

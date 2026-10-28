@@ -2,6 +2,7 @@
 #include "AppContext.h"
 #include "RecordMonitor.h"
 #include "BarCoverage.h"
+#include "TakeChart.h"
 #include "Uikit.h"
 #include "TimeReadout.h"
 
@@ -45,8 +46,15 @@ private:
     int searchBar = 0;
     /** J / Shift + J (3.4.0): the same place in the next / previous take of this window, found by matching the music (TakeMatchService). */
     void jumpToSamePlace (bool forward);
-    /** A click on the bar-coverage map: frame the takes that have the bar, and go to it. */
-    void goToBar (int bar);
+    /** A click on the bar-coverage map or the take chart: frame the takes that have the bar, and go to it (in 'inTake' when it has the bar). */
+    void goToBar (int bar, const juce::Uuid& inTake = juce::Uuid::null());
+    /** A click on BARS at the left of the bar strip, or Shift+B (3.8.0): drops the take chart down from that corner, or puts it away. */
+    void toggleTakeChart();
+    void closeTakeChart();
+    void placeTakeChart();                                    // under the bar strip, from its left corner, at the size it was last given (within the window)
+    /** A right-click on the bar strip (3.8.0): asks how many bars the piece has. */
+    void askPieceBars();
+    std::unique_ptr<TakeChartComponent> chart;                // the take chart, while it is down
     void playMarked();
     void loopChanged();                  // the Loop button / key L
     bool markedRange (juce::Uuid& take, double& in, double& out) const;

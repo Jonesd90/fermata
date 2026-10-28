@@ -879,7 +879,19 @@ void MainComponent::timerCallback()
         projectBox.setText (pn.isEmpty() ? juce::String ("NO PROJECT") : pn);
         projectBox.setTooltip (app.project.projectFile.getFullPathName());
         auto* dev = app.devices.getCurrentAudioDevice();
-        rateBox.setText (dev != nullptr ? juce::String (dev->getCurrentSampleRate() / 1000.0, (std::fmod (dev->getCurrentSampleRate(), 1000.0) == 0.0 ? 0 : 1)) + " KHZ" : juce::String ("-"));
+        const int rateBefore = rateBox.wantedWidth();
+        auto kHz = [] (double r) { return juce::String (r / 1000.0, (std::fmod (r, 1000.0) == 0.0 ? 0 : 1)); };
+        if (dev != nullptr && app.engine.isConverting())          // 3.8.0: the project's rate, converted to the device's on the way out
+        {
+            rateBox.setText (kHz (app.engine.getSampleRate()) + " -> " + kHz (app.engine.getDeviceRate()) + " KHZ", theme::warn);
+            rateBox.setTooltip (app.converterNote());
+        }
+        else
+        {
+            rateBox.setText (dev != nullptr ? kHz (dev->getCurrentSampleRate()) + " KHZ" : juce::String ("-"));
+            rateBox.setTooltip ("The audio device's sample rate");
+        }
+        if (rateBox.wantedWidth() != rateBefore) resized();
         depthBox.setText (dev != nullptr ? juce::String (dev->getCurrentBitDepth()) + " BIT" : juce::String ("-"));
         const auto now = juce::Time::getMillisecondCounter();
         if (now - lastDiskCheck > 2000 || lastDiskCheck == 0)              // the free space on the project's drive (asked every 2 seconds)
@@ -923,6 +935,9 @@ void MainComponent::timerCallback()
              + "   in " + juce::String (dev->getActiveInputChannels().countNumberOfSetBits())
              + " / out " + juce::String (dev->getActiveOutputChannels().countNumberOfSetBits());
         if (app.engine.getBackupFolder() != juce::File()) nums += "   2nd drive on";
+        if (app.engine.isConverting())                                  // 3.8.0
+            nums += "   CONVERTING " + juce::String (app.engine.getSampleRate() / 1000.0, 1).trimCharactersAtEnd ("0").trimCharactersAtEnd (".") + " kHz project -> "
+                  + juce::String (dev->getCurrentSampleRate() / 1000.0, 1).trimCharactersAtEnd ("0").trimCharactersAtEnd (".") + " kHz device (+" + juce::String (app.engine.converterDelayMs(), 1) + " ms, no recording)";
         if (rec && app.engine.overruns() > 0) s = "DISK OVERRUN - " + lostText (app.engine.samplesLost(), app.engine.getSampleRate()) + " of audio lost (silence in its place)   " + s;
         if (rec && diskAlarm.isNotEmpty()) s = diskAlarm + "   " + s;
         if (const auto problem = app.engine.recordingProblem(); rec && problem.isNotEmpty())

@@ -332,6 +332,13 @@ public:
     void syncWithDevice();
     /** The Audio settings window's Apply button: remember the device setup and re-plan the engine. */
     void applyAudioSettings();
+    /** 3.8.0: tells the engine the project's sample rate (Project::audioRate) and, when that changes the rate the engine should run at on this device (a
+        96 kHz project on a 48 kHz device: the engine at 96 kHz behind the live converter; no takes yet: the device's own rate), restarts the engine on the
+        device. Never while recording or playing (it waits). Called when a project is opened or started, and once a second (a first take or an import
+        can change the project's rate). Also says once when the converter comes on. */
+    void matchEngineRate();
+    /** While the converter is on, a sentence about it for the Audio settings window and the main window ("" when it is off). */
+    juce::String converterNote() const;
 
     // ---- engineer audition and copying mixes (the FIRST mixer is the engineer's) ----
     juce::Uuid auditionId;                                         // null = the engineer hears their own mixer
@@ -395,6 +402,7 @@ public:
     Lamp deviceLamp() const;
     std::function<void()> showRecordMonitor;          // (set by the application) opens the Recording monitor window
     int quietSeconds = 0;                             // how many seconds in a row the device has been "running" but delivered no block (a hung driver: see tickLoad)
+    bool wasConverting = false;                       // (matchEngineRate: the converter was on at the last look)
     /** quick: an automatic save - a snapshot here, written on the saver's thread (see BackgroundSaver). Save from the menu, closing, Save and
         quit: a full one, written there and then (after the saver has finished what it was given).
         True when the project was written (or handed to the saver), or there was nothing to write (no project file yet). False when the save

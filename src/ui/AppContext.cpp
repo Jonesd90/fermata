@@ -64,7 +64,7 @@ AppContext::AppContext()
         }
     };
     watcher.startTimer (100);
-    loadTicker.fn = [this] { tickLoad(); };
+    loadTicker.fn = [this] { tickLoad(); matchEngineRate(); };
     loadTicker.startTimer (1000);
     undoTicker.fn = [this] { if (undoHold <= 0) { BusyLabel busy ("making an undo step"); project.undoTick (engine.isRecording()); } };
     undoTicker.startTimer (250);
@@ -330,8 +330,8 @@ juce::String AppContext::pasteMix (const juce::Uuid& toId)
     if (mixClipName.isEmpty()) return "Nothing has been copied yet.";
     const auto parts = mixClipParts; const bool withInserts = true;
     auto* from = findMixer (mixClipFrom);
-    double sr = 48000.0; int block = 512;
-    if (auto* d = devices.getCurrentAudioDevice()) { sr = d->getCurrentSampleRate(); block = juce::jmax (64, d->getCurrentBufferSizeSamples()); }
+    const double sr = engine.getSampleRate() > 0.0 ? engine.getSampleRate() : 48000.0;      // (the engine's rate and blocks: with the converter on, not the device's)
+    const int block = engine.getMaxBlock();
     const auto snap = mixClipboard;
     std::vector<std::pair<juce::Uuid, juce::var>> undo;
     juce::StringArray names;
@@ -356,8 +356,8 @@ juce::String AppContext::pasteMix (const juce::Uuid& toId)
 juce::String AppContext::undoCopyMix()
 {
     if (mixUndo.empty()) return "Nothing to undo.";
-    double sr = 48000.0; int block = 512;
-    if (auto* d = devices.getCurrentAudioDevice()) { sr = d->getCurrentSampleRate(); block = juce::jmax (64, d->getCurrentBufferSizeSamples()); }
+    const double sr = engine.getSampleRate() > 0.0 ? engine.getSampleRate() : 48000.0;
+    const int block = engine.getMaxBlock();
     juce::StringArray names;
     for (auto& [id, snap] : mixUndo)
         if (auto* m = findMixer (id)) { project.applyMix (*m, snap, sr, block); names.add (m->name); }
@@ -403,6 +403,42 @@ void AppContext::applyAudioSettings()
     props.saveIfNeeded();
     engine.rebuildPlan();
     if (refreshTitles) refreshTitles();
+}
+
+static juce::String kHzText (double r) { return juce::String (r / 1000.0, std::fmod (r, 1000.0) == 0.0 ? 0 : 1) + " kHz"; }
+
+juce::String AppContext::converterNote() const
+{
+    if (! engine.isConverting()) return {};
+    const double pr = engine.getSampleRate();
+    return "This project is " + kHzText (pr) + " and the audio device runs at " + kHzText (engine.getDeviceRate()) + ": Fermata plays, mixes and runs the plug-ins at "
+           + kHzText (pr) + " and converts what you hear to " + kHzText (engine.getDeviceRate()) + " on its way out (" + juce::String (engine.converterDelayMs(), 1)
+           + " ms later). Recording needs the device at " + kHzText (pr) + ".";
+}
+
+void AppContext::matchEngineRate()
+{
+    engine.setProjectRate (project.audioRate());
+    auto* dev = devices.getCurrentAudioDevice();
+    if (dev != nullptr && engine.isRunning() && ! engine.isRecording() && ! engine.isPlaying() && ! engine.anyFinishing()
+        && std::abs (engine.rateFor (dev->getCurrentSampleRate()) - engine.getSampleRate()) > 0.5)
+    {
+        // the engine is at the wrong rate for this project on this device: started again on the device (JUCE stops it, then starts it, which prepares
+        // the engine - and every plug-in - for the new rate: see AudioEngine::startForDevice)
+        juce::Logger::writeToLog ("Engine: the project's audio is " + juce::String (engine.getProjectRate(), 0) + " Hz (0 = none yet), the device runs at "
+                                  + juce::String (dev->getCurrentSampleRate(), 0) + " Hz, the engine at " + juce::String (engine.getSampleRate(), 0) + " Hz - starting it again");
+        devices.removeAudioCallback (&engine);
+        devices.addAudioCallback (&engine);
+    }
+    const bool conv = engine.isConverting();
+    if (conv != wasConverting)
+    {
+        wasConverting = conv;
+        if (conv) setNotice ("RATE CONVERTER ON: the project is " + kHzText (engine.getSampleRate()) + ", the device " + kHzText (engine.getDeviceRate())
+                             + " - what you hear is converted live. Recording needs the device at " + kHzText (engine.getSampleRate()) + ".");
+        juce::Logger::writeToLog (conv ? "Rate converter on: " + converterNote() : juce::String ("Rate converter off: the engine runs at the device's rate"));
+        if (refreshTitles) refreshTitles();
+    }
 }
 
 void AppContext::timerCallback()
@@ -565,6 +601,7 @@ AppContext::Lamp AppContext::deviceLamp() const
     if (quietSeconds >= 2) { l.level = 2; l.word = "NOT DELIVERING"; l.detail = "The device says it is running but has delivered no sound for " + juce::String (quietSeconds) + " s (the driver has stalled?). " + name; return l; }
     if (m.recording && m.deviceStops > 0) { l.level = 1; l.word = juce::String (m.deviceStops) + (m.deviceStops == 1 ? " RESTART" : " RESTARTS"); l.detail = "The device stopped and started again during this take: the sound while it was down is missing. " + name; return l; }
     if (! m.recording && m.everRecorded && m.deviceStops > 0) { l.level = 1; l.word = "RESTARTED"; l.detail = "The device stopped and started again during the last take. " + name; return l; }
+    if (engine.isConverting()) { l.level = 1; l.word = "CONVERTING"; l.detail = "Running: " + name + ". " + converterNote(); return l; }      // (3.8.0: it plays, but cannot record)
     l.level = 0; l.word = juce::String (dev->getCurrentSampleRate() / 1000.0, dev->getCurrentSampleRate() == std::floor (dev->getCurrentSampleRate() / 1000.0) * 1000.0 ? 0 : 1) + " KHZ";
     l.detail = "Running: " + name + (lastLoad.late > 0 ? ". " + juce::String (lastLoad.late) + " late blocks in the last second" : juce::String()) + ".";
     return l;
@@ -593,6 +630,7 @@ void AppContext::tickLoad()
              << juce::String (minuteLoad.average, 1) << "%, peak " << juce::String (minuteLoad.peak, 1) << "%, "
              << minuteLoad.late << " of " << minuteLoad.blocks << " blocks late";
         if (dev != nullptr) line << ", buffer " << dev->getCurrentBufferSizeSamples() << " at " << juce::String (dev->getCurrentSampleRate(), 0) << " Hz, driver xruns " << dev->getXRunCount();
+        if (engine.isConverting()) line << ", converted live from the project's " << juce::String (engine.getSampleRate(), 0) << " Hz";
         line << ", mixer helpers " << engine.mixerThreads();
         if (minuteLoad.recordBufferPeak > 0.0f || rec || takeEnded) line << ", recording buffer peak " << juce::String (minuteLoad.recordBufferPeak, 1) << "% full";
         if (engine.isPlaying()) line << ", playback underruns " << engine.playbackUnderruns();
@@ -756,6 +794,7 @@ void AppContext::afterProjectReplaced()
     lastAutosaveMs = juce::Time::getMillisecondCounter();
     syncWithDevice();
     engine.rebuildPlan();
+    matchEngineRate();                                 // 3.8.0: the engine at this project's rate (the converter on or off for this device)
     freeRetiredMixersSoon();                           // the mixers (and plug-ins) of the project that was open before
     recordTarget = project.takeWindows.empty() ? juce::Uuid::null() : project.takeWindows.front()->id;
     if (project.preampDevices.empty())                 // a new project: use the devices of the rig, as last set up

@@ -124,6 +124,7 @@ public:
     double pixelsPerSecond = 12.0;
     int barHighlight = 0;                       // "Search for bar": takes that contain this bar get a blue-green frame (0 = off)
     std::vector<juce::Uuid> selectedTakes;      // takes picked for Bounce Out (click one; Ctrl + click adds or removes) - drawn a little darker
+    juce::Uuid lastClickedTake;                 // the take clicked last, with any button - also the one being recorded, which cannot be selected (Ctrl+B: its bars, 3.8.0)
     std::vector<juce::Uuid> selectedTracks;     // track names picked (click; Shift + click: every track in between; Ctrl + click: one more / less) - right-click: remove them
     juce::Uuid trackAnchor;
     /** A click on a track's name: on its own = only this track (or none, if it was the only one); Shift = every track from the last one clicked to
@@ -645,6 +646,7 @@ public:
         grabKeyboardFocus();
         auto* w = def();
         if (w == nullptr) return;
+        if (auto* hit = groupAt (e.getPosition(), true)) lastClickedTake = hit->id;      // (Ctrl+B: the bars of the take clicked last, also one still recording)
         markers.setNameWidth (viewport.getViewPositionX() + kNameW);
         markers.yOffset = hdrShift;
         if (w->showMarkers && markers.mouseDown (e)) return;                                 // the marker strip along the top: right-click for Add Marker / Clear All; drag a marker
@@ -1405,6 +1407,19 @@ private:
         app.project.changed(); repaint();
     }
 
+    /** Ctrl+B (3.8.0): the bars and notes box of the take clicked last - also the one being recorded. False (and nothing happens) when no take of
+        this window has been clicked, or it has gone. The box opens at the take's start (or at the left of the view when that is scrolled away). */
+    bool openBarsForClicked()
+    {
+        auto* w = def();
+        if (w == nullptr || lastClickedTake.isNull()) return false;
+        auto* g = w->findGroup (lastClickedTake);
+        if (g == nullptr) return false;
+        const int x = juce::jmax (xOf (g->startSeconds), viewport.getViewPositionX() + kNameW) + 8;
+        showBars (g->id, { x, viewport.getViewPositionY() + kRulerH + 4 });
+        return true;
+    }
+
     /** Right-click on a take (also one that is still being recorded): a small box with IN Bar and OUT Bar. It does not block anything, so Record / Stop still work;
         the cursor is already in the IN box. Enter in IN goes to OUT, Enter in OUT saves, Esc closes. "More..." leads to the rename / remove menu. */
     void showBars (const juce::Uuid& gid, juce::Point<int> where)
@@ -1740,7 +1755,9 @@ struct ScrollRepaintViewport : public juce::Viewport
 TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) : app (a), windowId (wid), recordLamps (a), barMap (a)
 {
     addAndMakeVisible (recordLamps);
-    addChildComponent (barMap); barMap.windowId = wid; barMap.onBarClicked = [this] (int bar) { goToBar (bar); };
+    addAndMakeVisible (barMap); barMap.windowId = wid; barMap.onBarClicked = [this] (int bar) { goToBar (bar); };
+    barMap.onLabelClicked = [this] { toggleTakeChart(); };              // (3.8.0: BARS drops the take chart down)
+    barMap.onAskBars = [this] { askPieceBars(); };                       // (right-click: how many bars the piece has)
     auto* vp = new ScrollRepaintViewport();
     timeline.reset (new TakeTimeline (app, windowId, *vp));
     vp->setViewedComponent (timeline.get(), false);
@@ -1921,7 +1938,7 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     setSize (juce::jlimit (900, 1700, juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea.getWidth() - 60), 520);
 }
 
-TakeWindowComponent::~TakeWindowComponent() { app.clearTransportHandler (this); app.project.removeChangeListener (this); }
+TakeWindowComponent::~TakeWindowComponent() { chart.reset(); app.clearTransportHandler (this); app.project.removeChangeListener (this); }
 
 bool TakeWindowComponent::isInterestedInFileDrag (const juce::StringArray& files)
 {
@@ -2005,9 +2022,9 @@ void TakeWindowComponent::resized()
     }
     r.removeFromTop (headH + 4);
     // the bar-coverage map (3.4.0): a strip under the head while any take has bars entered
-    barMap.setVisible (barMap.hasBars());
-    if (barMap.isVisible()) { barMap.setBounds (r.removeFromTop (BarCoverageStrip::kHeight)); r.removeFromTop (3); }
+    barMap.setBounds (r.removeFromTop (BarCoverageStrip::kHeight)); r.removeFromTop (3);         // (always there since 3.8.0: red until the piece's bars are entered)
     if (viewportOwner != nullptr) { viewportOwner->setBounds (r); if (timeline != nullptr) timeline->applyHeightLevel(); }
+    placeTakeChart();                                              // (3.8.0: the take chart, while it is down, stays at the strip's corner)
 }
 
 // ----------------------------------------------------------------------------- editing actions
@@ -2240,6 +2257,10 @@ bool TakeWindowComponent::keyPressed (const juce::KeyPress& k)
     {   // Ctrl + A: select every take (then Ctrl + Shift + drag moves all their clips on a track onto another track)
         const auto km = k.getModifiers();
         if ((km.isCtrlDown() || km.isCommandDown()) && ! km.isAltDown() && ! km.isShiftDown() && (k.getKeyCode() == 'A' || k.getKeyCode() == 'a')) { timeline->selectAllTakes(); return true; }
+        // Ctrl + B: the bars and notes box of the take clicked last, also the one being recorded (3.8.0); Shift + B: the take chart (B alone is the meter bridge)
+        if ((km.isCtrlDown() || km.isCommandDown()) && ! km.isAltDown() && ! km.isShiftDown() && (k.getKeyCode() == 'B' || k.getKeyCode() == 'b')) { timeline->openBarsForClicked(); return true; }
+        if (km.isShiftDown() && ! km.isCtrlDown() && ! km.isCommandDown() && ! km.isAltDown() && (k.getKeyCode() == 'B' || k.getKeyCode() == 'b')) { toggleTakeChart(); return true; }
+        if (k == juce::KeyPress::escapeKey && chart != nullptr) { closeTakeChart(); return true; }
     }
     const auto c = juce::CharacterFunctions::toLowerCase (k.getTextCharacter());
     if (k == juce::KeyPress::spaceKey)                                  // Space plays (or stops playing) from the playhead. A recording is stopped by AppContext,
@@ -2289,7 +2310,7 @@ void TakeWindowComponent::changeListenerCallback (juce::ChangeBroadcaster*)
 {
     const auto t0 = paintprof::enabled() ? juce::Time::getMillisecondCounterHiRes() : 0.0;
     fillSendBox(); repaint();
-    if (barMap.isVisible() != barMap.hasBars()) resized(); else barMap.repaint();     // (the bar map comes and goes with the takes' bars)
+    barMap.repaint();
     if (paintprof::enabled()) paintprof::paintDone ("take window change", juce::Time::getMillisecondCounterHiRes() - t0);
 }
 
@@ -2359,14 +2380,16 @@ void TakeWindowComponent::setBarSearch (int bar)
     barSearchButton.setToggleState (true, juce::dontSendNotification);
 }
 
-void TakeWindowComponent::goToBar (int bar)
+void TakeWindowComponent::goToBar (int bar, const juce::Uuid& inTake)
 {
     auto* w = def();
     if (w == nullptr || bar <= 0) return;
     setBarSearch (bar);
-    // the take to go to: the playhead's take if it has the bar, else the first take that has it (duds last)
+    // the take to go to: the one asked for (a take's line in the take chart), else the playhead's take if it has the bar, else the first take that has
+    // it (duds last)
     const TakeGroup* target = nullptr;
-    if (auto* cur = w->takeAt (w->playheadSeconds); cur != nullptr && barsContain (cur->barIn, cur->barOut, bar)) target = cur;
+    if (auto* asked = w->findGroup (inTake); asked != nullptr && barsContain (asked->barIn, asked->barOut, bar)) target = asked;
+    if (target == nullptr) if (auto* cur = w->takeAt (w->playheadSeconds); cur != nullptr && barsContain (cur->barIn, cur->barOut, bar)) target = cur;
     if (target == nullptr) for (auto& g : w->groups) if (! g.dud && barsContain (g.barIn, g.barOut, bar)) { target = &g; break; }
     if (target == nullptr) for (auto& g : w->groups) if (barsContain (g.barIn, g.barOut, bar)) { target = &g; break; }
     if (target == nullptr) return;
@@ -2374,6 +2397,75 @@ void TakeWindowComponent::goToBar (int bar)
     const int bars = juce::jmax (target->barIn, target->barOut) - target->barIn + 1;
     const double at = target->lengthSeconds() * (double) (bar - target->barIn) / (double) juce::jmax (1, bars);
     goTo (target->startSeconds + at);
+}
+
+static juce::Point<int>& takeChartSize() { static juce::Point<int> sz (900, 480); return sz; }      // (the size the take chart was last given: it comes back so)
+
+void TakeWindowComponent::toggleTakeChart()
+{
+    if (chart != nullptr) { closeTakeChart(); return; }
+    if (def() == nullptr) return;
+    chart = std::make_unique<TakeChartComponent> (app, windowId);
+    juce::Component::SafePointer<TakeWindowComponent> safe (this);
+    chart->onGoTo = [safe] (int bar, const juce::Uuid& take) { if (safe != nullptr) safe->goToBar (bar, take); };
+    chart->onClose = [safe] { juce::MessageManager::callAsync ([safe] { if (safe != nullptr) safe->closeTakeChart(); }); };      // (not inside its own button's click)
+    chart->onDoneTyping = [safe] { if (safe != nullptr && safe->timeline != nullptr) safe->timeline->grabKeyboardFocus(); };
+    chart->setSize (takeChartSize().x, takeChartSize().y);
+    addAndMakeVisible (chart.get());
+    placeTakeChart();
+    chart->onResized = [safe]
+    {
+        if (safe == nullptr || safe->chart == nullptr) return;
+        takeChartSize() = { safe->chart->getWidth(), safe->chart->getHeight() };   // (its corner was dragged: kept for next time)
+    };
+    barMap.chartOpen = true; barMap.repaint();
+}
+
+void TakeWindowComponent::placeTakeChart()
+{
+    if (chart == nullptr) return;
+    const int x = barMap.getX(), y = barMap.getBottom();
+    const int roomW = juce::jmax (200, getWidth() - x - 4), roomH = juce::jmax (150, getHeight() - y - 4);
+    const int w = juce::jlimit (juce::jmin (520, roomW), roomW, chart->getWidth());
+    const int h = juce::jlimit (juce::jmin (300, roomH), roomH, chart->getHeight());
+    auto keep = std::move (chart->onResized); chart->onResized = nullptr;      // (placing it is not the user resizing it)
+    chart->setBounds (x, y, w, h);
+    chart->onResized = std::move (keep);
+    chart->toFront (false);
+}
+
+void TakeWindowComponent::closeTakeChart()
+{
+    if (chart == nullptr) return;
+    chart.reset();
+    barMap.chartOpen = false; barMap.repaint();
+    if (timeline != nullptr) timeline->grabKeyboardFocus();
+}
+
+void TakeWindowComponent::askPieceBars()
+{
+    auto* w = def();
+    if (w == nullptr) return;
+    auto* aw = new juce::AlertWindow ("Bars in the piece", "How many bars does " + w->name + " have? The bar strip and the take chart then run from bar 1 to there, "
+                                      "so the bars no take has recorded show too. (0 or empty: the strip goes back to red.)", juce::MessageBoxIconType::NoIcon);
+    aw->addTextEditor ("bars", w->pieceBars > 0 ? juce::String (w->pieceBars) : juce::String(), "Bars");
+    if (auto* te = aw->getTextEditor ("bars")) { te->setInputRestrictions (5, "0123456789"); te->selectAll(); }
+    aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    juce::Component::SafePointer<TakeWindowComponent> safe (this);
+    aw->enterModalState (true, juce::ModalCallbackFunction::create ([safe, aw] (int r)
+    {
+        const int bars = juce::jlimit (0, 99999, aw->getTextEditorContents ("bars").trim().getIntValue());
+        delete aw;
+        if (safe == nullptr || r != 1) return;
+        if (auto* d = safe->def(); d != nullptr && d->pieceBars != bars)
+        {
+            d->pieceBars = bars;
+            safe->app.project.changed();                                 // (saved with the window; an undo step; the strip and the chart follow)
+        }
+        if (safe->timeline != nullptr) safe->timeline->grabKeyboardFocus();
+    }));
+    if (auto* te = aw->getTextEditor ("bars")) te->grabKeyboardFocus();
 }
 
 void TakeWindowComponent::jumpToSamePlace (bool forward)

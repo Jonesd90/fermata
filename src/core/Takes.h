@@ -71,6 +71,7 @@ struct TakeWindowDef
     bool showMarkers = true;                      // the Markers tick box
     std::vector<Marker> markers;                  // quick markers along the top of this window (not part of undo)
     std::vector<juce::Uuid> hiddenTracks;         // tracks removed from THIS window's view (other windows and the mixers are not touched)
+    int pieceBars = 0;                            // how many bars the piece has (the take chart, 3.8.0); 0 = not entered (the chart then runs to the last bar any take reaches)
 
     bool isHidden (const juce::Uuid& trackId) const
     {
@@ -180,4 +181,59 @@ struct TakeWindowDef
         return ok;
     }
 };
+/** Bar coverage (3.8.0, the take chart): which bars of a piece how many takes contain, from the bars entered for each take (its IN and OUT Bar). */
+namespace coverage
+{
+/** The last bar the chart runs to: the piece's bars when entered, or else the last bar any take reaches (and never less than that). */
+inline int lastBar (const TakeWindowDef& w)
+{
+    int last = juce::jmax (0, w.pieceBars);
+    for (auto& g : w.groups) if (g.barIn > 0) last = juce::jmax (last, juce::jmax (g.barIn, g.barOut));
+    return last;
+}
+/** For bars 1 .. lastBar (index 0 = bar 1): how many takes contain each (duds never count). */
+inline std::vector<int> counts (const TakeWindowDef& w)
+{
+    std::vector<int> c ((size_t) lastBar (w), 0);
+    for (auto& g : w.groups)
+        if (g.barIn > 0 && ! g.dud)
+            for (int b = g.barIn; b <= juce::jmax (g.barIn, g.barOut) && b <= (int) c.size(); ++b) ++c[(size_t) (b - 1)];
+    return c;
+}
+/** A run of bars that the same takes cover. */
+struct Run
+{
+    int from = 0, to = 0;                 // bars, both included
+    std::vector<int> takes;               // their numbers, in recording order (duds left out)
+    int count() const { return (int) takes.size(); }
+};
+/** The piece cut into runs: a new run starts wherever the set of takes changes (bar 1 to lastBar, every bar in exactly one run). */
+inline std::vector<Run> runs (const TakeWindowDef& w)
+{
+    std::vector<Run> out;
+    const int last = lastBar (w);
+    std::vector<const TakeGroup*> order;
+    for (auto& g : w.groups) if (g.barIn > 0 && ! g.dud) order.push_back (&g);
+    std::stable_sort (order.begin(), order.end(), [] (const TakeGroup* a, const TakeGroup* b) { return a->number < b->number; });
+    for (int b = 1; b <= last; ++b)
+    {
+        std::vector<int> has;
+        for (auto* g : order) if (barsContain (g->barIn, g->barOut, b)) has.push_back (g->number);
+        if (! out.empty() && out.back().takes == has && out.back().to == b - 1) { out.back().to = b; continue; }
+        Run r; r.from = r.to = b; r.takes = std::move (has);
+        out.push_back (std::move (r));
+    }
+    return out;
+}
+/** "Bars 51 - 58: only take 3", "Bar 12: no take", "Bars 1 - 20: 2 takes (1, 4)". */
+inline juce::String describe (const Run& r)
+{
+    juce::String s = r.to > r.from ? "Bars " + juce::String (r.from) + " - " + juce::String (r.to) : "Bar " + juce::String (r.from);
+    s << ": ";
+    if (r.takes.empty()) return s + "no take";
+    if (r.takes.size() == 1) return s + "only take " + juce::String (r.takes.front());
+    juce::StringArray n; for (int t : r.takes) n.add (juce::String (t));
+    return s + juce::String ((int) r.takes.size()) + " takes (" + n.joinIntoString (", ") + ")";
+}
+} // namespace coverage
 } // namespace td

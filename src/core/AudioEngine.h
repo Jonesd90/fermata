@@ -8,6 +8,7 @@
 #include "HostTransport.h"
 #include "TakeWriter.h"
 #include "PitchPipe.h"
+#include "RateBridge.h"
 
 namespace td
 {
@@ -28,6 +29,27 @@ public:
     // --- also usable without a device (tests) ---
     void prepare (double sampleRate, int maxBlock);
     void process (const float* const* in, int numIn, float* const* out, int numOut, int numSamples);
+
+    // --- 3.8.0: the project's sample rate, and an audio device at another rate (see RateBridge) ---
+    /** The rate of the project's audio (Project::audioRate: the rate of its takes; 0 = none yet, the engine then simply runs at the device's rate).
+        Message thread. Read when the device (re)starts: AppContext::matchEngineRate restarts it when this changes what the engine should run at. */
+    void setProjectRate (double r) noexcept                { projectRate.store (r); }
+    double getProjectRate() const noexcept                 { return projectRate.load(); }
+    /** The rate the engine runs at on a device of this rate: the project's when it has one and the two can be bridged, otherwise the device's. */
+    double rateFor (double deviceRate) const noexcept;
+    /** True while the device runs at another rate than the engine and the live converter sits between them (listening only: recording is refused). */
+    bool isConverting() const noexcept                     { return converting.load(); }
+    /** The device's own rate (the same as getSampleRate() when nothing is converted). */
+    double getDeviceRate() const noexcept                  { return deviceRateNow.load(); }
+    /** How much later the outputs sound because of the converter, in ms (0 when nothing is converted). */
+    double converterDelayMs() const noexcept               { return converterMs.load(); }
+    /** What audioDeviceAboutToStart does for a device of this rate, block size and channels: the engine at rateFor (deviceRate), with the converter
+        when that is not the device's rate (also the tests' way in). */
+    void startForDevice (double deviceRate, int deviceBlock, int numInputs, int numOutputs);
+    /** One block of the device, as the audio callback does it: through the converter when there is one (also the tests' way in). */
+    void deviceBlock (const float* const* in, int numIn, float* const* out, int numOut, int numSamples);
+    /** Tests: times the converter had no input ready (always 0). */
+    int converterShortfalls() const noexcept               { return bridge != nullptr ? bridge->inputShortfalls() : 0; }
 
     /** Call after any change to tracks / mixers / effects channels (message thread). */
     void rebuildPlan();
@@ -413,6 +435,14 @@ private:
     double sampleRate = 48000.0;
     int maxBlock = 512;
     int deviceInputs = 0, deviceOutputs = 0;
+    // 3.8.0: the live sample-rate converter between the engine and the device (null: the engine runs at the device's own rate). Only replaced while the
+    // device is stopped (startForDevice); used only by the audio callback (deviceBlock).
+    std::unique_ptr<RateBridge> bridge;
+    std::atomic<bool> converting { false };
+    std::atomic<double> projectRate { 0.0 }, deviceRateNow { 48000.0 }, converterMs { 0.0 };
+    bool preparingForDevice = false;                // startForDevice is calling prepare (any other call of prepare means no device: no converter)
+    bool bridgedBlock = false;                      // audio thread: process() is being run by the converter (the input meters were read from the device's own inputs)
+    std::array<bool, kMaxInputs> wantIn {};         // audio thread: the device inputs the engine listens to in this block (only those are converted)
 
     std::atomic<Plan*> plan { nullptr };
     std::atomic<juce::uint64> planLatencySig { 0 };

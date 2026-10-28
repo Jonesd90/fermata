@@ -463,6 +463,9 @@ public:
         the files of takes found whole at the last open (verified) are not asked about - unless the project has moved since - so a big project is not
         slowed down: a file that went missing since then is found out when it is played, or by missingAudioCount() in full. */
     int missingAudioCount (bool quick = false) const;
+    /** The sample rate of the project's audio: the rate most of its takes and edits are at (a tie: the first found); 0 while it has none (3.8.0: the engine
+        runs at this rate, behind a live converter when the audio device runs at another - see AudioEngine::setProjectRate). Quick: no disk. */
+    double audioRate() const;
     /** The missing audio files, each once, with where it is used ("Takes - Mass in B minor, 003 - Kyrie, ORTF L"). With 'quick', as missingAudioCount (true):
         the files of verified takes are not asked about (opening a big project with one file missing used to ask about every file of it again). */
     juce::StringArray missingAudioList (int atMost = 40, bool quick = false) const;

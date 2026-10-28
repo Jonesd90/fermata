@@ -944,6 +944,10 @@ private:
             addAndMakeVisible (selector);
             startTimer (500);                                           // (the chooser is switched off while a take records: see timerCallback)
             addAndMakeVisible (apply); addAndMakeVisible (close); addAndMakeVisible (note); addAndMakeVisible (scan); addAndMakeVisible (cpuCores); addAndMakeVisible (pluginList);
+            addChildComponent (rateNote);                               // (3.8.0: shown while the live rate converter is on)
+            rateNote.setColour (juce::Label::textColourId, theme::warn);
+            rateNote.setFont (juce::FontOptions (13.0f));
+            rateNote.setJustificationType (juce::Justification::centredLeft);
             pluginList.setTooltip ("Every plug-in Fermata has found: ignore the ones you never want (they are not scanned, loaded or offered), and try again the ones left out after a crash");
             pluginList.onClick = [this] { showPluginManager (app); };
             note.setText ("Choose the driver and settings above, then press Apply.", juce::dontSendNotification);
@@ -972,6 +976,13 @@ private:
             and a device restarted under a take ends it (see AudioEngine::audioDeviceAboutToStart). So while a take records the chooser is switched off. */
         void timerCallback() override
         {
+            const auto conv = app.converterNote();                       // 3.8.0: the device at another rate than the project, converted live
+            if (conv != rateNote.getText())
+            {
+                rateNote.setText (conv, juce::dontSendNotification);
+                rateNote.setVisible (conv.isNotEmpty());
+                resized();
+            }
             const bool rec = app.engine.isRecording();
             if (rec == lockedForRecording) return;
             lockedForRecording = rec;
@@ -983,6 +994,7 @@ private:
         {
             auto r = getLocalBounds().reduced (8);
             auto bottom = r.removeFromBottom (40);
+            if (rateNote.isVisible()) rateNote.setBounds (r.removeFromBottom (44));
             selector.setBounds (r);
             close.setBounds (bottom.removeFromRight (110).reduced (3));
             apply.setBounds (bottom.removeFromRight (110).reduced (3));
@@ -994,7 +1006,7 @@ private:
         AppContext& app;
         juce::AudioDeviceSelectorComponent selector;
         juce::TextButton apply { "Apply" }, close { "Close" }, scan { "Scan plug-ins" }, pluginList { "Plug-ins..." }, cpuCores { "CPU cores..." };
-        juce::Label note;
+        juce::Label note, rateNote;
     };
 
     void openAudioSettings()
