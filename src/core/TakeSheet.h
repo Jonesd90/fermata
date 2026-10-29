@@ -276,7 +276,7 @@ inline pdf::Document makePdf (const std::vector<Section>& sections, const juce::
             if (sec.lastBar <= 0)
             {
                 if (y + 12.0f > bottom) pageHead();
-                d.text (L, y + 4.0f, "Take chart: no bars entered for these takes (Ctrl+B in the take window; right-click the bar strip for the piece's bars).", Italic, 8.0f, dim);
+                d.text (L, y + 4.0f, "Take chart: no bars entered for these takes (B in the take window; right-click the bar strip for the piece's bars).", Italic, 8.0f, dim);
                 y += 14.0f;
             }
             else

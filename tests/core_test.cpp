@@ -11044,7 +11044,9 @@ int main()
         e.playheadSeconds = 3.0;
         CHECK (e.audibleStart() == -24000);
         CHECK (e.anchorStart());
-        CHECK (e.audibleStart() == 0 && e.regions[0].fadeInBegin() == 0 && e.regions[0].startSample == 24000 && e.regions[1].startSample == 504000);
+        // (3.17.1: the first piece itself reaches back to its fade, taking in the take's audio before it: its box starts with the fade, at 0:00)
+        CHECK (e.audibleStart() == 0 && e.regions[0].fadeInBegin() == 0 && e.regions[0].startSample == 0 && e.regions[0].srcIn == 24000
+               && e.regions[0].inStart == 0.0 && std::abs (e.regions[0].inEnd - 0.12) < 1e-9 && e.regions[1].startSample == 504000);
         CHECK (e.overdubs[0].startSample == 120000 && std::abs (e.markers[0].seconds - 5.5) < 1e-9 && std::abs (e.playheadSeconds - 3.5) < 1e-9);
         CHECK (! e.anchorStart());                                                // (already there)
         e.leadIn = true; e.leadInSeconds = 1.25;                                  // "Leave space before the first edit": 1.25 s
@@ -11053,6 +11055,11 @@ int main()
         e.regions[0].inStart = 0.2; e.regions[0].inEnd = 0.3;                     // the fade moved later: everything comes back to start at 0:00 again
         CHECK (e.anchorStart() && e.audibleStart() == 0);
         EditDef empty; empty.sampleRate = 48000.0; CHECK (! empty.anchorStart());
+        {   // not enough of the take before the piece: it reaches back as far as there is audio, the rest of the fade stays before it
+            EditDef f; f.sampleRate = 48000.0;
+            auto r = piece (0, 480000); r.srcIn = 12000; r.srcOut = 492000; r.inStart = -0.5; r.inEnd = -0.3; f.regions.push_back (r);
+            CHECK (f.anchorStart() && f.regions[0].srcIn == 0 && f.audibleStart() == 0 && std::abs (f.regions[0].inStart + 0.25) < 1e-9 && f.regions[0].startSample == 12000);
+        }
         // saved with the edit
         Project p; p.createDefaultDesign();
         auto& tw = p.addTakeWindow ("W");

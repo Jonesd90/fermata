@@ -1119,8 +1119,31 @@ struct EditDef
 inline bool EditDef::anchorStart()
 {
     if (sampleRate <= 0.0 || (regions.empty() && overdubs.empty())) return false;
+    bool moved = false;
+    // 3.17.1: an opening fade dragged to begin before the first piece makes the piece itself begin there - it takes in the audio before it from its
+    // take (the talking, the conductor's word before the first note), so its box starts with its fade and shows all it plays. As far as the take has
+    // audio (not while the piece waits for corrected audio: its files must still fit)
+    if (! regions.empty())
+    {
+        auto& r = regions.front();
+        if (r.inStart < 0.0 && r.sampleRate > 0.0 && ! r.waiting.active())
+        {
+            juce::int64 floor = 0;
+            for (auto& f : r.files) floor = juce::jmax (floor, f.fileStart);
+            const juce::int64 want = (juce::int64) std::llround (-r.inStart * r.sampleRate);
+            const juce::int64 d = juce::jlimit ((juce::int64) 0, juce::jmax ((juce::int64) 0, r.srcIn - floor), want);
+            if (d > 0)
+            {
+                r.srcIn -= d; r.startSample -= d;
+                const double ds = (double) d / r.sampleRate;
+                r.inStart += ds; r.inEnd += ds;
+                if (std::abs (r.inStart) < 0.5 / r.sampleRate) r.inStart = 0.0;
+                moved = true;
+            }
+        }
+    }
     const juce::int64 delta = startTarget() - audibleStart();
-    if (delta == 0) return false;
+    if (delta == 0) return moved;
     for (auto& r : regions) r.startSample += delta;
     rippleAfter (std::numeric_limits<juce::int64>::min() / 4, delta);      // everything else on the timeline goes with it (the overdubs included)
     return true;

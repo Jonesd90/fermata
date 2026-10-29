@@ -67,7 +67,8 @@ In a Take Window, click the ruler to place the playhead, mark the part you want 
 | 3 / 4 | Send the marked part to the end of the edit / to its playhead |
 | 5 | Clear the edit marks |
 | M | Open / close the processing mixer |
-| B | Open / close the meter bridge |
+| Ctrl+B | Open / close the meter bridge |
+| B (take window) | The bars and notes box of the take clicked last |
 | C | Centre the window on the playhead |
 | P | Put the 1 / 2 flags round the whole selected take (sample-exact) |
 | D | Mark a take as a dud |
@@ -94,7 +95,7 @@ Fermata keeps a log in `Documents\Fermata\fermata-log.txt`. Send that file with 
 
 **Display Organiser:** a picture of your screen: pick a shape, click each part to choose its window (any take window, edit or mixer of the project: a closed one is opened), drag the lines to change the split, press Arrange. Layouts can be saved with the project; the program's own (Recording, Editing ...) take the windows you used last.
 **Fades:** the start and end of an edit (and of each take) fade for 25 ms by default; drag the top corners to change it.
-**The start of an edit:** the opening fade always begins at exactly 0:00 - move the fade or the first piece and the whole edit moves with it, once you let go. To begin later, tick **Leave space before the first edit** (right of the edit window's information line) and type the seconds.
+**The start of an edit:** the opening fade always begins at exactly 0:00 - move the fade or the first piece and the whole edit moves with it, once you let go; a fade dragged before the first piece makes the piece begin there too (it takes in the audio before it, as far as the take has any). To begin later, tick **Leave space before the first edit** (right of the edit window's information line) and type the seconds.
 **Bounce Out:** *Between marks 1 and 2* uses the 1 and 2 flags. P puts them round a selected take (take window) or the selected pieces (edit window).
 
 **Gain and Fader automation.** In the Edit Window, the automation lane menu has both: *Gain* changes the level going INTO the mixer strip (before the inserts and the fader), *Fader* changes it after the inserts. Use Gain to even out a level before a compressor, and Fader for the final balance.

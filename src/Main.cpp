@@ -211,12 +211,13 @@ public:
                 {
                     if ((kc == 'Z' || kc == 'z') && ! m.isShiftDown()) { ctx->undoStep(); return true; }
                     if (kc == 'Y' || kc == 'y' || ((kc == 'Z' || kc == 'z') && m.isShiftDown())) { ctx->redoStep(); return true; }
+                    if ((kc == 'B' || kc == 'b') && ! m.isShiftDown()) { toggleBridge(); return true; }      // 3.17.1: Ctrl+B = the meter bridge (B alone: a take's bars)
                 }
             }
             if (k.getModifiers().isAnyModifierKeyDown()) return false;
             const auto c = juce::CharacterFunctions::toLowerCase (k.getTextCharacter());
             if (c == 'm') { toggleProcessingMixer(); return true; }
-            if (c == 'b') { toggleBridge(); return true; }
+            if (c == 'b') return false;                                             // 3.17.1: B is the take window's (a take's bars); the meter bridge is Ctrl+B
             if (c == 'u') { deskWindowToggle ("pitchpipe"); return true; }      // 3.0.1: U = the pitch pipe, I = the click: opens it, or closes it (a minimised one comes back), as the Stream Deck's keys do
             if (c == 'i') { deskWindowToggle ("click"); return true; }
             return false;

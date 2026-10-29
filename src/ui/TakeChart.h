@@ -8,7 +8,7 @@ namespace td
 /** The take chart (3.8.0): a panel that drops down from the BARS label at the left of a take window's bar strip (click BARS; click it again, Esc or
     Close to put it away) and shows at a glance which bars of the piece have been recorded. The piece's bars run across it (how many: right-click the
     bar strip, or the box at the top of the chart - 100 bars, and a take of bars 1 - 50 covers half the width); every take is a line of its own, in
-    recording order, from its IN Bar to its OUT Bar (the bars and notes box: Ctrl+B, or double-click a take). Duds are drawn dimmed and never count. The
+    recording order, from its IN Bar to its OUT Bar (the bars and notes box: B, or double-click a take). Duds are drawn dimmed and never count. The
     ALL line along the top (above the bar numbers since 3.12.1) has every bar in the coverage colours (3.11.0, coverage::colourFor): crimson no take, bright red one, red-orange two, darkish
     yellow three, green from four - very light - to ten and more - dark.
     The buttons No take / Only 1 / 2 takes / 3 takes / 4+ light those bars up across the chart, and the list underneath says where they are ("Bars 51 - 58: only
@@ -155,7 +155,7 @@ public:
         int k[5] = { 0, 0, 0, 0, 0 };
         for (int c : counts) ++k[categoryOf (c)];
         juce::String s;
-        if (last == 0) s = "No bars yet: type the piece's bars above, and each take's bars with Ctrl+B in the take window (or double-click a take).";
+        if (last == 0) s = "No bars yet: type the piece's bars above, and each take's bars with B in the take window (or double-click a take).";
         else
         {
             s << last << " bars: " << k[0] << " with no take, " << k[1] << " with only one, " << k[2] << " with two, " << k[3] << " with three, " << k[4] << " with four or more.";

@@ -24,7 +24,7 @@ inline const std::vector<Line>& lines()
         { "Everywhere", "Space", "While a take is recording: stop the recording, from every window." },
         { "Everywhere", "R", "Start recording into the take window you used last, if it is open (with no take window open, R does nothing). In the edit window R butts pieces together, in ReTouch and Noise mode it does the ReTouch, on the pitch curve it previews; in ReTimEr, ReHarmoniSer and plug-in windows it does nothing." },
         { "Everywhere", "M", "Open or close the mixer: the edit's own mixer while you work in an edit or its Trim window, otherwise the processing mixer. If it is open but behind other windows, M brings it forward." },
-        { "Everywhere", "B", "Open or close the meter bridge." },
+        { "Everywhere", "Ctrl+B", "Open or close the meter bridge." },
         { "Everywhere", "U", "Open or close the pitch pipe (a minimised one comes back)." },
         { "Everywhere", "I", "Open or close the click (a minimised one comes back)." },
         { "Everywhere", "Ctrl+Z", "Undo: the edits, the mastering and the takes' details (bars, duds, names, positions, removed takes), up to 30 steps back." },
@@ -58,12 +58,12 @@ inline const std::vector<Line>& lines()
         { "Take window", "Shift+Left / Shift+Right", "Move the playhead 10 ms earlier / later." },
         { "Take window", "Up / Down", "All tracks smaller / bigger." },
         { "Take window", ". / ,", "Bigger / smaller waveforms (the take and edit windows share the size)." },
-        { "Take window", "Ctrl+B", "The bars and notes box of the take clicked last - also the take being recorded: type its IN Bar, Tab, its OUT Bar, Enter." },
+        { "Take window", "B", "The bars and notes box of the take clicked last - also the take being recorded: type its IN Bar, Tab, its OUT Bar, Enter." },
         { "Take window", "Shift+B", "Open or close the take chart: every take as a line along the piece's bars, the bars with no take / only one / two / three or more lit up and listed." },
         { "Take window", "Ctrl+A", "Select every take." },
 
         // ---------------------------------------------------------------------------------------------------- take window: a take's bars and notes box
-        { "Take window: a take's bars and notes box", "", "Opened by Ctrl+B (the take clicked last), double-clicking a take's audio or right-clicking the strip above its tracks (also while it records)." },
+        { "Take window: a take's bars and notes box", "", "Opened by B (the take clicked last), double-clicking a take's audio or right-clicking the strip above its tracks (also while it records)." },
         { "Take window: a take's bars and notes box", "Enter", "In IN Bar: on to OUT Bar. In OUT Bar: save." },
         { "Take window: a take's bars and notes box", "Tab", "On to the next box (IN, OUT, Notes, the buttons)." },
         { "Take window: a take's bars and notes box", "Ctrl+Enter", "In Notes: save (Enter there starts a new line)." },

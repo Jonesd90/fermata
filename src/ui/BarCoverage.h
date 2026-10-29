@@ -23,7 +23,7 @@ inline void drawNoTakeStripes (juce::Graphics& g, juce::Rectangle<float> r, juce
     Until the piece's bars are entered it is red: right-click it and type how many bars the piece has. Then it runs from bar 1 to the piece's last bar
     (or further, when a take's bars go beyond it) and shows how many takes cover each bar in the coverage colours (3.11.0: crimson no take - with a thin
     diagonal pinstripe since 3.12.0 - bright red one, red-orange two, darkish yellow three, green from four - light - to ten - dark), duds not counted - so the producer sees at a glance which passages still need another take. It is drawn from the bars each take says it starts
-    and ends in (the bars and notes box: Ctrl+B, or double-click a take); a take with no bars entered is not on it. The playhead's take is outlined,
+    and ends in (the bars and notes box: B, or double-click a take); a take with no bars entered is not on it. The playhead's take is outlined,
     the bar being searched for (the magnifying glass) marked. Click a bar: the takes that have it are framed and the playhead goes to it (where it is
     in the take is estimated from the take's bar range: evenly spread). The BARS label at its left end is a button: it drops the take chart down
     from that corner (see TakeChart.h). */

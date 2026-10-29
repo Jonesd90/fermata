@@ -314,7 +314,7 @@ private:
         if (barLo > 0) s += "; searched only around bar" + (barHi > barLo ? "s " + juce::String (barLo) + "-" + juce::String (barHi) : " " + juce::String (barLo));
         if (leftOut > 0) s += "; " + juce::String (leftOut) + (leftOut == 1 ? " take does" : " takes do") + " not have those bars";
         if (noBars > 0) s += "; " + juce::String (noBars) + (noBars == 1 ? " take has" : " takes have") + " no bars entered (left out)";
-        if (barLo == 0) s += " (enter the bars of this piece's take - Ctrl+B in the take window - to search only the takes with those bars)";
+        if (barLo == 0) s += " (enter the bars of this piece's take - B in the take window - to search only the takes with those bars)";
         if (! withContext) s += " (the marked part's take is no longer in the window: searched without the music either side - check by ear)";
         s += ".";
         status.setText (s, juce::dontSendNotification);

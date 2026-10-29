@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.17.1
+- **B and Ctrl+B swapped.** **B** now opens the bars and notes box of the take clicked last in the take window (also the take being recorded) - the key used most in a session. **Ctrl+B** opens and closes the meter bridge, from any window. (HotKeys updated.)
+- **The opening fade takes the first piece with it.** Dragging the opening fade before the first piece now makes the piece itself begin there: it takes in the audio before it from its take - the talking, a conductor's word before the first note - so its box starts at 0:00 together with its fade and shows everything that plays (before, the sound was there but the box still began later). It reaches back as far as the take has audio; an edit saved the old way is put right when the project opens.
+
 ## 3.17.0
 - **A closed Fermata no longer stays behind.** Your log showed closing stopping at the background take matching: the window had gone, but Fermata.exe went on running - reading audio files and holding memory (22 GB in one case), so the next start crawled ("stuck at 353 of 367") and the old program file could not be deleted. Now the take matching is stopped first, early in closing (up to 3 s, timed in the log), and a **closing safety net** watches the rest: once the project is saved and the audio device closed, if closing has not finished 15 s later - or Fermata is still running 20 s after it finished - where every part of Fermata is goes into the log and the program ends itself. Nothing unsaved can be lost: it only starts after the save.
 - **The opening log.** Opening a project now logs every step with its time ("Opening: the audio engine's plan rebuilt (12 ms)" ...), and any take that takes over half a second to check is named, so a stuck opening shows where it stopped.

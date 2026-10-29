@@ -124,7 +124,7 @@ public:
     double pixelsPerSecond = 12.0;
     int barHighlight = 0;                       // "Search for bar": takes that contain this bar get a blue-green frame (0 = off)
     std::vector<juce::Uuid> selectedTakes;      // takes picked for Bounce Out (click one; Ctrl + click adds or removes) - drawn a little darker
-    juce::Uuid lastClickedTake;                 // the take clicked last, with any button - also the one being recorded, which cannot be selected (Ctrl+B: its bars, 3.8.0)
+    juce::Uuid lastClickedTake;                 // the take clicked last, with any button - also the one being recorded, which cannot be selected (B: its bars, 3.8.0)
     std::vector<juce::Uuid> selectedTracks;     // track names picked (click; Shift + click: every track in between; Ctrl + click: one more / less) - right-click: remove them
     juce::Uuid trackAnchor;
     /** A click on a track's name: on its own = only this track (or none, if it was the only one); Shift = every track from the last one clicked to
@@ -646,7 +646,7 @@ public:
         grabKeyboardFocus();
         auto* w = def();
         if (w == nullptr) return;
-        if (auto* hit = groupAt (e.getPosition(), true)) lastClickedTake = hit->id;      // (Ctrl+B: the bars of the take clicked last, also one still recording)
+        if (auto* hit = groupAt (e.getPosition(), true)) lastClickedTake = hit->id;      // (B: the bars of the take clicked last, also one still recording)
         markers.setNameWidth (viewport.getViewPositionX() + kNameW);
         markers.yOffset = hdrShift;
         if (w->showMarkers && markers.mouseDown (e)) return;                                 // the marker strip along the top: right-click for Add Marker / Clear All; drag a marker
@@ -1407,7 +1407,7 @@ private:
         app.project.changed(); repaint();
     }
 
-    /** Ctrl+B (3.8.0): the bars and notes box of the take clicked last - also the one being recorded. False (and nothing happens) when no take of
+    /** B (3.8.0 Ctrl+B, B since 3.17.1): the bars and notes box of the take clicked last - also the one being recorded. False (and nothing happens) when no take of
         this window has been clicked, or it has gone. The box opens at the take's start (or at the left of the view when that is scrolled away). */
     bool openBarsForClicked()
     {
@@ -2257,8 +2257,9 @@ bool TakeWindowComponent::keyPressed (const juce::KeyPress& k)
     {   // Ctrl + A: select every take (then Ctrl + Shift + drag moves all their clips on a track onto another track)
         const auto km = k.getModifiers();
         if ((km.isCtrlDown() || km.isCommandDown()) && ! km.isAltDown() && ! km.isShiftDown() && (k.getKeyCode() == 'A' || k.getKeyCode() == 'a')) { timeline->selectAllTakes(); return true; }
-        // Ctrl + B: the bars and notes box of the take clicked last, also the one being recorded (3.8.0); Shift + B: the take chart (B alone is the meter bridge)
-        if ((km.isCtrlDown() || km.isCommandDown()) && ! km.isAltDown() && ! km.isShiftDown() && (k.getKeyCode() == 'B' || k.getKeyCode() == 'b')) { timeline->openBarsForClicked(); return true; }
+        // B: the bars and notes box of the take clicked last, also the one being recorded (3.8.0 Ctrl+B; 3.17.1 B alone - Ctrl+B is now the meter bridge);
+        // Shift + B: the take chart
+        if (! km.isAnyModifierKeyDown() && (k.getKeyCode() == 'B' || k.getKeyCode() == 'b')) { timeline->openBarsForClicked(); return true; }
         if (km.isShiftDown() && ! km.isCtrlDown() && ! km.isCommandDown() && ! km.isAltDown() && (k.getKeyCode() == 'B' || k.getKeyCode() == 'b')) { toggleTakeChart(); return true; }
         if (k == juce::KeyPress::escapeKey && chart != nullptr) { closeTakeChart(); return true; }
     }
