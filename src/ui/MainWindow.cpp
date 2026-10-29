@@ -9,6 +9,7 @@
 #include "TakeSheetExport.h"
 #include "ProjectRateDialog.h"
 #include "ThemeSwitch.h"
+#include "HelpMenu.h"
 
 namespace td
 {
@@ -492,6 +493,8 @@ MainComponent::MainComponent (AppContext& a) : app (a), controllerBox (a)
     preampsButton.onClick = [this] { showPreampSetup (app); };
     mediaButton.onClick   = [this] { if (app.showMedia) app.showMedia(); };
     masteringButton.onClick = [this] { if (app.showMastering) app.showMastering(); };
+    helpButton.onClick = [this] { showHelpMenu (app, helpButton); };                       // 3.14.0
+    helpButton.setTooltip ("The manual, the keys, the log file, crash reports and About Fermata");
     masteringButton.setTooltip ("Mastering: export the edits as audio files (Virtual Master), or lay them out as a CD and make a DDP");
     takeDisplayButton.onClick = [this] { if (app.showTakeDisplay) app.showTakeDisplay(); };
     takeDisplayButton.setTooltip ("Show the take number, time of day and time left in the session, full screen, on another display");

@@ -47,6 +47,14 @@ struct SYSTEM_POWER_STATUS { BYTE ACLineStatus, BatteryFlag, BatteryLifePercent,
 typedef SYSTEM_POWER_STATUS* LPSYSTEM_POWER_STATUS;
 BOOL GetSystemPowerStatus (LPSYSTEM_POWER_STATUS);
 #define ABOVE_NORMAL_PRIORITY_CLASS 0x00008000
+// crash reports (3.14.0)
+typedef unsigned long long ULONG_PTR; typedef wchar_t* LPWSTR;
+#define CREATE_ALWAYS 2
+struct SYSTEMTIME { WORD wYear, wMonth, wDayOfWeek, wDay, wHour, wMinute, wSecond, wMilliseconds; };
+void GetLocalTime (SYSTEMTIME*);
+BOOL DeleteFileW (LPCWSTR);
+BOOL GetModuleHandleExW (DWORD, LPCWSTR, HMODULE*);
+DWORD GetModuleFileNameW (HMODULE, LPWSTR, DWORD);
 BOOL SetPriorityClass (HANDLE, DWORD);
 // file API (src/core/FileSync.h)
 typedef void* LPSECURITY_ATTRIBUTES;

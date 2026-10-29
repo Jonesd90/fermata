@@ -2,6 +2,7 @@
 #include <juce_events/juce_events.h>
 #include <atomic>
 #include "../core/CoreReservation.h"
+#include "../core/CrashReport.h"
 
 namespace td
 {
@@ -23,7 +24,9 @@ struct BusyLabel
     in the log afterwards, with its cause. At most 30 lines a minute.
     Since 3.13.0 each line also says how hard the main thread itself was working through the stall, how much of the processor Fermata and the whole
     PC were using, and whether a laptop was on battery - so a stall with no label can be told apart: Fermata's own drawing (main thread working),
-    a PC that is flat out (something else, or too few cores left), or the main thread waiting on Windows or a driver. */
+    a PC that is flat out (something else, or too few cores left), or the main thread waiting on Windows or a driver.
+    Since 3.14.0, when the main thread has been stuck for 15 seconds a freeze report is written (a minidump: where every thread is at that
+    moment, see CrashReport.h) - at most two a session - so a freeze that needs Fermata ending from the Task Manager can still be traced. */
 class StallWatch : private juce::Timer, private juce::Thread
 {
 public:
@@ -40,7 +43,7 @@ public:
         signalThreadShouldExit(); notify(); stopThread (2000);
     }
 
-    static constexpr double kPeriodMs = 50.0, kReportMs = 150.0;
+    static constexpr double kPeriodMs = 50.0, kReportMs = 150.0, kFreezeReportMs = 15000.0;
 
 private:
     void timerCallback() override { beat.store (juce::Time::getMillisecondCounterHiRes()); }
@@ -53,14 +56,29 @@ private:
         int nSeen = 0, linesThisMinute = 0, suppressed = 0;
         double minuteStart = juce::Time::getMillisecondCounterHiRes();
         SystemLoad::Snapshot atStart;
+        double lastLoop = juce::Time::getMillisecondCounterHiRes(), watchedSince = 0.0;
+        int freezeReports = 0;
+        bool reportedThisStall = false;
         while (! threadShouldExit())
         {
             wait (20);
             const double t = juce::Time::getMillisecondCounterHiRes();
             const double b = beat.load();
+            if (t - lastLoop > 2000.0) watchedSince = 0.0;                   // this thread did not run either (the PC was asleep): not a freeze
+            lastLoop = t;
             if (t - b > kPeriodMs + kReportMs * 0.5)                 // the beats have stopped: the message thread is busy
             {
-                if (! inStall) { inStall = true; lastBeatBefore = b; nSeen = 0; atStart = SystemLoad::take(); }
+                if (! inStall) { inStall = true; lastBeatBefore = b; nSeen = 0; atStart = SystemLoad::take(); watchedSince = t; reportedThisStall = false; }
+                if (watchedSince <= 0.0) watchedSince = t;
+                if (! reportedThisStall && freezeReports < 2 && t - watchedSince >= kFreezeReportMs)
+                {
+                    reportedThisStall = true;
+                    if (const auto f = crashreport::write (nullptr, "freeze"); f != juce::File())
+                    {
+                        ++freezeReports;
+                        juce::Logger::writeToLog ("Stall watch: the main thread has been stuck for " + juce::String (juce::roundToInt ((t - watchedSince) / 1000.0)) + " s - a freeze report was written: " + f.getFullPathName());
+                    }
+                }
                 if (const char* l = messageThreadLabel().load())
                 {
                     bool have = false;

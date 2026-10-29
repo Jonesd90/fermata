@@ -32,6 +32,8 @@
 #if JUCE_WINDOWS
  #include <shlobj.h>
 #endif
+#include <csignal>
+#include "core/CrashReport.h"
 
 #ifndef FERMATA_VERSION_STRING
  #define FERMATA_VERSION_STRING "0.0.0"      // only when built without CMake
@@ -41,13 +43,33 @@ using namespace td;
 
 static juce::File logFolder() { return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Fermata"); }
 
-/** Called by Windows when the program crashes: writes where it happened into the log file. */
-static void crashHandler (void*)
+/** Called by Windows when the program crashes: a crash report (3.14.0: a minidump in Documents\Fermata\Crash reports, see CrashReport.h) first,
+    then the kind of crash, where, and the stack trace into the log file. */
+static void crashHandler (void* exceptionPointers)
 {
+    const auto report = crashreport::write (exceptionPointers, "crash");
     auto f = logFolder().getChildFile ("fermata-log.txt");
-    f.appendText ("\n*** CRASH ***\n" + juce::SystemStats::getStackBacktrace() + "\n");
+    juce::String text ("\n*** CRASH ***");
+#if JUCE_WINDOWS
+    if (const auto what = crashreport::describeException (exceptionPointers); what.isNotEmpty()) text << " " << what;
+#endif
+    text << "\n";
+    if (report != juce::File()) text << "Crash report written: " << report.getFullPathName() << "\n";
+    text << juce::SystemStats::getStackBacktrace() << "\n";
+    f.appendText (text);
 }
 
+#if JUCE_WINDOWS
+/** abort() (a C++ exception nobody caught, a pure virtual call, a failed check in a library) does not go through the crash handler: it is caught
+    here, so it leaves a report and a log line too. */
+static void abortHandler (int)
+{
+    const auto report = crashreport::write (nullptr, "abort");
+    logFolder().getChildFile ("fermata-log.txt").appendText ("\n*** CRASH *** the program was aborted (an error it could not recover from)\n"
+                                                           + (report != juce::File() ? "Crash report written: " + report.getFullPathName() + "\n" : juce::String())
+                                                           + juce::SystemStats::getStackBacktrace() + "\n");
+}
+#endif
 
 /** The .ico of a saved project: a sheet of paper with the logo. Windows reads PNG pictures inside an .ico. */
 static bool writeProjectIcon (const juce::File& f)
@@ -104,7 +126,11 @@ public:
         registerProjectFileType();
         fileLogger.reset (new juce::FileLogger (logFolder().getChildFile ("fermata-log.txt"), "Fermata " + getApplicationVersion() + "  (built " + __DATE__ + " " + __TIME__ + ")", 512 * 1024));
         juce::Logger::setCurrentLogger (fileLogger.get());
+        crashreport::install (logFolder().getChildFile ("Crash reports"), getApplicationVersion());       // 3.14.0
         juce::SystemStats::setApplicationCrashHandler (crashHandler);
+       #if JUCE_WINDOWS
+        std::signal (SIGABRT, abortHandler);
+       #endif
         lookAndFeel.reset (new FermataLookAndFeel());
         juce::LookAndFeel::setDefaultLookAndFeel (lookAndFeel.get());
         tooltips = std::make_unique<juce::TooltipWindow> (nullptr, 900);        // without this no tooltip would ever show
@@ -422,6 +448,33 @@ public:
         if (splash != nullptr)
             splash->startCountdown ([this] { juce::MessageManager::callAsync ([this] { splash.reset(); }); });
         if (err.isNotEmpty()) showError ("Audio device", err + "\n\nOpen \"Audio settings\" to choose your ASIO device.");
+        announceCrashReports();
+    }
+
+    /** 3.14.0: crash or freeze reports written since the last start are mentioned once (in the log, and in a message after the splash). */
+    void announceCrashReports()
+    {
+        auto* st = ctx != nullptr ? ctx->props.getUserSettings() : nullptr;
+        if (st == nullptr) return;
+        const juce::Time last (st->getValue ("crashCheck", "0").getLargeIntValue());
+        st->setValue ("crashCheck", juce::String (juce::Time::getCurrentTime().toMilliseconds()));
+        st->saveIfNeeded();
+        const auto fresh = crashreport::reportsSince (last);
+        crashreport::prune (5);
+        if (last.toMilliseconds() == 0 || fresh.isEmpty()) return;          // (the first start of 3.14.0 has nothing to compare with)
+        juce::StringArray names; for (auto& f : fresh) names.add (f.getFileName());
+        juce::Logger::writeToLog ("Crash reports written since the last start: " + names.joinIntoString (", "));
+        const bool froze = fresh.getFirst().getFileName().contains (" freeze ");
+        const auto newest = fresh.getFirst();
+        juce::Timer::callAfterDelay (4000, [newest, froze]
+        {
+            juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Crash report")
+                                              .withMessage (juce::String (froze ? "Last time, Fermata got stuck for a long time" : "Last time, Fermata closed unexpectedly")
+                                                            + ", and it saved a report of what it was doing:\n" + newest.getFileName()
+                                                            + "\n\nTo help find the cause, send that file together with fermata-log.txt (both are in Documents\\Fermata). Help > Show the crash reports finds it again later.")
+                                              .withButton ("Show the report").withButton ("OK"),
+                                          [newest] (int r) { if (r == 1) newest.revealToUser(); });
+        });
     }
 
     void shutdown() override

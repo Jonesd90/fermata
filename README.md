@@ -27,7 +27,11 @@ If the program or the computer stops during a recording, nothing recorded is los
 2. **Project Designer**: name your inputs and outputs, add tracks (mono, stereo, surround) and choose the input of each. Sound reaches the outputs through an **Ext bus**: add one, send your tracks to it, and choose its driver outputs on its strip in the mixer.
 
 ## Keeping CPU cores for the audio (Audio settings > CPU cores...)
-For recording on a laptop or a busy PC. Tick one or two CPU cores and Fermata keeps its audio (the driver callback, the disk writing and the playback reading) on those cores only and everything else on the others; with the second box ticked it also asks the other programs to stay off them (what Process Lasso does). Press "Find the quietest cores" to let Fermata measure which cores Windows is using for driver interrupts and tick the calm ones. It is off until you switch it on, and closing Fermata puts everything back.
+For recording on a laptop or a busy PC. Tick one or two CPU cores and Fermata keeps its audio (the driver's audio callback and the mixer helpers) on those cores only, and the rest of Fermata on the others; the disk writer and the playback reader work seconds ahead and stay on the other cores. With the second box ticked it also asks the other programs to stay off them (what Process Lasso does). That stops ordinary programs from taking the processor away in the middle of a take. It is off until you switch it on, and closing Fermata puts everything back (after a crash, the next start does).
+
+What it cannot do: Windows' own driver work (DPCs and interrupts from the network, USB, graphics or Wi-Fi) runs on whichever core the driver chose. So pick the QUIETEST cores: "Find the quietest cores" measures for three seconds how much interrupt work each core does and ticks the best. Do it with the audio interface connected and the PC otherwise idle. Close the programs you do not need, and switch off Wi-Fi and Bluetooth during a recording on a laptop.
+
+On a CPU with big (fast) and small (slow) cores - Intel Core Ultra, 12th generation and later - at most half of the big cores are kept for the audio, whatever is ticked (a laptop with two big cores keeps one), and the small cores are never picked: the rest of the PC needs the big ones. On a laptop the "other programs" box is best left off.
 Windows' own driver work (DPCs) cannot be moved by any program: if you still get clicks, run LatencyMon to see which driver is the cause.
 
 ## Recording
@@ -78,7 +82,11 @@ In a Take Window, click the ruler to place the playhead, mark the part you want 
 
 ## If something goes wrong
 
-Fermata keeps a log in `Documents\Fermata\fermata-log.txt`. Send that file with a description of what happened. If the program ever seems to freeze for a moment, the log has a line starting "Stall watch" saying how long and what it was doing.
+Fermata keeps a log in `Documents\Fermata\fermata-log.txt`. Send that file with a description of what happened. If the program ever seems to freeze for a moment, the log has a line starting "Stall watch" saying how long, what it was doing and how busy Fermata and the PC were.
+
+**Crash reports.** If Fermata crashes, or gets stuck for 15 seconds or more, it saves a crash report (a `.dmp` file of a few megabytes) in `Documents\Fermata\Crash reports`. The next time it starts it says so once. Send the newest report together with fermata-log.txt: with the matching `Fermata.pdb` (keep it next to Fermata.exe, as it comes in the build) it shows exactly where the program was. Only the newest five are kept, and nothing is ever sent anywhere by Fermata itself. **Help > Show the crash reports** finds them; **Help > About Fermata > Copy** copies the version, the PC and the audio device for a message.
+
+**Help menu.** The Fermata manual (the PDF: put it next to Fermata.exe with "manual" in its name, or show Fermata where it is the first time), HotKeys, the log file, the crash reports and About Fermata.
 
 **Display Organiser:** a picture of your screen: pick a shape, click each part to choose its window (any take window, edit or mixer of the project: a closed one is opened), drag the lines to change the split, press Arrange. Layouts can be saved with the project; the program's own (Recording, Editing ...) take the windows you used last.
 **Fades:** the start and end of an edit (and of each take) fade for 25 ms by default; drag the top corners to change it.

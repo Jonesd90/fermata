@@ -6,6 +6,15 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.14.0
+- **A Help menu** at the right end of the main window's menu bar: **Fermata manual (PDF)** (it looks next to Fermata.exe and in Documents\Fermata for a PDF with "manual" in its name; if there is none, you show it where the manual is, once), **HotKeys**, **Show the log file**, **Show the crash reports** and **About Fermata** (the version, Windows, the CPU and its cores, the memory, the audio device and the project - **Copy** puts it all on the clipboard for a message).
+- **Crash reports.** When Fermata crashes it now writes a crash report (a Windows "minidump", a few megabytes) into Documents\Fermata\Crash reports: where every part of the program was at that moment. With the build's Fermata.pdb it shows the exact line - much more than the log's stack trace. The log's crash line now also says what kind of crash it was and where ("access violation reading 0x0 at Fermata.exe+0x1a2b3c"). A program abort (an error it cannot recover from) leaves a report too.
+- **Freeze reports.** When the main window has been stuck for 15 seconds, Fermata writes a freeze report of the same kind (at most two a session), so a freeze that has to be ended from the Task Manager can be traced. Not when the PC was asleep.
+- The next start says once that a report was written and offers to show it. Only the newest five reports are kept; nothing is ever sent anywhere by Fermata.
+
+## 3.13.1
+- **The CPU cores window says it in three lines**: what it does, to press "Find the quietest cores" with the audio interface connected, and that on laptops and newer Intel CPUs at most half the fast cores are kept. The full explanation is in the manual (README, "Keeping CPU cores for the audio").
+
 ## 3.13.0
 **A laptop is no longer slowed to a crawl by the CPU core reservation.** On a CPU with big (fast) and small (slow) cores - Intel Core Ultra, 12th generation and later - the reservation could take every big core for the audio (a laptop Core Ultra 5 has only two) and, with "ask other programs to stay off", leave Windows, the other programs and Fermata's own windows on the slow cores only.
 - **At most half of the big cores are kept for the audio** (two big cores: one; eight: four), whatever is ticked; the CPU cores window says which core was left to the PC. "Find the quietest cores" picks big cores only, within the same limit. A CPU with only one big core keeps none.

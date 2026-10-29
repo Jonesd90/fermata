@@ -15,6 +15,7 @@
 #include "../src/core/Ravenna.h"
 #include "../src/core/Dither.h"
 #include "../src/core/CoreReservation.h"
+#include "../src/core/CrashReport.h"
 #include "../src/core/WavRepair.h"
 #include "../src/core/TakeWriter.h"
 #include "../src/core/ProjectCopy.h"
@@ -11014,6 +11015,31 @@ int main()
         CHECK (CoreReservation::get().releaseLeftovers (s) == 0 && ! CoreReservation::isLaptop());
         const auto a = SystemLoad::take(), b = SystemLoad::take();
         CHECK (! a.ok && SystemLoad::describe (a, b, true).isEmpty() && SystemLoad::powerText().isEmpty());
+    }
+    SECTION ("3.14.0 crash reports: the folder, newest first, only five kept");
+    {
+        const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("fermata-crash-test");
+        dir.deleteRecursively();
+        crashreport::install (dir, "3.14.0");
+        CHECK (crashreport::folder() == dir && crashreport::allReports().isEmpty());
+        CHECK (crashreport::write (nullptr, "freeze") == juce::File());                      // (not Windows here: nothing is written)
+        CHECK (crashreport::describeException (nullptr).isEmpty());
+        dir.createDirectory();
+        const auto now = juce::Time::getCurrentTime();
+        for (int i = 0; i < 7; ++i)
+        {
+            auto f = dir.getChildFile ("Fermata 3.14.0 crash " + juce::String (i) + ".dmp");
+            f.replaceWithText ("x");
+            f.setLastModificationTime (now - juce::RelativeTime::hours (7 - i));                // report 6 is the newest
+        }
+        dir.getChildFile ("notes.txt").replaceWithText ("not a report");
+        auto all = crashreport::allReports();
+        CHECK (all.size() == 7 && all.getFirst().getFileName().contains ("crash 6") && all.getLast().getFileName().contains ("crash 0"));
+        CHECK (crashreport::reportsSince (now - juce::RelativeTime::minutes (90)).size() == 1);
+        crashreport::prune (5);
+        all = crashreport::allReports();
+        CHECK (all.size() == 5 && all.getLast().getFileName().contains ("crash 2") && dir.getChildFile ("notes.txt").existsAsFile());
+        dir.deleteRecursively();
     }
 
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

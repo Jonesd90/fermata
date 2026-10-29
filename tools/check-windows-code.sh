@@ -1,5 +1,5 @@
 #!/bin/bash
-# Developer helper: compiles (syntax only) the Windows part of src/core/CoreReservation.cpp on Linux, against tools/win-stubs/windows.h, checks
+# Developer helper: compiles (syntax only) the Windows part of src/core/CoreReservation.cpp and src/core/CrashReport.cpp on Linux, against tools/win-stubs/windows.h, checks
 # that src/core/FileSync.h compiles on its own (3.1.3: it no longer has a Windows branch - its disk sync goes through JUCE's stream), and scans
 # every source for identifiers that windows.h turns into macros (small, near, far, hyper, pascal: MSVC then fails with "'int' followed by 'char'
 # is illegal" or "type 'char' unexpected" in any file that includes a Windows header).
@@ -8,6 +8,7 @@ JUCE=${1:?path to JUCE}
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 FLAGS="-std=c++17 -fsyntax-only -Wall -Wextra -DJUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1 -DJUCE_STANDALONE_APPLICATION=1 -DJUCE_MODULE_AVAILABLE_juce_core=1 -I$HERE/tools/win-stubs -isystem $JUCE/modules"
 g++ $FLAGS -DFERMATA_CPU_WINDOWS_STUBS=1 "$HERE/src/core/CoreReservation.cpp" || exit 1
+g++ $FLAGS -DFERMATA_CPU_WINDOWS_STUBS=1 "$HERE/src/core/CrashReport.cpp" || exit 1
 echo '#include "src/core/FileSync.h"
 int main() { return td::filesync::syncToDisk (juce::File()) ? 0 : 1; }' | g++ $FLAGS -I"$HERE" -x c++ - || exit 1
 python3 - "$HERE" <<'PY' || exit 1
