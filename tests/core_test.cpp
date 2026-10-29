@@ -4424,6 +4424,14 @@ int main()
           for (auto& tf : g.files) { RegionFile rf; rf.trackId = tf.trackId; rf.trackName = tf.trackName; rf.numChannels = tf.numChannels; rf.file = tf.file; r.files.push_back (rf); }
           ed.regions.push_back (r); }
         CHECK (rp.missingAudioCount() == 3 && rp.missingAudioList().size() == 3 && rp.missingAudioList()[0].contains ("Takes - Kyrie, 003 - Kyrie, ORTF L"));
+        {   // 3.15.0: "Ignore missing files permanently" - left out of the checks, saved with the project, and given back
+            CHECK (rp.ignoreMissingAudio() == 3 && rp.missingAudioCount() == 0 && rp.missingAudioCount (true) == 0 && rp.missingAudioList().isEmpty());
+            CHECK (rp.ignoreMissingAudio() == 0);                                      // (each once)
+            Project back; CHECK (back.fromVar (rp.toVar()) && back.ignoredMissing.size() == 3 && back.missingAudioCount() == 0);
+            rp.ignoredMissing.clear();
+            CHECK (rp.missingAudioCount() == 3);
+            Project none; CHECK (none.fromVar (rp.toVar()) && none.ignoredMissing.empty() && ! rp.toVar().hasProperty ("ignoredMissingAudio"));
+        }
 
         // the files turn up elsewhere: ORTF under its own name (in a sub-folder), Spaced renamed but with Fermata's header, Choir renamed with no header
         writeWav (elsewhere.getChildFile ("sub").getChildFile (g.files[0].file.getFileName()), 24, 1, 24000, 48000.0, bwf (desc + "ORTF L", "2026-09-14", "10:30:00"), 0.1f);

@@ -118,6 +118,7 @@ AppContext::~AppContext()
     project.settleBackgroundSaves = nullptr;
     *saverAlive = false;                             // (what it finishes from here on is not taken in: the program is closing, and shutdown() saved)
     saver.reset();                                   // (waits until everything handed to it is written)
+    closing::step ("background saves finished");
     stallWatch.reset();
     spaceBelongsToRecordingHook() = nullptr;
     timereadout::shared().removeChangeListener (this);
@@ -129,6 +130,7 @@ AppContext::~AppContext()
     takeDisplayHub.reset();
     project.structure.removeChangeListener (this);
     devices.removeChangeListener (this);
+    closing::step ("timers and listeners stopped");
 }
 
 void AppContext::setCrMicInput (int i, bool on)
@@ -715,7 +717,7 @@ void AppContext::tickLoad()
     const bool rec = engine.isRecording();
     const bool takeEnded = loadWasRecording && ! rec;
     loadWasRecording = rec;
-    if (minuteSeconds == 0) minuteSys = SystemLoad::take();                  // (3.13.0: the PC's load over the same minute)
+    if (minuteSeconds == 0) minuteSys = SystemLoad::take (true);                  // (3.13.0: the PC's load over the same minute)
     if (++minuteSeconds >= 60 || takeEnded)
     {
         auto* dev = devices.getCurrentAudioDevice();
@@ -729,7 +731,7 @@ void AppContext::tickLoad()
         if (minuteLoad.recordBufferPeak > 0.0f || rec || takeEnded) line << ", recording buffer peak " << juce::String (minuteLoad.recordBufferPeak, 1) << "% full";
         if (engine.isPlaying()) line << ", playback underruns " << engine.playbackUnderruns();
         if (CoreReservation::get().active()) line << ", " << CoreReservation::get().reservedLogicalProcessors() << " reserved processors";
-        if (const auto sys = SystemLoad::describe (minuteSys, SystemLoad::take(), false); sys.isNotEmpty()) line << "; " << sys;
+        if (const auto sys = SystemLoad::describe (minuteSys, SystemLoad::take (true), false); sys.isNotEmpty()) line << "; " << sys;
         juce::Logger::writeToLog (line);
         minuteSeconds = 0; minuteLoad = {};
     }
@@ -878,6 +880,47 @@ void AppContext::showSaveError (const juce::String& err, bool automatic)
     }
     lastSaveErrorMs = now;
     showError ("Could not save project", err);
+}
+
+void AppContext::askIgnoreMissingAudio()
+{
+    if (! hasProject()) return;
+    const int n = project.missingAudioCount();                             // (every file asked about: the ones the quick check trusted too)
+    if (n == 0) return;
+    const auto list = project.missingAudioList (12);
+    juce::String text = "Fermata will stop looking for " + (n == 1 ? juce::String ("this missing file") : "these " + juce::String (n) + " missing files")
+                        + " every time the project opens:\n\n";
+    for (auto& l : list) text << "   " << l << "\n";
+    text << "\nThe places that use them stay as they are and play silence there. Only do this for files you deleted on purpose - not for recordings that "
+            "may be on a drive that is not plugged in. (To look for them again later: Project menu > Look for the ignored missing files again.)";
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon).withTitle ("Ignore missing files permanently")
+                                      .withMessage (text).withButton ("Confirm").withButton ("Cancel"),
+                                  [this] (int r)
+                                  {
+                                      if (r != 1 || ! hasProject()) return;
+                                      const int added = project.ignoreMissingAudio();
+                                      juce::Logger::writeToLog ("Missing audio files: " + juce::String (added) + " now ignored for good (" + juce::String ((int) project.ignoredMissing.size()) + " in all)");
+                                      saveNow();
+                                  });
+}
+
+void AppContext::askUnignoreMissingAudio()
+{
+    const int n = (int) project.ignoredMissing.size();
+    if (! hasProject() || n == 0) return;
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon).withTitle ("Ignored missing files")
+                                      .withMessage (juce::String (n) + (n == 1 ? " missing audio file is" : " missing audio files are") + " being ignored. Look for "
+                                                    + (n == 1 ? "it" : "them") + " again? Fermata then reports " + (n == 1 ? "it" : "them")
+                                                    + " when the project opens and in Find missing audio files, as before.")
+                                      .withButton ("Look for them again").withButton ("Cancel"),
+                                  [this] (int r)
+                                  {
+                                      if (r != 1 || ! hasProject()) return;
+                                      project.ignoredMissing.clear();
+                                      project.markDirty();
+                                      juce::Logger::writeToLog ("Missing audio files: no longer ignored");
+                                      saveNow();
+                                  });
 }
 
 void AppContext::afterProjectReplaced()
@@ -1138,8 +1181,12 @@ bool AppContext::openProject (const juce::File& file)
         juce::MessageManager::callAsync ([this, text]
         {
             juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Audio files missing").withMessage (text)
-                                              .withButton ("Find the audio files...").withButton ("Later"),
-                                          [this] (int r) { if (r == 1 && findMissingAudio) findMissingAudio(); });
+                                              .withButton ("Find the audio files...").withButton ("Ignore missing files permanently").withButton ("Later"),
+                                          [this] (int r)
+                                          {
+                                              if (r == 1 && findMissingAudio) findMissingAudio();
+                                              else if (r == 2) askIgnoreMissingAudio();
+                                          });
         });
     }
     const auto tReady = juce::Time::getMillisecondCounterHiRes();
@@ -1893,15 +1940,21 @@ void AppContext::shutdown()
     takeDisplayHub.reset();
     if (engine.isRecording()) engine.stopRecording();
     stopPlayback();
+    closing::step ("playback stopped");
     project.preampDriver = std::make_shared<NullPreampDriver>();
+    closing::step ("preamp connections handed over to close");
     plugins.closeAllEditors();
+    closing::step ("plug-in windows closed");
     closingProgram = true;
     if (! skipFinalSave) { juce::String err; saveNow (false, &err); }     // (a failure is in the log; no message box can be shown while the program closes - Save and quit asks before it gets here)
     else { waitForSaves(); retryFailedSave(); }      // "Quit without saving" keeps what was saved automatically: so it must really be on the disk
+    closing::step (skipFinalSave ? "automatic saves made sure of (quit without saving)" : "project saved");
     if (auto* s = props.getUserSettings())
         if (auto xml = devices.createStateXml()) { s->setValue ("audioDevice", xml.get()); }
     props.saveIfNeeded();
+    closing::step ("settings saved");
     devices.removeAudioCallback (&engine);
     devices.closeAudioDevice();
+    closing::step ("audio device closed");
 }
 } // namespace td

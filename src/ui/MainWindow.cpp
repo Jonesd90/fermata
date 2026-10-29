@@ -999,6 +999,8 @@ void MainComponent::showProjectMenu()
     m.addItem (9, "Import AAF as edit windows...");
     m.addItem (15, "Take sheet of every take window (PDF and CSV)...", app.hasProject());
     m.addItem (8, "Re-draw all waveforms in current window", workKey.isNotEmpty());
+    if (! app.project.ignoredMissing.empty())                                    // 3.15.0
+        m.addItem (19, "Look for the ignored missing files again (" + juce::String ((int) app.project.ignoredMissing.size()) + ")...");
     m.addSeparator();
     {
         const auto bf = app.engine.getBackupFolder();
@@ -1026,6 +1028,7 @@ void MainComponent::showProjectMenu()
         if (r == 14) { if (app.showSurfacePanel) app.showSurfacePanel(); return; }
         if (r == 16) { if (app.showHotKeys) app.showHotKeys(); return; }
         if (r == 17) { if (app.showRecordMonitor) app.showRecordMonitor(); return; }
+        if (r == 19) { app.askUnignoreMissingAudio(); return; }
         if (r == 18) { app.askProjectRate ("Choose the sample rate this project records and plays at (it can be changed only while the project has no takes).", true); return; }
         if (r == 15) { exportTakeSheet (app, juce::Uuid::null()); return; }
         if (r == 13)

@@ -8,6 +8,7 @@
 #include "../core/SaveWriter.h"
 #include "StallWatch.h"
 #include "TakeMatchService.h"
+#include "ClosingLog.h"
 
 namespace td
 {
@@ -48,12 +49,19 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     /** The colours of this file's waveform, or nothing while it is not wanted or not worked out yet (it is being worked out in the background). */
     std::shared_ptr<const WaveColorData> waveColourOf (const juce::File& f) { return waveColour ? waveColors.get (f) : nullptr; }
 
+    // (3.15.0: the closing::Mark between the members log, as Fermata closes, how long each one took to go - see ClosingLog.h)
+    closing::Mark closedProject { "project freed: mixers and plug-ins unloaded, preamp connections let go" };
     Project project;
+    closing::Mark closedDevices { "audio device manager closed" };
     juce::AudioDeviceManager devices;
+    closing::Mark closedEngine { "audio engine stopped" };
     AudioEngine engine { project };
+    closing::Mark closedPlugins { "plug-in host closed" };
     PluginHost plugins;
+    closing::Mark closedTakeMatch { "take matching stopped" };
     /** The fingerprints of the takes and their alignments, for "the same place in another take" (3.4.0): made in the background, kept in the project's Analysis folder. */
     TakeMatchService takeMatch { project, engine };
+    closing::Mark closedRest { "the rest of the program's helpers freed" };
     juce::ApplicationProperties props;
 
     // windows (set by the application)
@@ -207,6 +215,9 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     std::function<bool (const juce::String& key)> windowIsOpen;       // is the program window with this key open ("trim:<edit id>", "bounce:<edit id>")? The edit window lights its Trim and Bounce Out buttons from it
     /** "Find missing audio files": the folder chooser and the search (the main window). Set by the main window. */
     std::function<void()> findMissingAudio;
+    /** 3.15.0: "Ignore missing files permanently" (asks to confirm, lists the files) and its way back (Project menu). */
+    void askIgnoreMissingAudio();
+    void askUnignoreMissingAudio();
 
     /** The last pitch correction / repair, so it can be undone (the new audio files stay on the disk; the originals were never touched). */
     int undoHold = 0;      // > 0 while a dialog is trying something out (pitch curve audition): the undo history is not written to meanwhile

@@ -242,6 +242,12 @@ public:
         engine is at another rate. 0 = not chosen: a project from before 3.9.0, whose rate audioRate() then takes from its takes (and saves); one with no
         takes is asked for it. Changed only while the project has no takes. Saved in the project file; not an undo step. */
     double sampleRate = 0.0;
+    /** Missing audio files the user chose to ignore for good (3.15.0: "Ignore missing files permanently" when the project opens), by full path: the
+        missing-file checks (at the open, Find missing audio files) leave them out. A file that is there again is used as before. Saved with the
+        project as "ignoredMissingAudio"; Project menu > "Look for the ignored missing files again" empties it. Not an undo step. */
+    std::set<juce::String> ignoredMissing;
+    /** Adds every audio file the project uses that is missing now (a full check, not the quick one) to ignoredMissing. Returns how many were added. */
+    int ignoreMissingAudio();
     static constexpr double kProjectRates[4] = { 44100.0, 48000.0, 96000.0, 192000.0 };
     /** At least one take in any take window (the rate can then no longer be changed). */
     bool hasTakes() const { for (auto& w : takeWindows) if (! w->groups.empty()) return true; return false; }

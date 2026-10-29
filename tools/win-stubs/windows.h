@@ -55,6 +55,11 @@ void GetLocalTime (SYSTEMTIME*);
 BOOL DeleteFileW (LPCWSTR);
 BOOL GetModuleHandleExW (DWORD, LPCWSTR, HMODULE*);
 DWORD GetModuleFileNameW (HMODULE, LPWSTR, DWORD);
+// the threads of the process (3.15.0)
+#define TH32CS_SNAPTHREAD 0x4
+struct THREADENTRY32 { DWORD dwSize, cntUsage, th32ThreadID, th32OwnerProcessID; LONG tpBasePri, tpDeltaPri; DWORD dwFlags; };
+BOOL Thread32First (HANDLE, THREADENTRY32*); BOOL Thread32Next (HANDLE, THREADENTRY32*);
+HANDLE LocalFree (HANDLE);
 BOOL SetPriorityClass (HANDLE, DWORD);
 // file API (src/core/FileSync.h)
 typedef void* LPSECURITY_ATTRIBUTES;

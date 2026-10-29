@@ -135,12 +135,15 @@ struct SystemLoad
         unsigned long long pcIdle = 0, pcTotal = 0;         // the whole PC, all cores together (100 ns units)
         unsigned long long process = 0;                     // Fermata, all its threads
         unsigned long long mainThread = 0;                  // Fermata's main (message) thread
+        std::vector<std::pair<unsigned long, unsigned long long>> threads;   // (take (true) only) each of Fermata's threads: its id and its working time
     };
     /** Call once on the message thread, so that its working time can be read from other threads. */
     static void rememberMessageThread();
-    /** Any thread. */
-    static Snapshot take();
-    /** "main thread working 95% of it, Fermata using 1.2 cores, whole PC 88% busy, on battery", plus a few words on what that means. Empty if unknown. */
+    /** Any thread. 'withThreads' (3.15.0, the timing lines): also each of Fermata's threads, so describe() can name the busiest. */
+    static Snapshot take (bool withThreads = false);
+    /** "main thread working 95% of it, Fermata using 1.2 cores, whole PC 88% busy, on battery", plus a few words on what that means. Empty if unknown.
+        When both snapshots have the threads (3.15.0): the main thread's share too, and the busiest threads by name ("busiest: Mixer helper 2 98%,
+        main thread 12%") - every thread using a tenth of a core or more, at most four. */
     static juce::String describe (const Snapshot& before, const Snapshot& after, bool forStall);
     /** "on battery" / "on mains" (+ ", battery saver on"); empty on a desktop or when unknown. */
     static juce::String powerText();

@@ -596,6 +596,7 @@ juce::String CoreReservation::describeMachine() const
 // ======================================================================================================= SystemLoad (3.13.0)
 #if FERMATA_CPU_WINDOWS
 static std::atomic<HANDLE> messageThreadHandle { nullptr };
+static std::atomic<DWORD> messageThreadId { 0 };
 static bool messageThreadKnown() noexcept { return messageThreadHandle.load() != nullptr; }
 static unsigned long long fileTimeValue (const FILETIME& f) noexcept { return ((unsigned long long) f.dwHighDateTime << 32) | f.dwLowDateTime; }
 #else
@@ -606,14 +607,41 @@ void SystemLoad::rememberMessageThread()
 {
 #if FERMATA_CPU_WINDOWS
     if (messageThreadHandle.load() == nullptr)
+    {
+        messageThreadId.store (GetCurrentThreadId());
         messageThreadHandle.store (OpenThread (THREAD_QUERY_LIMITED_INFORMATION, FALSE, GetCurrentThreadId()));
+    }
 #endif
 }
 
-SystemLoad::Snapshot SystemLoad::take()
+#if FERMATA_CPU_WINDOWS
+using GetThreadDescriptionFn = LONG (WINAPI*) (HANDLE, wchar_t**);
+static GetThreadDescriptionFn threadDescriptionFn()
+{
+    static GetThreadDescriptionFn fn = [] { auto k = GetModuleHandleW (L"kernel32.dll"); return k != nullptr ? reinterpret_cast<GetThreadDescriptionFn> ((void*) GetProcAddress (k, "GetThreadDescription")) : nullptr; }();
+    return fn;
+}
+/** A thread's name: JUCE names its threads ("Mixer helper 2", "Take matching" ...); the main thread is the main thread; others go by their number. */
+static juce::String threadName (DWORD id)
+{
+    if (id == messageThreadId.load()) return "main thread";
+    juce::String name;
+    if (auto fn = threadDescriptionFn())
+        if (HANDLE h = OpenThread (THREAD_QUERY_LIMITED_INFORMATION, FALSE, id))
+        {
+            wchar_t* desc = nullptr;
+            if (fn (h, &desc) >= 0 && desc != nullptr) { name = juce::String (desc); LocalFree (desc); }
+            CloseHandle (h);
+        }
+    return name.isNotEmpty() ? name : "unnamed thread " + juce::String ((juce::int64) id) + " (a driver's or a plug-in's, or the audio callback)";
+}
+#endif
+
+SystemLoad::Snapshot SystemLoad::take (bool withThreads)
 {
     Snapshot s;
     s.atMs = juce::Time::getMillisecondCounterHiRes();
+    juce::ignoreUnused (withThreads);
 #if FERMATA_CPU_WINDOWS
     FILETIME idle {}, kernel {}, user {};
     if (! GetSystemTimes (&idle, &kernel, &user)) return s;
@@ -623,6 +651,25 @@ SystemLoad::Snapshot SystemLoad::take()
     if (GetProcessTimes (GetCurrentProcess(), &c, &e, &k, &u)) s.process = fileTimeValue (k) + fileTimeValue (u);
     if (HANDLE h = messageThreadHandle.load())
         if (GetThreadTimes (h, &c, &e, &k, &u)) s.mainThread = fileTimeValue (k) + fileTimeValue (u);
+    if (withThreads)
+    {
+        HANDLE snap = CreateToolhelp32Snapshot (TH32CS_SNAPTHREAD, 0);
+        if (snap != INVALID_HANDLE_VALUE)
+        {
+            const DWORD self = GetCurrentProcessId();
+            THREADENTRY32 te {}; te.dwSize = sizeof (te);
+            for (BOOL more = Thread32First (snap, &te); more; more = Thread32Next (snap, &te))
+            {
+                if (te.th32OwnerProcessID != self) continue;
+                if (HANDLE h = OpenThread (THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID))
+                {
+                    if (GetThreadTimes (h, &c, &e, &k, &u)) s.threads.push_back ({ (unsigned long) te.th32ThreadID, fileTimeValue (k) + fileTimeValue (u) });
+                    CloseHandle (h);
+                }
+            }
+            CloseHandle (snap);
+        }
+    }
     s.ok = true;
 #endif
     return s;
@@ -639,8 +686,29 @@ juce::String SystemLoad::describe (const Snapshot& a, const Snapshot& b, bool fo
     const double mainShare = juce::jlimit (0.0, 100.0, 100.0 * (double) (b.mainThread - a.mainThread) / wall);
     juce::String t;
     if (forStall && messageThreadKnown()) t << "main thread working " << juce::roundToInt (mainShare) << "% of it, ";
+    if (! forStall && messageThreadKnown()) t << "main thread " << juce::roundToInt (mainShare) << "% of a core, ";
     t << "Fermata using " << juce::String (fermataCores, 1) << (std::abs (fermataCores - 1.0) < 0.05 ? " core" : " cores") << ", whole PC " << juce::roundToInt (pcBusy) << "% busy";
     if (const auto p = powerText(); p.isNotEmpty()) t << ", " << p;
+#if FERMATA_CPU_WINDOWS
+    if (! a.threads.empty() && ! b.threads.empty())                        // (3.15.0) the busiest of Fermata's threads, by name
+    {
+        std::vector<std::pair<double, unsigned long>> busy;
+        for (auto& [id, after] : b.threads)
+        {
+            unsigned long long before = 0; bool found = false;
+            for (auto& [id0, t0] : a.threads) if (id0 == id) { before = t0; found = true; break; }
+            const double share = 100.0 * (double) (after - (found ? before : 0)) / wall;     // (a thread started meanwhile: all its time is new)
+            if (share >= 10.0) busy.push_back ({ share, id });
+        }
+        std::sort (busy.begin(), busy.end(), [] (const auto& x, const auto& y) { return x.first > y.first; });
+        if (! busy.empty())
+        {
+            t << "; busiest: ";
+            for (size_t i = 0; i < busy.size() && i < 4; ++i)
+                t << (i > 0 ? ", " : "") << threadName ((DWORD) busy[i].second) << " " << juce::roundToInt (busy[i].first) << "%";
+        }
+    }
+#endif
     if (forStall)
     {
         if (pcBusy >= 85.0)                             t << " - the PC was flat out";

@@ -1566,6 +1566,11 @@ var Project::toVar (bool withWindows) const
         }
         put (root, "consonants", cs);
     }
+    if (! ignoredMissing.empty())                                                // 3.15.0: the missing files the user chose to ignore
+    {
+        juce::Array<var> ig; for (auto& pth : ignoredMissing) ig.add (pth);
+        put (root, "ignoredMissingAudio", ig);
+    }
     if (const double r = audioRate(); r > 0.0) put (root, "sampleRate", r);      // (3.9.0; a project from before it gets the rate of its takes written once it is saved)
     return root;
 }
@@ -1638,6 +1643,8 @@ bool Project::fromVar (const var& root)
 
     inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); consonants.clear();
     sampleRate = juce::jmax (0.0, (double) root.getProperty ("sampleRate", 0.0));
+    ignoredMissing.clear();
+    if (auto* ig = root["ignoredMissingAudio"].getArray()) for (auto& x : *ig) if (x.toString().isNotEmpty()) ignoredMissing.insert (x.toString());
     filesMoved = false;
     name = root.getProperty ("name", "Untitled").toString();
     windowBounds.clear();
@@ -3012,11 +3019,23 @@ int Project::missingAudioCount (bool quick) const
     forEachAudioFile (self.takeWindows, self.edits, [&] (juce::File& f)
     {
         const auto path = f.getFullPathName();
-        if (path.isEmpty() || ! seen.insert (path).second || qc.trusted.count (path) > 0) return;
+        if (path.isEmpty() || ! seen.insert (path).second || qc.trusted.count (path) > 0 || ignoredMissing.count (path) > 0) return;     // (3.15.0: ignored ones too)
         if (quick && ! qc.folderExists (f)) { ++n; return; }                          // (its folder is gone: no need to ask about the file)
         if (! f.existsAsFile()) ++n;
     });
     return n;
+}
+
+int Project::ignoreMissingAudio()
+{
+    int added = 0;
+    forEachAudioFile (takeWindows, edits, [&] (juce::File& f)
+    {
+        const auto path = f.getFullPathName();
+        if (path.isNotEmpty() && ignoredMissing.count (path) == 0 && ! f.existsAsFile()) { ignoredMissing.insert (path); ++added; }
+    });
+    if (added > 0) markDirty();
+    return added;
 }
 
 juce::StringArray Project::missingAudioList (int atMost, bool quick) const
@@ -3025,7 +3044,8 @@ juce::StringArray Project::missingAudioList (int atMost, bool quick) const
     juce::StringArray out; std::set<String> seen; int more = 0;
     auto add = [&] (const juce::File& f, const String& where)
     {
-        if (f == juce::File() || ! seen.insert (f.getFullPathName()).second || qc.trusted.count (f.getFullPathName()) > 0 || f.existsAsFile()) return;
+        if (f == juce::File() || ! seen.insert (f.getFullPathName()).second || qc.trusted.count (f.getFullPathName()) > 0 || ignoredMissing.count (f.getFullPathName()) > 0
+            || f.existsAsFile()) return;
         if (out.size() < atMost) out.add (f.getFileName() + "   (" + where + ")"); else ++more;
     };
     for (auto& w : takeWindows)

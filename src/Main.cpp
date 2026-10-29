@@ -479,26 +479,34 @@ public:
 
     void shutdown() override
     {
+        closing::begin();                                                         // 3.15.0: every step into the log, with its time (ClosingLog.h)
         busy::setAreaProvider (nullptr);
         splash.reset();
         remoteServer.reset();
+        closing::step ("Stream Deck / remote connections closed");
         // The fix tools' windows (ReTouch, De-click, Noise mode ...) are modal dialogs that JUCE would delete only after this object - and the
         // AppContext their destructors talk to (stop playback, put back what was not written, the undo hold) - had gone. Delete them first.
         // (Only DialogWindows: those are always "deleted when dismissed", so nothing else owns them.)
         for (int i = juce::ModalComponentManager::getInstance()->getNumModalComponents(); --i >= 0;)
             if (auto* dw = dynamic_cast<juce::DialogWindow*> (juce::ModalComponentManager::getInstance()->getModalComponent (i))) delete dw;
+        closing::step ("tool windows closed");
         if (ctx) ctx->surface = nullptr;
         surface.reset();                                                          // (the surface is blanked: faders down, lamps off)
+        closing::step ("control surface blanked");
         if (ctx) ctx->shutdown();
         CoreReservation::get().shutdown();                                       // other programs are given all the cores back
+        closing::step ("CPU cores handed back");
         windows.clear();
+        closing::step ("windows closed");
         mainWindow.reset();
+        closing::step ("main window closed");
         ctx.reset();
         tooltips.reset();
         focusKeeper.reset();
         globalKeyHook() = nullptr;
         juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
         lookAndFeel.reset();
+        closing::end();
         juce::Logger::setCurrentLogger (nullptr);
         fileLogger.reset();
     }
