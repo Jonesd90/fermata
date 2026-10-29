@@ -114,7 +114,7 @@ public:
 
 private:
     struct Entry { State state = State::Unknown; float progress = 0.0f; juce::String why; std::shared_ptr<const takematch::Fingerprint> fp; };
-    struct Job { juce::Uuid takeId; std::vector<juce::File> files; juce::File cacheFile; };
+    struct Job { juce::Uuid takeId = juce::Uuid::null(); std::vector<juce::File> files; juce::File cacheFile; };
     struct Cached { std::shared_ptr<const takematch::Fingerprint> fa, fb; std::shared_ptr<const takematch::Alignment> al; };
 
     /** The files a take's fingerprint is made from: its MAIN microphones (3.7.0, from real takes: the main pair hears the whole choir; a spot hears
@@ -190,12 +190,16 @@ private:
         td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
         while (! threadShouldExit())
         {
+            // 3.17.2: whether there is a job is told by the queue itself. (It used to be told by the job's take id being null - but a juce::Uuid made
+            // without a value is a NEW RANDOM id, never null: with nothing queued, the thread analysed a made-up take with no files, filed it under that
+            // id, and went round again at once, for ever - a whole core busy, millions of entries piling up (22 GB), and minutes to free them on closing.)
             Job job;
+            bool have = false;
             {
                 const juce::ScopedLock sl (lock);
-                if (! queue.empty()) { job = std::move (queue.front()); queue.pop_front(); }
+                if (! queue.empty()) { job = std::move (queue.front()); queue.pop_front(); have = true; }
             }
-            if (job.takeId.isNull()) { wake.wait (1000); continue; }
+            if (! have) { wake.wait (1000); continue; }
             if (engine.isRecording())                    // not while a take records: back on the queue, tried again in a moment
             {
                 { const juce::ScopedLock sl (lock); queue.push_front (std::move (job)); }

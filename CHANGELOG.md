@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.17.2
+- **The real cause of the slow closing, the slow opening and the busy core is fixed.** The background take matching (which fingerprints each take for Find other versions) had a fault: when it had nothing to do, it did not rest - it made up a take that does not exist, "analysed" it, filed it away, and went round again at once, thousands of times a second, for as long as Fermata was open. That is the processor core your log showed busy at 94-100 % with nothing happening, the memory growing to tens of gigabytes (22 GB in one case, 49 % of memory in another), the disk busy, and the long wait on closing while all of it was given back. Now it rests until a take really needs analysing. The closing safety net from 3.17.0 stays, but should no longer be needed.
+
 ## 3.17.1
 - **B and Ctrl+B swapped.** **B** now opens the bars and notes box of the take clicked last in the take window (also the take being recorded) - the key used most in a session. **Ctrl+B** opens and closes the meter bridge, from any window. (HotKeys updated.)
 - **The opening fade takes the first piece with it.** Dragging the opening fade before the first piece now makes the piece itself begin there: it takes in the audio before it from its take - the talking, a conductor's word before the first note - so its box starts at 0:00 together with its fade and shows everything that plays (before, the sound was there but the box still began later). It reaches back as far as the take has audio; an edit saved the old way is put right when the project opens.
