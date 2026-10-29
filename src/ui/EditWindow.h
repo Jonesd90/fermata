@@ -68,6 +68,10 @@ private:
     AppContext& app;
     juce::Uuid editId;
     juce::Label nameCaption, infoLabel;
+    juce::ToggleButton leadInBox { "Leave space before the first edit" };     // 3.16.0: the edit begins at 0:00, or this many seconds later
+    juce::TextEditor leadInSecs;
+    juce::Label leadInUnit;
+    void commitLeadIn();
     TimeReadout clock;                                        // the big time readout in the top bar
     static constexpr int kClockH = 58;
     juce::TextEditor nameEditor;

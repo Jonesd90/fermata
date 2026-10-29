@@ -462,21 +462,7 @@ TrimComponent::TrimComponent (AppContext& a, const juce::Uuid& eid, const juce::
     }
     preSlider.setValue (1.5, juce::dontSendNotification); postSlider.setValue (1.5, juce::dontSendNotification);
 
-    auto makeGroup = [this] (Group& g, const juce::String& title, std::function<void (double)> fn)
-    {
-        g.label.setText (title, juce::dontSendNotification);
-        addAndMakeVisible (g.label);
-        for (double ms : { -100.0, -10.0, -1.0, 1.0, 10.0, 100.0 })
-        {
-            auto* b = g.buttons.add (new juce::TextButton ((ms > 0 ? "+" : "") + juce::String ((int) ms) + " ms"));
-            b->onClick = [fn, ms] { fn (ms); };
-            b->setWantsKeyboardFocus (false);
-            addAndMakeVisible (b);
-        }
-    };
-    makeGroup (gA, "Slide A (out audio):",   [this] (double ms) { slideA (ms); });
-    makeGroup (gB, "Slide B (in audio):",    [this] (double ms) { slideB (ms); });
-    makeGroup (gJ, "Move the join (cut):",   [this] (double ms) { moveJoinBy (ms); });
+    // (3.16.0: the nudge buttons - Slide A, Slide B, Move the join by -100 ... +100 ms - are gone: joins are set by eye and ear, and the waveforms got the room)
 
     slipLeftToggle.setToggleState (app.trimSlipLeft, juce::dontSendNotification);
     slipRightToggle.setToggleState (app.trimSlipRight, juce::dontSendNotification);
@@ -708,8 +694,6 @@ void TrimComponent::refreshControls()
                               : juce::String (std::abs (gapMs), 1) + " ms " + (gapMs > 0 ? "of silence between A and B" : "of overlap between A and B"), juce::dontSendNotification);
             gapLabel.setColour (juce::Label::textColourId, apart ? theme::warn : theme::dimText);
         }
-        for (auto* g : { &gA, &gB, &gJ })
-            for (auto* b : g->buttons) b->setEnabled (both);
     }
     updatingControls = false;
 }
@@ -778,38 +762,6 @@ void TrimComponent::timerCallback()
 }
 
 // ------------------------------------------------------------------ editing actions
-void TrimComponent::slideA (double ms)
-{
-    const auto rf = refs();
-    if (! rf.ok() || rf.A == nullptr || rf.B == nullptr) return;
-    auto* e = rf.e; const int k = rf.k;
-    const auto want = (juce::int64) std::llround (ms * 0.001 * e->regions[(size_t) k].sampleRate);
-    const auto did = e->slipOut (k, want, slipLeft());
-    if (did != want) app.setNotice ("A cannot slide any further that way: " + juce::String (std::abs (did) / e->regions[(size_t) k].sampleRate * 1000.0, 0) + " ms is all the take allows (it runs out of audio, or the piece would become too short)");
-    app.project.changedLive();
-}
-
-void TrimComponent::slideB (double ms)
-{
-    const auto rf = refs();
-    if (! rf.ok() || rf.A == nullptr || rf.B == nullptr) return;
-    auto* e = rf.e; const int k = rf.k;
-    const auto want = (juce::int64) std::llround (ms * 0.001 * e->regions[(size_t) k].sampleRate);
-    const auto did = e->slipIn (k, want, slipRight());
-    if (did != want) app.setNotice ("B cannot slide any further that way: " + juce::String (std::abs (did) / e->regions[(size_t) k].sampleRate * 1000.0, 0) + " ms is all the take allows (it runs out of audio at its start, or the piece would become too short)");
-    app.project.changedLive();
-}
-
-void TrimComponent::moveJoinBy (double ms)
-{
-    const auto rf = refs();
-    if (! rf.ok() || rf.A == nullptr || rf.B == nullptr) return;
-    auto* e = rf.e; const int k = rf.k;
-    e->moveJoin (k, (juce::int64) std::llround (ms * 0.001 * e->regions[(size_t) k].sampleRate));
-    recentre();
-    app.project.changedLive();
-}
-
 void TrimComponent::resetFades()
 {
     const auto rf = refs();
@@ -948,7 +900,7 @@ void TrimComponent::resized()
     auto head = r.removeFromTop (24);
     infoLabel.setBounds (head);
     fadeLabel.setBounds (r.removeFromTop (20));
-    auto controls = r.removeFromBottom (264);
+    auto controls = r.removeFromBottom (171);                                 // (3.16.0: 93 px less without the nudge rows - the waveforms have it)
     waves->setBounds (r);
 
     auto row = [&controls] (int h) { auto x = controls.removeFromTop (h); controls.removeFromTop (3); return x; };
@@ -985,13 +937,6 @@ void TrimComponent::resized()
     levelBCap.setBounds (rL.removeFromLeft (115)); levelB.setBounds (rL.removeFromLeft (270));
     rL.removeFromLeft (14);
     normaliseBox.setBounds (rL.removeFromLeft (250));
-
-    for (auto* g : { &gA, &gB, &gJ })
-    {
-        auto rr = row (28);
-        g->label.setBounds (rr.removeFromLeft (170));
-        for (auto* b : g->buttons) b->setBounds (rr.removeFromLeft (75).reduced (2));
-    }
 
     auto r6 = row (32);
     auditionButton.setBounds (r6.removeFromLeft (150).reduced (2));

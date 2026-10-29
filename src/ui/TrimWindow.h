@@ -52,9 +52,6 @@ private:
     void describe();
     void recentre();
     void zoomBy (double factor);
-    void slideA (double ms);
-    void slideB (double ms);
-    void moveJoinBy (double ms);
     void audition();
     void playOriginal (bool outgoing);
     void stopAll();
@@ -91,8 +88,6 @@ private:
                      copyOutIn { "Copy out-fade to in  [A]" }, copyInOut { "Copy in-fade to out  [Z]" }, closeGapButton { "Close gap" };
     juce::Label gapLabel;
     juce::ToggleButton loopToggle { "Loop" }, slipLeftToggle { "Slip Left" }, slipRightToggle { "Slip Right" };
-    struct Group { juce::Label label; juce::OwnedArray<juce::TextButton> buttons; };
-    Group gA, gB, gJ;
     bool wasAuditioning = false, updatingControls = false;
 };
 } // namespace td

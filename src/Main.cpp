@@ -994,7 +994,7 @@ private:
     {
         if (ctx->project.findEdit (id) == nullptr) return;
         if (stayInFront == nullptr) recentEdit = id;
-        showWindow ("edit:" + id.toString(), "Edit", [this, id] { return new EditWindowComponent (*ctx, id); }, stayInFront);
+        showWindow ("edit:" + id.toString(), "Edit - " + ctx->project.findEdit (id)->name, [this, id] { return new EditWindowComponent (*ctx, id); }, stayInFront);     // (3.16.0: its name, also on the taskbar when minimised)
     }
     void openTrim (const juce::Uuid& editId, const juce::Uuid& regionId, bool atEnd)
     {
@@ -1007,7 +1007,7 @@ private:
             DockHub::get().show (it->second.get());
             return;
         }
-        showWindow (key, "Trim", [this, editId, regionId, atEnd] { auto* c = new TrimComponent (*ctx, editId, regionId, atEnd); return c; });
+        showWindow (key, "Trim - " + ctx->project.findEdit (editId)->name, [this, editId, regionId, atEnd] { auto* c = new TrimComponent (*ctx, editId, regionId, atEnd); return c; });
     }
     void openMedia()
     {
@@ -1118,13 +1118,11 @@ private:
                 if (auto* d = ctx->project.findTakeWindow (juce::Uuid (key.fromFirstOccurrenceOf (":", false, false)))) w->setName ("Takes - " + d->name);
                 else dead.push_back (key);
             }
-            else if (key.startsWith ("edit:"))
+            else if (key.startsWith ("edit:") || key.startsWith ("trim:"))       // (3.16.0: titled with the edit's name, kept up to date)
             {
-                if (ctx->project.findEdit (juce::Uuid (key.fromFirstOccurrenceOf (":", false, false))) == nullptr) dead.push_back (key);
-            }
-            else if (key.startsWith ("trim:"))
-            {
-                if (ctx->project.findEdit (juce::Uuid (key.fromFirstOccurrenceOf (":", false, false))) == nullptr) dead.push_back (key);
+                if (auto* e = ctx->project.findEdit (juce::Uuid (key.fromFirstOccurrenceOf (":", false, false))))
+                    w->setName ((key.startsWith ("edit:") ? "Edit - " : "Trim - ") + e->name);
+                else dead.push_back (key);
             }
             else if (key.startsWith ("scope:"))
             {

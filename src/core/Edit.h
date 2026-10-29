@@ -261,6 +261,20 @@ struct EditDef
     std::vector<juce::Uuid> fixTracks;            // Alt + drag: only these tracks are marked (empty = every track)
     bool fixUses (const juce::Uuid& track) const { return fixTracks.empty() || std::find (fixTracks.begin(), fixTracks.end(), track) != fixTracks.end(); }
 
+    // ---- where the edit begins (3.16.0) ----
+    /** The edit's sound always begins at 0:00 - the opening fade's first sample - or, with 'leadIn' ticked ("Leave space before the first edit"), that many
+        seconds later (to a hundredth of a second). anchorStart() moves the whole edit there whenever it has drifted (an opening fade dragged earlier,
+        the first piece slid, deleted or replaced): every piece, the overdubs, markers, flags, automation, the guide, the marks and the playhead together.
+        Saved with the edit; part of undo. */
+    bool   leadIn = false;
+    double leadInSeconds = 0.0;
+    juce::int64 startTarget() const noexcept
+    {
+        return leadIn && sampleRate > 0.0 ? (juce::int64) std::llround (juce::jlimit (0.0, 3600.0, leadInSeconds) * sampleRate) : 0;
+    }
+    /** Moves the whole edit so its sound begins at startTarget(). Returns true when anything moved. */
+    bool anchorStart();
+
     // ---- automation (drawn in the edit window; only plays from the edit) ----
     bool                 showLtc = false;       // the LTC track's row is shown in this edit window (the triangle button)
     std::vector<Marker>  markers;               // quick markers along the top of this edit window (not part of undo)
@@ -1101,6 +1115,16 @@ struct EditDef
         return d;
     }
 };
+
+inline bool EditDef::anchorStart()
+{
+    if (sampleRate <= 0.0 || (regions.empty() && overdubs.empty())) return false;
+    const juce::int64 delta = startTarget() - audibleStart();
+    if (delta == 0) return false;
+    for (auto& r : regions) r.startSample += delta;
+    rippleAfter (std::numeric_limits<juce::int64>::min() / 4, delta);      // everything else on the timeline goes with it (the overdubs included)
+    return true;
+}
 
 inline float fadeGain (FadeCurve c, float x, bool fadeIn) noexcept   // x = 0..1 through the fade
 {

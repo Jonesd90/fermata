@@ -67,7 +67,7 @@ AppContext::AppContext()
     watcher.startTimer (100);
     loadTicker.fn = [this] { tickLoad(); matchEngineRate(); };
     loadTicker.startTimer (1000);
-    undoTicker.fn = [this] { if (undoHold <= 0) { BusyLabel busy ("making an undo step"); project.undoTick (engine.isRecording()); } };
+    undoTicker.fn = [this] { if (undoHold <= 0) { BusyLabel busy ("making an undo step"); anchorEdits(); project.undoTick (engine.isRecording()); } };
     undoTicker.startTimer (250);
     peakPoller.fn = [this]
     {
@@ -923,6 +923,22 @@ void AppContext::askUnignoreMissingAudio()
                                   });
 }
 
+void AppContext::anchorEdits (bool always)
+{
+    if (! always)
+    {
+        if (juce::ModifierKeys::getCurrentModifiersRealtime().isAnyMouseButtonDown() || isPlaying()) return;
+        if (auto* mcm = juce::ModalComponentManager::getInstanceWithoutCreating(); mcm != nullptr && mcm->getNumModalComponents() > 0) return;
+    }
+    bool moved = false;
+    for (auto& e : project.edits)
+    {
+        if (! always && windowIsOpen && windowIsOpen ("trim:" + e->id.toString())) continue;
+        if (e->anchorStart()) moved = true;
+    }
+    if (moved) project.changed();
+}
+
 void AppContext::afterProjectReplaced()
 {
     ++saveGeneration;                                  // (what a save handed over before this did is not this project's)
@@ -941,6 +957,7 @@ void AppContext::afterProjectReplaced()
         if (auto* a = v.getArray())
             for (auto& d : *a) project.preampDevices.push_back (PreampDeviceCfg::fromVar (d));
     }
+    anchorEdits (true);                                // 3.16.0: every edit begins at 0:00 (or its lead-in) before the undo history starts
     project.undoReset();
     rebuildPreampDriver();
     refreshPreampsFromAneman();

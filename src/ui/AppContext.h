@@ -78,6 +78,10 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     /** Deletes the edit / take window AND its .fmedit / .fmtake file (the caller has already asked the person). Its windows are closed first; recordings are never touched. */
     void deleteWindowAndFile (bool isEdit, const juce::Uuid& id);
     std::function<void (const juce::Uuid& editId)> closeTrim;                              // closes the trim window of that edit
+    /** 3.16.0: every edit whose sound no longer begins at 0:00 (or at its "Leave space before the first edit") is moved there as a whole - see
+        EditDef::anchorStart. Not while a mouse button is down (a drag in progress), something plays, a dialog is up, or that edit's trim window is open
+        (they work on the positions as they are); it is done on the next tick after. 'always': regardless (a project just opened). */
+    void anchorEdits (bool always = false);
     std::function<void()> showDesign, showAudioSettings, refreshTitles, showBridge, showMedia;
     std::function<void (const juce::Uuid&)> showScope;
     std::function<void()> showOrganiser;

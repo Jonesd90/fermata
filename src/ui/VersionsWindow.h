@@ -13,7 +13,14 @@ namespace td
     marked part, with everything after it moved to fit (the ripple: markers, overdubs, the lot - Edit::replaceRangeRippled), plays from a little
     before to a little after (half a second each side, adjustable), and takes it out again when playback stops. Use this one leaves it in; Ctrl+Z
     takes it out. Where exactly the version starts and ends is found from the music (core/TakeMatch.h: the fingerprints, then the shape of the
-    sound at each join), so the new joins land on the same beat as the old ones. */
+    sound at each join), so the new joins land on the same beat as the old ones.
+    3.7.0, tuned on real takes: the marked part is searched for WITH the music either side of it (8 s in all, from its own take), which tells apart
+    music that sounds alike for a few seconds - the opening of one verse and the next, whose inner voices differ; the part on its own then says
+    exactly where it starts and ends in each version found. A false start is shorter than that, so the part on its own is also looked for in what is
+    left of each take: those are listed as POSSIBLE (a false start, or the same notes somewhere else - check by ear).
+    3.16.0, the bars: when the marked part's take has its bars entered, only the takes that have at least one of the marked bars are searched (a take
+    with no bars entered is left out), and each only around where those bars are in it (the take's bars spread over its music: takematch::BarMap,
+    with room either side) - not from end to end, where music that sounds alike elsewhere used to come up. */
 class VersionsComponent : public juce::Component, private juce::ListBoxModel, private juce::Timer
 {
 public:
@@ -39,8 +46,9 @@ public:
             l.setText (t, juce::dontSendNotification); l.setFont (juce::FontOptions (size, bold ? juce::Font::bold : juce::Font::plain)); addAndMakeVisible (l);
         };
         cap (title, "Other versions of " + timeText ((double) from / rate) + " - " + timeText ((double) to / rate) + "  (" + piece.takeName + ")", 16.0f, true);
-        cap (what, "Every place in the takes of this take window where the marked music was played, in recording order. Audition puts a version into the edit in place of the marked part - "
-                   "everything after it moves to fit - and plays it from a little before to a little after; it comes out again when playback stops. Use this one leaves it in (Ctrl+Z takes it out).", 12.5f);
+        cap (what, "Every place in the takes of this take window where the marked music was played, in recording order (\"possible\": only the marked part itself matches there - a false start, "
+                   "or the same notes elsewhere; check by ear). Audition puts a version into the edit in place of the marked part - everything after it moves to fit - and plays it from a little before "
+                   "to a little after; it comes out again when playback stops. Use this one leaves it in (Ctrl+Z takes it out).", 12.5f);
         what.setJustificationType (juce::Justification::topLeft); what.setMinimumHorizontalScale (1.0f);
         cap (rollCaption, "Play this much before and after:", 13.0f);
         addAndMakeVisible (roll);
@@ -82,6 +90,7 @@ private:
         takematch::Version v;
         int pass = 1, passes = 1;
         bool pending = false;                      // the take's fingerprint is not ready yet: this row stands for the whole take
+        bool possible = false;                     // only the marked part on its own matches here (a false start, or the same notes elsewhere)
         bool refined = false; juce::int64 srcIn = 0, srcOut = 0;        // the exact samples once the joins have been refined
     };
     /** A row of the list: the text, an Audition button and a Use button. */
@@ -96,7 +105,7 @@ private:
         }
         void set (int r, const Row& data, bool playingThis)
         {
-            row = r; text = owner.textOf (data); dim = data.pending || data.dud; playing = playingThis;
+            row = r; text = owner.textOf (data); dim = data.pending || data.dud || data.possible; playing = playingThis;
             audition.setEnabled (! data.pending); use.setEnabled (! data.pending);
             audition.setButtonText (playingThis ? "Playing" : "Audition");
             repaint();
@@ -138,7 +147,8 @@ private:
     {
         if (r.pending) return r.takeName + "   (analysing this take...)";
         juce::String t = r.takeName + "   at " + timeText (r.v.start);
-        if (r.passes > 1) t += "   (" + juce::String (r.pass) + (r.pass == 1 ? "st" : r.pass == 2 ? "nd" : r.pass == 3 ? "rd" : "th") + " of " + juce::String (r.passes) + ")";
+        if (r.possible) t += "   possible - check by ear";                // (a false start, or the same notes elsewhere: the window's text says so)
+        else if (r.passes > 1) t += "   (" + juce::String (r.pass) + (r.pass == 1 ? "st" : r.pass == 2 ? "nd" : r.pass == 3 ? "rd" : "th") + " of " + juce::String (r.passes) + ")";
         t += "   match " + juce::String (juce::roundToInt (100.0 * juce::jlimit (0.0, 1.0, 1.0 - r.v.cost))) + " %";
         const int tempo = juce::roundToInt (100.0 * (1.0 / juce::jmax (0.01, r.v.stretch) - 1.0));
         if (tempo != 0) t += "   tempo " + juce::String (tempo > 0 ? "+" : "") + juce::String (tempo) + " %";
@@ -160,44 +170,152 @@ private:
     }
     bool isLtc (const juce::Uuid& trackId) const { for (auto& t : app.project.tracks) if (t.id == trackId) return t.isLtc; return false; }
 
-    /** The passage's fingerprint (once), then every take of the window: its versions, or a pending row. Called again by the timer while takes are still being analysed. */
+    /** The marked part's fingerprint and the part with the music either side: from its own take's fingerprint (the take window's, made in the
+        background), kContextSeconds in all. False while that is still being made. When its take is no longer in the window, the part on its own,
+        read from the piece's files. */
+    bool makePassage()
+    {
+        if (! passage.empty()) return true;
+        auto* w = app.project.findTakeWindow (windowId);
+        const TakeGroup* src = w != nullptr ? w->findGroup (piece.takeId) : nullptr;
+        if (src != nullptr)
+        {
+            auto fp = app.takeMatch.fingerprintFor (piece.takeId);
+            if (fp == nullptr)
+            {
+                const auto st = app.takeMatch.statusOf (piece.takeId).state;
+                if (st != TakeMatchService::State::NoAudio && st != TakeMatchService::State::Failed) return false;      // (being made: the timer asks again)
+            }
+            else
+            {
+                const double fps = fp->fps;
+                const int p0 = juce::jlimit (0, fp->frames(), (int) std::lround ((double) passageFrom / rate * fps)), p1 = juce::jlimit (p0, fp->frames(), (int) std::lround ((double) passageTo / rate * fps));
+                const int need = (int) std::lround (takematch::kContextSeconds * fps);
+                int c0 = p0, c1 = p1;
+                if (c1 - c0 < need)
+                {
+                    const int extra = (need - (c1 - c0)) / 2;
+                    c0 = juce::jmax (0, c0 - extra); c1 = juce::jmin (fp->frames(), c1 + extra);
+                    if (c1 - c0 < need) { c0 = juce::jmax (0, c1 - need); c1 = juce::jmin (fp->frames(), c0 + need); }
+                }
+                part = fp->slice (p0, p1); passage = fp->slice (c0, c1); innerFrom = p0 - c0; innerTo = p1 - c0; withContext = true;
+                return ! part.empty();
+            }
+        }
+        part = takematch::analyseRange (formats, sourcesOf (piece.files), passageFrom, passageTo);
+        passage = part; innerFrom = 0; innerTo = -1; withContext = false;
+        return true;
+    }
+    /** The bars the marked part is in, from its take's bars - spread evenly over the take's MUSIC, from where it begins to where it ends (3.16.0;
+        before, over the whole recording): 0 when the take has none entered. */
+    void passageBars (int& lo, int& hi) const
+    {
+        lo = hi = 0;
+        auto* w = app.project.findTakeWindow (windowId);
+        const TakeGroup* src = w != nullptr ? w->findGroup (piece.takeId) : nullptr;
+        if (src == nullptr || src->barIn <= 0 || src->lengthSeconds() <= 0.0) return;
+        auto fp = app.takeMatch.fingerprintFor (src->id);
+        const auto map = takematch::barMapOf (fp != nullptr ? *fp : takematch::Fingerprint(), src->barIn, src->barOut, src->lengthSeconds());
+        if (! map.valid()) return;
+        lo = map.barAt ((double) passageFrom / rate);
+        hi = juce::jmax (lo, map.barAt ((double) juce::jmax (passageFrom, passageTo - 1) / rate));
+    }
+    /** Where in a take with these bars bars lo..hi should be (seconds), with room either side for the bars not being evenly spread: two bars, plus a
+        twentieth of the take's music, plus two seconds. */
+    static void searchSpan (const takematch::BarMap& m, int lo, int hi, double& from, double& to)
+    {
+        const double margin = 2.0 * m.barLength() + 0.05 * (m.to - m.from) + 2.0;
+        from = m.timeOf (juce::jmax (lo, m.barIn)) - margin;
+        to = m.timeOf (juce::jmin (hi, m.barOut) + 1) + margin;
+    }
+
+    /** Every take of the window: its versions, its possible ones, or a pending row. Called again by the timer while takes are still being analysed. */
     void search()
     {
         auto* w = app.project.findTakeWindow (windowId);
         if (w == nullptr) { status.setText ("The take window this piece came from is not in the project any more.", juce::dontSendNotification); return; }
-        if (passage.empty())
+        if (! makePassage())
         {
-            passage = takematch::analyseRange (formats, sourcesOf (piece.files), passageFrom, passageTo);
-            if (passage.empty()) { status.setText ("The marked part's audio could not be read.", juce::dontSendNotification); return; }
+            status.setText ("Analysing the take the marked part comes from...", juce::dontSendNotification);
+            stillWaiting = true;
+            return;
         }
+        if (part.empty()) { status.setText ("The marked part's audio could not be read.", juce::dontSendNotification); stillWaiting = false; return; }
+        if (takematch::mostlySilent (part, 0, part.frames()))
+        {
+            status.setText ("The marked part is mostly silence: there is no music in it to look for. Mark the music to replace.", juce::dontSendNotification);
+            stillWaiting = false; return;
+        }
+        int barLo = 0, barHi = 0; passageBars (barLo, barHi);
         rows.clear();
-        int waiting = 0;
+        int waiting = 0, leftOut = 0, noBars = 0;
+        const double own = (double) passageFrom / rate;
         for (auto& g : w->groups)
         {
+            // 3.16.0: when the marked part's bars are known, only the takes that have at least one of them are searched - a take with no bars entered
+            // is left out too - and each only around where those bars are in it
+            if (barLo > 0 && g.id != piece.takeId)
+            {
+                if (g.barIn <= 0) { ++noBars; continue; }
+                if (! takematch::BarMap { g.barIn, juce::jmax (g.barIn, g.barOut), 0.0, 1.0 }.hasAny (barLo, barHi)) { ++leftOut; continue; }
+            }
             const auto name = w->displayName (g);
-            auto fp = app.takeMatch.fingerprintFor (g.id);
-            if (fp == nullptr)
+            auto full = app.takeMatch.fingerprintFor (g.id);
+            if (full == nullptr)
             {
                 const auto st = app.takeMatch.statusOf (g.id);
                 if (st.state == TakeMatchService::State::NoAudio || st.state == TakeMatchService::State::Failed) continue;
                 Row r; r.takeId = g.id; r.takeName = name; r.dud = g.dud; r.pending = true; rows.push_back (r); ++waiting;
                 continue;
             }
-            auto vs = takematch::findVersions (passage, *fp);
-            // (the marked part itself, in its own take, is not another version)
-            if (g.id == piece.takeId)
+            // the stretch of this take to search: around the marked bars (3.16.0), else all of it
+            const takematch::Fingerprint* fp = full.get();
+            takematch::Fingerprint window;
+            double offset = 0.0;
+            if (barLo > 0 && g.barIn > 0)
             {
-                const double own = (double) passageFrom / rate;
-                vs.erase (std::remove_if (vs.begin(), vs.end(), [own] (const takematch::Version& v) { return std::abs (v.start - own) < 1.0; }), vs.end());
+                const auto map = takematch::barMapOf (*full, g.barIn, g.barOut, full->lengthSeconds());
+                double a = 0.0, b = 0.0; searchSpan (map, barLo, barHi, a, b);
+                if (const double need = passage.lengthSeconds() + 4.0; b - a < need) { a -= (need - (b - a)) * 0.5; b = a + need; }    // (room for the music either side)
+                const int f0 = juce::jlimit (0, full->frames(), (int) std::floor (a * full->fps)), f1 = juce::jlimit (f0, full->frames(), (int) std::ceil (b * full->fps));
+                if (f0 > 0 || f1 < full->frames()) { window = full->slice (f0, f1); fp = &window; offset = (double) f0 / full->fps; }
             }
-            std::sort (vs.begin(), vs.end(), [] (const takematch::Version& a, const takematch::Version& b) { return a.start < b.start; });
+            auto shifted = [offset] (takematch::Version v) { v.start += offset; v.end += offset; return v; };
+            auto notOwn = [&] (const takematch::Version& v) { return g.id != piece.takeId || std::abs (v.start - own) >= 1.0; };
+            std::vector<takematch::Version> sure, maybe;
+            for (auto v : takematch::findVersions (passage, *fp, takematch::kVersionCost, innerFrom, innerTo))
+            {
+                v = shifted (v);
+                if (withContext) v = takematch::placePart (part, *full, v);        // (the context says where; the part on its own says exactly where)
+                if (notOwn (v)) sure.push_back (v);
+            }
+            if (withContext)                                                      // what the context cannot find: a false start is shorter than it
+                for (auto v : takematch::findVersions (part, *fp, takematch::kPossibleCost))
+                {
+                    v = shifted (v);
+                    bool inSure = false;
+                    for (auto& s2 : sure) if (v.start < s2.end + 0.5 && v.end > s2.start - 0.5) inSure = true;
+                    if (! inSure && notOwn (v)) maybe.push_back (v);
+                }
+            auto byStart = [] (const takematch::Version& a, const takematch::Version& b) { return a.start < b.start; };
+            std::sort (sure.begin(), sure.end(), byStart);
             int k = 0;
-            for (auto& v : vs) { Row r; r.takeId = g.id; r.takeName = name; r.dud = g.dud; r.v = v; r.pass = ++k; r.passes = (int) vs.size(); rows.push_back (r); }
+            std::vector<Row> mine;
+            for (auto& v : sure) { Row r; r.takeId = g.id; r.takeName = name; r.dud = g.dud; r.v = v; r.pass = ++k; r.passes = (int) sure.size(); mine.push_back (r); }
+            for (auto& v : maybe) { Row r; r.takeId = g.id; r.takeName = name; r.dud = g.dud; r.v = v; r.possible = true; mine.push_back (r); }
+            std::sort (mine.begin(), mine.end(), [] (const Row& a, const Row& b) { return a.v.start < b.v.start; });
+            for (auto& r : mine) rows.push_back (r);
         }
         list.updateContent();
-        const int found = (int) rows.size() - waiting;
+        int found = 0, possible = 0; for (auto& r : rows) { if (r.pending) continue; if (r.possible) ++possible; else ++found; }
         juce::String s = found == 0 ? "No other version found" : found == 1 ? "1 version found" : juce::String (found) + " versions found";
+        if (possible > 0) s += ", and " + juce::String (possible) + " possible (check by ear)";
         if (waiting > 0) s += "; " + juce::String (waiting) + (waiting == 1 ? " take is" : " takes are") + " still being analysed";
+        if (barLo > 0) s += "; searched only around bar" + (barHi > barLo ? "s " + juce::String (barLo) + "-" + juce::String (barHi) : " " + juce::String (barLo));
+        if (leftOut > 0) s += "; " + juce::String (leftOut) + (leftOut == 1 ? " take does" : " takes do") + " not have those bars";
+        if (noBars > 0) s += "; " + juce::String (noBars) + (noBars == 1 ? " take has" : " takes have") + " no bars entered (left out)";
+        if (barLo == 0) s += " (enter the bars of this piece's take - Ctrl+B in the take window - to search only the takes with those bars)";
+        if (! withContext) s += " (the marked part's take is no longer in the window: searched without the music either side - check by ear)";
         s += ".";
         status.setText (s, juce::dontSendNotification);
         stillWaiting = waiting > 0;
@@ -318,7 +436,9 @@ private:
     double rate = 48000.0;
     juce::int64 from = 0, to = 0, passageFrom = 0, passageTo = 0;
     EditRegion piece;
-    takematch::Fingerprint passage;
+    takematch::Fingerprint passage, part;                                    // the marked part with the music either side, and on its own
+    int innerFrom = 0, innerTo = -1;                                         // where the marked part is in 'passage' (frames)
+    bool withContext = false;
     std::vector<Row> rows;
     Base base;
     fixtools::PreviewApplied hold;                                           // while a version is in the edit only to be listened to, the automatic save waits

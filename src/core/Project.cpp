@@ -1344,6 +1344,8 @@ var Project::editToVarIn (const EditDef& eref, const juce::File& base)
         put (o, "guide", go);
     }
     if (! e->showGuide) put (o, "showGuide", false);
+    if (e->leadIn) put (o, "leadIn", true);                                            // 3.16.0: "Leave space before the first edit"
+    if (e->leadInSeconds > 0.0) put (o, "leadInSeconds", e->leadInSeconds);
     {
         juce::Array<var> ls;
         for (auto& l : e->lanes)
@@ -1901,6 +1903,7 @@ bool Project::fromVar (const var& root)
                 if (! gd.active()) gd = EditGuide();
             }
             e->showGuide = v["showGuide"].isVoid() ? true : (bool) v["showGuide"];
+            e->leadIn = (bool) v["leadIn"]; e->leadInSeconds = juce::jlimit (0.0, 3600.0, (double) v["leadInSeconds"]);
             if (auto* ls = v["autoLanes"].getArray())
                 for (auto& lv : *ls)
                 {
@@ -2042,7 +2045,7 @@ juce::uint64 Project::undoHash (const TakeWindowDef& w)
 juce::uint64 Project::undoHash (const EditDef& e)
 {
     UndoHasher h;
-    h.add (e.id); h.add (e.name); h.add (e.windowId); h.add (e.sampleRate); h.add (e.automationOn); h.add (e.showLtc);
+    h.add (e.id); h.add (e.name); h.add (e.windowId); h.add (e.sampleRate); h.add (e.automationOn); h.add (e.showLtc); h.add (e.leadIn); h.add (e.leadInSeconds);
     h.count (e.trackIds.size()); for (auto& t : e.trackIds) h.add (t);
     auto region = [&h] (const EditRegion& r)
     {

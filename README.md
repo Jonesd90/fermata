@@ -92,6 +92,7 @@ Fermata keeps a log in `Documents\Fermata\fermata-log.txt`. Send that file with 
 
 **Display Organiser:** a picture of your screen: pick a shape, click each part to choose its window (any take window, edit or mixer of the project: a closed one is opened), drag the lines to change the split, press Arrange. Layouts can be saved with the project; the program's own (Recording, Editing ...) take the windows you used last.
 **Fades:** the start and end of an edit (and of each take) fade for 25 ms by default; drag the top corners to change it.
+**The start of an edit:** the opening fade always begins at exactly 0:00 - move the fade or the first piece and the whole edit moves with it, once you let go. To begin later, tick **Leave space before the first edit** (right of the edit window's information line) and type the seconds.
 **Bounce Out:** *Between marks 1 and 2* uses the 1 and 2 flags. P puts them round a selected take (take window) or the selected pieces (edit window).
 
 **Gain and Fader automation.** In the Edit Window, the automation lane menu has both: *Gain* changes the level going INTO the mixer strip (before the inserts and the fader), *Fader* changes it after the inserts. Use Gain to even out a level before a compressor, and Fader for the final balance.

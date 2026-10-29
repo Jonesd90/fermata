@@ -2103,11 +2103,28 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     nameEditor.setText (edit() ? edit()->name : "", false);
     auto commitEditName = [this]
     {
-        if (auto* e = edit()) if (nameEditor.getText().isNotEmpty() && e->name != nameEditor.getText()) { e->name = nameEditor.getText(); if (app.project.syncEditMixers()) app.project.structureChanged(); else app.project.changed(); }
+        if (auto* e = edit()) if (nameEditor.getText().isNotEmpty() && e->name != nameEditor.getText()) { e->name = nameEditor.getText(); if (app.project.syncEditMixers()) app.project.structureChanged(); else app.project.changed(); if (app.refreshTitles) app.refreshTitles(); }
     };
     nameEditor.onFocusLost = commitEditName;
     nameEditor.onReturnKey = [this, commitEditName] { commitEditName(); timeline->grabKeyboardFocus(); };     // Enter: the keyboard goes back to the timeline (its keys work at once)
     infoLabel.setColour (juce::Label::textColourId, theme::text);
+    // 3.16.0: the edit always begins at 0:00 (the opening fade's first sample) - or, ticked, this many seconds later
+    leadInBox.setTooltip ("The edit always begins at 0:00: move the opening fade or the first piece and everything moves with it. Tick this to leave this many seconds of silence before it instead.");
+    leadInSecs.setTooltip ("Seconds of silence before the first edit (to a hundredth of a second)");
+    leadInSecs.setInputRestrictions (7, "0123456789.");
+    leadInSecs.setJustification (juce::Justification::centredRight);
+    leadInUnit.setText ("s", juce::dontSendNotification);
+    leadInUnit.setColour (juce::Label::textColourId, theme::text);
+    if (auto* e = edit())
+    {
+        leadInBox.setToggleState (e->leadIn, juce::dontSendNotification);
+        leadInSecs.setText (juce::String (e->leadInSeconds, 2), false);
+    }
+    leadInSecs.setEnabled (leadInBox.getToggleState());
+    leadInBox.onClick = [this] { leadInSecs.setEnabled (leadInBox.getToggleState()); commitLeadIn(); };
+    leadInSecs.onReturnKey = [this] { commitLeadIn(); timeline->grabKeyboardFocus(); };
+    leadInSecs.onFocusLost = [this] { commitLeadIn(); };
+    addAndMakeVisible (leadInBox); addAndMakeVisible (leadInSecs); addAndMakeVisible (leadInUnit);
 
     tracksButton.setTooltip ("The tracks (audio rows) of THIS edit: add one, remove one, or show every project track again. Drag a track's name up or down to change the order. Each track has its own mixer strip.");
     tracksButton.onClick = [this] { showTracksMenu(); };
@@ -2313,6 +2330,10 @@ void EditWindowComponent::resized()
     r.removeFromTop (headH + 2);
     {
         auto row = r.removeFromTop (22);
+        leadInUnit.setBounds (row.removeFromRight (16));
+        leadInSecs.setBounds (row.removeFromRight (58).reduced (0, 1));
+        row.removeFromRight (4);
+        leadInBox.setBounds (row.removeFromRight (232));
         infoLabel.setBounds (row.reduced (4, 0));
     }
     r.removeFromTop (4);
@@ -2329,6 +2350,18 @@ void EditWindowComponent::filesDropped (const juce::StringArray& files, int, int
 {
     juce::Array<juce::File> list; for (auto& f : files) list.add (juce::File (f));
     fixtools::importTakes (app, juce::Uuid::null(), list, this, editId);
+}
+
+void EditWindowComponent::commitLeadIn()
+{
+    auto* e = edit();
+    if (e == nullptr) return;
+    const double secs = std::round (juce::jlimit (0.0, 3600.0, leadInSecs.getText().getDoubleValue()) * 100.0) / 100.0;       // (to a hundredth of a second)
+    leadInSecs.setText (juce::String (secs, 2), false);
+    const bool on = leadInBox.getToggleState();
+    if (e->leadIn == on && std::abs (e->leadInSeconds - secs) < 0.0001) return;
+    e->leadIn = on; e->leadInSeconds = secs;
+    app.project.changed();                                                 // (the edit moves to its new start on the next tick: AppContext::anchorEdits)
 }
 
 double EditWindowComponent::transportNow() const
@@ -2891,6 +2924,11 @@ void EditWindowComponent::timerCallback()
         if (bounceButton.getToggleState() != bounceOpen) bounceButton.setToggleState (bounceOpen, juce::dontSendNotification);
     }
     clock.setSampleRate (app.engine.getSampleRate());
+    if (auto* e = edit())                                                  // (an undo, or another window, may have changed the lead-in)
+    {
+        if (leadInBox.getToggleState() != e->leadIn) { leadInBox.setToggleState (e->leadIn, juce::dontSendNotification); leadInSecs.setEnabled (e->leadIn); }
+        if (! leadInSecs.hasKeyboardFocus (true) && std::abs (leadInSecs.getText().getDoubleValue() - e->leadInSeconds) > 0.004) leadInSecs.setText (juce::String (e->leadInSeconds, 2), false);
+    }
     if (auto* e = edit())
         infoLabel.setText (juce::String (takesInEdit (*e)) + (takesInEdit (*e) == 1 ? " Take" : " Takes") + (e->overdubs.empty() ? juce::String() : ", " + juce::String ((int) e->overdubs.size()) + " overdub(s)") + ", " + formatTimeShort (e->lengthSeconds(), 0)
                            + (e->fixIn >= 0 ? "   [1] " + formatTimeShort (e->fixIn, 2) : juce::String())

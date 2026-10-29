@@ -11024,6 +11024,46 @@ int main()
         const auto a = SystemLoad::take(), b = SystemLoad::take();
         CHECK (! a.ok && SystemLoad::describe (a, b, true).isEmpty() && SystemLoad::powerText().isEmpty());
     }
+    SECTION ("3.16.0 the edit begins at 0:00 (or its lead-in), everything moving with it");
+    {
+        EditDef e; e.sampleRate = 48000.0;
+        auto piece = [] (juce::int64 start, juce::int64 len) { EditRegion r; r.id = juce::Uuid(); r.sampleRate = 48000.0; r.sourceLength = 48000 * 60; r.srcIn = 48000; r.srcOut = 48000 + len; r.startSample = start; return r; };
+        e.regions.push_back (piece (0, 480000)); e.regions.push_back (piece (480000, 480000));
+        e.regions[0].inStart = -0.5; e.regions[0].inEnd = -0.38;                 // the opening fade dragged half a second before 0:00
+        auto od = piece (96000, 48000); e.overdubs.push_back (od);
+        Marker m; m.seconds = 5.0; e.markers.push_back (m);
+        e.playheadSeconds = 3.0;
+        CHECK (e.audibleStart() == -24000);
+        CHECK (e.anchorStart());
+        CHECK (e.audibleStart() == 0 && e.regions[0].fadeInBegin() == 0 && e.regions[0].startSample == 24000 && e.regions[1].startSample == 504000);
+        CHECK (e.overdubs[0].startSample == 120000 && std::abs (e.markers[0].seconds - 5.5) < 1e-9 && std::abs (e.playheadSeconds - 3.5) < 1e-9);
+        CHECK (! e.anchorStart());                                                // (already there)
+        e.leadIn = true; e.leadInSeconds = 1.25;                                  // "Leave space before the first edit": 1.25 s
+        CHECK (e.anchorStart() && e.audibleStart() == 60000 && e.startTarget() == 60000);
+        e.leadIn = false;
+        e.regions[0].inStart = 0.2; e.regions[0].inEnd = 0.3;                     // the fade moved later: everything comes back to start at 0:00 again
+        CHECK (e.anchorStart() && e.audibleStart() == 0);
+        EditDef empty; empty.sampleRate = 48000.0; CHECK (! empty.anchorStart());
+        // saved with the edit
+        Project p; p.createDefaultDesign();
+        auto& tw = p.addTakeWindow ("W");
+        auto& ed = p.addEdit ("E", tw.id); ed.leadIn = true; ed.leadInSeconds = 2.37;
+        Project back; CHECK (back.fromVar (p.toVar()) && back.edits.size() == 1 && back.edits[0]->leadIn && std::abs (back.edits[0]->leadInSeconds - 2.37) < 1e-9);
+    }
+    SECTION ("3.16.0 Find other versions: a take's bars over its music");
+    {
+        takematch::Fingerprint fp; fp.fps = 20.0;
+        fp.loudness.assign (20 * 15, -90.0f);                                     // 15 s: silence, 10 s of music from 2 s, silence
+        for (int i = 40; i < 240; ++i) fp.loudness[(size_t) i] = -20.0f;
+        fp.chroma.assign ((size_t) fp.frames() * (size_t) fp.bins, 0.0f);
+        const auto m = takematch::barMapOf (fp, 1, 10, 15.0);
+        CHECK (m.valid() && std::abs (m.from - 2.0) < 1e-9 && std::abs (m.to - 12.0) < 1e-9 && std::abs (m.barLength() - 1.0) < 1e-9);
+        CHECK (m.barAt (2.5) == 1 && m.barAt (11.9) == 10 && m.barAt (0.0) == 1 && m.barAt (14.0) == 10 && std::abs (m.timeOf (5) - 6.0) < 1e-9);
+        CHECK (m.hasAny (10, 12) && ! m.hasAny (11, 12) && m.hasAny (1, 1));
+        const auto none = takematch::barMapOf (takematch::Fingerprint(), 5, 8, 20.0);     // no fingerprint: the whole take
+        CHECK (none.from == 0.0 && none.to == 20.0 && none.barAt (19.9) == 8);
+        takematch::BarMap noBars; CHECK (! noBars.valid() && ! noBars.hasAny (1, 100));
+    }
     SECTION ("3.14.0 crash reports: the folder, newest first, only five kept");
     {
         const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("fermata-crash-test");
