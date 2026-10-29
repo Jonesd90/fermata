@@ -26,7 +26,9 @@ struct BusyLabel
     PC were using, and whether a laptop was on battery - so a stall with no label can be told apart: Fermata's own drawing (main thread working),
     a PC that is flat out (something else, or too few cores left), or the main thread waiting on Windows or a driver.
     Since 3.14.0, when the main thread has been stuck for 15 seconds a freeze report is written (a minidump: where every thread is at that
-    moment, see CrashReport.h) - at most two a session - so a freeze that needs Fermata ending from the Task Manager can still be traced. */
+    moment, see CrashReport.h) - at most two a session - so a freeze that needs Fermata ending from the Task Manager can still be traced.
+    3.17.0: after 5 seconds stuck, where every thread is goes into the log as text (at most five times a session), and the 15-second report is
+    written by a helper process (crashreport::writeViaHelper) - the one written from inside the stuck program was left at 0 bytes. */
 class StallWatch : private juce::Timer, private juce::Thread
 {
 public:
@@ -34,6 +36,7 @@ public:
     {
         beat.store (juce::Time::getMillisecondCounterHiRes());
         SystemLoad::rememberMessageThread();                                // (constructed on the message thread)
+        mainThreadId = (unsigned long) (juce::pointer_sized_int) juce::Thread::getCurrentThreadId();     // (Windows' own id of the message thread)
         startTimerHz (20);
         startThread (juce::Thread::Priority::low);
     }
@@ -43,13 +46,14 @@ public:
         signalThreadShouldExit(); notify(); stopThread (2000);
     }
 
-    static constexpr double kPeriodMs = 50.0, kReportMs = 150.0, kFreezeReportMs = 15000.0;
+    static constexpr double kPeriodMs = 50.0, kReportMs = 150.0, kStacksMs = 5000.0, kFreezeReportMs = 15000.0;
 
 private:
     void timerCallback() override { beat.store (juce::Time::getMillisecondCounterHiRes()); }
 
     void run() override
     {
+        td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
         bool inStall = false;
         double lastBeatBefore = 0.0;
         const char* seen[4] = {};
@@ -57,8 +61,8 @@ private:
         double minuteStart = juce::Time::getMillisecondCounterHiRes();
         SystemLoad::Snapshot atStart;
         double lastLoop = juce::Time::getMillisecondCounterHiRes(), watchedSince = 0.0;
-        int freezeReports = 0;
-        bool reportedThisStall = false;
+        int freezeReports = 0, stackReports = 0;
+        bool reportedThisStall = false, stacksThisStall = false;
         while (! threadShouldExit())
         {
             wait (20);
@@ -68,15 +72,36 @@ private:
             lastLoop = t;
             if (t - b > kPeriodMs + kReportMs * 0.5)                 // the beats have stopped: the message thread is busy
             {
-                if (! inStall) { inStall = true; lastBeatBefore = b; nSeen = 0; atStart = SystemLoad::take(); watchedSince = t; reportedThisStall = false; }
+                if (! inStall) { inStall = true; lastBeatBefore = b; nSeen = 0; atStart = SystemLoad::take(); watchedSince = t; reportedThisStall = false; stacksThisStall = false; }
                 if (watchedSince <= 0.0) watchedSince = t;
+                // 3.17.0: after 5 s, where every part of Fermata is, as text in the log (read on the user's PC with Fermata.pdb: function names and lines)
+                if (! stacksThisStall && stackReports < 5 && t - watchedSince >= kStacksMs)
+                {
+                    stacksThisStall = true;
+                    const auto where = crashreport::describeThreads (mainThreadId);
+                    if (where.isNotEmpty())
+                    {
+                        ++stackReports;
+                        juce::Logger::writeToLog ("Stall watch: the main thread has been stuck for " + juce::String (juce::roundToInt ((t - watchedSince) / 1000.0))
+                                                  + " s. Where every part of Fermata is now (innermost first):\n" + where.trimEnd());
+                    }
+                }
+                // after 15 s, a freeze report: written by a separate helper process (one written from inside a stuck program can get stuck itself)
                 if (! reportedThisStall && freezeReports < 2 && t - watchedSince >= kFreezeReportMs)
                 {
                     reportedThisStall = true;
-                    if (const auto f = crashreport::write (nullptr, "freeze"); f != juce::File())
+                    const int secs = juce::roundToInt ((t - watchedSince) / 1000.0);
+                    juce::String why;
+                    auto f = crashreport::writeViaHelper ("freeze", why);
+                    if (f == juce::File())
+                    {
+                        juce::Logger::writeToLog ("Stall watch: the freeze report could not be written by the helper (" + why + "): writing it from here");
+                        f = crashreport::write (nullptr, "freeze");
+                    }
+                    if (f != juce::File())
                     {
                         ++freezeReports;
-                        juce::Logger::writeToLog ("Stall watch: the main thread has been stuck for " + juce::String (juce::roundToInt ((t - watchedSince) / 1000.0)) + " s - a freeze report was written: " + f.getFullPathName());
+                        juce::Logger::writeToLog ("Stall watch: the main thread has been stuck for " + juce::String (secs) + " s - a freeze report was written: " + f.getFullPathName());
                     }
                 }
                 if (const char* l = messageThreadLabel().load())
@@ -110,6 +135,7 @@ private:
         }
     }
 
+    unsigned long mainThreadId = 0;
     std::atomic<double> beat { 0.0 };
     std::atomic<int> count { 0 };
     std::atomic<double> longest { 0.0 };

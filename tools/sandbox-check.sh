@@ -52,5 +52,5 @@ $CXX "$OUT/timeformat_test.o.x" "$OUT/Ltc.o" "$OUT"/juce_*.o "$OUT/ct.o" -o "$OU
 "$OUT/timeformat_test"
 # the control port's connections: lines in and out, a controller that stops reading, many threads at once (only needs juce_core)
 $CXX -c "$HERE/tests/remote_hub_test.cpp" -o "$OUT/remote_hub_test.o.x"
-$CXX "$OUT/remote_hub_test.o.x" "$OUT/juce_core.o" "$OUT/ct.o" -o "$OUT/remote_hub_test" -lpthread -ldl -lrt
+$CXX "$OUT/remote_hub_test.o.x" "$OUT/CrashReport.o" "$OUT/juce_core.o" "$OUT/ct.o" -o "$OUT/remote_hub_test" -lpthread -ldl -lrt
 "$OUT/remote_hub_test"

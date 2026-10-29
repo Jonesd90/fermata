@@ -1,4 +1,5 @@
 #include "AudioEngine.h"
+#include "CrashReport.h"
 #ifndef FERMATA_VERSION_STRING
  #define FERMATA_VERSION_STRING "dev"      // (the program gets its number from CMakeLists.txt; the tests build without it)
 #endif
@@ -34,6 +35,7 @@ private:
     struct Item { std::unique_ptr<PlaybackSession> session; juce::uint64 block0 = 0; juce::uint32 since = 0; };
     void run() override
     {
+        td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
         while (! threadShouldExit())
         {
             tidy (false);
@@ -218,6 +220,8 @@ void AudioEngine::audioDeviceStopped()
 void AudioEngine::audioDeviceIOCallbackWithContext (const float* const* in, int numIn, float* const* out, int numOut,
                                                     int numSamples, const juce::AudioIODeviceCallbackContext&)
 {
+    static thread_local bool named = false;                    // 3.17.0: the driver's thread named for the log, once (nothing allocated)
+    if (! named) { named = true; td::crashreport::nameThisThreadW (L"Audio callback (the driver's thread)"); }
     auto& cores = CoreReservation::get();
     cores.audioThreadCheck();                                  // first block on this thread, or the reserved cores just changed: move this thread to them
     // with cores reserved, no more helpers than the reserved processors can run beside this thread (two audio threads on one processor would wait for each other)
@@ -587,6 +591,7 @@ void AudioEngine::ensurePreRoll()
 
 void AudioEngine::RingBuilder::run()
 {
+    td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
     while (! threadShouldExit())
     {
         std::vector<int> inputs; int cap = 0, preLen = 0;
@@ -1755,6 +1760,7 @@ juce::Uuid AudioEngine::stopRecording()
 
 void AudioEngine::Finisher::run()
 {
+    td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
     while (! threadShouldExit())
     {
         Finishing* f = nullptr;

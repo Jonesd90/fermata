@@ -82,6 +82,9 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
         EditDef::anchorStart. Not while a mouse button is down (a drag in progress), something plays, a dialog is up, or that edit's trim window is open
         (they work on the positions as they are); it is done on the next tick after. 'always': regardless (a project just opened). */
     void anchorEdits (bool always = false);
+    /** 3.17.0: while a project opens, each step is logged with its time (see StepTimer); null otherwise. */
+    StepTimer* openSteps = nullptr;
+    void openStep (const juce::String& what) { if (openSteps != nullptr) openSteps->step (what); }
     std::function<void()> showDesign, showAudioSettings, refreshTitles, showBridge, showMedia;
     std::function<void (const juce::Uuid&)> showScope;
     std::function<void()> showOrganiser;
@@ -441,6 +444,8 @@ public:
     juce::uint32 lastTransportMs = 0;
     double lastPlayStartMs = 0.0;                     // how long the last Play took on the message thread (for the log)
     SystemLoad::Snapshot minuteSys;                    // the PC's processor times at the start of the timing line's minute (3.13.0)
+    unsigned long busyThreadId = 0; int busyMinutes = 0, busyTraces = 0;   // 3.17.0: one thread keeping a core busy minute after minute: where it is, logged
+    unsigned long messageThreadId = 0;                 // Windows' id of the main thread (for the thread listings)
     std::unique_ptr<StallWatch> stallWatch;           // logs every moment the message thread is held up (see StallWatch)
     bool skipFinalSave = false;                       // "Quit without saving": the last save when closing is left out
     void restoreLastProject();

@@ -1,4 +1,5 @@
 #include "MasterExport.h"
+#include "CrashReport.h"
 #include "Playback.h"
 #include "AudioOps.h"
 #include "Resampler.h"
@@ -255,6 +256,7 @@ juce::String MasterExportJob::getStatus() const { const juce::ScopedLock sl (loc
 
 void MasterExportJob::run()
 {
+    td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
     auto result = execute();
     auto fn = onDone;
     juce::MessageManager::callAsync ([fn, result] { if (fn) fn (result); });

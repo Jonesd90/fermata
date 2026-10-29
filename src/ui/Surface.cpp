@@ -1,4 +1,5 @@
 #include "Surface.h"
+#include "../core/CrashReport.h"
 
 namespace td
 {
@@ -42,6 +43,7 @@ SurfaceController::Sender::~Sender() { stopThreadOrLog (*this, 2000); }     // (
 
 void SurfaceController::Sender::run()
 {
+    td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
     while (! threadShouldExit())
     {
         std::vector<juce::MidiMessage> batch; std::shared_ptr<juce::MidiOutput> p;

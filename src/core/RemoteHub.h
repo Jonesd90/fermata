@@ -1,5 +1,6 @@
 #pragma once
 #include <juce_core/juce_core.h>
+#include "CrashReport.h"
 #include <atomic>
 #include <csignal>
 #include <functional>
@@ -56,6 +57,7 @@ public:
     private:
         void run() override
         {
+            td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
             char probe = 0;
             sock->read (&probe, 0, false);     // (JUCE makes a socket non-blocking when asked to read without waiting: from now on no send or receive can hold this thread)
             std::string in, out;
@@ -173,6 +175,7 @@ public:
 private:
     void run() override                                              // accepts connections and deletes the ones that have ended
     {
+        td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
         while (! threadShouldExit())
         {
             sweep();

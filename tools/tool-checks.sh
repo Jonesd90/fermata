@@ -70,7 +70,7 @@ run_asan ()
     g++ "$O/t_core_test.o" $CORE_OBJS $JUCE_OBJS -o "$O/core_test" $L
     g++ "$O/t_stress_test.o" $CORE_OBJS $JUCE_OBJS -o "$O/stress_test" $L
     g++ "$O/t_timeformat_test.o" "$O/core_Ltc.o" $JUCE_OBJS -o "$O/timeformat_test" $L
-    g++ "$O/t_remote_hub_test.o" "$O/juce_core.o" "$O/ct.o" -o "$O/remote_hub_test" $L
+    g++ "$O/t_remote_hub_test.o" "$O/core_CrashReport.o" "$O/juce_core.o" "$O/ct.o" -o "$O/remote_hub_test" $L
     # the Re-HarmoniSer's engine (no JUCE): its voices test, and its golden test when REHAR_GOLDEN names a folder made by tools/reharmoniser/make_golden.py
     local RH="g++ -std=c++17 -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -pthread"
     $RH "$HERE/tests/reharmoniser_voices_test.cpp" "$HERE/src/reharmoniser/Engine.cpp" "$HERE/src/reharmoniser/Dsp.cpp" -o "$O/reharmoniser_voices_test" 2>"$O/t_rehar_voices.log" || echo "FAILED reharmoniser_voices_test"
@@ -93,7 +93,7 @@ run_tsan ()
     for t in core_test stress_test remote_hub_test; do $CXX -c "$HERE/tests/$t.cpp" -o "$O/t_$t.o" 2>"$O/t_$t.log" || echo "FAILED $t"; done
     g++ "$O/t_core_test.o" $CORE_OBJS $JUCE_OBJS -o "$O/core_test" $L
     g++ "$O/t_stress_test.o" $CORE_OBJS $JUCE_OBJS -o "$O/stress_test" $L
-    g++ "$O/t_remote_hub_test.o" "$O/juce_core.o" "$O/ct.o" -o "$O/remote_hub_test" $L
+    g++ "$O/t_remote_hub_test.o" "$O/core_CrashReport.o" "$O/juce_core.o" "$O/ct.o" -o "$O/remote_hub_test" $L
     export TSAN_OPTIONS="halt_on_error=0:report_signal_unsafe=0:second_deadlock_stack=1"
     for t in stress_test remote_hub_test core_test; do
         ( cd "$O" && if [ "$t" = stress_test ]; then ./$t 5; else ./$t; fi ) > "$OUT/tsan_$t.log" 2>&1
@@ -165,7 +165,7 @@ run_valgrind ()
     for t in stress_test timeformat_test remote_hub_test; do $CXX -c "$HERE/tests/$t.cpp" -o "$O/t_$t.o" 2>"$O/t_$t.log" || echo "FAILED $t"; done
     g++ "$O/t_stress_test.o" $CORE_OBJS $JUCE_OBJS -o "$O/stress_test" $L
     g++ "$O/t_timeformat_test.o" "$O/core_Ltc.o" $JUCE_OBJS -o "$O/timeformat_test" $L
-    g++ "$O/t_remote_hub_test.o" "$O/juce_core.o" "$O/ct.o" -o "$O/remote_hub_test" $L
+    g++ "$O/t_remote_hub_test.o" "$O/core_CrashReport.o" "$O/juce_core.o" "$O/ct.o" -o "$O/remote_hub_test" $L
     for t in stress_test timeformat_test remote_hub_test; do
         ( cd "$O" && if [ "$t" = stress_test ]; then valgrind --track-origins=yes --error-exitcode=9 ./$t 5; else valgrind --track-origins=yes --error-exitcode=9 ./$t; fi ) > "$OUT/valgrind_$t.log" 2>&1
         echo "$t exit $?: $(grep 'ERROR SUMMARY' "$OUT/valgrind_$t.log" | tail -1 | sed 's/^==[0-9]*== //'); $(grep -E 'PASSED|FAILURE' "$OUT/valgrind_$t.log" | tail -1)"

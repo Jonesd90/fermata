@@ -1,5 +1,6 @@
 #pragma once
 #include "Project.h"
+#include "CrashReport.h"
 #include "PitchShift.h"
 #include "SpectralRepair.h"
 #include "Denoise.h"
@@ -102,6 +103,7 @@ public:
 private:
     void run() override
     {
+        td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
         juce::String err;
         try { err = work (*this); } catch (...) { err = "Something went wrong while processing."; }
         if (cancel.load() && err.isEmpty()) err = "Cancelled.";

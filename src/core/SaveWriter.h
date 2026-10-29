@@ -1,5 +1,6 @@
 #pragma once
 #include "Project.h"
+#include "CrashReport.h"
 #include <deque>
 #include <functional>
 
@@ -72,6 +73,7 @@ private:
 
     void run() override
     {
+        td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
         for (;;)
         {
             Item item;

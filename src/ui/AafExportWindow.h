@@ -1,5 +1,6 @@
 #pragma once
 #include "AppContext.h"
+#include "../core/CrashReport.h"
 #include "Uikit.h"
 #include "FixTools.h"
 #include "../core/AafExport.h"
@@ -137,6 +138,7 @@ private:
     private:
         void run() override
         {
+            td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
             auto result = aafexport::exportAaf (*plan, settings, formats, &progress, &cancelFlag);
             auto fn = onDone;
             juce::MessageManager::callAsync ([fn, result] { if (fn) fn (result); });

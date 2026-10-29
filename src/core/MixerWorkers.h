@@ -1,5 +1,6 @@
 #pragma once
 #include <juce_core/juce_core.h>
+#include "CrashReport.h"
 #include <atomic>
 #include <thread>
 #include "CoreReservation.h"
@@ -96,6 +97,7 @@ private:
         Worker (MixerWorkers& o, int i) : juce::Thread ("Mixer helper " + juce::String (i + 1)), owner (o) {}
         void run() override
         {
+            td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
             juce::FloatVectorOperations::disableDenormalisedNumberSupport();          // as on the audio thread: decaying reverb tails must not slow the CPU down
             while (! threadShouldExit())
             {

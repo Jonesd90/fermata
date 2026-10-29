@@ -11024,6 +11024,15 @@ int main()
         const auto a = SystemLoad::take(), b = SystemLoad::take();
         CHECK (! a.ok && SystemLoad::describe (a, b, true).isEmpty() && SystemLoad::powerText().isEmpty());
     }
+    SECTION ("3.17.0 the freeze-report helper's arguments, and where the threads are");
+    {
+        CHECK (crashreport::isHelperCall (juce::StringArray { "--fermata-dump", "123", "\"C:\\x.dmp\"" }) && ! crashreport::isHelperCall (juce::StringArray { "Mass.fermata" }));
+        CHECK (crashreport::helperMain (juce::StringArray { "--fermata-dump" }) == 3);                 // (no process or file)
+        CHECK (crashreport::helperMain (juce::StringArray { "--fermata-dump", "0", "x.dmp" }) == 3);
+        CHECK (crashreport::helperMain (juce::StringArray { "--fermata-dump", "123", "x.dmp" }) == 8); // (not Windows here)
+        juce::String why; CHECK (crashreport::writeViaHelper ("freeze", why) == juce::File() && why.isNotEmpty());
+        CHECK (crashreport::describeThreads (1).isEmpty());
+    }
     SECTION ("3.16.0 the edit begins at 0:00 (or its lead-in), everything moving with it");
     {
         EditDef e; e.sampleRate = 48000.0;

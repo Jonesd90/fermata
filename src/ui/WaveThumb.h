@@ -5,6 +5,7 @@
 #include <memory>
 #include <vector>
 #include "../core/AudioFormats.h"
+#include "../core/CrashReport.h"
 
 namespace td
 {
@@ -44,7 +45,7 @@ public:
         r.reset();
         d = data;
         juce::WeakReference<WaveThumb> weak (this);
-        pool.pool.addJob ([weak, data, f] { readFile (weak, data, f); });
+        pool.pool.addJob ([weak, data, f] { td::crashreport::nameThisThreadW (L"Waveform reader"); readFile (weak, data, f); });
     }
 
     double getTotalLength() const noexcept { return d != nullptr && d->rate > 0.0 ? (double) d->samples / d->rate : 0.0; }

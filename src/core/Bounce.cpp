@@ -1,4 +1,5 @@
 #include "Bounce.h"
+#include "CrashReport.h"
 #include "Playback.h"
 #include "Dither.h"
 #include "AudioOps.h"
@@ -235,6 +236,7 @@ BounceJob::~BounceJob()
 
 void BounceJob::run()
 {
+    td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
     auto result = bouncer->render (&progress, &cancelFlag);
     auto fn = onDone;
     juce::MessageManager::callAsync ([fn, result] { if (fn) fn (result); });

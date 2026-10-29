@@ -39,6 +39,7 @@ AppContext::AppContext()
     });
     project.settleBackgroundSaves = [this] { waitForSaves(); };
     stallWatch = std::make_unique<StallWatch>();
+    messageThreadId = (unsigned long) (juce::pointer_sized_int) juce::Thread::getCurrentThreadId();
     timereadout::shared().fromString (props.getUserSettings()->getValue ("timeReadout"));       // how the time readouts write the time (remembered on this computer)
     timereadout::shared().addChangeListener (this);
     project.structure.addChangeListener (this);
@@ -731,8 +732,21 @@ void AppContext::tickLoad()
         if (minuteLoad.recordBufferPeak > 0.0f || rec || takeEnded) line << ", recording buffer peak " << juce::String (minuteLoad.recordBufferPeak, 1) << "% full";
         if (engine.isPlaying()) line << ", playback underruns " << engine.playbackUnderruns();
         if (CoreReservation::get().active()) line << ", " << CoreReservation::get().reservedLogicalProcessors() << " reserved processors";
-        if (const auto sys = SystemLoad::describe (minuteSys, SystemLoad::take (true), false); sys.isNotEmpty()) line << "; " << sys;
+        const auto sysNow = SystemLoad::take (true);
+        if (const auto sys = SystemLoad::describe (minuteSys, sysNow, false); sys.isNotEmpty()) line << "; " << sys;
         juce::Logger::writeToLog (line);
+        // 3.17.0: a thread that has kept a whole core busy for three minutes running is shown where it is (twice a session at most)
+        double share = 0.0;
+        const auto busiest = SystemLoad::busiestThread (minuteSys, sysNow, share);
+        if (busiest != 0 && share >= 90.0) { busyMinutes = busiest == busyThreadId ? busyMinutes + 1 : 1; busyThreadId = busiest; }
+        else { busyMinutes = 0; busyThreadId = 0; }
+        if (busyMinutes >= 3 && busyTraces < 2)
+        {
+            ++busyTraces; busyMinutes = 0;
+            const auto where = crashreport::describeThreads (messageThreadId, 24, 40, busiest);
+            if (where.isNotEmpty())
+                juce::Logger::writeToLog ("Timing: one thread has kept a whole processor core busy for three minutes. Where it is:\n" + where.trimEnd());
+        }
         minuteSeconds = 0; minuteLoad = {};
     }
 }
@@ -946,9 +960,13 @@ void AppContext::afterProjectReplaced()
     wholeSaveNext = false; quickSaveWanted = false; lastFailedJob.reset();
     fixUndo = nullptr; fixUndoLabel.clear(); fixUndoHash = 0;      // (the last fix was in the project that was open before: 3.1.4)
     lastAutosaveMs = juce::Time::getMillisecondCounter();
+    openStep ("take matching told of the new project");
     syncWithDevice();
+    openStep ("the project's inputs and outputs matched to the audio device");
     engine.rebuildPlan();
+    openStep ("the audio engine's plan rebuilt");
     matchEngineRate();                                 // 3.8.0: the engine at this project's rate (the converter on or off for this device)
+    openStep ("the engine's sample rate matched");
     freeRetiredMixersSoon();                           // the mixers (and plug-ins) of the project that was open before
     recordTarget = project.takeWindows.empty() ? juce::Uuid::null() : project.takeWindows.front()->id;
     if (project.preampDevices.empty())                 // a new project: use the devices of the rig, as last set up
@@ -958,12 +976,17 @@ void AppContext::afterProjectReplaced()
             for (auto& d : *a) project.preampDevices.push_back (PreampDeviceCfg::fromVar (d));
     }
     anchorEdits (true);                                // 3.16.0: every edit begins at 0:00 (or its lead-in) before the undo history starts
+    openStep ("edits anchored at 0:00");
     project.undoReset();
+    openStep ("undo history started");
     rebuildPreampDriver();
+    openStep ("preamp connections restarted");
     refreshPreampsFromAneman();
+    openStep ("ANEMAN asked about the preamps (in the background)");
     preampChecked = false; preampAsking = false; preampWaitTicks = 0; haveWrittenPreamps = false;     // compare with the stored state once the devices have answered
     if (closeWindowByKey) { closeWindowByKey ("pitchpipe"); closeWindowByKey ("click"); }   // (their settings are the project's: they showed the old project's while the new one's sounded)
     if (refreshTitles) refreshTitles();
+    openStep ("windows told of the new project");
 }
 
 juce::File AppContext::preampMemoryFile() const
@@ -1156,10 +1179,15 @@ bool AppContext::openProject (const juce::File& file)
         };
     }
     const auto tOpen0 = juce::Time::getMillisecondCounterHiRes();
+    StepTimer steps ("Opening");                      // 3.17.0: each step into the log with its time, so a stuck open shows where it stopped
+    openSteps = &steps;
+    struct ClearSteps { AppContext& a; ~ClearSteps() { a.openSteps = nullptr; } } clearSteps { *this };
     if (! project.load (file, err)) { showError ("Could not open project", err); return false; }
     const auto tRead = juce::Time::getMillisecondCounterHiRes();
+    openStep ("project files read and set up (tracks, mixers, plug-ins)");
     project.insertFactory = realFactory;
     project.createFolders();
+    openStep ("project folders made sure of");
     if (! project.loadNotes.isEmpty())
     {
         juce::String text = "Not everything could be read as it was saved. Nothing was deleted. Where a file is missing, put it back in the project folder and open the project again; where a .bak was used, the file had gone wrong and the save before it was taken instead.\n\n";
@@ -1175,8 +1203,12 @@ bool AppContext::openProject (const juce::File& file)
                 "the next time the project opens with the plug-in working. Choosing another plug-in for such a slot replaces it. The log has the details.";
         juce::MessageManager::callAsync ([text] { juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Plug-ins").withMessage (text).withButton ("OK"), nullptr); });
     }
+    openStep ("messages about unread files and plug-ins prepared");
+    project.slowTakeLog = [this] (const juce::String& what) { openStep (what); };     // (a take that takes long to check is named)
     const auto mended = project.repairInterruptedRecordings();      // the program or the computer stopped while recording: keep everything that was recorded
+    project.slowTakeLog = nullptr;
     const auto tChecked = juce::Time::getMillisecondCounterHiRes();
+    openStep ("recordings checked (" + juce::String (mended.size()) + " put right)");
     busy::step ("Getting the audio ready", -1.0);
     if (mended.size() > 0)
     {
@@ -1187,7 +1219,9 @@ bool AppContext::openProject (const juce::File& file)
     }
     afterProjectReplaced();
     busy::step ("Checking for missing audio files", -1.0);
-    if (const int missing = project.missingAudioCount (true); missing > 0)       // (quick: the takes found whole last time are not asked about again)
+    const int missingNow = project.missingAudioCount (true);       // (quick: the takes found whole last time are not asked about again)
+    openStep ("missing audio files looked for (" + juce::String (missingNow) + " missing)");
+    if (const int missing = missingNow; missing > 0)
     {
         const auto list = project.missingAudioList (12, true);
         juce::String text = juce::String (missing) + (missing == 1 ? " audio file used by this project could not be found" : " audio files used by this project could not be found") + ":\n\n";
@@ -1213,6 +1247,7 @@ bool AppContext::openProject (const juce::File& file)
                                   + " ms, recordings checked " + juce::String (juce::roundToInt (tChecked - tRead)) + " ms, audio and undo ready " + juce::String (juce::roundToInt (tReady - tChecked))
                                   + " ms (" + juce::String ((int) project.takeWindows.size()) + " take windows, " + juce::String ((int) takes) + " takes, " + juce::String ((int) project.edits.size()) + " edits)");
     }
+    steps.end ("finished");
     props.getUserSettings()->setValue ("lastProject", file.getFullPathName());
     // 3.9.0: a project from before 3.9.0 with no takes has no rate yet: asked for (it can wait: Record asks again). Otherwise the device is offered the
     // project's rate when it runs at another.
@@ -1962,6 +1997,8 @@ void AppContext::shutdown()
     closing::step ("preamp connections handed over to close");
     plugins.closeAllEditors();
     closing::step ("plug-in windows closed");
+    takeMatch.stop();                                  // 3.17.0: the background take analysis stops first (it was what kept a closed Fermata running)
+    closing::step ("take matching stopped");
     closingProgram = true;
     if (! skipFinalSave) { juce::String err; saveNow (false, &err); }     // (a failure is in the log; no message box can be shown while the program closes - Save and quit asks before it gets here)
     else { waitForSaves(); retryFailedSave(); }      // "Quit without saving" keeps what was saved automatically: so it must really be on the disk

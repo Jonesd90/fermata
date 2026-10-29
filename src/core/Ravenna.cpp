@@ -1,4 +1,5 @@
 #include "Ravenna.h"
+#include "CrashReport.h"
 #include <thread>
 #include <map>
 #include <algorithm>
@@ -505,6 +506,7 @@ void RavennaDevice::session()
 
 void RavennaDevice::run()
 {
+    td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
     while (! threadShouldExit())
     {
         session();

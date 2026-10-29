@@ -1,4 +1,5 @@
 #include "CoreReservation.h"
+#include "CrashReport.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -260,6 +261,7 @@ struct CoreReservation::Impl
         }
         void run() override
         {
+            td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
             while (! threadShouldExit()) { owner.sweepPrograms (ids, true, this); wait (5000); }
         }
         Impl& owner;
@@ -716,6 +718,22 @@ juce::String SystemLoad::describe (const Snapshot& a, const Snapshot& b, bool fo
         else if (messageThreadKnown() && mainShare < 30.0)  t << " - the main thread was mostly waiting (for Windows, a driver, the disk or a free core)";
     }
     return t;
+}
+
+unsigned long SystemLoad::busiestThread (const Snapshot& a, const Snapshot& b, double& percent)
+{
+    percent = 0.0;
+    const double wall = (b.atMs - a.atMs) * 10000.0;
+    if (! a.ok || ! b.ok || wall <= 0.0) return 0;
+    unsigned long best = 0;
+    for (auto& [id, after] : b.threads)
+    {
+        unsigned long long before = 0;
+        for (auto& [id0, t0] : a.threads) if (id0 == id) { before = t0; break; }
+        const double share = 100.0 * (double) (after - before) / wall;
+        if (share > percent) { percent = share; best = id; }
+    }
+    return best;
 }
 
 juce::String SystemLoad::powerText()

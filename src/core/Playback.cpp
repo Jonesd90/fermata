@@ -1,4 +1,5 @@
 #include "Playback.h"
+#include "CrashReport.h"
 #include "CoreReservation.h"
 #include <set>
 #include <algorithm>
@@ -101,6 +102,7 @@ void PlaybackSession::start (bool waitForPreload)
 
 void PlaybackSession::run()
 {
+    td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
     // The last moment (1 ms) before the loop's end is faded out here, so going round to the start never clicks (the start has its fade-in in the
     // segments). That faded moment is rendered as a piece of its own and its place in the ring is remembered (tails), so a loop let go of
     // after it was read can have it skipped and read again unfaded.

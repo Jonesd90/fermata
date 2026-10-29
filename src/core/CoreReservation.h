@@ -147,5 +147,7 @@ struct SystemLoad
     static juce::String describe (const Snapshot& before, const Snapshot& after, bool forStall);
     /** "on battery" / "on mains" (+ ", battery saver on"); empty on a desktop or when unknown. */
     static juce::String powerText();
+    /** (3.17.0) The busiest of Fermata's threads between two snapshots taken with threads: its id (0 if none) and its share of one core (percent). */
+    static unsigned long busiestThread (const Snapshot& before, const Snapshot& after, double& percentOfCore);
 };
 } // namespace td

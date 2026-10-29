@@ -10,6 +10,7 @@
 #include <set>
 #include <vector>
 #include "../core/AudioFormats.h"
+#include "../core/CrashReport.h"
 
 namespace td
 {
@@ -60,6 +61,7 @@ public:
         if (pending.insert (key).second)
             pool.addJob ([this, f, key, alive = alive]
                          {
+                             td::crashreport::nameThisThreadW (L"Waveform colours");
                              const auto dir = folder ? folder() : juce::File();
                              auto d = dir != juce::File() ? loadSaved (dir, f) : nullptr;
                              if (d == nullptr)

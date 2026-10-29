@@ -1,4 +1,5 @@
 #include "PluginHost.h"
+#include "../core/CrashReport.h"
 #include "WinOwner.h"
 #include "../core/HostTransport.h"
 
@@ -311,6 +312,7 @@ bool PluginHost::startScan (std::function<void()> whenFinished)
 
 void PluginHost::run()
 {
+    td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
     // The "dead man's pedal": the name of the plug-in being looked at is written to this file before it is opened and taken out again after.
     // A plug-in that crashes the program while it is scanned is found there at the next scan and left out (blacklisted), instead of crashing
     // the program at every scan from then on.

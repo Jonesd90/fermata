@@ -1,5 +1,6 @@
 #pragma once
 #include "../core/Project.h"
+#include "../core/CrashReport.h"
 #include "../core/AudioEngine.h"
 #include "../core/TakeMatch.h"
 #include "../core/AudioFormats.h"
@@ -26,9 +27,24 @@ public:
     }
     ~TakeMatchService() override
     {
+        stop();
+        if (isThreadRunning()) stopThread (2000);        // (still busy as the object goes: it cannot be left running on a deleted object)
+    }
+
+    /** Stops the background analysis (3.17.0: called early in closing, timed in the closing log). Waits up to 3 s for the thread to finish the block
+        it is reading; if it has not, it is left to end with the program (the closing safety net in Main ends the program if it lingers) - it is
+        never killed half-way through by this. Safe to call again. */
+    void stop()
+    {
         stopTimer();
         cancel = true; signalThreadShouldExit(); wake.signal();
-        stopThread (10000);
+        if (isThreadRunning() && ! waitForThreadToExit (3000))
+        {
+            if (! stopLogged) juce::Logger::writeToLog ("Take matching: still busy 3 s after being told to stop - left to end with the program");
+            stopLogged = true;
+            return;
+        }
+        stopThread (100);                                // (finished: this only tidies up)
     }
 
     /** The project has been replaced (opened, new, closed): everything known belongs to the old one. */
@@ -171,6 +187,7 @@ private:
     }
     void run() override
     {
+        td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
         while (! threadShouldExit())
         {
             Job job;
@@ -220,5 +237,6 @@ private:
     std::map<std::pair<juce::Uuid, juce::Uuid>, Cached> alignments;
     std::atomic<bool> cancel { false };
     juce::WaitableEvent wake;
+    bool stopLogged = false;
 };
 } // namespace td

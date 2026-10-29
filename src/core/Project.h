@@ -468,6 +468,8 @@ public:
         so a "please wait" window can show it. Nothing else depends on it. */
     std::function<void (const juce::String& what, double progress)> loadProgress;
     void reportLoad (const juce::String& what, double progress) const { if (loadProgress) loadProgress (what, progress); }
+    /** 3.17.0: told when one take takes long to check at the open (repairInterruptedRecordings) - "take 17 of Salve Regina: 2.4 s" - for the opening log. */
+    std::function<void (const juce::String&)> slowTakeLog;
     /** Reads a .fmedit / .fmtake file (from another project, or a copy) and adds it. Same-named windows get a number, ids that clash are renewed, tracks are matched by name.
         'missingFiles' (optional) is told how many of the audio files the imported window uses cannot be found. */
     bool importWindowFile (const juce::File&, juce::String& message, juce::Uuid* newId = nullptr, int* missingFiles = nullptr);

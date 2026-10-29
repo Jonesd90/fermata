@@ -1,5 +1,6 @@
 #pragma once
 #include <juce_core/juce_core.h>
+#include "CrashReport.h"
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -67,6 +68,7 @@ public:
 private:
     void run() override
     {
+        td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
         CoreReservation::makeThisThreadBackground();
         std::vector<char> buffer ((size_t) kChunk);
         while (! threadShouldExit())

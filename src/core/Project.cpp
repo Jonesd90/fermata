@@ -2476,6 +2476,16 @@ juce::StringArray Project::repairInterruptedRecordings()
         for (auto& g : w->groups)
         {
             if ((done++ % 32) == 0) reportLoad ("Checking the recordings (" + String ((int) done) + " of " + String ((int) total) + " takes)", total > 0 ? (double) done / (double) total : 1.0);
+            const double tTake = juce::Time::getMillisecondCounterHiRes();
+            struct SlowTake                                                    // (3.17.0: a take that takes over half a second is named in the opening log)
+            {
+                const Project& p; const TakeWindowDef& w; const TakeGroup& g; double t0;
+                ~SlowTake()
+                {
+                    const double ms = juce::Time::getMillisecondCounterHiRes() - t0;
+                    if (ms >= 500.0 && p.slowTakeLog) p.slowTakeLog ("checking take " + w.displayName (g) + " of " + w.name + " took " + String (ms / 1000.0, 1) + " s");
+                }
+            } slowTake { *this, *w, g, tTake };
             // A take that was still recording when the program stopped was saved with length 0. A finished take only needs a look if one of its files is
             // shorter than its length says (the computer lost power before everything reached the disk). Asking for a file's size is quick; opening
             // thousands of files one by one is what made big projects slow to open. A take found whole once is marked verified and saved so: the next

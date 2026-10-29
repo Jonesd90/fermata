@@ -1,4 +1,5 @@
 #include "MasterRender.h"
+#include "CrashReport.h"
 #include "MasterExport.h"
 #include "Playback.h"
 #include <map>
@@ -398,6 +399,7 @@ MasterRenderJob::~MasterRenderJob()
 
 void MasterRenderJob::run()
 {
+    td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
     const auto err = batch->run (&progress, &cancelFlag);
     auto fn = onDone;
     juce::MessageManager::callAsync ([fn, err] { if (fn) fn (err); });

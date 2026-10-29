@@ -1,5 +1,6 @@
 #pragma once
 #include <juce_audio_formats/juce_audio_formats.h>
+#include "../core/CrashReport.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "WaveColor.h"
@@ -341,6 +342,7 @@ private:
         void stop() { signalThreadShouldExit(); notify(); stopThreadOrLog (*this, 20000); }     // (a read from a drive that has gone to sleep can take seconds: 3.1.2, was 5 s)
         void run() override
         {
+            td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
             while (! threadShouldExit())
             {
                 Job j; bool have = false;

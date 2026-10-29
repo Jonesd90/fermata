@@ -1,4 +1,5 @@
 #include "AlignWindow.h"
+#include "../core/CrashReport.h"
 #include "FermataLookAndFeel.h"
 #include "../core/AudioOps.h"
 #include "../core/AudioFormats.h"
@@ -25,6 +26,7 @@ struct AlignComponent::Job : public juce::Thread
 
     void run() override
     {
+        td::crashreport::nameThisThread (getThreadName());                // (3.17.0: named for the log)
         auto reader = [this] (int t, int c, juce::int64 start, int n, float* dst) -> bool
         {
             std::fill (dst, dst + n, 0.0f);

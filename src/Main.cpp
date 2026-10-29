@@ -117,10 +117,17 @@ class FermataApplication : public juce::JUCEApplication, private juce::ChangeLis
 public:
     const juce::String getApplicationName() override    { return "Fermata"; }
     const juce::String getApplicationVersion() override { return FERMATA_VERSION_STRING; }      // from FERMATA_VERSION in CMakeLists.txt
-    bool moreThanOneInstanceAllowed() override          { return false; }
+    bool moreThanOneInstanceAllowed() override          { return crashreport::isHelperCall (getCommandLineParameterArray()); }     // (the freeze-report helper runs beside Fermata)
 
     void initialise (const juce::String& commandLine) override
     {
+        if (crashreport::isHelperCall (getCommandLineParameterArray()))      // 3.17.0: started by a stuck Fermata to write its freeze report - nothing else
+        {
+            helperMode = true;
+            setApplicationReturnValue (crashreport::helperMain (getCommandLineParameterArray()));
+            quit();
+            return;
+        }
         splash = std::make_unique<SplashScreen> (juce::String ("Version ") + getApplicationVersion());
         logFolder().createDirectory();
         registerProjectFileType();
@@ -479,6 +486,7 @@ public:
 
     void shutdown() override
     {
+        if (helperMode) return;                                                  // (the freeze-report helper started nothing)
         closing::begin();                                                         // 3.15.0: every step into the log, with its time (ClosingLog.h)
         busy::setAreaProvider (nullptr);
         splash.reset();
@@ -494,6 +502,8 @@ public:
         surface.reset();                                                          // (the surface is blanked: faders down, lamps off)
         closing::step ("control surface blanked");
         if (ctx) ctx->shutdown();
+        ClosingWatchdog::start ((unsigned long) (juce::pointer_sized_int) juce::Thread::getCurrentThreadId(),      // 3.17.0: saved, so from here on a closing that
+                                logFolder().getChildFile ("fermata-log.txt"));                                     // hangs is ended (see ClosingWatchdog)
         CoreReservation::get().shutdown();                                       // other programs are given all the cores back
         closing::step ("CPU cores handed back");
         windows.clear();
@@ -507,6 +517,7 @@ public:
         juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
         lookAndFeel.reset();
         closing::end();
+        ClosingWatchdog::finished();
         juce::Logger::setCurrentLogger (nullptr);
         fileLogger.reset();
     }
@@ -1144,6 +1155,7 @@ private:
 
     std::unique_ptr<SplashScreen> splash;
     std::unique_ptr<juce::FileLogger> fileLogger;
+    bool helperMode = false;                       // 3.17.0: this process is only the freeze-report helper (see crashreport::helperMain)
     std::unique_ptr<FermataLookAndFeel> lookAndFeel;
     std::unique_ptr<juce::TooltipWindow> tooltips;
     std::unique_ptr<ToolWindow> audioSettings;

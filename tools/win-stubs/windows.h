@@ -60,6 +60,24 @@ DWORD GetModuleFileNameW (HMODULE, LPWSTR, DWORD);
 struct THREADENTRY32 { DWORD dwSize, cntUsage, th32ThreadID, th32OwnerProcessID; LONG tpBasePri, tpDeltaPri; DWORD dwFlags; };
 BOOL Thread32First (HANDLE, THREADENTRY32*); BOOL Thread32Next (HANDLE, THREADENTRY32*);
 HANDLE LocalFree (HANDLE);
+// thread stacks and the helper process (3.17.0)
+typedef unsigned long long DWORD64; typedef DWORD64* PDWORD64; typedef unsigned long long ULONG64; typedef char CHAR; typedef wchar_t* LPWSTR2;
+struct CONTEXT { DWORD ContextFlags; DWORD64 Rip, Rsp; };
+#define CONTEXT_FULL 0x10000B
+struct RUNTIME_FUNCTION { DWORD BeginAddress, EndAddress, UnwindData; }; typedef RUNTIME_FUNCTION* PRUNTIME_FUNCTION;
+struct UNWIND_HISTORY_TABLE; struct KNONVOLATILE_CONTEXT_POINTERS;
+PRUNTIME_FUNCTION RtlLookupFunctionEntry (DWORD64, PDWORD64, UNWIND_HISTORY_TABLE*);
+void* RtlVirtualUnwind (DWORD, DWORD64, DWORD64, PRUNTIME_FUNCTION, CONTEXT*, void**, PDWORD64, KNONVOLATILE_CONTEXT_POINTERS*);
+#define THREAD_SUSPEND_RESUME 0x0002
+#define THREAD_GET_CONTEXT 0x0008
+#define THREAD_QUERY_INFORMATION 0x0040
+DWORD SuspendThread (HANDLE); DWORD ResumeThread (HANDLE); BOOL GetThreadContext (HANDLE, CONTEXT*);
+struct STARTUPINFOW { DWORD cb; void* rest[12]; };
+struct PROCESS_INFORMATION { HANDLE hProcess, hThread; DWORD dwProcessId, dwThreadId; };
+BOOL CreateProcessW (LPCWSTR, wchar_t*, void*, void*, BOOL, DWORD, void*, LPCWSTR, STARTUPINFOW*, PROCESS_INFORMATION*);
+DWORD WaitForSingleObject (HANDLE, DWORD); BOOL GetExitCodeProcess (HANDLE, LPDWORD); BOOL TerminateProcess (HANDLE, unsigned int);
+#define PROCESS_QUERY_INFORMATION 0x0400
+#define PROCESS_VM_READ 0x0010
 BOOL SetPriorityClass (HANDLE, DWORD);
 // file API (src/core/FileSync.h)
 typedef void* LPSECURITY_ATTRIBUTES;
