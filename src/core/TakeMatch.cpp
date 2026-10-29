@@ -15,79 +15,132 @@ namespace
 constexpr double kRate = 8000.0;             // the audio is brought down to this: the notes that matter are below 4 kHz
 constexpr int kWindow = 4096;                // 0.512 s: fine enough to tell the low notes apart
 constexpr int kHop = 400;                    // 50 ms: 20 frames a second
-constexpr double kSilenceDb = -55.0;         // quieter than this is "silence": its chroma is the flat vector, so silence matches silence
 constexpr int kSmooth = 5;                   // frames averaged into each (0.25 s): the course of the harmony, not every passing note
-constexpr float kFlat = 0.28867513f;         // 1 / sqrt (12)
 constexpr int kOnsetLook = 10;               // frames (0.5 s) a note must be new against to count as an onset
 constexpr float kOnset = 2.0f;               // how much the onsets weigh against what sustains
+constexpr int kTuneHalf = 50;                // the tuning is the average over this many frames either side (2.5 s)
+constexpr double kTuneLo = 100.0, kTuneHi = 1200.0;    // where the tuning is measured (the voices' fundamentals and first partials)
 
-/** Builds chroma frames from a stream of 8 kHz samples. */
-class ChromaBuilder
+inline float flatValue (int bins) noexcept { return 1.0f / std::sqrt ((float) juce::jmax (1, bins)); }
+
+/** Builds the note frames from a stream of 8 kHz samples, in two passes over the same stream: the first measures each frame's loudness and the
+    tuning (how far the sound sits from the equal-tempered notes: the energy of 100 Hz - 1.2 kHz, each bin turned into its distance from the
+    nearest note as an angle, averaged over 5 s - a circular mean, as the distance wraps round), the second reads each bin's note against that
+    tuning. The tuning is read leaning flat (-75 to +25 cents): a choir 50 cents flat stays 50 cents flat, it is not read as 50 cents sharp. */
+class NoteBuilder
 {
 public:
-    ChromaBuilder() : fft (kWindow), window (dsp::hann (kWindow))
+    NoteBuilder() : fft (kWindow), window (dsp::hann (kWindow))
     {
-        // which note class each FFT bin belongs to (-1: outside the range used)
-        binClass.assign ((size_t) kWindow / 2, -1);
+        pitch.assign ((size_t) kWindow / 2, -1000.0);
         for (int k = 1; k < kWindow / 2; ++k)
         {
             const double f = (double) k * kRate / kWindow;
-            if (f < 80.0 || f > 4000.0) continue;
-            const double pitch = 69.0 + 12.0 * std::log2 (f / 440.0);
-            const int note = (int) std::lround (pitch);
-            if (std::abs (pitch - (double) note) > 0.4) continue;      // a bin between two notes says nothing clear
-            binClass[(size_t) k] = ((note % 12) + 12) % 12;
+            if (f >= 60.0 && f <= 4000.0) pitch[(size_t) k] = 69.0 + 12.0 * std::log2 (f / 440.0);
         }
     }
-    void push (const float* in, size_t n, Fingerprint& out)
+    void push (const float* in, size_t n, int pass, Fingerprint* out)
     {
         buf.insert (buf.end(), in, in + n);
         size_t off = 0;
-        while (off + (size_t) kWindow <= buf.size())
-        {
-            frame (buf.data() + off, out);
-            off += (size_t) kHop;
-        }
+        while (off + (size_t) kWindow <= buf.size()) { frame (buf.data() + off, pass, out); off += (size_t) kHop; }
         buf.erase (buf.begin(), buf.begin() + (long) off);
     }
-    void finish (Fingerprint& out)
+    void finish (int pass, Fingerprint* out)
     {
-        // the tail: padded with silence to a last frame
-        if (! buf.empty()) { buf.resize ((size_t) kWindow, 0.0f); frame (buf.data(), out); buf.clear(); }
+        if (! buf.empty()) { buf.resize ((size_t) kWindow, 0.0f); frame (buf.data(), pass, out); buf.clear(); }      // (the tail, padded with silence)
+        if (pass == 1) tuneUp();
+        index = 0;
     }
+    /** The tuning found in the first pass, in semitones from A440, per frame (for tests and the log). */
+    const std::vector<float>& tuning() const { return tune; }
 private:
-    void frame (const float* x, Fingerprint& out)
+    void frame (const float* x, int pass, Fingerprint* out)
     {
-        double rms = 0.0;
-        for (int i = 0; i < kWindow; ++i) { const double v = (double) x[i] * window[(size_t) i]; spec[(size_t) i] = { v, 0.0 }; rms += (double) x[i] * x[i]; }
-        rms = std::sqrt (rms / kWindow);
-        const double db = 20.0 * std::log10 (rms + 1.0e-9);
-        out.loudness.push_back ((float) db);
-        float c[Fingerprint::kBins] = {};
+        const int i = index++;
+        if (pass == 1)
+        {
+            double rms = 0.0;
+            for (int k = 0; k < kWindow; ++k) rms += (double) x[k] * x[k];
+            const double db = 20.0 * std::log10 (std::sqrt (rms / kWindow) + 1.0e-9);
+            loud.push_back ((float) db);
+            std::complex<double> z;
+            if (db >= kSilenceDb)
+            {
+                transform (x);
+                for (int k = 1; k < kWindow / 2; ++k)
+                {
+                    const double f = (double) k * kRate / kWindow;
+                    if (f < kTuneLo || f > kTuneHi) continue;
+                    const double c = pitch[(size_t) k] - std::round (pitch[(size_t) k]);
+                    z += std::sqrt (std::norm (spec[(size_t) k])) * std::polar (1.0, 2.0 * juce::MathConstants<double>::pi * c);
+                }
+            }
+            evidence.push_back (z);
+            return;
+        }
+        const int K = out->bins;
+        const float db = i < (int) loud.size() ? loud[(size_t) i] : -200.0f;
+        out->loudness.push_back (db);
+        std::vector<float> c ((size_t) K, 0.0f);
+        bool any = false;
         if (db >= kSilenceDb)
         {
-            fft.forward (spec);
+            transform (x);
+            const double t = i < (int) tune.size() ? (double) tune[(size_t) i] : 0.0;
+            double sum = 0.0;
             for (int k = 1; k < kWindow / 2; ++k)
-                if (const int cls = binClass[(size_t) k]; cls >= 0) c[cls] += (float) std::norm (spec[(size_t) k]);
-            float sum = 0.0f;
-            for (auto v : c) sum += v;
-            if (sum > 0.0f)
+            {
+                if (pitch[(size_t) k] < 0.0) continue;
+                const double p = pitch[(size_t) k] - t;
+                const int note = (int) std::lround (p);
+                if (std::abs (p - (double) note) > 0.4) continue;                            // a bin between two notes says nothing clear
+                const int b = note - Fingerprint::kLowNote;
+                if (b < 0 || b >= K) continue;
+                const double e = std::norm (spec[(size_t) k]);
+                c[(size_t) b] += (float) e; sum += e;
+            }
+            if (sum > 0.0)
             {
                 float norm = 0.0f;
-                for (auto& v : c) { v = std::log1p (20.0f * v / sum); norm += v * v; }     // the shape of the chord, not how loud it is
+                for (auto& v : c) { v = std::log1p (20.0f * (float) (v / sum)); norm += v * v; }     // the shape of the chord, not how loud it is
                 norm = std::sqrt (norm);
-                for (auto& v : c) v /= norm;
+                if (norm > 0.0f) { for (auto& v : c) v /= norm; any = true; }
             }
-            else for (auto& v : c) v = kFlat;
         }
-        else for (auto& v : c) v = kFlat;
-        out.chroma.insert (out.chroma.end(), c, c + Fingerprint::kBins);
+        if (! any) std::fill (c.begin(), c.end(), flatValue (K));
+        out->chroma.insert (out->chroma.end(), c.begin(), c.end());
+    }
+    void transform (const float* x)
+    {
+        for (int k = 0; k < kWindow; ++k) spec[(size_t) k] = { (double) x[k] * window[(size_t) k], 0.0 };
+        fft.forward (spec);
+    }
+    void tuneUp()
+    {
+        const int n = (int) evidence.size();
+        std::vector<std::complex<double>> pre ((size_t) n + 1);
+        for (int i = 0; i < n; ++i) pre[(size_t) i + 1] = pre[(size_t) i] + evidence[(size_t) i];
+        tune.assign ((size_t) n, 0.0f);
+        double held = 0.0;
+        for (int i = 0; i < n; ++i)
+        {
+            const auto z = pre[(size_t) juce::jmin (n, i + kTuneHalf + 1)] - pre[(size_t) juce::jmax (0, i - kTuneHalf)];
+            if (std::abs (z) > 1.0e-12)
+            {
+                double t = std::arg (z) / (2.0 * juce::MathConstants<double>::pi);           // -0.5 .. +0.5 semitone
+                if (t > 0.25) t -= 1.0;                                                       // read leaning flat: -0.75 .. +0.25
+                held = t;
+            }
+            tune[(size_t) i] = (float) held;                                                  // (silence: the tuning stays as it was)
+        }
     }
     dsp::FFT fft;
-    std::vector<double> window;
+    std::vector<double> window, pitch;
     std::vector<std::complex<double>> spec = std::vector<std::complex<double>> ((size_t) kWindow);
-    std::vector<int> binClass;
-    std::vector<float> buf;
+    std::vector<float> buf, loud, tune;
+    std::vector<std::complex<double>> evidence;
+    int index = 0;
 };
 
 /** What is NEW in each frame - the notes that have just begun - is added to it with weight kOnset: a note's start is sharp even in a
@@ -95,32 +148,33 @@ private:
     back to length 1: the harmony's course. */
 void smooth (Fingerprint& fp)
 {
-    const int n = fp.frames(), half = kSmooth / 2;
+    const int n = fp.frames(), half = kSmooth / 2, K = fp.bins;
     if (n == 0) return;
-    std::vector<float> sharp ((size_t) n * Fingerprint::kBins);
+    std::vector<float> sharp ((size_t) n * (size_t) K), before ((size_t) K);
     for (int i = 0; i < n; ++i)
     {
-        float before[Fingerprint::kBins] = {}; int cnt = 0;
-        for (int k = juce::jmax (0, i - kOnsetLook); k < i; ++k, ++cnt) for (int b = 0; b < Fingerprint::kBins; ++b) before[b] += fp.frame (k)[b];
+        std::fill (before.begin(), before.end(), 0.0f); int cnt = 0;
+        for (int k = juce::jmax (0, i - kOnsetLook); k < i; ++k, ++cnt) for (int b = 0; b < K; ++b) before[(size_t) b] += fp.frame (k)[b];
         float norm = 0.0f;
-        for (int b = 0; b < Fingerprint::kBins; ++b)
+        float* sh = sharp.data() + (size_t) i * (size_t) K;
+        for (int b = 0; b < K; ++b)
         {
-            const float v = fp.frame (i)[b], rise = cnt > 0 ? juce::jmax (0.0f, v - before[b] / (float) cnt) : 0.0f;
-            sharp[(size_t) i * Fingerprint::kBins + (size_t) b] = v + kOnset * rise; norm += sharp[(size_t) i * Fingerprint::kBins + (size_t) b] * sharp[(size_t) i * Fingerprint::kBins + (size_t) b];
+            const float v = fp.frame (i)[b], rise = cnt > 0 ? juce::jmax (0.0f, v - before[(size_t) b] / (float) cnt) : 0.0f;
+            sh[b] = v + kOnset * rise; norm += sh[b] * sh[b];
         }
         norm = std::sqrt (norm);
-        if (norm > 0.0f) for (int b = 0; b < Fingerprint::kBins; ++b) sharp[(size_t) i * Fingerprint::kBins + (size_t) b] /= norm;
+        if (norm > 0.0f) for (int b = 0; b < K; ++b) sh[b] /= norm;
     }
-    std::vector<float> out ((size_t) n * Fingerprint::kBins);
+    std::vector<float> out ((size_t) n * (size_t) K), acc ((size_t) K);
     for (int i = 0; i < n; ++i)
     {
-        float acc[Fingerprint::kBins] = {};
+        std::fill (acc.begin(), acc.end(), 0.0f);
         for (int k = juce::jmax (0, i - half); k <= juce::jmin (n - 1, i + half); ++k)
-            for (int b = 0; b < Fingerprint::kBins; ++b) acc[b] += sharp[(size_t) k * Fingerprint::kBins + (size_t) b];
+            for (int b = 0; b < K; ++b) acc[(size_t) b] += sharp[(size_t) k * (size_t) K + (size_t) b];
         float norm = 0.0f;
         for (auto v : acc) norm += v * v;
         norm = std::sqrt (norm);
-        for (int b = 0; b < Fingerprint::kBins; ++b) out[(size_t) i * Fingerprint::kBins + (size_t) b] = norm > 0.0f ? acc[b] / norm : kFlat;
+        for (int b = 0; b < K; ++b) out[(size_t) i * (size_t) K + (size_t) b] = norm > 0.0f ? acc[(size_t) b] / norm : flatValue (K);
     }
     fp.chroma = std::move (out);
 }
@@ -128,62 +182,74 @@ void smooth (Fingerprint& fp)
 /** The fingerprint at fewer frames a second: blocks of 'factor' frames averaged. */
 Fingerprint downsample (const Fingerprint& fp, int factor)
 {
-    Fingerprint out; out.fps = fp.fps / factor;
-    const int n = (fp.frames() + factor - 1) / factor;
+    Fingerprint out; out.fps = fp.fps / factor; out.bins = fp.bins;
+    const int n = (fp.frames() + factor - 1) / factor, K = fp.bins;
+    std::vector<float> acc ((size_t) K);
     for (int i = 0; i < n; ++i)
     {
-        float acc[Fingerprint::kBins] = {}; float db = -200.0f; int cnt = 0;
-        for (int k = i * factor; k < juce::jmin (fp.frames(), (i + 1) * factor); ++k, ++cnt)
+        std::fill (acc.begin(), acc.end(), 0.0f); float db = -200.0f;
+        for (int k = i * factor; k < juce::jmin (fp.frames(), (i + 1) * factor); ++k)
         {
-            for (int b = 0; b < Fingerprint::kBins; ++b) acc[b] += fp.frame (k)[b];
+            for (int b = 0; b < K; ++b) acc[(size_t) b] += fp.frame (k)[b];
             db = juce::jmax (db, fp.loudness[(size_t) k]);
         }
         float norm = 0.0f;
         for (auto v : acc) norm += v * v;
         norm = std::sqrt (norm);
-        for (auto v : acc) out.chroma.push_back (norm > 0.0f ? v / norm : kFlat);
+        for (auto v : acc) out.chroma.push_back (norm > 0.0f ? v / norm : flatValue (K));
         out.loudness.push_back (db);
     }
     return out;
 }
 
-inline float distance (const float* x, const float* y) noexcept
+inline float distance (const float* x, const float* y, int K) noexcept
 {
     float dot = 0.0f;
-    for (int b = 0; b < Fingerprint::kBins; ++b) dot += x[b] * y[b];
+    for (int b = 0; b < K; ++b) dot += x[b] * y[b];
     return juce::jlimit (0.0f, 1.0f, 1.0f - dot);
 }
 
-/** B's note classes turned by 'rotation' semitones. */
+/** B's notes moved by 'rotation' semitones (up for a positive one; what moves off either end is dropped), each frame scaled back to length 1. */
 Fingerprint rotated (const Fingerprint& fp, int rotation)
 {
     if (rotation == 0) return fp;
     Fingerprint out = fp;
+    const int K = fp.bins;
     for (int i = 0; i < fp.frames(); ++i)
-        for (int b = 0; b < Fingerprint::kBins; ++b) out.chroma[(size_t) i * Fingerprint::kBins + (size_t) ((b + rotation) % Fingerprint::kBins)] = fp.frame (i)[b];
+    {
+        float* o = out.chroma.data() + (size_t) i * (size_t) K;
+        std::fill (o, o + K, 0.0f);
+        float norm = 0.0f;
+        for (int b = 0; b < K; ++b) { const int t = b + rotation; if (t >= 0 && t < K) { o[t] = fp.frame (i)[b]; norm += o[t] * o[t]; } }
+        norm = std::sqrt (norm);
+        if (norm > 0.0f) for (int b = 0; b < K; ++b) o[b] /= norm; else std::fill (o, o + K, flatValue (K));
+    }
     return out;
 }
 
-/** How many semitones B must be turned by to sound in A's key: from the two takes' average chroma. 0 unless clearly better. */
+/** How many semitones B must be moved by to sound in A's key (-11 .. +11): from the two takes' average note strengths. 0 unless clearly better. */
 int bestRotation (const Fingerprint& a, const Fingerprint& b)
 {
     auto mean = [] (const Fingerprint& fp)
     {
-        std::vector<float> m ((size_t) Fingerprint::kBins, 0.0f); int n = 0;
+        std::vector<float> m ((size_t) fp.bins, 0.0f);
         for (int i = 0; i < fp.frames(); ++i)
-            if (fp.loudness[(size_t) i] >= kSilenceDb) { for (int k = 0; k < Fingerprint::kBins; ++k) m[(size_t) k] += fp.frame (i)[k]; ++n; }
+            if (fp.loudness[(size_t) i] >= kSilenceDb) for (int k = 0; k < fp.bins; ++k) m[(size_t) k] += fp.frame (i)[k];
         float norm = 0.0f;
         for (auto v : m) norm += v * v;
         norm = std::sqrt (norm);
         if (norm > 0.0f) for (auto& v : m) v /= norm;
         return m;
     };
+    if (a.bins != b.bins) return 0;
     const auto ma = mean (a), mb = mean (b);
+    const int K = a.bins;
     float best = -1.0f, atZero = 0.0f; int bestR = 0;
-    for (int r = 0; r < Fingerprint::kBins; ++r)
+    for (int r = -11; r <= 11; ++r)
     {
-        float dot = 0.0f;
-        for (int k = 0; k < Fingerprint::kBins; ++k) dot += ma[(size_t) ((k + r) % Fingerprint::kBins)] * mb[(size_t) k];
+        float dot = 0.0f, nb = 0.0f;
+        for (int k = 0; k < K; ++k) { const int t = k + r; if (t >= 0 && t < K) { dot += ma[(size_t) t] * mb[(size_t) k]; nb += mb[(size_t) k] * mb[(size_t) k]; } }
+        if (nb > 0.0f) dot /= std::sqrt (nb);                  // (what moved off the end does not count against it)
         if (r == 0) atZero = dot;
         if (dot > best) { best = dot; bestR = r; }
     }
@@ -218,7 +284,7 @@ std::vector<PathPoint> dtw (const Fingerprint& A, const Fingerprint& B, const st
         const int jl = lo (i), jh = hi (i);
         for (int j = jl; j <= jh; ++j)
         {
-            const float d = distance (A.frame (i), B.frame (j));
+            const float d = distance (A.frame (i), B.frame (j), A.bins);
             const int c = col (i, j);
             float best = inf, bestW = 0.0f; std::uint8_t from = 3;
             auto consider = [&] (float prev, float prevW, float add, float addW, std::uint8_t f)
@@ -259,7 +325,7 @@ std::vector<PathPoint> dtw (const Fingerprint& A, const Fingerprint& B, const st
     int i = bestI, j = bestJ;
     while (true)
     {
-        path.push_back ({ i, j, distance (A.frame (i), B.frame (j)) });
+        path.push_back ({ i, j, distance (A.frame (i), B.frame (j), A.bins) });
         const auto f = dir[(size_t) i * (size_t) width + (size_t) col (i, j)];
         if (f == 3) break;
         if (f == 0) { --i; --j; } else if (f == 1) --i; else --j;
@@ -275,24 +341,26 @@ Fingerprint analyseSamples (const float* mono, juce::int64 numSamples, double sa
 {
     Fingerprint fp;
     fp.fps = kRate / kHop;
-    ChromaBuilder builder;
-    std::vector<float> out;
-    if (std::abs (sampleRate - kRate) < 0.5)
-        builder.push (mono, (size_t) numSamples, fp);
-    else
+    NoteBuilder builder;
+    for (int pass = 1; pass <= 2; ++pass)                       // (the same stream twice: the tuning first, then the notes against it)
     {
-        SincResampler rs (sampleRate, kRate, 16);
-        const size_t block = 65536;
-        for (size_t off = 0; off < (size_t) numSamples; off += block)
+        if (std::abs (sampleRate - kRate) < 0.5) builder.push (mono, (size_t) numSamples, pass, &fp);
+        else
         {
-            if (cancel != nullptr && cancel->load()) return {};
-            out.clear();
-            rs.process (mono + off, juce::jmin (block, (size_t) numSamples - off), out);
-            builder.push (out.data(), out.size(), fp);
+            SincResampler rs (sampleRate, kRate, 16);
+            std::vector<float> out;
+            const size_t block = 65536;
+            for (size_t off = 0; off < (size_t) numSamples; off += block)
+            {
+                if (cancel != nullptr && cancel->load()) return {};
+                out.clear();
+                rs.process (mono + off, juce::jmin (block, (size_t) numSamples - off), out);
+                builder.push (out.data(), out.size(), pass, &fp);
+            }
+            out.clear(); rs.finish (out); builder.push (out.data(), out.size(), pass, &fp);
         }
-        out.clear(); rs.finish (out); builder.push (out.data(), out.size(), fp);
+        builder.finish (pass, &fp);
     }
-    builder.finish (fp);
     smooth (fp);
     return fp;
 }
@@ -320,34 +388,37 @@ Fingerprint analyseFiles (juce::AudioFormatManager& fm, const std::vector<juce::
     juce::int64 length = 0; int channels = 0;
     for (auto& r : readers) { length = juce::jmax (length, r->lengthInSamples); channels += (int) r->numChannels; }
     fp.fps = kRate / kHop;
-    ChromaBuilder builder;
-    SincResampler rs (rate, kRate, 16);
+    NoteBuilder builder;
     const int block = 65536;
     std::vector<float> mono ((size_t) block), out;
     juce::AudioBuffer<float> tmp;
     const float gain = 1.0f / (float) juce::jmax (1, channels);
-    for (juce::int64 pos = 0; pos < length; pos += block)
+    for (int pass = 1; pass <= 2; ++pass)                       // (the files are read twice: the tuning first, then the notes against it - nothing large is kept in memory)
     {
-        if (cancel != nullptr && cancel->load()) return {};
-        const int n = (int) juce::jmin ((juce::int64) block, length - pos);
-        std::fill (mono.begin(), mono.begin() + n, 0.0f);
-        for (auto& r : readers)
+        SincResampler rs (rate, kRate, 16);
+        for (juce::int64 pos = 0; pos < length; pos += block)
         {
-            if (pos >= r->lengthInSamples) continue;
-            const int here = (int) juce::jmin ((juce::int64) n, r->lengthInSamples - pos);
-            tmp.setSize ((int) r->numChannels, here, false, false, true);
-            if (! r->read (&tmp, 0, here, pos, true, true)) continue;
-            for (int ch = 0; ch < (int) r->numChannels; ++ch)
+            if (cancel != nullptr && cancel->load()) return {};
+            const int n = (int) juce::jmin ((juce::int64) block, length - pos);
+            std::fill (mono.begin(), mono.begin() + n, 0.0f);
+            for (auto& r : readers)
             {
-                const float* s = tmp.getReadPointer (ch);
-                for (int i = 0; i < here; ++i) mono[(size_t) i] += s[i] * gain;
+                if (pos >= r->lengthInSamples) continue;
+                const int here = (int) juce::jmin ((juce::int64) n, r->lengthInSamples - pos);
+                tmp.setSize ((int) r->numChannels, here, false, false, true);
+                if (! r->read (&tmp, 0, here, pos, true, true)) continue;
+                for (int ch = 0; ch < (int) r->numChannels; ++ch)
+                {
+                    const float* s = tmp.getReadPointer (ch);
+                    for (int i = 0; i < here; ++i) mono[(size_t) i] += s[i] * gain;
+                }
             }
+            out.clear(); rs.process (mono.data(), (size_t) n, out); builder.push (out.data(), out.size(), pass, &fp);
+            if (progress) progress ((float) (0.5 * (pass - 1) + 0.5 * (double) (pos + n) / (double) length));
         }
-        out.clear(); rs.process (mono.data(), (size_t) n, out); builder.push (out.data(), out.size(), fp);
-        if (progress) progress ((float) ((double) (pos + n) / (double) length));
+        out.clear(); rs.finish (out); builder.push (out.data(), out.size(), pass, &fp);
+        builder.finish (pass, &fp);
     }
-    out.clear(); rs.finish (out); builder.push (out.data(), out.size(), fp);
-    builder.finish (fp);
     smooth (fp);
     fp.sourceKey = sourceKeyFor (files);           // ALL the files given, not only the ones mixed: the service compares against the take's whole file list (3.5.0: with
                                                    // only the mixed ones in the key a take of more than four files never matched its own key, so it was analysed again and again)
@@ -357,8 +428,8 @@ Fingerprint analyseFiles (juce::AudioFormatManager& fm, const std::vector<juce::
 bool save (const Fingerprint& fp, const juce::File& file)
 {
     juce::MemoryOutputStream mo;
-    mo.write ("FMFP", 4); mo.writeInt (1);
-    mo.writeDouble (fp.fps); mo.writeInt (fp.frames()); mo.writeString (fp.sourceKey);
+    mo.write ("FMFP", 4); mo.writeInt (2);                     // (2: 3.7.0's notes in their octaves, against the choir's tuning; a version 1 file is made again)
+    mo.writeDouble (fp.fps); mo.writeInt (fp.frames()); mo.writeInt (fp.bins); mo.writeString (fp.sourceKey);
     mo.write (fp.chroma.data(), fp.chroma.size() * sizeof (float));
     mo.write (fp.loudness.data(), fp.loudness.size() * sizeof (float));
     file.getParentDirectory().createDirectory();
@@ -379,13 +450,14 @@ bool load (Fingerprint& fp, const juce::File& file)
     if (! in.openedOk()) return false;
     char magic[4] = {};
     if (in.read (magic, 4) != 4 || std::memcmp (magic, "FMFP", 4) != 0) return false;
-    if (in.readInt() != 1) return false;
+    if (in.readInt() != 2) return false;
     Fingerprint out;
     out.fps = in.readDouble();
     const int frames = in.readInt();
+    out.bins = in.readInt();
     out.sourceKey = in.readString();
-    if (out.fps <= 0.0 || frames < 0 || frames > 100000000) return false;
-    out.chroma.resize ((size_t) frames * Fingerprint::kBins); out.loudness.resize ((size_t) frames);
+    if (out.fps <= 0.0 || frames < 0 || frames > 100000000 || out.bins != Fingerprint::kNotes) return false;
+    out.chroma.resize ((size_t) frames * (size_t) out.bins); out.loudness.resize ((size_t) frames);
     if (in.read (out.chroma.data(), (int) (out.chroma.size() * sizeof (float))) != (int) (out.chroma.size() * sizeof (float))) return false;
     if (in.read (out.loudness.data(), (int) (out.loudness.size() * sizeof (float))) != (int) (out.loudness.size() * sizeof (float))) return false;
     fp = std::move (out);
@@ -410,7 +482,7 @@ double Alignment::map (double secondsInA, bool* inside) const
 Alignment align (const Fingerprint& A, const Fingerprint& Bin, const std::atomic<bool>* cancel)
 {
     Alignment out;
-    if (A.empty() || Bin.empty() || A.fps <= 0.0) return out;
+    if (A.empty() || Bin.empty() || A.fps <= 0.0 || A.bins != Bin.bins) return out;
     out.rotation = bestRotation (A, Bin);
     const Fingerprint B = rotated (Bin, out.rotation);
     // the coarse pass: at most about 1500 frames of the longer take, so the whole of A against the whole of B is cheap
@@ -445,9 +517,7 @@ Alignment align (const Fingerprint& A, const Fingerprint& Bin, const std::atomic
     }
     const int band = (int) std::lround (2.5 * A.fps);
     // (only the part of A the coarse path covers takes part: a window into A's frames)
-    Fingerprint Awin; Awin.fps = A.fps;
-    Awin.chroma.assign (A.chroma.begin() + (long) i0 * Fingerprint::kBins, A.chroma.begin() + (long) (i1 + 1) * Fingerprint::kBins);
-    Awin.loudness.assign (A.loudness.begin() + i0, A.loudness.begin() + i1 + 1);
+    const Fingerprint Awin = A.slice (i0, i1 + 1);
     std::vector<int> centreWin (centre.begin() + i0, centre.begin() + i1 + 1);
     const auto fine = dtw (Awin, B, &centreWin, band, (float) (10.0 * A.fps * 2.0), cancel);
     if (fine.empty()) return out;
@@ -509,11 +579,23 @@ Fingerprint analyseRange (juce::AudioFormatManager& fm, const std::vector<Source
     return analyseSamples (mono.data(), (juce::int64) mono.size(), rate);
 }
 
-std::vector<Version> findVersions (const Fingerprint& passage, const Fingerprint& take, double maxCost)
+bool mostlySilent (const Fingerprint& fp, int from, int to, double share)
+{
+    from = juce::jlimit (0, fp.frames(), from); to = juce::jlimit (from, fp.frames(), to);
+    if (to <= from) return true;
+    int quiet = 0;
+    for (int i = from; i < to; ++i) if (fp.loudness[(size_t) i] < kSilenceDb) ++quiet;
+    return (double) quiet > share * (double) (to - from);
+}
+
+std::vector<Version> findVersions (const Fingerprint& passage, const Fingerprint& take, double maxCost, int innerFrom, int innerTo)
 {
     std::vector<Version> out;
-    const int n = passage.frames(), m = take.frames();
-    if (n < 3 || m < 3 || passage.fps <= 0.0) return out;
+    const int n = passage.frames(), m = take.frames(), K = passage.bins;
+    if (n < 3 || m < 3 || passage.fps <= 0.0 || passage.bins != take.bins) return out;
+    if (innerTo < 0 || innerTo > n) innerTo = n;
+    innerFrom = juce::jlimit (0, n - 1, innerFrom); innerTo = juce::jlimit (innerFrom + 1, n, innerTo);
+    if (mostlySilent (passage, innerFrom, innerTo)) return out;                     // (silence matches any silence: a quiet part says nothing)
     // the passage must be matched whole (its first frame to its last); it may begin anywhere in the take. The steps keep the tempo within a
     // factor of two either way: diagonal (weight 2), two frames of the take to one of the passage (3), two of the passage to one of the take (3) -
     // without that the search squeezed the passage into a single chord of the take and called it a match.
@@ -523,7 +605,7 @@ std::vector<Version> findVersions (const Fingerprint& passage, const Fingerprint
     std::vector<float> row ((size_t) m), prevRow ((size_t) m, 0.0f);
     for (int i = 0; i < n; ++i)
     {
-        for (int j = 0; j < m; ++j) row[(size_t) j] = distance (passage.frame (i), take.frame (j));
+        for (int j = 0; j < m; ++j) row[(size_t) j] = distance (passage.frame (i), take.frame (j), K);
         for (int j = 0; j < m; ++j)
         {
             const float d = row[(size_t) j];
@@ -553,34 +635,60 @@ std::vector<Version> findVersions (const Fingerprint& passage, const Fingerprint
         if (dip) cands.push_back ({ j, endCost[(size_t) j] });
     }
     std::sort (cands.begin(), cands.end(), [] (const Cand& a, const Cand& b) { return a.c < b.c; });
-    auto startOf = [&] (int jEnd)          // back along the path to the frame the passage's first frame sits on
+    // back along the path from an end: where the passage starts, and where its inner part (the marked part) starts and ends
+    struct Span { int start = 0, innerStart = 0, innerEnd = 0; };
+    auto trace = [&] (int jEnd)
     {
+        Span sp; sp.innerEnd = jEnd + 1; sp.innerStart = 0;
         int i = n - 1, j = jEnd;
-        while (i > 0 && j >= 0)
+        bool endSet = innerTo >= n, startSet = false;
+        while (true)
         {
+            if (! endSet && i < innerTo) { sp.innerEnd = j + 1; endSet = true; }
+            if (! startSet && i <= innerFrom) { sp.innerStart = j; startSet = true; }
+            if (i <= 0 || j < 0) break;
             const auto f = dir[(size_t) i * (size_t) m + (size_t) j];
             if (f == 0) { --i; --j; } else if (f == 1) { --i; j -= 2; } else if (f == 2) { i -= 2; --j; } else break;
+            if (j < 0) { j = 0; break; }
         }
-        return juce::jmax (0, j);
+        sp.start = juce::jmax (0, j);
+        if (! startSet) sp.innerStart = sp.start;
+        sp.innerStart = juce::jlimit (0, m - 1, sp.innerStart); sp.innerEnd = juce::jlimit (sp.innerStart + 1, m, sp.innerEnd);
+        return sp;
     };
-    const int minApart = juce::jmax (1, n / 2);
+    const int slack = juce::jmax (1, n / 10);                                         // (two passes never overlap; the edges of a match are a little loose)
+    std::vector<std::pair<int, int>> taken;                                           // the whole spans of the versions kept
     for (auto& c : cands)
     {
-        const int j0 = startOf (c.j);
+        const auto sp = trace (c.j);
+        const int j0 = sp.start;
         const double stretch = (double) (c.j + 1 - j0) / (double) n;
-        if (stretch < 0.7 || stretch > 1.45) continue;                            // (a match that far from the passage's tempo is not the same music)
+        if (stretch < 0.8 || stretch > 1.25) continue;                                // (a match that far from the passage's tempo is not the same music)
+        if (mostlySilent (take, sp.innerStart, sp.innerEnd)) continue;                // (silence found in silence)
         bool clash = false;
-        for (auto& v : out)
-        {
-            const int vs = (int) std::lround (v.start * take.fps), ve = (int) std::lround (v.end * take.fps);
-            const int overlap = juce::jmin (ve, c.j + 1) - juce::jmax (vs, j0);
-            if (overlap > minApart) { clash = true; break; }
-        }
+        for (auto& t : taken) if (juce::jmin (t.second, c.j + 1) - juce::jmax (t.first, j0) > slack) { clash = true; break; }
         if (clash) continue;
+        taken.push_back ({ j0, c.j + 1 });
         Version v;
-        v.start = (double) j0 / take.fps; v.end = (double) (c.j + 1) / take.fps; v.cost = c.c; v.stretch = stretch;
+        v.start = (double) sp.innerStart / take.fps; v.end = (double) sp.innerEnd / take.fps; v.cost = c.c; v.stretch = stretch;
         out.push_back (v);
     }
+    return out;
+}
+
+Version placePart (const Fingerprint& part, const Fingerprint& take, const Version& found, double within)
+{
+    if (part.empty() || take.empty() || take.fps <= 0.0) return found;
+    const int lo = juce::jmax (0, (int) std::floor ((found.start - within - 0.5) * take.fps)), hi = juce::jmin (take.frames(), (int) std::ceil ((found.end + within + 0.5) * take.fps));
+    if (hi - lo < 3) return found;
+    const auto around = take.slice (lo, hi);
+    const double off = (double) lo / take.fps;
+    const Version* best = nullptr;
+    const auto vs = findVersions (part, around, 1.0);
+    for (auto& v : vs) if (std::abs (v.start + off - found.start) <= within && (best == nullptr || v.cost < best->cost)) best = &v;
+    if (best == nullptr) return found;
+    Version out = found;                                  // (the cost stays the context's: it is the one that says whether this is the music)
+    out.start = best->start + off; out.end = best->end + off; out.stretch = best->stretch;
     return out;
 }
 

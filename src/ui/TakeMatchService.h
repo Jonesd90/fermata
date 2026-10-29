@@ -101,23 +101,43 @@ private:
     struct Job { juce::Uuid takeId; std::vector<juce::File> files; juce::File cacheFile; };
     struct Cached { std::shared_ptr<const takematch::Fingerprint> fa, fb; std::shared_ptr<const takematch::Alignment> al; };
 
+    /** The files a take's fingerprint is made from: its MAIN microphones (3.7.0, from real takes: the main pair hears the whole choir; a spot hears
+        part of it, and the first four tracks of a take used to be whatever came first - often spots). The tracks given the role Main in the Align
+        window; failing that, the tracks whose names say main pair (MAIN, AB, A-B, ORTF, DECCA, TREE, XY, MS, NOS, OMNI, PAIR); failing that, the first
+        four tracks. Never the LTC track. */
     std::vector<juce::File> filesOf (const juce::Uuid& takeId) const
     {
-        std::vector<juce::File> files;
+        std::vector<juce::File> all, byRole, byName;
         for (auto& w : project.takeWindows)
             if (auto* g = w->findGroup (takeId))
             {
                 for (auto& f : g->files)
-                    if (f.file != juce::File() && ! isLtcTrack (f.trackId)) files.push_back (f.file);
+                {
+                    if (f.file == juce::File()) continue;
+                    const auto* t = trackOf (f.trackId);
+                    if (t != nullptr && t->isLtc) continue;
+                    all.push_back (f.file);
+                    if (t != nullptr && t->alignRole == 1) byRole.push_back (f.file);
+                    if (soundsLikeMain (t != nullptr ? t->name : f.trackName)) byName.push_back (f.file);
+                }
                 break;
             }
-        return files;
+        if (! byRole.empty()) return byRole;
+        if (! byName.empty()) return byName;
+        if (all.size() > 4) all.resize (4);
+        return all;
     }
-    bool isLtcTrack (const juce::Uuid& trackId) const
+    static bool soundsLikeMain (const juce::String& name)
     {
-        for (auto& t : project.tracks) if (t.id == trackId) return t.isLtc;
-        return false;
+        auto words = juce::StringArray::fromTokens (name.toUpperCase().replaceCharacters ("-_/.()", "      "), " ", "");
+        words.removeEmptyStrings();
+        const auto joined = name.toUpperCase().removeCharacters (" -_/.");
+        for (auto& w : words)
+            for (auto* key : { "MAIN", "MAINS", "AB", "ORTF", "DECCA", "TREE", "XY", "MS", "NOS", "OMNI", "OMNIS", "PAIR" })
+                if (w == key) return true;
+        return joined.contains ("MAINPRINT") || joined.contains ("DECCATREE");
     }
+    const TrackDef* trackOf (const juce::Uuid& id) const { for (auto& t : project.tracks) if (t.id == id) return &t; return nullptr; }
     juce::File cacheFileFor (const juce::Uuid& takeId) const
     {
         if (project.projectFile == juce::File()) return {};

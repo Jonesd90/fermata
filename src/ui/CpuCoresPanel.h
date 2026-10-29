@@ -29,13 +29,10 @@ public:
     explicit CpuCoresPanel (AppContext& a) : app (a)
     {
         auto& cr = CoreReservation::get();
-        intro.setText ("Keeps some CPU cores for Fermata's audio only (the driver's audio callback and the mixer helpers; the disk writer and the playback reader work seconds ahead and stay on the other cores), and keeps the rest of Fermata - and, if you tick the last box, "
-                       "the other programs too - on the remaining cores. That stops ordinary programs from taking the processor away in the middle of a take.\n\n"
-                       "It cannot stop Windows' own driver work (DPCs and interrupts from the network, USB, graphics or Wi-Fi) on a core that the driver has chosen for it. "
-                       "So pick the QUIETEST cores: 'Find the quietest cores' measures how much interrupt work each core is doing for three seconds and ticks the best ones. "
-                       "Also close the programs you do not need, and switch off Wi-Fi and Bluetooth during a recording on a laptop.\n\n"
-                       "On a CPU with big and small cores (Intel Core Ultra, 12th generation and later) at most half of the big cores are kept for the audio, whatever is ticked: the rest of the PC needs them.", juce::dontSendNotification);
-        intro.setFont (juce::FontOptions (12.5f)); intro.setColour (juce::Label::textColourId, theme::dimText); intro.setJustificationType (juce::Justification::topLeft);
+        intro.setText ("Keeps one or two CPU cores just for Fermata's audio, so other programs can't interrupt a take.\n"
+                       "Press 'Find the quietest cores' with your audio interface connected. On laptops and newer Intel CPUs, Fermata keeps at most half "
+                       "the fast cores, so the rest of the PC stays quick.", juce::dontSendNotification);
+        intro.setFont (juce::FontOptions (13.5f)); intro.setColour (juce::Label::textColourId, theme::text); intro.setJustificationType (juce::Justification::topLeft);
         addAndMakeVisible (intro);
 
         const auto cur = loadCoreReservationSettings (*app.props.getUserSettings());
@@ -69,13 +66,13 @@ public:
         status.setFont (juce::FontOptions (12.5f)); status.setJustificationType (juce::Justification::topLeft);
         addAndMakeVisible (status);
         refreshStatus();
-        setSize (620, 150 + 40 + rowsNeeded() * 46 + 150 + 56);
+        setSize (620, kIntroHeight + 40 + rowsNeeded() * 46 + 150 + 56);
     }
 
     void resized() override
     {
         auto r = getLocalBounds().reduced (12);
-        intro.setBounds (r.removeFromTop (150));
+        intro.setBounds (r.removeFromTop (kIntroHeight));
         enableBox.setBounds (r.removeFromTop (28));
         r.removeFromTop (4);
         const int perRow = 8, w = r.getWidth() / perRow;
@@ -97,6 +94,7 @@ public:
 
 private:
     int maxEfficiency() const { int m = 0; for (auto& c : CoreReservation::get().cores()) m = std::max (m, c.efficiency); return m; }
+    static constexpr int kIntroHeight = 64;           // (3.13.1: the short text)
     int rowsNeeded() const { return std::max (1, ((int) coreButtons.size() + 7) / 8); }
     static juce::String threadsText (const CpuCore& c) { juce::StringArray a; for (int l : c.logical) a.add (juce::String (l)); return a.joinIntoString (", "); }
 
