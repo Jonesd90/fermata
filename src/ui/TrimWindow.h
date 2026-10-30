@@ -8,7 +8,7 @@ class TrimWaves;
 /** The trim window for one join of an edit (or for the start or end of the edit, where only a fade-in or a fade-out exists): the outgoing piece (A, top) and the incoming piece (B, bottom) around the join,
     with the crossfade drawn over them. Drag a waveform to slide that audio under the join, drag the crossfade handles to
     shape the out- and in-fades independently, audition with F2, accept with Enter. */
-class TrimComponent : public juce::Component, private juce::ChangeListener, private juce::Timer
+class TrimComponent : public juce::Component, private juce::ChangeListener, private juce::Timer, private juce::ScrollBar::Listener
 {
 public:
     /** atEnd: the end of the edit: regionBId is then the LAST piece and the window shows its fade-out. (The start of the edit is the first piece's fade-in.) */
@@ -41,12 +41,18 @@ public:
     juce::int64 refSample = 0;                              // the "join" reference line: only a reference (the ruler counts from it, zoom centres on it); it never changes the edit
     void refMoved();                                        // the reference line was dragged: refresh the "relative to" texts
     void viewMoved();                                    // the view was panned: redraw (no edit changed)
+    /** 3.20.0: how far the view can be moved (edit timeline samples): from where the earlier of the two takes begins to where the later one
+        ends - all the audio the join could be moved into, not only the edit's own length. */
+    juce::Range<juce::int64> viewLimits() const;
+    juce::int64 clampCentre (double t) const;            // a centre for the view, kept inside viewLimits
     void dragChanged();                                     // while dragging: cheap
     void dragFinished();                                    // mouse released: tell everyone
 
 private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void timerCallback() override;
+    void scrollBarMoved (juce::ScrollBar*, double newRangeStart) override;      // 3.20.0: the scroll bar under the waveforms
+    void syncScrollBar();                                                      // the bar follows the view (zoom, pan, a new join)
     void refreshReaders();
     void refreshControls();
     void describe();
@@ -87,6 +93,7 @@ private:
                      auditionButton { "Audition  [F2]" }, origA { "Play original A" }, origB { "Play original B" }, stopButton { "Stop" },
                      copyOutIn { "Copy out-fade to in  [A]" }, copyInOut { "Copy in-fade to out  [Z]" }, closeGapButton { "Close gap" };
     juce::Label gapLabel;
+    juce::ScrollBar hScroll { false };                      // 3.20.0: left and right at any zoom
     juce::ToggleButton loopToggle { "Loop" }, slipLeftToggle { "Slip Left" }, slipRightToggle { "Slip Right" };
     bool wasAuditioning = false, updatingControls = false;
 };

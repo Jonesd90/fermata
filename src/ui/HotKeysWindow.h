@@ -154,6 +154,8 @@ inline const std::vector<Line>& lines()
         { "Trim window", "Left / Right", "Zoom out / in." },
         { "Trim window", ". / ,", "Bigger / smaller waveforms (the Trim window has its own size)." },
         { "Trim window", "wheel", "Over the waveforms: zoom in (wheel up) / out (wheel down)." },
+        { "Trim window", "Shift+wheel", "Over the waveforms: move the view left / right (a sideways swipe or a tilt of the wheel does the same). The scroll bar under the waveforms reaches all of both takes." },
+        { "Trim window", "drag", "A fade, the crossfade or a take dragged to the left or right edge: the view moves along (faster further out), so the join can be taken far away while zoomed in." },
         { "Trim window", "double-click or Alt+click", "\"Level of A (out)\" or \"Level of B (in)\": back to 0 dB." },
 
         // ---------------------------------------------------------------------------------------------------- mixer
@@ -162,6 +164,7 @@ inline const std::vector<Line>& lines()
         { "Mixer", "Shift+click / Ctrl+click", "A strip's name plate: every strip from the last one clicked to this one / this strip in or out of the selection." },
         { "Mixer", "Shift+Alt", "Held, with two or more strips selected: they are linked while you hold them (bold orange outlines). Faders, sends and pans move together; M, S and the sends' mute and pre are set the same; plug-ins go on, come off or are bypassed on every one." },
         { "Mixer", "right-click", "A strip's name plate: colour, hide strips from this mixer, select all or none." },
+        { "Mixer", "click", "An edit's own mixer, in the METERS strip: Match edit hides the strips of tracks that are not in the edit and shows those that are (once, now); Show all strips brings every hidden strip back." },
         { "Mixer", "double-click or Ctrl+click", "A fader cap: back to 0 dB." },
         { "Mixer", "double-click", "The dB number under a fader: type a level." },
         { "Mixer", "click", "Press and hold the small arrows beside the fader number: 1 dB steps that keep repeating." },

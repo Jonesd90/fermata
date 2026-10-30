@@ -332,6 +332,10 @@ public:
     TrackDef* findTrack (const juce::Uuid&);
     /** The tracks an edit shows, in its own order (all project tracks when the edit has no list of its own). Ids that no longer exist are skipped. */
     std::vector<const TrackDef*> editTracks (const EditDef&) const;
+    /** 3.20.0 (the mixer's Match edit button): mixer m's audio strips made to match edit e's tracks - the strips of project tracks that are not among
+        the edit's tracks are hidden (a solo on them let go of, as Hide on a name plate does), those of its tracks that were hidden come back.
+        Returns { hidden, shown }. The caller rebuilds the engine's plan and tells the windows. */
+    std::pair<int, int> matchMixerToEdit (MixerState& m, const EditDef& e) const;
     /** Where each window was last (window key -> "x y w h"), saved with the project so a window opens again where and how big it was left. Not an undo step, not a change. */
     std::map<juce::String, juce::String> windowBounds;
     /** The Display Organiser's saved layouts (the project's own; the program's built-in ones are not kept here). Saved with the project, not an undo step. */

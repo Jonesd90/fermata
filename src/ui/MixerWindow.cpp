@@ -2097,6 +2097,18 @@ public:
         addStripButton.setTooltip ("Add a strip to the project: an Int Bus, an Ext Bus or a VCA (a fader that controls the level of other strips). Int and Ext Buses are added to the whole project (every mixer); a VCA is added to this mixer. Audio strips hidden from this mixer are shown again from here too.");
         addStripButton.onClick = [this] { chooseNewStrip(); };
         addAndMakeVisible (addStripButton);
+        // 3.20.0: only in an edit's own mixer - its strips made to match the edit's tracks, or all shown again (one click each; nothing keeps following)
+        if (auto* mx = mixerState(); mx != nullptr && ! mx->editId.isNull())
+        {
+            matchButton.setButtonText ("Match edit");
+            matchButton.setTooltip ("Makes this mixer's audio strips match the edit's tracks: the strips of tracks that are not in the edit are hidden, "
+                                    "and those of tracks in the edit that were hidden come back. Once, now - press it again after changing the edit's tracks.");
+            matchButton.onClick = [this] { matchEdit(); };
+            showAllButton.setButtonText ("Show all strips");
+            showAllButton.setTooltip ("Shows every audio strip this mixer has hidden");
+            showAllButton.onClick = [this] { showAllStrips(); };
+            addAndMakeVisible (matchButton); addAndMakeVisible (showAllButton);
+        }
         styleCaption (widthCap, "STRIP WIDTH"); addAndMakeVisible (widthCap);
         narrowerButton.setButtonText ("-"); widerButton.setButtonText ("+");
         narrowerButton.setTooltip ("Make every strip narrower (fits more strips in the window)");
@@ -2125,6 +2137,11 @@ public:
         monoButton.setBounds (r.removeFromTop (26).reduced (0, 1));
         r.removeFromTop (8);
         addStripButton.setBounds (r.removeFromTop (26).reduced (0, 1));
+        if (matchButton.isVisible())
+        {
+            matchButton.setBounds (r.removeFromTop (26).reduced (0, 1));
+            showAllButton.setBounds (r.removeFromTop (26).reduced (0, 1));
+        }
         r.removeFromTop (8);
         widthCap.setBounds (r.removeFromTop (12));
         auto row = r.removeFromTop (26).reduced (0, 1);
@@ -2146,6 +2163,30 @@ private:
         stripWidthLevel() = lv; ++stripWidthGen();
         if (auto* st = app.props.getUserSettings()) { st->setValue ("mixerStripWidth", lv); app.props.saveIfNeeded(); }
         showWidth();
+    }
+    /** 3.20.0: Match edit (Project::matchMixerToEdit). Rebuilds the mixer window, so nothing of 'this' is used after it. */
+    void matchEdit()
+    {
+        auto* mx = mixerState();
+        if (mx == nullptr || mx->editId.isNull()) return;
+        const auto* e = app.project.findEdit (mx->editId);
+        if (e == nullptr) return;
+        const auto [hidden, shown] = app.project.matchMixerToEdit (*mx, *e);     // (the edit's tracks: every project track while it has no rows of its own)
+        auto& appRef = app;
+        appRef.setNotice (hidden == 0 && shown == 0 ? juce::String ("The mixer already matches the edit.")
+                                                    : "The mixer now matches the edit: " + juce::String (hidden) + " strip(s) hidden, " + juce::String (shown) + " shown again.");
+        if (hidden + shown > 0) { appRef.engine.rebuildPlan(); appRef.project.markDirty(); appRef.project.structureChanged(); }
+    }
+    /** 3.20.0: Show all strips - every audio strip this mixer has hidden comes back (as + Strip > Show a hidden audio strip again > All of them). */
+    void showAllStrips()
+    {
+        auto* mx = mixerState();
+        if (mx == nullptr) return;
+        if (mx->hiddenStrips.empty()) { app.setNotice ("No strips are hidden in this mixer."); return; }
+        auto& appRef = app;
+        appRef.setNotice ("Showing all " + juce::String ((int) mx->hiddenStrips.size()) + " hidden strip(s) again.");
+        mx->hiddenStrips.clear();
+        appRef.engine.rebuildPlan(); appRef.project.markDirty(); appRef.project.structureChanged();
     }
     void chooseNewStrip()
     {
@@ -2212,6 +2253,7 @@ private:
     }
     AppContext& app; juce::Uuid mixer; std::function<void()> onReset;
     juce::TextButton resetButton, scopeButton, monoButton, addStripButton, narrowerButton, widerButton;
+    juce::TextButton matchButton, showAllButton;            // (3.20.0: an edit's own mixer only)
     juce::Label widthCap;
     juce::ComboBox ditherBox, modeBox, riseBox, fallBox, holdBox;
     juce::Label ditherCap, modeCap, riseCap, fallCap, holdCap;

@@ -1,5 +1,6 @@
 #include "TrimWindow.h"
 #include "../core/AudioFormats.h"
+#include <limits>
 
 namespace td
 {
@@ -165,6 +166,8 @@ public:
             return;
         }
         regions0 = ed->regions;
+        downT = timeAtX (e.x);                                       // 3.20.0: where the drag began on the timeline (the view may move during it)
+        beginDragAutoRepeat (30);                                    // (held still at an edge, the drag carries on: the view keeps moving)
         owner.getApp().stopPlayback();
     }
 
@@ -185,7 +188,7 @@ public:
         {
             const double rt = ed->sampleRate > 0 ? ed->sampleRate : 48000.0;
             const double dS = e.getDistanceFromDragStartX() * owner.viewSeconds * rt / juce::jmax (1, getWidth());
-            owner.centreSample = juce::jlimit ((juce::int64) 0, juce::jmax ((juce::int64) 0, ed->lengthSamples()), panBase - (juce::int64) std::llround (dS));   // drag right: the view moves left
+            owner.centreSample = owner.clampCentre ((double) panBase - dS);     // drag right: the view moves left (3.20.0: as far as the takes go)
             owner.viewMoved();
             return;
         }
@@ -193,7 +196,15 @@ public:
         const double rate = ed->sampleRate > 0 ? ed->sampleRate : 48000.0;
         const bool hasA = k >= 1, hasB = k < (int) ed->regions.size();
         if ((! hasA || ! hasB) && (mode == Mode::SlipA || mode == Mode::SlipB || mode == Mode::MidStart || mode == Mode::MidEnd || mode == Mode::MidBody)) return;
-        const double dSamples = e.getDistanceFromDragStartX() * owner.viewSeconds * rate / juce::jmax (1, getWidth());
+        // 3.20.0: near the left or right edge (or past it) the view moves along, faster the further out, so a fade or a take can be taken far from where
+        // it was while zoomed in; the drag is measured on the timeline, so it follows the view
+        if (const int edgeW = 28; std::abs (e.getDistanceFromDragStartX()) > 3 && (e.x < edgeW || e.x > getWidth() - edgeW))       // (not for a handle that only lies near the edge)
+        {
+            const double over = e.x < edgeW ? (double) (e.x - edgeW) : (double) (e.x - (getWidth() - edgeW));       // negative on the left
+            owner.centreSample = owner.clampCentre ((double) owner.centreSample + juce::jlimit (-1.0, 1.0, over / edgeW) * owner.viewSeconds * rate * 0.04);
+            owner.viewMoved();
+        }
+        const double dSamples = timeAtX (e.x) - downT;
         const double dSec = dSamples / rate;
 
         if (mode == Mode::SlipA || mode == Mode::SlipB)
@@ -236,8 +247,16 @@ public:
         if (ed == nullptr) return;
         const double rt = ed->sampleRate > 0 ? ed->sampleRate : 48000.0;
         const double t = (double) owner.centreSample + (x - getWidth() * 0.5) * owner.viewSeconds * rt / juce::jmax (1, getWidth());
-        owner.centreSample = juce::jlimit ((juce::int64) 0, juce::jmax ((juce::int64) 0, ed->lengthSamples()), (juce::int64) std::llround (t));
+        owner.centreSample = owner.clampCentre (t);
         owner.viewMoved();
+    }
+
+    /** The edit timeline sample under x, with the view as it is now. */
+    double timeAtX (double x) const
+    {
+        auto* ed = owner.edit();
+        const double rt = ed != nullptr && ed->sampleRate > 0 ? ed->sampleRate : 48000.0;
+        return (double) owner.centreSample + (x - getWidth() * 0.5) * owner.viewSeconds * rt / juce::jmax (1, getWidth());
     }
 
     void mouseUp (const juce::MouseEvent&) override
@@ -418,7 +437,7 @@ private:
     }
 
     TrimComponent& owner;
-    Mode mode = Mode::None; juce::int64 panBase = 0;
+    Mode mode = Mode::None; juce::int64 panBase = 0; double downT = 0.0;
     std::vector<EditRegion> regions0;
     Cache cacheA, cacheB; Key cacheKey; float scale = 1.0f;
     bool wasPlaying = false;
@@ -431,6 +450,9 @@ TrimComponent::TrimComponent (AppContext& a, const juce::Uuid& eid, const juce::
     waves.reset (new TrimWaves (*this));
     waves->extraZoom = app.trimWaveZoom;
     addAndMakeVisible (*waves);
+    hScroll.setAutoHide (false);                               // 3.20.0: always there, so it is clear the view can be moved
+    hScroll.addListener (this);
+    addAndMakeVisible (hScroll);
     setWantsKeyboardFocus (true);
 
     for (auto* l : { &infoLabel, &fadeLabel, &trackCaption, &curveCaption, &rollCaption }) addAndMakeVisible (l);
@@ -559,6 +581,7 @@ TrimComponent::~TrimComponent()
 {
     app.project.removeChangeListener (this);
     app.trimWaveZoomChanged.removeChangeListener (this);
+    hScroll.removeListener (this);
     stopAll();
 }
 
@@ -587,12 +610,56 @@ void TrimComponent::recentre()
     const auto rf = refs();
     if (rf.ok()) centreSample = refSample = rf.B != nullptr ? rf.B->startSample : rf.A->endSample();
     waves->invalidate();
+    syncScrollBar();
     describe();
 }
 
 void TrimComponent::zoomBy (double factor)
 {
     viewSeconds = juce::jlimit (0.02, 900.0, viewSeconds * factor);        // right out to 15 minutes: a whole take, so a fade can be moved anywhere in it
+    waves->invalidate();
+    syncScrollBar();
+}
+
+juce::Range<juce::int64> TrimComponent::viewLimits() const
+{
+    const auto rf = refs();
+    if (! rf.ok()) return { 0, 1 };
+    juce::int64 lo = std::numeric_limits<juce::int64>::max(), hi = std::numeric_limits<juce::int64>::min();
+    for (const EditRegion* R : { (const EditRegion*) rf.A, (const EditRegion*) rf.B })
+    {
+        if (R == nullptr) continue;
+        const juce::int64 takeStart = R->startSample - R->srcIn;                          // where the take's first sample sits on the edit's timeline
+        const juce::int64 takeEnd = R->sourceLength > 0 ? takeStart + R->sourceLength : R->endSample();
+        lo = juce::jmin (lo, takeStart, R->startSample);
+        hi = juce::jmax (hi, takeEnd, R->endSample());
+    }
+    return { lo, juce::jmax (lo + 1, hi) };
+}
+
+juce::int64 TrimComponent::clampCentre (double t) const
+{
+    const auto lim = viewLimits();
+    return juce::jlimit (lim.getStart(), lim.getEnd(), (juce::int64) std::llround (t));
+}
+
+void TrimComponent::syncScrollBar()
+{
+    auto* e = edit();
+    const double rate = e != nullptr && e->sampleRate > 0 ? e->sampleRate : 48000.0;
+    const double view = juce::jmax (1.0, viewSeconds * rate), half = view * 0.5;
+    const auto lim = viewLimits();
+    // the bar's whole length is every place the centre can be (plus half a view at each end), its thumb is the part on screen
+    hScroll.setRangeLimits ((double) lim.getStart() - half, (double) lim.getEnd() + half, juce::dontSendNotification);
+    hScroll.setCurrentRange ((double) centreSample - half, view, juce::dontSendNotification);
+    hScroll.setSingleStepSize (view * 0.1);
+}
+
+void TrimComponent::scrollBarMoved (juce::ScrollBar*, double newRangeStart)
+{
+    auto* e = edit();
+    const double rate = e != nullptr && e->sampleRate > 0 ? e->sampleRate : 48000.0;
+    centreSample = clampCentre (newRangeStart + viewSeconds * rate * 0.5);
     waves->invalidate();
 }
 
@@ -730,15 +797,17 @@ void TrimComponent::changeListenerCallback (juce::ChangeBroadcaster* src)
     if (rf.ok() && ((rf.A != nullptr ? rf.A->id : juce::Uuid::null()) != readersForA || (rf.B != nullptr ? rf.B->id : juce::Uuid::null()) != readersForB || trackBox.getSelectedId() != readersTrack))
         refreshReaders();
     waves->invalidate();
+    syncScrollBar();                                   // (a slide changes where the takes lie, so how far the bar reaches)
 }
 
-void TrimComponent::viewMoved() { waves->invalidate(); }
+void TrimComponent::viewMoved() { waves->invalidate(); syncScrollBar(); }
 void TrimComponent::refMoved() { describe(); }
 
 void TrimComponent::dragChanged()
 {
     app.project.markDirty();
     waves->repaint();
+    syncScrollBar();
     describe();
 }
 
@@ -888,8 +957,20 @@ bool TrimComponent::keyPressed (const juce::KeyPress& k)
     return false;
 }
 
-void TrimComponent::mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& d)
+void TrimComponent::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& d)
 {
+    // 3.20.0: Shift + wheel (or a sideways swipe or tilt of the wheel) moves the view left and right; the wheel alone zooms, as before
+    const bool sideways = std::abs (d.deltaX) > std::abs (d.deltaY);
+    if (sideways || (e.mods.isShiftDown() && d.deltaY != 0.0f))
+    {
+        auto* ed = edit();
+        const double rate = ed != nullptr && ed->sampleRate > 0 ? ed->sampleRate : 48000.0;
+        const float amount = sideways ? d.deltaX : d.deltaY;                   // (wheel down / swipe left: later in time)
+        centreSample = clampCentre ((double) centreSample - amount * viewSeconds * rate * 0.6);
+        viewMoved();
+        return;
+    }
+    if (d.deltaY == 0.0f) return;                                             // (nothing to do: a horizontal-only event used to zoom out)
     zoomBy (d.deltaY > 0 ? 1.0 / 1.25 : 1.25);
 }
 
@@ -900,7 +981,10 @@ void TrimComponent::resized()
     infoLabel.setBounds (head);
     fadeLabel.setBounds (r.removeFromTop (20));
     auto controls = r.removeFromBottom (171);                                 // (3.16.0: 93 px less without the nudge rows - the waveforms have it)
+    hScroll.setBounds (r.removeFromBottom (14));                              // 3.20.0: under the waveforms
+    r.removeFromBottom (2);
     waves->setBounds (r);
+    syncScrollBar();
 
     auto row = [&controls] (int h) { auto x = controls.removeFromTop (h); controls.removeFromTop (3); return x; };
 

@@ -11425,6 +11425,30 @@ int main()
         CHECK (q.undo() && w.groups[0].dud);
     }
 
+    SECTION ("3.20.0 the edit mixer's Match edit: strips of tracks not in the edit are hidden, those in it come back; a project-track edit shows all");
+    {
+        Project q; q.setInputCount (4); q.setOutputCount (2); q.tracks.clear();
+        for (auto* n : { "A", "B", "C", "D" }) q.addTrack (n, TrackFormat::Mono, 0);
+        q.takeWindows.clear(); q.edits.clear();
+        auto& w = q.addTakeWindow ("Piece");
+        auto& e = q.addEdit ("Piece edit", w.id);
+        q.syncEditMixers();
+        auto& m = *q.mixerOfEdit (e.id);
+        const auto A = q.tracks[0].id, B = q.tracks[1].id, C = q.tracks[2].id, D = q.tracks[3].id;
+        e.trackIds = { A, C };                                                   // the edit uses A and C
+        m.hiddenStrips = { C, D };                                               // the mixer had C and D hidden
+        m.stripFor (B)->solo.set (true);
+        const auto [hidden, shown] = q.matchMixerToEdit (m, e);
+        CHECK (hidden == 1 && shown == 1);                                       // B hidden, C back; D stays hidden
+        CHECK (m.isStripHidden (B) && ! m.isStripHidden (C) && m.isStripHidden (D) && ! m.isStripHidden (A));
+        CHECK (! m.stripFor (B)->solo.get());                                    // (a hidden strip's solo is let go of)
+        const auto again = q.matchMixerToEdit (m, e);
+        CHECK (again.first == 0 && again.second == 0);                           // already matching: nothing to do
+        e.trackIds.clear();                                                      // an edit with no rows of its own uses every project track
+        const auto all = q.matchMixerToEdit (m, e);
+        CHECK (all.first == 0 && all.second == 2 && m.hiddenStrips.empty());
+    }
+
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;
 }

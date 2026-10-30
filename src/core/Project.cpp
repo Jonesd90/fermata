@@ -488,6 +488,18 @@ void Project::setOutputCount (int n)
     structureChanged();
 }
 
+std::pair<int, int> Project::matchMixerToEdit (MixerState& m, const EditDef& e) const
+{
+    const auto rows = editTracks (e);
+    auto inEdit = [&rows] (const juce::Uuid& id) { return std::any_of (rows.begin(), rows.end(), [&id] (const TrackDef* t) { return t != nullptr && t->id == id; }); };
+    int hidden = 0;
+    for (auto& t : tracks)
+        if (! inEdit (t.id) && ! m.isStripHidden (t.id)) { m.hiddenStrips.push_back (t.id); m.stripFor (t.id)->solo.set (false); ++hidden; }
+    const auto before = m.hiddenStrips.size();
+    m.hiddenStrips.erase (std::remove_if (m.hiddenStrips.begin(), m.hiddenStrips.end(), [&inEdit] (const juce::Uuid& id) { return inEdit (id); }), m.hiddenStrips.end());
+    return { hidden, (int) (before - m.hiddenStrips.size()) };
+}
+
 std::vector<const TrackDef*> Project::editTracks (const EditDef& e) const
 {
     std::vector<const TrackDef*> v;
