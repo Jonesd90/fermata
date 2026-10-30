@@ -11351,6 +11351,80 @@ int main()
         CHECK (checked == 19 && timefmt::minSecText (-3.0) == "0:00" && timefmt::minSecText (125.0) == "2:05" && timefmt::minSecText (65.3, 1) == "1:05.3");
     }
 
+    SECTION ("3.19.0 Save this window: what the person kept of each window, what changed since, and going back to it (recordings since stay)");
+    {
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear();
+        q.addTrack ("A", TrackFormat::Mono, 0); q.addTrack ("B", TrackFormat::Mono, 1);
+        q.takeWindows.clear(); q.edits.clear();
+        auto& w = q.addTakeWindow ("Kept window");
+        auto& w2 = q.addTakeWindow ("Other window");
+        for (int t = 0; t < 2; ++t)
+        {
+            TakeGroup g; g.id = juce::Uuid(); g.number = t + 1; g.label = "Take"; g.startSeconds = 10.0 * t; g.lengthSamples = 48000; g.sampleRate = 48000.0;
+            for (auto& tr : q.tracks) { TakeFile f; f.trackId = tr.id; f.trackName = tr.name; f.file = tmp.getChildFile ("kept" + tr.name + juce::String (t) + ".wav"); f.numChannels = 1; g.files.push_back (f); }
+            w.groups.push_back (g);
+        }
+        w.nextNumber = 3;
+        auto& e = q.addEdit ("Kept edit", w.id);
+        { EditRegion reg; reg.id = juce::Uuid(); reg.windowId = w.id; reg.takeId = w.groups[0].id; reg.takeName = "001"; reg.srcIn = 100; reg.srcOut = 40000; reg.sampleRate = 48000.0;
+          for (auto& tr : q.tracks) { RegionFile f; f.trackId = tr.id; f.trackName = tr.name; f.file = w.groups[0].files[0].file; f.numChannels = 1; reg.files.push_back (f); }
+          e.insertRegion (reg); }
+        auto& mixer = q.addMixer ("Kept mixer");
+        const auto trackA = q.tracks[0].id;
+        q.undoReset();
+        q.keepAllWindows();                                                              // (as a project just opened, or a save the person asked for)
+        CHECK (q.kept.size() == q.takeWindows.size() + q.edits.size() + q.mixers.size());
+        CHECK (q.windowsChangedSinceKept().empty());
+
+        // view changes are not changes: marks, the playhead, markers
+        w.editIn = 1.0; w.editOut = 2.0; e.playheadSeconds = 3.0; e.fixIn = 0.5; e.fixOut = 1.5;
+        CHECK (q.windowsChangedSinceKept().empty());
+
+        // a change in each kind of window is seen, and only there
+        w.groups[0].dud = true; w.groups[1].barIn = 5; w.groups[1].barOut = 9; w.groups[0].notes = "too slow";
+        auto changed = q.windowsChangedSinceKept();
+        CHECK (changed.size() == 1 && changed[0].kind == "take" && changed[0].id == w.id && changed[0].name == "Kept window");
+        e.regions[0].srcOut = 30000;
+        mixer.stripFor (trackA)->gainDb.set (-6.0f);
+        changed = q.windowsChangedSinceKept();
+        CHECK (changed.size() == 3);
+        { int takes = 0, eds = 0, mixes = 0; for (auto& c : changed) { takes += c.kind == "take"; eds += c.kind == "edit"; mixes += c.kind == "mixer"; } CHECK (takes == 1 && eds == 1 && mixes == 1); }
+        CHECK (std::none_of (changed.begin(), changed.end(), [&] (const Project::ChangedWindow& c) { return c.id == w2.id; }));     // (nothing was done in it)
+
+        // Save this window: the edit is kept as it is now; the others still count as changed
+        CHECK (q.keepWindow (e.id));
+        changed = q.windowsChangedSinceKept();
+        CHECK (changed.size() == 2 && std::none_of (changed.begin(), changed.end(), [&] (const Project::ChangedWindow& c) { return c.id == e.id; }));
+        CHECK (! q.keepWindow (juce::Uuid()));                                           // (no such window)
+
+        // a take recorded since the keep: it is kept whatever happens to the rest of the window
+        TakeGroup rec; rec.id = juce::Uuid(); rec.number = 3; rec.label = "Take"; rec.startSeconds = 20.0; rec.lengthSamples = 48000; rec.sampleRate = 48000.0;
+        for (auto& tr : q.tracks) { TakeFile f; f.trackId = tr.id; f.trackName = tr.name; f.file = tmp.getChildFile ("keptrec" + tr.name + ".wav"); f.numChannels = 1; rec.files.push_back (f); }
+        w.groups.push_back (rec); w.nextNumber = 4;
+
+        // going back: the take window loses the dud, the bars and the note, keeps the new take, its marks and the numbering
+        CHECK (q.revertWindowToKept (w.id, juce::Uuid::null(), 48000.0, 512));
+        CHECK (w.groups.size() == 3 && w.groups[2].id == rec.id && w.nextNumber == 4);
+        CHECK (q.windowsChangedSinceKept().size() == 1 && q.windowsChangedSinceKept()[0].kind == "mixer");     // (the window as it is now, new take included, is its kept state)
+        CHECK (! w.groups[0].dud && w.groups[1].barIn == 0 && w.groups[0].notes.isEmpty());
+        CHECK (w.editIn == 1.0 && w.editOut == 2.0);
+        // the edit was kept with its change, so going back changes nothing in it; the playhead is where it was left
+        CHECK (q.revertWindowToKept (e.id, juce::Uuid::null(), 48000.0, 512));
+        CHECK (e.regions[0].srcOut == 30000 && e.playheadSeconds == 3.0);
+        // the mixer's fader comes back
+        CHECK (q.revertWindowToKept (mixer.id, juce::Uuid::null(), 48000.0, 512));
+        CHECK (std::abs (mixer.stripFor (trackA)->gainDb.get()) < 1e-6f);
+        CHECK (q.windowsChangedSinceKept().empty());
+        CHECK (! q.revertWindowToKept (juce::Uuid(), juce::Uuid::null(), 48000.0, 512));
+        // a window made since the last keep has nothing kept: never listed, never touched
+        auto& w3 = q.addTakeWindow ("Newest"); w3.groups.push_back (rec);
+        CHECK (q.windowsChangedSinceKept().empty() && ! q.revertWindowToKept (w3.id, juce::Uuid::null(), 48000.0, 512));
+        // the revert can be undone: the dud comes back
+        w.groups[0].dud = true; q.changed(); q.undoTick (false, true);
+        CHECK (q.revertWindowToKept (w.id, juce::Uuid::null(), 48000.0, 512) && ! w.groups[0].dud);
+        CHECK (q.undo() && w.groups[0].dud);
+    }
+
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;
 }

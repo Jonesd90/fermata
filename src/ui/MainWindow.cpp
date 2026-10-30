@@ -992,6 +992,19 @@ void MainComponent::showProjectMenu()
     m.addItem (1, "New project...");
     m.addItem (2, "Open project...");
     m.addItem (3, "Save");
+    // 3.19.0: the window in use (the take window, edit window or mixer that was in front last) is kept as it is; the others are still asked about at quit
+    juce::Uuid saveWindowId; juce::String saveWindowName;
+    if (app.listWindows)
+    {
+        int best = -1;
+        for (auto& e : app.listWindows())
+            if (e.open && e.recency > best && (e.kind == "take" || e.kind == "edit" || e.kind == "mixer"))
+            {
+                best = e.recency; saveWindowId = juce::Uuid (e.key.fromFirstOccurrenceOf (":", false, false));
+                saveWindowName = (e.kind == "take" ? "take window " : e.kind == "edit" ? "edit window " : "mixer ") + e.title;
+            }
+    }
+    m.addItem (22, saveWindowName.isNotEmpty() ? "Save this window: " + saveWindowName : juce::String ("Save this window"), ! saveWindowId.isNull() && app.hasProject());
     m.addItem (6, "Save as...");
     m.addItem (7, "Create copy of entire project...");
     m.addItem (10, "Close", app.hasProject());
@@ -1029,8 +1042,9 @@ void MainComponent::showProjectMenu()
         m.addSubMenu ("UI style", style);
     }
     m.addCustomItem (11, std::make_unique<desk::SwatchRow> (desk::themeIndex(), picked), nullptr, "Colour theme");
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&projectButton), [this, workKey, picked] (int r)
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&projectButton), [this, workKey, picked, saveWindowId, saveWindowName] (int r)
     {
+        if (r == 22) { if (app.saveWindow (saveWindowId)) app.setNotice ("Saved the " + saveWindowName + ". The other windows are saved too, but what changed in them is still asked about when you quit."); return; }
         if (r == 11) { if (*picked >= 0) pickColour (*picked); return; }
         if (r == 20 || r == 21) { pickStyle (r - 20); return; }
         if (r == 12) { chooseBackupFolder(); return; }
@@ -1052,7 +1066,7 @@ void MainComponent::showProjectMenu()
         if (r == 10) { closeProjectDialog(); return; }
         if (r == 1) newProjectDialog();
         else if (r == 2) openProjectDialog();
-        else if (r == 3) app.saveNow();
+        else if (r == 3) app.saveNow (false, nullptr, true);          // (3.19.0: a save the person asked for keeps every window)
         else if (r == 6) fixtools::copyProject (app, this, true);
         else if (r == 7) fixtools::copyProject (app, this, false);
         else if (r == 4) app.project.projectFile.getParentDirectory().revealToUser();

@@ -35,6 +35,7 @@ inline const std::vector<Line>& lines()
         { "Main window", "click", "The Rec | Pre button in the menu bar: Rec (left half) switches Rec mode on or off - recording / tracking, nothing heavy in the background; Pre (right half) switches the lead-in on or off. Right-click: how many seconds Pre keeps (1 to 10)." },
         { "Main window", "click", "The MATCHING box (top row): how far the take matching has got, Pause / Resume, and its switch for every take window." },
         { "Main window", "Enter", "In an input or output name box: done, the name is kept." },
+        { "Main window", "", "Project > Save this window: the take window, edit window or mixer you used last is kept as it is now. Fermata saves everything automatically as you work; this marks what you want to keep. When you quit, the windows that changed since you last saved them (Save, or Save this window) are listed with a tick each: untick one and it goes back to your last save of it (new recordings are always kept)." },
         { "Main window", "Esc", "In a name box: back to the name it had." },
         { "Main window", "Tab", "In a name box: on to the next one, to name the inputs one after another." },
         { "Main window", "double-click or Alt+click", "An input's gain knob: back to 20 dB (as the readout shows it)." },

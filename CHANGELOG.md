@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.19.0
+- **Save this window** (Project menu). Fermata still saves everything automatically as you work, so nothing is lost in a crash. Over that, each take window, edit window and mixer now remembers what you last asked to keep: Project > Save (or Save and close) keeps every window as it is; **Project > Save this window** keeps just the window you used last (the item names it). When you quit, the windows that changed since you last saved them are listed in the quit box with a tick each. A ticked window is saved as it is; **untick a window to let its changes go**: it goes back to your last save of it before the final save. So you can save the work in one window, quit, and have the work in another window go back. New recordings are always kept, whatever you untick, and a window made since your last save is kept too. Only "Save and quit" asks; "Quit without saving" is as before (the automatic saves stay, nothing is put back).
+- After a crash or a power cut, what the automatic saves wrote is what comes back - including changes you had not yet decided about; the choice is made only when you quit.
+
 ## 3.18.6
 Tidying with nothing to see or hear: every tool works exactly as before.
 - **The fix tools' source is split** (it was one file of 6,600 lines): `FixTools.cpp` (imports, ReHarmoniSer, copying the project, Export for Processing, the room tone, AAF import), `FixToolsEdits.cpp` (pitch, repair, Noise mode and the pitch curve from the take and edit windows), `FixToolsDialogs.h` (their windows) and `FixToolsCommon.h` (what they share). A new file in the build: `src/ui/FixToolsEdits.cpp`.

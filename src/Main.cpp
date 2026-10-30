@@ -534,23 +534,57 @@ public:
         if (quitAsking) return;                                                  // the question is already on screen
         if (! ctx || ctx->project.projectFile == juce::File()) { quit(); return; }
         quitAsking = true;
-        juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon).withTitle ("Quit Fermata")
-                                          .withMessage ("Do you want to save your work before quitting?\n\n(The project is also saved automatically as you work; \"Quit without saving\" skips only the final save.)")
-                                          .withButton ("Save and quit").withButton ("Quit without saving").withButton ("Cancel"),
-                                      [this] (int result)
-                                      {
-                                          quitAsking = false;
-                                          if (result == 1) saveAndQuit();                                          // Save and quit
-                                          else if (result == 2) { if (ctx) ctx->skipFinalSave = true; quit(); }   // Quit without saving
-                                          // anything else (Cancel): carry on working
-                                      });
+        // 3.19.0: the windows changed since the person last kept them (Project > Save, or Save this window) are listed with a tick each; an unticked
+        // one goes back to its kept state before the final save - the way to keep the work in one window and let go of the work in another
+        const auto changed = ctx->project.windowsChangedSinceKept();
+        auto* w = new juce::AlertWindow ("Quit Fermata",
+                                         changed.empty() ? juce::String ("Do you want to save your work before quitting?\n\n(The project is also saved automatically as you work; \"Quit without saving\" skips only the final save.)")
+                                                         : juce::String ("Do you want to save your work before quitting?\n\nThese windows have changed since you last saved them. A ticked window is saved as it is; "
+                                                                         "untick a window to let its changes go - it goes back to your last save of it (new recordings are always kept).\n\n"
+                                                                         "(The project is also saved automatically as you work; \"Quit without saving\" skips only the final save and lets go of nothing.)"),
+                                         juce::MessageBoxIconType::QuestionIcon);
+        // (the list and its ticks are owned here, not by the box - JUCE's AlertWindow does not own a custom component - and live as long as the answer)
+        struct Ticks { juce::Viewport view; juce::Component list; juce::OwnedArray<juce::ToggleButton> boxes; std::vector<juce::Uuid> ids; };
+        auto ticks = std::make_shared<Ticks>();
+        if (! changed.empty())
+        {
+            int y = 0;
+            for (auto& c : changed)
+            {
+                auto* tb = ticks->boxes.add (new juce::ToggleButton ((c.kind == "take" ? "Take window: " : c.kind == "edit" ? "Edit window: " : "Mixer: ") + c.name));
+                tb->setToggleState (true, juce::dontSendNotification);
+                tb->setBounds (0, y, 440, 24); y += 26;
+                ticks->list.addAndMakeVisible (tb);
+                ticks->ids.push_back (c.id);
+            }
+            ticks->list.setSize (440, y);
+            ticks->view.setViewedComponent (&ticks->list, false);
+            ticks->view.setScrollBarsShown (true, false);
+            ticks->view.setSize (460, juce::jmin (y, 8 * 26));
+            w->addCustomComponent (&ticks->view);
+        }
+        w->setEscapeKeyCancels (true);
+        w->addButton ("Save and quit", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        w->addButton ("Quit without saving", 2);
+        w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        w->enterModalState (true, juce::ModalCallbackFunction::create ([this, ticks] (int result)
+                            {
+                                quitAsking = false;
+                                if (result == 1)                                                                 // Save and quit
+                                {
+                                    if (ctx) for (int i = 0; i < ticks->boxes.size(); ++i) if (! ticks->boxes[i]->getToggleState()) ctx->revertWindow (ticks->ids[(size_t) i]);   // (unticked: back to what was kept)
+                                    saveAndQuit();
+                                }
+                                else if (result == 2) { if (ctx) ctx->skipFinalSave = true; quit(); }           // Quit without saving
+                                // anything else (Cancel): carry on working
+                            }), true);
     }
     /** "Save and quit": the program quits only once the project is on the disk. A save that fails used to go unseen (the message box came after
         quit(), so it was never shown): now Fermata stays open and asks - stay, or quit without this last save (what was saved automatically before is untouched). */
     void saveAndQuit()
     {
         juce::String err;
-        if (ctx == nullptr || ctx->saveNow (false, &err)) { quit(); return; }
+        if (ctx == nullptr || ctx->saveNow (false, &err, true)) { quit(); return; }
         quitAsking = true;
         juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Could not save project")
                                           .withMessage ("The project could not be saved:\n\n" + err + "\n\nFermata stays open so nothing is lost: free the drive and save again (Project > Save, or Save as... to another drive), "

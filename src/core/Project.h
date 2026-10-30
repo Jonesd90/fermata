@@ -586,6 +586,22 @@ public:
     void undoAbsorb (const juce::Uuid& takeWindowId);
     bool undo (const juce::Uuid& liveTake = {});         // false if there is nothing to undo; a take being recorded is never touched
     bool redo (const juce::Uuid& liveTake = {});
+
+    // ---- 3.19.0: "Save this window" - what the person last KEPT of each window, apart from what the automatic saves write ----
+    // The automatic saves (and every save) write every window as it is, for safety. Over that, each take window, edit and mixer remembers the
+    // state the person last asked to keep: a save they asked for (Project > Save, Save and close, Save and quit) keeps every window; Project >
+    // Save this window keeps one. At quit the windows that changed since are listed, and an unticked one goes back to its kept state before the
+    // last save (revertWindowToKept, which restores the way undo does: takes recorded since stay, and so does the view - marks, playhead, markers).
+    // Not saved with the project: a project just opened is kept as loaded. A window made since the last keep has no entry and is never listed.
+    MixerState* mixerById (const juce::Uuid& id) const;
+    struct KeptWindow { UndoSnap snap; juce::var mix; juce::String mixHash; };      // a take window / edit: snap; a mixer: its mix snapshot and that snapshot's fingerprint
+    std::map<juce::Uuid, KeptWindow> kept;
+    void keepAllWindows();
+    bool keepWindow (const juce::Uuid& id);              // false: no such window
+    struct ChangedWindow { juce::String kind, name; juce::Uuid id; };       // kind: "take", "edit" or "mixer"
+    std::vector<ChangedWindow> windowsChangedSinceKept() const;
+    /** Puts the window back as it was kept (see above). A mixer needs the engine's rate and block for its plug-ins. False: nothing kept for it, or it is gone. */
+    bool revertWindowToKept (const juce::Uuid& id, const juce::Uuid& liveTake, double sampleRate, int maxBlock);
     int undoDepth() const { return (int) undoStack.size(); }
     int redoDepth() const { return (int) redoStack.size(); }
 

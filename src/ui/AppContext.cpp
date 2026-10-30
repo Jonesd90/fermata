@@ -792,7 +792,7 @@ void AppContext::redoStep()
     if (refreshTitles) refreshTitles();
 }
 
-bool AppContext::saveNow (bool quick, juce::String* errorOut)
+bool AppContext::saveNow (bool quick, juce::String* errorOut, bool keepAll)
 {
     if (quick && saveHold > 0) return true;              // (a preview's files are in a take's file list: the project file must not say so; the save comes once they are out)
     if (project.projectFile == juce::File()) return true;
@@ -822,7 +822,7 @@ bool AppContext::saveNow (bool quick, juce::String* errorOut)
         ok = project.save (err, quick);                  // (waits for the saver first: Project::settleBackgroundSaves)
         const auto ms = juce::Time::getMillisecondCounterHiRes() - t0;
         if (ms > 250.0) juce::Logger::writeToLog ("Saved the project in " + juce::String (juce::roundToInt (ms)) + " ms (written there and then)");
-        if (ok) { wholeSaveNext = false; lastFailedJob.reset(); }
+        if (ok) { wholeSaveNext = false; lastFailedJob.reset(); if (! quick && keepAll) project.keepAllWindows(); }     // (3.19.0: a save the person asked for keeps every window as it is)
         else
         {
             // every save that fails is in the log (a message box that the person is not there to see, or that cannot be shown while the program closes, is not enough)
@@ -834,6 +834,22 @@ bool AppContext::saveNow (bool quick, juce::String* errorOut)
     props.getUserSettings()->setValue ("lastProject", project.projectFile.getFullPathName());
     props.saveIfNeeded();
     return ok;
+}
+
+bool AppContext::saveWindow (const juce::Uuid& id)
+{
+    if (! project.keepWindow (id)) return false;
+    juce::String err;
+    return saveNow (false, &err, false) || (showSaveError (err, false), false);
+}
+
+bool AppContext::revertWindow (const juce::Uuid& id)
+{
+    const bool isMixer = project.mixerById (id) != nullptr;
+    const double sr = engine.getSampleRate() > 0.0 ? engine.getSampleRate() : 48000.0;      // (as pasteMix: the engine's rate and blocks)
+    if (! project.revertWindowToKept (id, engine.isRecording() ? engine.currentTakeId() : juce::Uuid::null(), sr, engine.getMaxBlock())) return false;
+    if (isMixer) project.structure.sendChangeMessage();                                 // (strips redraw with the values that came back)
+    return true;
 }
 
 void AppContext::waitForSaves()
@@ -980,6 +996,7 @@ void AppContext::afterProjectReplaced()
     anchorEdits (true);                                // 3.16.0: every edit begins at 0:00 (or its lead-in) before the undo history starts
     openStep ("edits anchored at 0:00");
     project.undoReset();
+    project.keepAllWindows();                          // 3.19.0: what was loaded is what the person has kept of every window
     openStep ("undo history started");
     rebuildPreampDriver();
     openStep ("preamp connections restarted");
@@ -1292,7 +1309,7 @@ bool AppContext::closeProject (bool save)
     plugins.closeAllEditors();
     if (save)                                        // "Save and close": a save that fails keeps the project open (closing would lose what it could not write)
     {
-        if (juce::String serr; ! saveNow (false, &serr)) { showError ("Close project", "The project could not be saved, so it stays open.\n\n" + serr); return false; }
+        if (juce::String serr; ! saveNow (false, &serr, true)) { showError ("Close project", "The project could not be saved, so it stays open.\n\n" + serr); return false; }
     }
     else { waitForSaves(); retryFailedSave(); }      // (the automatic saves are kept: one being written finishes first, one that failed is written again)
     props.saveIfNeeded();

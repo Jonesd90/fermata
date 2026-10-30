@@ -2687,6 +2687,71 @@ void collectIds (const var& o, std::vector<String>& out, const char* arrayKey)
 }
 }
 
+// ---- 3.19.0: what the person last kept of each window ---------------------------------------------------------------------------------------
+MixerState* Project::mixerById (const juce::Uuid& id) const { for (auto& m : mixers) if (m->id == id) return m.get(); return nullptr; }
+
+void Project::keepAllWindows()
+{
+    std::map<juce::Uuid, KeptWindow> next;
+    for (auto& w : takeWindows) { KeptWindow k; k.snap = snapOf (*w); next[w->id] = std::move (k); }
+    for (auto& e : edits)       { KeptWindow k; k.snap = snapOf (*e); next[e->id] = std::move (k); }
+    for (auto& m : mixers)      { KeptWindow k; k.mix = mixSnapshot (*m, true); k.mixHash = fingerprintOf (k.mix); next[m->id] = std::move (k); }
+    kept = std::move (next);                              // (a window gone since is forgotten with it)
+}
+
+bool Project::keepWindow (const juce::Uuid& id)
+{
+    if (auto* w = findTakeWindow (id)) { KeptWindow k; k.snap = snapOf (*w); kept[id] = std::move (k); return true; }
+    if (auto* e = findEdit (id))       { KeptWindow k; k.snap = snapOf (*e); kept[id] = std::move (k); return true; }
+    if (auto* m = mixerById (id))      { KeptWindow k; k.mix = mixSnapshot (*m, true); k.mixHash = fingerprintOf (k.mix); kept[id] = std::move (k); return true; }
+    return false;
+}
+
+std::vector<Project::ChangedWindow> Project::windowsChangedSinceKept() const
+{
+    std::vector<ChangedWindow> out;
+    for (auto& w : takeWindows) { auto it = kept.find (w->id); if (it != kept.end() && it->second.snap.hash != undoHash (*w)) out.push_back ({ "take", w->name, w->id }); }
+    for (auto& e : edits)       { auto it = kept.find (e->id); if (it != kept.end() && it->second.snap.hash != undoHash (*e)) out.push_back ({ "edit", e->name, e->id }); }
+    for (auto& m : mixers)      { auto it = kept.find (m->id); if (it != kept.end() && it->second.mixHash != fingerprintOf (mixSnapshot (*m, true))) out.push_back ({ "mixer", m->name, m->id }); }
+    return out;
+}
+
+bool Project::revertWindowToKept (const juce::Uuid& id, const juce::Uuid& liveTake, double sampleRate, int maxBlock)
+{
+    auto it = kept.find (id);
+    if (it == kept.end()) return false;
+    const auto& k = it->second;
+    // A take window or an edit is put back the way undo puts a step back (restorePiece: the view stays, takes recorded since stay); the change is
+    // an undo step of its own (the pending changes are ticked into a step first, then the revert makes the next one), so Ctrl+Z brings the work
+    // back. What the window is now - the kept state plus the recordings since - becomes its kept state, so it is not listed as changed again.
+    if (auto* w = findTakeWindow (id))
+    {
+        if (k.snap.takeCopy == nullptr) return false;
+        undoTick (false, true);
+        restorePiece (*this, pieceOf (UndoKind::takeWindow, id, k.snap), liveTake);
+        changed(); undoTick (false, true);
+        it->second.snap = snapOf (*w);
+        return true;
+    }
+    if (auto* e = findEdit (id))
+    {
+        if (k.snap.editCopy == nullptr) return false;
+        undoTick (false, true);
+        const bool structural = restorePiece (*this, pieceOf (UndoKind::edit, id, k.snap), liveTake);
+        if (structural) structureChanged(); else changed();
+        undoTick (false, true);
+        it->second.snap = snapOf (*e);
+        return true;
+    }
+    if (auto* m = mixerById (id))
+    {
+        if (! k.mix.isObject()) return false;
+        applyMix (*m, k.mix, sampleRate, maxBlock, MixParts());      // (a mixer is not part of the undo history)
+        return true;
+    }
+    return false;
+}
+
 String Project::takeFileHash (const TakeWindowDef& w, const String& tracksHash) const
 {
     return tracksHash + "-" + String::toHexString ((juce::int64) saveHash (w));

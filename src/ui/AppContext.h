@@ -454,7 +454,15 @@ public:
         True when the project was written (or handed to the saver), or there was nothing to write (no project file yet). False when the save
         failed: it is said in a message box, unless errorOut is given - then the reason goes there and the caller says it in its own words
         (what is called next must not go ahead over a project that could not be saved: see newProject, openProject, closeProject, Save and quit). */
-    bool saveNow (bool quick = false, juce::String* errorOut = nullptr);
+    /** keepAll (3.19.0): a save the PERSON asked for (Project > Save, Save and close, Save and quit) marks every window as kept - see Project::kept.
+        The program's own full saves (after an import, a relink, a window deleted, a plug-in scan ...) leave that alone: what the person has not
+        decided about is still asked about at quit. */
+    bool saveNow (bool quick = false, juce::String* errorOut = nullptr, bool keepAll = false);
+    /** 3.19.0: Project > Save this window - the window (take window, edit or mixer) is kept as it is now (Project::keepWindow), and the project is
+        written as any save writes it, but the OTHER windows are not marked as kept: at quit, those that changed are still asked about. */
+    bool saveWindow (const juce::Uuid& id);
+    /** 3.19.0: puts a window back as it was last kept (see Project::revertWindowToKept) and tells everything that shows it. */
+    bool revertWindow (const juce::Uuid& id);
     /** Waits until the automatic saves handed to the saver's thread are on the disk, and takes in what they did (a failed one is saved again). */
     void waitForSaves();
     /** Play / Stop just happened (the automatic save keeps out of the way for a few seconds: the next press may be coming). */
