@@ -9,7 +9,9 @@
 // A broken rule (a mended WAV changing length, a project that saves into a file it cannot read back) is printed as FINDING and counted; the
 // first few such inputs are kept as fuzz-finding-<target>-<n>.bin.
 //
-// Usage: fuzz_readers <seconds per target> [target ...]      targets: wav ixml aaf feedback mcu remote json devices text import ltc (default: all)
+// Usage: fuzz_readers <seconds per target> [target ...]      targets: wav ixml aaf feedback mcu remote json devices text import ltc caches (default: all)
+//        (3.18.3: "caches" = the take-matching fingerprints (.fpr) and waveform outlines (.fwave2) Fermata keeps; the json target's seed project now has
+//        every field added since 3.1.1; the aaf target starts from an AAF Fermata itself exports when no FUZZ_AAF file is given)
 //        fuzz_readers --replay <target> <file>               runs one kept input again
 // The random choices start from a fixed seed (the FUZZ_SEED environment variable changes it), so a run can be repeated exactly. The AAF target
 // needs a real AAF file to start from: FUZZ_AAF=<file> (it is skipped without one).
@@ -32,6 +34,11 @@
 #include "../src/core/Ltc.h"
 #include "../src/core/TextBytes.h"
 #include "../src/core/AudioFormats.h"
+#include "../src/core/TakeMatch.h"
+#include "../src/core/AafExport.h"
+#include "../src/core/AudioOps.h"
+#include "../src/core/Ltc.h"
+#include "../src/ui/WaveThumb.h"
 #include <sanitizer/common_interface_defs.h>
 #include <atomic>
 #include <chrono>
@@ -662,6 +669,134 @@ void ltcOne (const Bytes* given)
     (void) dec.frames();
 }
 
+// ---- a project with everything a project file can hold since 3.1.1 (the json target mutates it): consonants, a room tone, a lead-in, ignored
+//      missing files, take matching on, bars and notes, a waiting mark, a visual guide, automation, markers, listeners' comments, the project's rate
+juce::var richProjectSeed (const juce::File& folder)
+{
+    Project p; p.projectFile = folder.getChildFile ("Rich.fermata");
+    p.setInputCount (4); p.setOutputCount (2); p.tracks.clear();
+    const auto a = p.addTrack ("Main", TrackFormat::Stereo, 0).id;
+    const auto b = p.addTrack ("Spot", TrackFormat::Mono, 2).id;
+    auto& ltc = p.addTrack ("LTC", TrackFormat::Mono, 3); ltc.isLtc = true;
+    p.sampleRate = 48000.0;
+    auto& w = *p.takeWindows.front();
+    w.name = "Kyrie"; w.pieceBars = 40; w.takeMatching = true; w.showLtc = true;
+    Marker wm; wm.id = juce::Uuid(); wm.seconds = 3.0; wm.name = "Entry"; w.markers.push_back (wm);
+    for (int i = 0; i < 3; ++i)
+    {
+        TakeGroup g; g.id = juce::Uuid(); g.number = i + 1; g.startSeconds = 30.0 * i; g.lengthSamples = 48000 * 20; g.sampleRate = 48000.0; g.recordedAt = juce::Time (1700000000000 + i);
+        g.barIn = 1 + 10 * i; g.barOut = 12 + 10 * i; g.notes = i == 1 ? "flat in bar 9" : juce::String(); g.dud = i == 2; g.verified = true; g.overruns = i;
+        if (i == 0) { g.roomTone = true; g.roomToneIn = 1.0; g.roomToneOut = 4.0; }
+        for (auto& t : p.tracks) { TakeFile f; f.trackId = t.id; f.trackName = t.name; f.file = folder.getChildFile (t.name + juce::String (i) + ".wav"); f.numChannels = t.channelCount(); g.files.push_back (f); }
+        if (i == 1) { WaitingPiece wp; wp.name = "bar 9 click"; wp.from = 48000; wp.to = 96000; wp.files.push_back (folder.getChildFile ("exp.wav")); wp.tracks.push_back (b); g.waiting.push_back (wp); }
+        w.groups.push_back (g);
+    }
+    w.editTake = w.groups[0].id; w.editIn = 2.0; w.editOut = 8.0;
+    auto& e = p.addEdit ("Kyrie edit", w.id);
+    e.sampleRate = 48000.0; e.leadIn = true; e.leadInSeconds = 1.25; e.showGuide = true; e.automationOn = true;
+    for (int i = 0; i < 2; ++i)
+    {
+        EditRegion r; r.id = juce::Uuid(); r.windowId = w.id; r.takeId = w.groups[(size_t) i].id; r.takeName = "00" + juce::String (i + 1) + " - Kyrie"; r.sampleRate = 48000.0;
+        r.srcIn = 48000; r.srcOut = 48000 * 8; r.startSample = (juce::int64) i * 48000 * 7; r.sourceLength = 48000 * 20; r.barIn = 1 + 10 * i; r.barOut = 12 + 10 * i;
+        r.inStart = i == 0 ? -0.5 : -0.05; r.inEnd = 0.05; r.outStart = -0.05; r.outEnd = 0.05;
+        for (auto& t : p.tracks) { RegionFile f; f.trackId = t.id; f.trackName = t.name; f.file = folder.getChildFile (t.name + juce::String (i) + ".wav"); f.numChannels = t.channelCount(); r.files.push_back (f); }
+        if (i == 1) { GainChange gc; gc.at = 500; gc.ramp = 0.1; gc.db = { -1.0f, -2.0f }; r.gains.push_back (gc); }
+        e.regions.push_back (r);
+    }
+    { EditRegion od = e.regions[0]; od.id = juce::Uuid(); od.startSample = 48000 * 3; e.overdubs.push_back (od); }
+    { AutoLane l; l.id = juce::Uuid(); l.trackId = a; l.param = autoparam::fader; AutoPoint pt; pt.id = juce::Uuid(); pt.time = 1000; pt.value = -3.0f; l.pts.push_back (pt); pt.id = juce::Uuid(); pt.time = 96000; pt.value = 2.0f; pt.region = e.regions[1].id; l.pts.push_back (pt); e.lanes.push_back (l); }
+    { Marker m; m.id = juce::Uuid(); m.seconds = 5.0; m.name = "Alto entry"; e.markers.push_back (m); }
+    { FeedbackNote n; n.key = "n1"; n.who = "Anna"; n.bar = "12"; n.text = "Lovely"; n.seconds = 6.5; n.colour = "red"; e.feedback.push_back (n); }
+    e.guide.windowId = w.id; e.guide.takeId = w.groups[2].id; e.guide.trackId = a; e.guide.takeName = "003"; e.guide.trackName = "Main"; e.guide.file = folder.getChildFile ("Main2.wav");
+    e.guide.numChannels = 2; e.guide.sampleRate = 48000.0; e.guide.srcIn = 0; e.guide.srcOut = 48000 * 10; e.guide.start = -24000;
+    {
+        ConsonantDef c; c.id = juce::Uuid(); c.name = "t of 'et'"; c.from = "Kyrie take 2"; c.sampleRate = 48000.0; c.length = 2400; c.lead = 240; c.made = juce::Time (1700000000000);
+        for (auto& t : p.tracks) { ConsonantTrack ct; ct.trackId = t.id; ct.trackName = t.name; ct.file = folder.getChildFile ("Consonants").getChildFile ("c-" + t.name + ".wav"); ct.numChannels = t.channelCount(); c.tracks.push_back (ct); }
+        p.consonants.push_back (c);
+    }
+    p.ignoredMissing.insert (folder.getChildFile ("gone.wav").getFullPathName());
+    p.windowBounds["edit:" + e.id.toString()] = "10 20 800 600";
+    return p.toVar (true);
+}
+
+// ---- an AAF of Fermata's own (3.3.0) for the aaf target when no FUZZ_AAF file is given: two pieces, a crossfade, an LTC track
+Bytes ownAafSeed (const juce::File& folder)
+{
+    const double rate = 48000.0;
+    auto S = [rate] (double s) { return (juce::int64) std::llround (s * rate); };
+    std::vector<std::vector<float>> music (1, std::vector<float> ((size_t) S (6.0)));
+    for (size_t i = 0; i < music[0].size(); ++i) music[0][i] = 0.3f * (float) std::sin (0.02 * (double) i);
+    std::vector<std::vector<float>> code (1, std::vector<float> ((size_t) S (6.0)));
+    { LtcGenerator gen; gen.prepare (rate); gen.start (1, 36000.0); gen.fill (code[0].data(), (int) code[0].size()); }
+    const auto musicA = folder.getChildFile ("A-music.wav"), ltcA = folder.getChildFile ("A-ltc.wav");
+    if (! audioops::writeWav (musicA, music, rate) || ! audioops::writeWav (ltcA, code, rate)) return {};
+    Project vp; vp.projectFile = folder.getChildFile ("Aaf.fermata");
+    vp.setInputCount (2); vp.setOutputCount (2); vp.tracks.clear();
+    const auto tm = vp.addTrack ("music", TrackFormat::Mono, 0).id;
+    auto& ltcTrack = vp.addTrack ("LTC", TrackFormat::Mono, 1); ltcTrack.isLtc = true; const auto tl = ltcTrack.id;
+    auto& ed = vp.addEdit ("Concert", juce::Uuid::null());
+    ed.sampleRate = rate;
+    auto piece = [&] (double srcInSec, double srcOutSec, double startSec, double inStart, double inEnd, double outStart, double outEnd)
+    {
+        EditRegion r; r.id = juce::Uuid(); r.takeName = "Take A"; r.sampleRate = rate; r.sourceLength = S (6.0);
+        r.srcIn = S (srcInSec); r.srcOut = S (srcOutSec); r.startSample = S (startSec); r.inStart = inStart; r.inEnd = inEnd; r.outStart = outStart; r.outEnd = outEnd;
+        RegionFile a; a.trackId = tm; a.trackName = "music"; a.file = musicA; r.files.push_back (a);
+        RegionFile b; b.trackId = tl; b.trackName = "LTC"; b.file = ltcA; r.files.push_back (b);
+        ed.regions.push_back (r);
+    };
+    piece (0.5, 3.0, 0.0, 0.0, 0.02, -0.05, 0.05);
+    piece (3.5, 5.5, 2.5, -0.05, 0.05, -0.3, 0.0);
+    aafexport::Settings st; st.file = folder.getChildFile ("seed.aaf");
+    auto plan = aafexport::planFor (vp, ed, st);
+    if (plan.error.isNotEmpty()) return {};
+    juce::AudioFormatManager fm; fm.registerBasicFormats();
+    std::atomic<float> prog { 0.0f }; std::atomic<bool> cancel { false };
+    const auto res = aafexport::exportAaf (plan, st, fm, &prog, &cancel);
+    if (res.error.isNotEmpty()) return {};
+    return bytesOfFile (st.file);
+}
+
+// ---- the caches Fermata keeps in a project's Analysis and Waveforms folders (3.18.3): a damaged one must be refused (and made again), never crash
+//      or ask for memory the file cannot be holding
+std::vector<Bytes> fprSeeds, thumbSeeds;
+void cachesOne (const Bytes* given)
+{
+    Bytes d;
+    bool fpr = true;
+    if (given != nullptr) { d = *given; fpr = d.size() >= 4 && std::memcmp (d.data(), "FMFP", 4) == 0; }
+    else
+    {
+        fpr = oneIn (2);
+        auto& seeds = fpr ? fprSeeds : thumbSeeds;
+        d = seeds[rndz (seeds.size())];
+        mutate (d, 40, &seeds[rndz (seeds.size())]);
+    }
+    Trying t (d);
+    if (fpr)
+    {
+        const auto f = scratch ("c.fpr"); write (f, d);
+        takematch::Fingerprint fp;
+        if (takematch::load (fp, f))
+        {
+            if (fp.bins != takematch::Fingerprint::kNotes || fp.chroma.size() != (size_t) fp.frames() * (size_t) fp.bins || fp.loudness.size() != (size_t) fp.frames() || fp.fps <= 0.0)
+                finding ("a fingerprint that does not add up was accepted");
+            if ((juce::int64) fp.chroma.size() * 4 > (juce::int64) d.size()) finding ("a fingerprint holds more than its file could");
+        }
+    }
+    else
+    {
+        juce::MemoryInputStream in (d.data(), d.size(), false);
+        juce::AudioFormatManager fm; WaveThumb::Pool pool; WaveThumb th (fm, pool);
+        if (th.loadFrom (in))
+        {
+            const double len = th.getTotalLength();
+            if (! (len >= 0.0) || th.getNumChannels() < 1 || th.getNumChannels() > 64) finding ("a thumbnail that does not add up was accepted");
+            float mn = 0.0f, mx = 0.0f; th.getApproximateMinMax (0.0, juce::jmax (0.001, len), 0, mn, mx);       // (drawn: every point read must be there)
+            th.getApproximateMinMax (len * 0.5, len * 0.5 + 0.0001, th.getNumChannels() - 1, mn, mx);
+        }
+    }
+}
+
 bool loadJsonFile (const juce::File& f, juce::var& out)
 {
     if (! f.existsAsFile()) return false;
@@ -715,9 +850,34 @@ int main (int argc, char** argv)
                 Project p; juce::String err;
                 if (p.load (f, err)) { projectSeeds.push_back (p.toVar (true)); if (! p.mastering.items.empty()) masteringSeed = p.mastering.toVar(); }
             }
-    {   // and one made here, so there is always one
+    {   // and one made here, so there is always one - and one with everything a project file can hold (3.18.3)
         Project p; p.projectFile = scratch ("proj").getChildFile ("Seed.fermata");
         projectSeeds.push_back (p.toVar (true));
+        projectSeeds.push_back (richProjectSeed (scratch ("proj")));
+    }
+    {   // the caches (3.18.3): fingerprints from a tone and from a short silence; thumbnails of a few made-up files
+        for (int k = 0; k < 2; ++k)
+        {
+            std::vector<float> s ((size_t) (k == 0 ? 48000 * 4 : 4096));
+            for (size_t i = 0; i < s.size(); ++i) s[i] = k == 0 ? 0.3f * (float) std::sin (0.03 * (double) i) : 0.0f;
+            auto fp = takematch::analyseSamples (s.data(), (juce::int64) s.size(), 48000.0);
+            fp.sourceKey = "seed";
+            const auto f = scratch ("seed.fpr");
+            if (takematch::save (fp, f)) fprSeeds.push_back (bytesOfFile (f));
+        }
+        if (fprSeeds.empty()) { Bytes b; b.insert (b.end(), { 'F', 'M', 'F', 'P' }); put32 (b, 2); fprSeeds.push_back (b); }
+        for (int ch : { 1, 2 })
+        {
+            const auto wav = scratch ("thumb.wav");
+            write (wav, makeWav (ch, 24, false, 20000, false, false, false, false, false));
+            juce::AudioFormatManager fm; WaveThumb::Pool pool; WaveThumb t (fm, pool);
+            fm.registerBasicFormats();
+            t.load (wav);
+            for (int i = 0; i < 200 && ! t.isFullyLoaded(); ++i) juce::Thread::sleep (10);
+            juce::MemoryOutputStream mo;
+            if (t.isFullyLoaded() && t.saveTo (mo)) thumbSeeds.push_back (Bytes ((const std::uint8_t*) mo.getData(), (const std::uint8_t*) mo.getData() + mo.getDataSize()));
+        }
+        if (thumbSeeds.empty()) { Bytes b; put32 (b, 1); put32 (b, 256); put32 (b, 1); thumbSeeds.push_back (b); }
     }
     if (masteringSeed.isVoid()) { MasteringDef md; masteringSeed = md.toVar(); }
     { PreampMemory pm; PreampSettings a; a.gainDb = 30.0f; a.phantom = true; pm.inputs[0] = a; pm.inputs[5] = a; preampSeed = pm.toVar(); }
@@ -736,6 +896,7 @@ int main (int argc, char** argv)
         { "wav",      [] { return true; }, wavOne },
         { "ixml",     [] { return true; }, ixmlOne },
         { "aaf",      [&] { if (const char* a = std::getenv ("FUZZ_AAF")) aafSeed = bytesOfFile (juce::File (a));
+                            if (aafSeed.size() < 4096) { aafSeed = ownAafSeed (scratch ("proj")); if (! aafSeed.empty()) std::printf ("aaf: starting from an AAF Fermata exported itself (%d bytes)\n", (int) aafSeed.size()); }
                             if (aafSeed.size() < 4096) { std::printf ("aaf: skipped (no FUZZ_AAF file to start from)\n"); return false; }
                             aafPrepareHotSpots(); return true; }, aafOne },
         { "feedback", [] { return ! feedbackSeeds.front().empty(); }, feedbackOne },
@@ -746,6 +907,7 @@ int main (int argc, char** argv)
         { "text",     [] { return true; }, textOne },
         { "import",   [] { return true; }, importOne },
         { "ltc",      [] { return true; }, ltcOne },
+        { "caches",   [] { return true; }, cachesOne },
     };
 
     if (argc >= 4 && juce::String (argv[1]) == "--replay")

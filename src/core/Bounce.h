@@ -21,9 +21,9 @@ struct BounceSettings
     double sampleRate = 48000.0;
     std::vector<BounceItem> items;           // one file each
     double leadSeconds = 0.0, tailSeconds = 0.0;     // extra time before / after each item (the mixer keeps running, so plug-ins settle and tails ring out)
-    juce::Uuid automationEdit;               // the edit whose automation is applied while bouncing (null = none)
+    juce::Uuid automationEdit = juce::Uuid::null();   // the edit whose automation is applied while bouncing (null = none)
     juce::String alignOwner;                 // whose spot-mic alignment the items play with (the piece's: Project::alignOwnerFor)
-    juce::Uuid mixerId;                      // the mixer whose settings are used (normally the processing mixer)
+    juce::Uuid mixerId = juce::Uuid::null();          // the mixer whose settings are used (normally the processing mixer)
     std::vector<juce::Uuid> sources;         // the post-fader signal of these audio tracks / Int Buses / Ext Buses. Every one chosen is written to its own stereo file.
     std::vector<juce::Uuid> sourcesPre;      // the same, taken BEFORE the fader (after inserts and pan, not affected by mute / solo): files are named "... - <name> (before fader)"
     bool addOutputName = true;              // file names end with " - <output name>" (always done when there is more than one output)

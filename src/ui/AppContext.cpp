@@ -116,6 +116,7 @@ AppContext::AppContext()
 
 AppContext::~AppContext()
 {
+    waveColors.stop();                               // 3.18.2: first - a colouring job still queued would ask the project for its folder after the project has gone
     project.settleBackgroundSaves = nullptr;
     *saverAlive = false;                             // (what it finishes from here on is not taken in: the program is closing, and shutdown() saved)
     saver.reset();                                   // (waits until everything handed to it is written)
@@ -249,7 +250,7 @@ void AppContext::changeListenerCallback (juce::ChangeBroadcaster* source)
         props.saveIfNeeded();
         return;
     }
-    if (! auditionId.isNull() && (findMixer (auditionId) == nullptr || isEngineerMixer (auditionId))) setAudition ({});
+    if (! auditionId.isNull() && (findMixer (auditionId) == nullptr || isEngineerMixer (auditionId))) setAudition (juce::Uuid::null());
     engine.rebuildPlan();
     freeRetiredMixersSoon();
     applyTalkback();
@@ -957,6 +958,7 @@ void AppContext::afterProjectReplaced()
 {
     ++saveGeneration;                                  // (what a save handed over before this did is not this project's)
     takeMatch.projectReplaced();                       // (the takes' fingerprints were the old project's; the new one's are found by its sweep)
+    waveColors.clear();                                // (3.18.2: and so were the waveform colours - they were kept for the whole run)
     wholeSaveNext = false; quickSaveWanted = false; lastFailedJob.reset();
     fixUndo = nullptr; fixUndoLabel.clear(); fixUndoHash = 0;      // (the last fix was in the project that was open before: 3.1.4)
     lastAutosaveMs = juce::Time::getMillisecondCounter();

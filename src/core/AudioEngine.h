@@ -457,7 +457,7 @@ private:
     std::atomic<bool> sessionMode { false };
     std::atomic<int> preRollSeconds { kPreRollDefault };
     std::atomic<const MixerState*> auditionMixer { nullptr };
-    juce::Uuid offlineMixerId;                       // offline rendering (see setOfflineTarget)
+    juce::Uuid offlineMixerId = juce::Uuid::null();  // offline rendering (see setOfflineTarget); null = none
     std::vector<juce::Uuid> offlineTaps, offlinePreTaps;
     std::vector<juce::AudioBuffer<float>>* captureBufs = nullptr;  // only while renderOffline() runs
     std::unique_ptr<PlaybackSession> playSession;   // owned by the message thread

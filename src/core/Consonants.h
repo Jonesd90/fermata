@@ -107,6 +107,7 @@ inline std::shared_ptr<ConsonantAudio> load (const ConsonantDef& def, juce::Audi
         auto r = audioops::openReader (fm, t.file);
         if (r == nullptr) { error = "The audio of \"" + def.name + "\" for " + t.trackName + " is missing (" + t.file.getFullPathName() + ")."; return nullptr; }
         if (std::abs (r->sampleRate - def.sampleRate) > 0.5) { error = "The audio of \"" + def.name + "\" for " + t.trackName + " is at another sample rate."; return nullptr; }
+        if (r->lengthInSamples > (juce::int64) (60.0 * r->sampleRate)) { error = "The audio of \"" + def.name + "\" for " + t.trackName + " is over a minute long: not a consonant (the file may have been replaced)."; return nullptr; }     // (3.18.3: read whole into memory below - never a whole take by mistake)
         std::vector<std::vector<float>> ch;
         if (! audioops::readRange (*r, 0, r->lengthInSamples, ch) || ch.empty()) { error = "Cannot read " + t.file.getFullPathName(); return nullptr; }
         a->trackIds.push_back (t.trackId); a->trackNames.push_back (t.trackName); a->tracks.push_back (std::move (ch));

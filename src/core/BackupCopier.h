@@ -89,7 +89,7 @@ private:
                 const std::lock_guard<std::mutex> l (lock);
                 jobs.erase (std::remove_if (jobs.begin(), jobs.end(), [] (const std::shared_ptr<Job>& x) { return x->done; }), jobs.end());
             }
-            wait (worked ? 1 : 40);
+            wait (list.empty() ? 1000 : worked ? 1 : 40);                  // (3.18.2: with no copy going it rests - add() wakes it; it used to look 25 times a second, second drive or none)
         }
         for (auto& j : jobs) { j->out.reset(); j->in.reset(); }      // (closing: whatever was copied stays)
     }

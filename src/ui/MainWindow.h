@@ -403,6 +403,7 @@ private:
     WindowLamp* flagFor (const juce::Component* b) { return b == &takesButton ? &flagT : b == &editsButton ? &flagE : b == &mixersButton ? &flagM : nullptr; }
     InfoBox projectBox, rateBox { "RATE" }, depthBox { "DEPTH" }, diskBox { "DISK FREE" };
     MatchBox matchBox;                                         // 3.18.0: what the take matching is doing (a click opens its panel)
+    int matchTick = 0;                                         // (the box is brought up to date twice a second)
     /** The control surface (Avid S1): which mixer it controls, and a lamp (lit while it is connected) that opens the Mixer controller window. */
     struct CaptionLabel : public juce::Component
     {

@@ -4,6 +4,7 @@
 #include <juce_events/juce_events.h>
 #include "../core/Dsp.h"
 #include "WaveStore.h"
+#include <atomic>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -42,36 +43,53 @@ struct WaveColorData
     }
 };
 
-/** Works out the WaveColorData of files in a background thread (one at a time). get() returns nothing until a file is done; onReady then fires. */
+/** Works out the WaveColorData of files in a background thread (one at a time). get() returns nothing until a file is done; onReady then fires.
+    3.18.2: the Waveforms folder is asked for on the message thread, in get(), and handed to the job - the job used to ask the project for it from its own
+    thread (a race with a project being opened, and a job still queued when Fermata closed asked a project that had already gone). stop() ends the pool
+    early in closing; clear() lets the colours of a project go when another is opened (they were kept for the whole run). */
 class WaveColorCache
 {
 public:
     WaveColorCache() : pool (1) { td::registerAudioFormats (formats); }
-    ~WaveColorCache() { *alive = false; pool.removeAllJobs (true, 20000); }
+    ~WaveColorCache() { stop(); }
 
     std::function<void()> onReady;
-    std::function<juce::File()> folder;              // the Waveforms folder: worked-out colours are kept there between runs
+    std::function<juce::File()> folder;              // the Waveforms folder: worked-out colours are kept there between runs (called on the message thread only)
+
+    /** Closing (3.18.2): nothing more is started, and a job under way is given up (it looks at 'alive' between chunks); waits for it, at most 20 s. Safe to call again. */
+    void stop()
+    {
+        alive->store (false);
+        pool.removeAllJobs (true, 20000);
+    }
+    /** Another project (3.18.2): the finished colours are let go (a file drawn again is worked out again, or read back from its Waveforms folder). */
+    void clear()
+    {
+        std::lock_guard<std::mutex> lock (m);
+        done.clear();
+    }
 
     std::shared_ptr<const WaveColorData> get (const juce::File& f)
     {
+        if (! alive->load()) return nullptr;
         const auto key = f.getFullPathName() + "|" + juce::String (f.getSize());
+        const auto dir = folder ? folder() : juce::File();                    // (here, on the message thread: never from the job)
         std::lock_guard<std::mutex> lock (m);
         auto it = done.find (key);
         if (it != done.end()) return it->second;
         if (pending.insert (key).second)
-            pool.addJob ([this, f, key, alive = alive]
+            pool.addJob ([this, f, key, dir, alive = alive]
                          {
                              td::crashreport::nameThisThreadW (L"Waveform colours");
-                             const auto dir = folder ? folder() : juce::File();
                              auto d = dir != juce::File() ? loadSaved (dir, f) : nullptr;
                              if (d == nullptr)
                              {
                                  d = analyse (f);
-                                 if (*alive && dir != juce::File()) save (dir, f, *d);
+                                 if (alive->load() && dir != juce::File()) save (dir, f, *d);
                              }
-                             if (! *alive) return;
+                             if (! alive->load()) return;
                              { std::lock_guard<std::mutex> l (m); done[key] = d; pending.erase (key); }
-                             juce::MessageManager::callAsync ([this, alive] { if (*alive && onReady) onReady(); });
+                             juce::MessageManager::callAsync ([this, alive] { if (alive->load() && onReady) onReady(); });
                          });
         return nullptr;
     }
@@ -104,6 +122,7 @@ private:
         d->blockSeconds = in.readDouble();
         const auto n = in.readInt64();
         if (n < 0 || n > 50000000 || d->blockSeconds <= 0.0) return nullptr;
+        if (in.getTotalLength() >= 0 && in.getTotalLength() - in.getPosition() < n * 8) return nullptr;      // (3.18.2: a garbled count never asks for more than the file holds)
         d->argb.resize ((size_t) n); d->level.resize ((size_t) n);
         if (in.read (d->argb.data(), (int) (n * 4)) != (int) (n * 4) || in.read (d->level.data(), (int) (n * 4)) != (int) (n * 4)) return nullptr;
         return d;
@@ -137,7 +156,7 @@ private:
         juce::AudioBuffer<float> chunk (nCh, N * 32);
         for (juce::int64 pos = 0; pos < r->lengthInSamples; pos += (juce::int64) N * 32)
         {
-            if (! *alive) return d;
+            if (! alive->load()) return d;
             const int got = (int) juce::jmin ((juce::int64) N * 32, r->lengthInSamples - pos);
             chunk.clear();
             r->read (&chunk, 0, got, pos, true, nCh > 1);
@@ -179,6 +198,6 @@ private:
     std::mutex m;
     std::map<juce::String, std::shared_ptr<const WaveColorData>> done;
     std::set<juce::String> pending;
-    std::shared_ptr<bool> alive = std::make_shared<bool> (true);
+    std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>> (true);     // (atomic: read by the job, written at closing)
 };
 }

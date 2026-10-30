@@ -128,10 +128,12 @@ public:
     int rowAfterBlock (int row) const { rowTracks(); int r = row + 1; while (r < (int) rowInfo.size() && rowInfo[(size_t) r].node == rowInfo[(size_t) row].node) ++r; return r; }
     bool lanesOn (const EditDef& e) const { return e.automationOn; }
     mutable std::vector<TrackDef> rowsCache;
-    juce::Uuid clipMoveRegion, clipMoveTrack; int clipMoveToRow = -1;   // Shift + drag: one track's clip of a piece moves to another track, staying at the same time
+    // (3.18.2: these start as null. A juce::Uuid made without a value is a NEW RANDOM id, never null - so a fresh window believed a shuffle and then a clip move
+    //  were under way, and its first two drags went to those instead of to the piece, mark or fade being dragged.)
+    juce::Uuid clipMoveRegion = juce::Uuid::null(), clipMoveTrack = juce::Uuid::null(); int clipMoveToRow = -1;   // Shift + drag: one track's clip of a piece moves to another track, staying at the same time
     int rowDragFrom = -1, rowDragTo = -1;       // dragging a track's name up or down to move the track (the edit's order only)
     std::vector<juce::Uuid> selectedTracks;     // track names picked (click; Shift + click: every track in between; Ctrl + click: one more / less) - right-click: remove them
-    juce::Uuid trackAnchor;
+    juce::Uuid trackAnchor = juce::Uuid::null();
     bool trackSelected (const juce::Uuid& id) const { return std::find (selectedTracks.begin(), selectedTracks.end(), id) != selectedTracks.end(); }
     /** A click on a track's name: on its own = only this track (or none, if it was the only one); Shift = every track from the last one clicked to
         this one; Ctrl = this one in or out. */
@@ -2065,7 +2067,7 @@ private:
     bool markDrag = false, markActive = false, markAlt = false; double markAnchor = 0.0; int markStartX = 0, markRow0 = 0;     // dragging over audio that is not selected sets marks 1 and 2
     bool dragOverdub = false; juce::int64 overdubBase = 0;
     bool insertDrag = false, insertSnapped = true; int insertShownX = 0, insertDragIndex = 0;                 // the insert flag being dragged
-    juce::Uuid shuffleId; juce::int64 shuffleGrab = 0, shuffleSample = 0; bool shuffleMoved = false; int shuffleStartX = 0;     // a piece being shuffled by its banner
+    juce::Uuid shuffleId = juce::Uuid::null(); juce::int64 shuffleGrab = 0, shuffleSample = 0; bool shuffleMoved = false; int shuffleStartX = 0;     // a piece being shuffled by its banner (null: none; see clipMoveRegion)
     int fadeDrag = 0; juce::Uuid fadeId; double fadeBase = 0.0;      // dragging a piece's fade-in (1) or fade-out (2) from its corner
     juce::VBlankAttachment vblank { this, [this] { movePlayhead(); } };     // (last, so everything it uses exists first)
 };

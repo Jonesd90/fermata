@@ -88,7 +88,7 @@ struct EditRegion
 {
     WaitingPiece waiting;              // set while the piece waits for corrected audio (from/to = srcIn/srcOut at the time of the export)
     juce::Uuid   id;
-    juce::Uuid   windowId, takeId;     // where it came from (informational only: the edit does not depend on them)
+    juce::Uuid   windowId = juce::Uuid::null(), takeId = juce::Uuid::null();     // where it came from (informational only: the edit does not depend on them; null = not known)
     juce::String takeName;             // display name, e.g. "002 - Take"
     std::vector<RegionFile> files;
     juce::int64  sourceLength = 0;     // length of the take's files in samples (limits the handles); 0 = unknown
@@ -233,7 +233,7 @@ struct EditRegion
     anywhere along the timeline, also to start before 0:00 (that part is simply not shown). */
 struct EditGuide
 {
-    juce::Uuid   windowId, takeId, trackId;  // where it came from: the take window, the take, the track whose clip it is
+    juce::Uuid   windowId = juce::Uuid::null(), takeId = juce::Uuid::null(), trackId = juce::Uuid::null();  // where it came from: the take window, the take, the track whose clip it is
     juce::String takeName, trackName;        // for its label ("Take 3", "ORTF")
     juce::File   file;                       // the clip's audio file (mono, or a stereo pair)
     int          numChannels = 1;

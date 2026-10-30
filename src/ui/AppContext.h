@@ -285,7 +285,7 @@ public:
     struct PlayInfo
     {
         enum class Kind { None, Take, Edit, Other } kind = Kind::None;
-        juce::Uuid windowId, id;          // take window + take, or the edit
+        juce::Uuid windowId = juce::Uuid::null(), id = juce::Uuid::null();     // take window + take, or the edit
         double startSeconds = 0.0;        // where on the take / edit timeline playback began
         bool noFollow = false;            // the playhead stays put when this stops (the trim window's audition)
         double loopLen = 0.0;             // > 0: the range [startSeconds, startSeconds + loopLen) is playing in a loop
@@ -311,7 +311,7 @@ public:
         that back). Returns an error or ""; 'editOut' is told which edit it went to. */
     juce::String setEditGuide (const juce::Uuid& takeWindowId, const juce::Uuid& takeId, const juce::Uuid& trackId, juce::Uuid* editOut = nullptr);
     /** One clip of a disc audition: the edit and where it starts on the disc's timeline. */
-    struct DiscPlayItem { juce::Uuid editId; double startSeconds = 0.0; };
+    struct DiscPlayItem { juce::Uuid editId = juce::Uuid::null(); double startSeconds = 0.0; };
     /** Plays the clips one after the other, each at its place on the disc timeline (the pauses between them are silence), through the mixers with the
         edits' automation, from fromSec to toSec (-1 = to the end of the last clip). 'token' goes into playInfo.id so the caller knows it is its own playback. */
     juce::String playDisc (const std::vector<DiscPlayItem>& items, double fromSec, double toSec, const juce::Uuid& token);
@@ -377,7 +377,7 @@ public:
     juce::String converterNote() const;
 
     // ---- engineer audition and copying mixes (the FIRST mixer is the engineer's) ----
-    juce::Uuid auditionId;                                         // null = the engineer hears their own mixer
+    juce::Uuid auditionId = juce::Uuid::null();                    // null = the engineer hears their own mixer
     bool isAuditioning (const juce::Uuid& mixerId) const { return auditionId == mixerId && ! mixerId.isNull(); }
     /** Listen to another mixer on the engineer's outputs until switched off (pass a null id, or the same id again, to stop). */
     void setAudition (const juce::Uuid& mixerId);
@@ -432,7 +432,7 @@ public:
         std::vector<Event> events;                   // this take's, oldest first (at most kMaxEvents)
         bool recording = false;                      // (as of the last tick)
         juce::String takeName;                       // "Take 12 - Piece 01" of the take being (or last) recorded
-        juce::Uuid windowId, takeId;                 // which take it is
+        juce::Uuid windowId = juce::Uuid::null(), takeId = juce::Uuid::null();     // which take it is (null: not known)
         juce::uint32 startedMs = 0;                  // when it started (the clock)
         int overruns = 0; juce::int64 lostSamples = 0; bool writeFailed = false;     // the main drive, this take
         int deviceStops = 0; bool deviceDown = false; bool deviceQuiet = false;      // the device: stopped during the take (count), down / not delivering right now

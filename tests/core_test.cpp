@@ -48,6 +48,7 @@
 #include "../src/core/AudioFormats.h"
 #include "../src/core/TextBytes.h"
 #include "../src/ui/TakeMatchService.h"
+#include "../src/ui/WaveThumb.h"
 #include <cstdio>
 #include <thread>
 
@@ -11197,6 +11198,88 @@ int main()
         juce::Thread::sleep (300);
         CHECK (tm.statusOf (t3).state == St::Unknown && tm.fingerprintFor (t1) != nullptr && tm.progress().windowsOn == 0);
         CHECK (tm.progress (&w).total == 3 && tm.progress (&w).ready == 2);                       // (one window asked for: on or not)
+        tm.stop();
+        dir.deleteRecursively();
+    }
+
+    SECTION ("3.18.2 an id that means 'none' starts null (a juce::Uuid made without a value is a new RANDOM id, never null: the 3.17.2 fault)");
+    {
+        CHECK (! juce::Uuid().isNull() && juce::Uuid::null().isNull());                  // (the fact the rest of this section rests on)
+        CHECK (juce::Uuid (juce::String()).isNull());                                          // (an id missing from a file reads as null, not random ...)
+        CHECK (! juce::Uuid (juce::String ("not an id")).isNull());                            // (... a garbled one reads as a junk id: "not found" wherever it is looked up, never "none")
+        BounceSettings bs; CHECK (bs.automationEdit.isNull() && bs.mixerId.isNull());
+        BounceItem bi;     CHECK (bi.automationEdit.isNull() && bi.mixerId.isNull());
+        EditRegion r;      CHECK (r.windowId.isNull() && r.takeId.isNull());
+        EditGuide gd;      CHECK (gd.windowId.isNull() && gd.takeId.isNull() && gd.trackId.isNull() && ! gd.active());
+        // a piece from nowhere (an AAF import) does not pull an edit towards a made-up take window's alignment
+        Project q;
+        auto& e = q.addEdit ("From AAF", juce::Uuid::null());
+        EditRegion rg; rg.id = juce::Uuid(); rg.sampleRate = 48000.0; rg.srcIn = 0; rg.srcOut = 48000; rg.startSample = 0; rg.sourceLength = 48000;
+        e.regions.push_back (rg);
+        CHECK (q.alignOwnerFor (true, e.id) == e.id.toString());
+        // the automation plan's default mixer argument means "none": a lane with no mixer of its own goes to the edit's mixer, as when none is named
+        AutoLane l; l.id = juce::Uuid(); l.trackId = q.tracks.empty() ? juce::Uuid::null() : q.tracks.front().id; l.param = autoparam::fader;
+        AutoPoint pt; pt.id = juce::Uuid(); pt.time = 0; pt.value = -3.0f; l.pts.push_back (pt);
+        e.lanes.push_back (l);
+        auto a1 = automationPlanFor (q, e), a2 = automationPlanFor (q, e, false, juce::Uuid::null());
+        CHECK ((a1 == nullptr) == (a2 == nullptr) && (a1 == nullptr || a1->items.size() == a2->items.size()));
+    }
+
+    SECTION ("3.18.2 a new project starts clean; a garbled cache file never asks for gigabytes");
+    {
+        Project q;
+        q.ignoredMissing.insert ("C:/gone/a.wav"); q.windowBounds["take:x"] = "1 2 3 4"; q.filesMoved = true;
+        q.createDefaultDesign();
+        CHECK (q.ignoredMissing.empty() && q.windowBounds.empty() && ! q.filesMoved);         // (they stayed, and were saved into the next project)
+        const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("fermata-garbled-318");
+        dir.deleteRecursively(); dir.createDirectory();
+        {   // a fingerprint whose header claims 50 million frames in a 60-byte file
+            juce::MemoryOutputStream mo;
+            mo.write ("FMFP", 4); mo.writeInt (2); mo.writeDouble (20.0); mo.writeInt (50000000); mo.writeInt (takematch::Fingerprint::kNotes); mo.writeString ("k");
+            const auto f = dir.getChildFile ("big.fpr"); f.replaceWithData (mo.getData(), mo.getDataSize());
+            takematch::Fingerprint fp;
+            CHECK (! takematch::load (fp, f) && fp.empty());
+        }
+        {   // a thumbnail claiming four billion points
+            juce::MemoryOutputStream mo;
+            mo.writeInt (WaveThumb::kFormat); mo.writeInt (WaveThumb::kSamplesPerPoint); mo.writeInt (2); mo.writeDouble (48000.0); mo.writeInt64 (1); mo.writeInt64 ((juce::int64) 1 << 31);
+            juce::MemoryInputStream in (mo.getData(), mo.getDataSize(), false);
+            juce::AudioFormatManager fm; WaveThumb::Pool pool; WaveThumb t (fm, pool);
+            CHECK (! t.loadFrom (in) && t.isEmpty());
+        }
+        dir.deleteRecursively();
+    }
+
+    SECTION ("3.18.3 take matching keeps at most kResident fingerprints in memory; the others come back from the Analysis folder");
+    {
+        const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("fermata-takematch-resident");
+        dir.deleteRecursively(); dir.createDirectory();
+        Project q; q.projectFile = dir.getChildFile ("R.fermata");
+        auto& w = *q.takeWindows.front(); w.takeMatching = true;
+        const int N = TakeMatchService::kResident + 12;
+        std::vector<juce::Uuid> ids;
+        for (int i = 0; i < N; ++i)
+        {
+            TakeGroup g; g.id = juce::Uuid(); g.number = i + 1; g.sampleRate = 48000.0; g.lengthSamples = 48000;
+            TakeFile f; f.file = makeToneWav (dir.getChildFile ("t" + juce::String (i) + ".wav"), 0.2 + 0.001 * i, 1, false); f.numChannels = 1; f.trackName = "Main";
+            if (! q.tracks.empty()) f.trackId = q.tracks.front().id;
+            g.files.push_back (f); w.groups.push_back (g); ids.push_back (g.id);
+        }
+        AudioEngine eng (q);
+        TakeMatchService tm (q, eng);
+        tm.windowsChanged();
+        auto waitFor = [] (const std::function<bool()>& cond, int ms) { for (int t = 0; t < ms && ! cond(); t += 20) juce::Thread::sleep (20); return cond(); };
+        CHECK (waitFor ([&] { return tm.progress().left() == 0; }, 120000));
+        CHECK (tm.progress().ready == N);
+        CHECK (tm.residentFingerprints() <= TakeMatchService::kResident);                     // (the rest were saved and let go)
+        CHECK (dir.getChildFile ("Analysis").getNumberOfChildFiles (juce::File::findFiles, "*.fpr") == N);
+        auto first = tm.fingerprintFor (ids.front());                                            // one let go of comes back from its file, whole
+        CHECK (first != nullptr && first->frames() > 0 && first->sourceKey == takematch::sourceKeyFor ({ w.groups.front().files.front().file }));
+        CHECK (tm.residentFingerprints() <= TakeMatchService::kResident);
+        for (auto& id : ids) CHECK (tm.fingerprintFor (id) != nullptr);                          // every one, asked for in turn, is there (nothing is analysed again)
+        CHECK (tm.progress().left() == 0 && tm.residentFingerprints() <= TakeMatchService::kResident);
+        auto al = tm.alignmentFor (ids[0], ids[1]);
+        CHECK (al != nullptr && tm.alignmentFor (ids[0], ids[1]) == al);                           // (kept by the files' keys, not by a pointer)
         tm.stop();
         dir.deleteRecursively();
     }

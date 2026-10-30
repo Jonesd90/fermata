@@ -149,15 +149,35 @@ public:
         {
             const juce::ScopedLock sl (lock);
             auto it = known.find (takeId);
-            if (it != known.end() && it->second.state == State::Ready && it->second.fp != nullptr)
+            if (it != known.end() && it->second.state == State::Ready)
             {
-                if (it->second.fp->sourceKey == takematch::sourceKeyFor (filesOf (takeId))) return it->second.fp;
-                it->second = Entry();                       // (the files are not the ones the fingerprint came from)
+                if (it->second.fp == nullptr && it->second.hasCache)           // 3.18.3: let go of to save memory (see trimResident): read back from the Analysis folder
+                {
+                    takematch::Fingerprint back;
+                    if (takematch::load (back, cacheFileFor (takeId))) it->second.fp = std::make_shared<const takematch::Fingerprint> (std::move (back));
+                }
+                if (it->second.fp != nullptr && it->second.fp->sourceKey == takematch::sourceKeyFor (filesOf (takeId)))
+                {
+                    it->second.used = ++useCounter;
+                    trimResident();
+                    return it->second.fp;
+                }
+                it->second = Entry();                       // (the files are not the ones the fingerprint came from, or the saved one has gone)
             }
         }
         enqueue (takeId, false);
         return nullptr;
     }
+    /** How many fingerprints are in memory right now (the rest of the Ready takes are read back from the Analysis folder when asked for). For the tests. */
+    int residentFingerprints() const
+    {
+        const juce::ScopedLock sl (lock);
+        int n = 0; for (auto& kv : known) if (kv.second.fp != nullptr) ++n;
+        return n;
+    }
+    /** At most this many fingerprints stay in memory (3.18.3): a ten-minute take's is about 3 MB, and a project of 367 takes with take matching on
+        everywhere held half a gigabyte. The ones used longest ago are let go and read back from the Analysis folder when asked for (a few ms). */
+    static constexpr int kResident = 48;
     /** The alignment of take A with take B, made now (a few tens of milliseconds for ten-minute takes) and kept. Null when either
         fingerprint is not ready. */
     std::shared_ptr<const takematch::Alignment> alignmentFor (const juce::Uuid& a, const juce::Uuid& b)
@@ -168,12 +188,12 @@ public:
         {
             const juce::ScopedLock sl (lock);
             auto it = alignments.find (key);
-            if (it != alignments.end() && it->second.fa == fa && it->second.fb == fb) return it->second.al;
+            if (it != alignments.end() && it->second.ka == fa->sourceKey && it->second.kb == fb->sourceKey) return it->second.al;      // (3.18.3: by the files' keys, not the pointers - a kept pointer pinned the fingerprint in memory)
         }
         auto al = std::make_shared<takematch::Alignment> (takematch::align (*fa, *fb));
         const juce::ScopedLock sl (lock);
         if (alignments.size() > 400) alignments.clear();        // (a session's worth; they are quick to make again)
-        alignments[key] = { fa, fb, al };
+        alignments[key] = { fa->sourceKey, fb->sourceKey, al };
         return al;
     }
     /** How many takes are waiting for or having their fingerprint made (for a status line). */
@@ -186,9 +206,21 @@ public:
     }
 
 private:
-    struct Entry { State state = State::Unknown; float progress = 0.0f; juce::String why; std::shared_ptr<const takematch::Fingerprint> fp; bool hasCache = false; };
+    struct Entry { State state = State::Unknown; float progress = 0.0f; juce::String why; std::shared_ptr<const takematch::Fingerprint> fp; bool hasCache = false; juce::uint64 used = 0; };
+    /** Under 'lock': lets go of the fingerprints used longest ago beyond kResident - only those saved in the Analysis folder, so they can come back. */
+    void trimResident()
+    {
+        for (;;)
+        {
+            int resident = 0; Entry* oldest = nullptr;
+            for (auto& kv : known)
+                if (kv.second.fp != nullptr) { ++resident; if (kv.second.hasCache && (oldest == nullptr || kv.second.used < oldest->used)) oldest = &kv.second; }
+            if (resident <= kResident || oldest == nullptr) return;
+            oldest->fp = nullptr;
+        }
+    }
     struct Job { juce::Uuid takeId = juce::Uuid::null(); std::vector<juce::File> files; juce::File cacheFile; };
-    struct Cached { std::shared_ptr<const takematch::Fingerprint> fa, fb; std::shared_ptr<const takematch::Alignment> al; };
+    struct Cached { juce::String ka, kb; std::shared_ptr<const takematch::Alignment> al; };     // (the source keys of the two fingerprints it was made from)
 
     /** The files a take's fingerprint is made from: its MAIN microphones (3.7.0, from real takes: the main pair hears the whole choir; a spot hears
         part of it, and the first four tracks of a take used to be whatever came first - often spots). The tracks given the role Main in the Align
@@ -286,9 +318,9 @@ private:
                 continue;
             }
             takematch::Fingerprint fp;
-            bool ok = false;
+            bool ok = false, saved = false;
             const auto key = takematch::sourceKeyFor (job.files);
-            if (job.cacheFile != juce::File() && takematch::load (fp, job.cacheFile) && fp.sourceKey == key) ok = true;      // saved last time, and the files are the same
+            if (job.cacheFile != juce::File() && takematch::load (fp, job.cacheFile) && fp.sourceKey == key) ok = saved = true;      // saved last time, and the files are the same
             else
             {
                 { const juce::ScopedLock sl (lock); known[job.takeId].state = State::Analysing; }
@@ -304,7 +336,8 @@ private:
                         const juce::ScopedLock sl (lock);
                         audioPerSecond = audioPerSecond > 0.0 ? 0.7 * audioPerSecond + 0.3 * r : r;
                     }
-                    if (job.cacheFile != juce::File() && ! takematch::save (fp, job.cacheFile)) juce::Logger::writeToLog ("Take matching: the fingerprint could not be saved in " + job.cacheFile.getParentDirectory().getFullPathName());
+                    saved = job.cacheFile != juce::File() && takematch::save (fp, job.cacheFile);
+                    if (job.cacheFile != juce::File() && ! saved) juce::Logger::writeToLog ("Take matching: the fingerprint could not be saved in " + job.cacheFile.getParentDirectory().getFullPathName());
                     juce::Logger::writeToLog ("Take matching: " + juce::String ((int) job.files.size()) + (job.files.size() == 1 ? " file" : " files") + " of a take analysed in "
                                               + juce::String (juce::roundToInt (juce::Time::getMillisecondCounterHiRes() - t0)) + " ms (" + juce::String (fp.lengthSeconds(), 1) + " s)");
                 }
@@ -323,7 +356,7 @@ private:
                 continue;
             }
             auto& e = known[job.takeId];
-            if (ok) { e.state = State::Ready; e.progress = 1.0f; e.why.clear(); e.fp = std::make_shared<const takematch::Fingerprint> (std::move (fp)); }
+            if (ok) { e.state = State::Ready; e.progress = 1.0f; e.why.clear(); e.fp = std::make_shared<const takematch::Fingerprint> (std::move (fp)); e.hasCache = saved; e.used = ++useCounter; trimResident(); }
             else { e.state = State::Failed; e.why = "the take's audio could not be read"; e.fp = nullptr; }
         }
     }
@@ -343,6 +376,7 @@ private:
     bool requeueOnCancel = false;                    // (under 'lock') a hold cancelled the take under way: it goes back on the queue, not away
     juce::Uuid current = juce::Uuid::null();         // (under 'lock') the take the thread is working on, null when none
     double audioPerSecond = 0.0;                     // (under 'lock') seconds of takes analysed per second, lately: 0 until the first is done
+    juce::uint64 useCounter = 0;                     // (under 'lock') for the "used longest ago" order of trimResident
     /** Paused or Rec mode just changed. Held: the take under way stops now and goes back on the queue. Let go: the thread wakes at once. */
     void holdChanged()
     {

@@ -1774,7 +1774,7 @@ void AudioEngine::Finisher::run()
     {
         Finishing* f = nullptr;
         { const juce::ScopedLock sl (lock); if (! queue.empty()) { f = queue.front(); queue.erase (queue.begin()); } }
-        if (f == nullptr) { wait (200); continue; }
+        if (f == nullptr) { wait (1000); continue; }                  // (3.18.2: add() wakes it; it used to look five times a second for nothing)
         const auto t0 = juce::Time::getMillisecondCounterHiRes();
         for (auto& rt : f->rs->tracks) rt.writer.reset();           // writes what is left in the buffer, then the header (the length)
         for (auto& c : f->copies) BackupCopier::finish (c);         // now the second drive's copies can take the finished files

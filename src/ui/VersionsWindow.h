@@ -1,5 +1,6 @@
 #pragma once
 #include "AppContext.h"
+#include <map>
 #include "Uikit.h"
 #include "FixTools.h"
 #include "../core/TakeMatch.h"
@@ -60,10 +61,11 @@ public:
         addAndMakeVisible (close); close.onClick = [this] { closeMe(); };
         addAndMakeVisible (status); status.setJustificationType (juce::Justification::centredLeft); status.setMinimumHorizontalScale (1.0f); status.setFont (juce::FontOptions (12.5f));
         setSize (760, 460);
+        app.undoHold += 1;                      // 3.18.3: auditions are not undo steps (they were: Ctrl+Z after Close put the last audition back in). Use this one is one step, made when the hold is let go
         search();
         startTimer (200);
     }
-    ~VersionsComponent() override { if (hold) { app.stopPlayback(); takeOut(); } }
+    ~VersionsComponent() override { if (hold) { app.stopPlayback(); takeOut(); } app.undoHold -= 1; }
 
     void resized() override
     {
@@ -268,6 +270,13 @@ private:
                 Row r; r.takeId = g.id; r.takeName = name; r.dud = g.dud; r.pending = true; rows.push_back (r); ++waiting;
                 continue;
             }
+            // 3.18.3: a take searched already (the same fingerprint) is not searched again - while takes were still being analysed, every one of
+            // the finished ones was searched afresh every two seconds, which held the program up for as long as the search took
+            if (auto done = searched.find (g.id); done != searched.end() && done->second.first == full)
+            {
+                for (auto& r : done->second.second) rows.push_back (r);
+                continue;
+            }
             // the stretch of this take to search: around the marked bars (3.16.0), else all of it
             const takematch::Fingerprint* fp = full.get();
             takematch::Fingerprint window;
@@ -305,6 +314,7 @@ private:
             for (auto& v : maybe) { Row r; r.takeId = g.id; r.takeName = name; r.dud = g.dud; r.v = v; r.possible = true; mine.push_back (r); }
             std::sort (mine.begin(), mine.end(), [] (const Row& a, const Row& b) { return a.v.start < b.v.start; });
             for (auto& r : mine) rows.push_back (r);
+            searched[g.id] = { full, mine };
         }
         list.updateContent();
         int found = 0, possible = 0; for (auto& r : rows) { if (r.pending) continue; if (r.possible) ++possible; else ++found; }
@@ -441,6 +451,7 @@ private:
     int innerFrom = 0, innerTo = -1;                                         // where the marked part is in 'passage' (frames)
     bool withContext = false;
     std::vector<Row> rows;
+    std::map<juce::Uuid, std::pair<std::shared_ptr<const takematch::Fingerprint>, std::vector<Row>>> searched;     // (3.18.3) each take's result, for the fingerprint it was made from
     Base base;
     fixtools::PreviewApplied hold;                                           // while a version is in the edit only to be listened to, the automatic save waits
     int playingRow = -1, ticks = 0;

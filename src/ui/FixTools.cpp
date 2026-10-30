@@ -6611,7 +6611,7 @@ private:
                 regs.push_back (std::move (r));
             }
             if (regs.empty()) continue;
-            auto& e = p.addEdit (pc.name, juce::Uuid());
+            auto& e = p.addEdit (pc.name, juce::Uuid::null());             // (from no take window: null, not a made-up id)
             e.sampleRate = res.sampleRate;
             for (auto& tn : pc.trackNames)
             {

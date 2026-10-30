@@ -124,7 +124,7 @@ public:
     double pixelsPerSecond = 12.0;
     int barHighlight = 0;                       // "Search for bar": takes that contain this bar get a blue-green frame (0 = off)
     std::vector<juce::Uuid> selectedTakes;      // takes picked for Bounce Out (click one; Ctrl + click adds or removes) - drawn a little darker
-    juce::Uuid lastClickedTake;                 // the take clicked last, with any button - also the one being recorded, which cannot be selected (B: its bars, 3.8.0)
+    juce::Uuid lastClickedTake = juce::Uuid::null();     // the take clicked last, with any button - also the one being recorded, which cannot be selected (B: its bars, 3.8.0)
     std::vector<juce::Uuid> selectedTracks;     // track names picked (click; Shift + click: every track in between; Ctrl + click: one more / less) - right-click: remove them
     juce::Uuid trackAnchor;
     /** A click on a track's name: on its own = only this track (or none, if it was the only one); Shift = every track from the last one clicked to
@@ -641,7 +641,7 @@ public:
 
     void mouseDownImpl (const juce::MouseEvent& e)
     {
-        dragId = {}; dragging = false; markDragTake = {}; markActive = false; lassoActive = lassoMoved = false; moveActive = moveMoved = false;
+        dragId = juce::Uuid::null(); dragging = false; markDragTake = juce::Uuid::null(); markActive = false; lassoActive = lassoMoved = false; moveActive = moveMoved = false;
         keepAndCloseBarsPopup();                                       // (a click elsewhere keeps what was typed; Esc is the way to throw it away)
         grabKeyboardFocus();
         auto* w = def();
@@ -965,7 +965,7 @@ public:
         if (markers.mouseUp (e)) return;
         if (markActive) { markActive = false; app.project.changed(); }
         if (flagDrag != 0) { flagDrag = 0; app.project.changed(); }
-        markDragTake = {};
+        markDragTake = juce::Uuid::null();
         if (fadeDrag != 0) { fadeDrag = 0; app.project.changed(); }
         if (dragging)
         {
@@ -1711,7 +1711,7 @@ private:
     WaveThumb::Pool thumbPool;
     DirectWaveCache directWave { formatManager };
     std::map<juce::String, std::unique_ptr<WaveThumb>> thumbs;
-    juce::Uuid dragId; bool dragging = false; double dragOriginSeconds = 0.0;
+    juce::Uuid dragId = juce::Uuid::null(); bool dragging = false; double dragOriginSeconds = 0.0;
     int flagDrag = 0;                                      // 1 = dragging the Edit IN flag, 2 = the Edit OUT flag
     /** Which Edit flag (1 = IN, 2 = OUT) is under this point: the little label at the top of the take or the line itself. */
     int editFlagAt (TakeWindowDef& w, juce::Point<int> p) const
@@ -1724,7 +1724,9 @@ private:
         if (w.editOut >= 0) { const int x = gx + (int) (w.editOut * pixelsPerSecond); if (p.x >= x - 48 && p.x <= x + 3) return 2; }
         return 0;
     }
-    juce::Uuid markDragTake; bool markActive = false, markAlt = false; double markAnchor = 0.0; int markStartX = 0, markRow0 = 0;     // dragging over a take's tracks sets Edit IN (mouse down) and OUT (mouse up)
+    // (3.18.2: null, and put back to null - not to "{}", which is a new random id: with a random id here, the mark-drag branch of mouseDrag claimed every drag,
+    //  so dragging along the ruler never moved the playhead.)
+    juce::Uuid markDragTake = juce::Uuid::null(); bool markActive = false, markAlt = false; double markAnchor = 0.0; int markStartX = 0, markRow0 = 0;     // dragging over a take's tracks sets Edit IN (mouse down) and OUT (mouse up)
     int fadeDrag = 0; juce::Uuid fadeTake; double fadeBase = 0.0;      // dragging a take's fade-in (1) or fade-out (2) from its top corner
 
     /** The take whose top corner (within 12 px of its start or end, in the lane) is under p. A take being recorded has no handles. */

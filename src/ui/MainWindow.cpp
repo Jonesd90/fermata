@@ -859,7 +859,8 @@ void MainComponent::timerCallback()
     // The menu bar (with the Rec | Pre button and the Talkback / Playback squares) is always there, in front of the other Fermata windows (not other programs), and goes with the main window when it is minimised.
     if (menuStrip != nullptr && getPeer() != nullptr && ! getPeer()->isMinimised() && ! menuStrip->isVisible()) menuStrip->setVisible (true);
     flagPre.setState (app.recMode(), app.sessionMode(), app.engine.getPreRollSeconds()); flagCr.set (app.crMicOpen()); flagPb.set (app.tbPlaybackOn());
-    {   // 3.18.0: the MATCHING box
+    if (++matchTick % 15 == 0)   // 3.18.0: the MATCHING box (3.18.2: twice a second, like the lamps - it counts every take of the windows switched on)
+    {
         auto look = takematchui::Look::Off;
         const auto t = takematchui::boxText (app, look);
         const int before = matchBox.wantedWidth();

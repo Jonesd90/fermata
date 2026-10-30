@@ -82,6 +82,7 @@ inline const std::vector<Line>& lines()
         { "Take chart", "drag", "Its bottom-right corner: bigger or smaller (it keeps the size)." },
 
         // ---------------------------------------------------------------------------------------------------- take window: with the mouse
+        { "Take window: with the mouse", "click / drag", "The time ruler: the playhead goes there; dragged along the ruler, it follows the mouse (scrubbing). While playing, play carries on from the spot clicked, or from where the drag let go." },
         { "Take window: with the mouse", "Ctrl+click", "A take: add it to the selected takes, or take it out (the selection Bounce Out's \"Selected takes\" uses). Ctrl + Shift + click does the same." },
         { "Take window: with the mouse", "Ctrl+click", "An empty part of the timeline: the selected takes stay selected (a plain click there lets go of them)." },
         { "Take window: with the mouse", "Alt+drag", "Over the tracks: a lasso. Every take it touches is selected." },

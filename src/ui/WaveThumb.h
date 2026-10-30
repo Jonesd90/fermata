@@ -93,6 +93,9 @@ public:
         auto data = std::make_shared<Data>();
         data->channels = in.readInt(); data->rate = in.readDouble(); data->samples = in.readInt64(); data->points = in.readInt64();
         if (data->channels < 1 || data->channels > 64 || data->rate <= 0.0 || data->points < 0 || data->points > (juce::int64) 1 << 32) return false;
+        if (data->samples < 0 || data->samples > data->points * kSamplesPerPoint || (data->samples + kSamplesPerPoint - 1) / kSamplesPerPoint != data->points) return false;       // (3.18.3: the length and the points must agree - a negative length drew nothing and divided by it)
+        // (3.18.2) every point of every channel must be in the file: a garbled count would otherwise ask for gigabytes of memory
+        if (in.getTotalLength() >= 0 && in.getTotalLength() - in.getPosition() < data->points * 4 * (juce::int64) data->channels) return false;
         data->coarsePoints = (data->points + kCoarse - 1) / kCoarse;
         data->ch.resize ((size_t) data->channels);
         for (auto& c : data->ch)

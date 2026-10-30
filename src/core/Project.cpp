@@ -333,6 +333,7 @@ void Project::createDefaultDesign()
     sampleRate = 0.0;                                                                                 // (3.9.0: chosen for the new project by the one making it)
     windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear(); oldWindowFiles.clear();     // (nothing of the project that was open before: its missing files are not this one's)
     layouts.clear();                                                                                  // (nor its saved Display Organiser layouts)
+    ignoredMissing.clear(); windowBounds.clear(); filesMoved = false;                                // (3.18.2: nor its ignored missing files, its window places or its "moved" flag - they stayed, and were saved into the new project)
     setInputCount (8);
     setOutputCount (4);
     addMixer ("Processing mixer");
@@ -1203,6 +1204,10 @@ void Project::createFolders() const
 }
 
 /** A file path as saved: the full path, and (for a file inside the project folder) the path from the project folder, so the whole folder can be moved or copied. */
+/** A sample count or position read from a file (3.18.3): kept within +-2^50 (about 300 years at 96 kHz), so arithmetic on it (lengths, ripples,
+    fades) can never overflow - a garbled value near the limits of an int64 did, which is undefined behaviour. */
+static juce::int64 samplesFromVar (const var& v) { return juce::jlimit ((juce::int64) -(1LL << 50), (juce::int64) (1LL << 50), (juce::int64) v); }
+
 static void putFilePath (var& o, const juce::File& file, const juce::File& base)
 {
     put (o, "file", file.getFullPathName());
@@ -1234,7 +1239,7 @@ static juce::File getFilePath (const var& fv, const juce::File& base, bool* move
 static WaitingPiece waitingFromVar (const var& o, const juce::File& base)
 {
     WaitingPiece w;
-    w.name = o["name"].toString(); w.from = (juce::int64) o["from"]; w.to = (juce::int64) o["to"];
+    w.name = o["name"].toString(); w.from = samplesFromVar (o["from"]); w.to = samplesFromVar (o["to"]);
     if (auto* fs = o["files"].getArray()) for (auto& fv : *fs) w.files.push_back (getFilePath (fv, base));
     if (auto* ts = o["tracks"].getArray()) for (auto& t : *ts) w.tracks.push_back (juce::Uuid (t.toString()));
     return w;
@@ -1824,7 +1829,7 @@ bool Project::fromVar (const var& root)
                 {
                     TakeGroup g;
                     g.id = juce::Uuid (gv[key::k_id].toString()); g.number = (int) gv[key::k_number]; g.label = gv[key::k_label].toString();
-                    g.startSeconds = (double) gv[key::k_start]; g.lengthSamples = (juce::int64) gv[key::k_length];
+                    g.startSeconds = (double) gv[key::k_start]; g.lengthSamples = juce::jmax<juce::int64> (0, samplesFromVar (gv[key::k_length]));
                     g.sampleRate = (double) gv[key::k_rate]; g.recordedAt = juce::Time ((juce::int64) gv[key::k_time]);
                     if (gv.hasProperty (key::k_fadeIn))  g.fadeInSeconds  = juce::jmax (0.0, (double) gv[key::k_fadeIn]);
                     if (g.fadeInSeconds <= 0.0011 && g.fadeInSeconds > 0.0) g.fadeInSeconds = kDefaultEdgeFade;       // the old 1 ms default becomes the new one
@@ -1833,7 +1838,7 @@ bool Project::fromVar (const var& root)
                     g.dud = (bool) gv[key::k_dud]; g.verified = (bool) gv[key::k_verified]; g.barIn = juce::jmax (0, (int) gv[key::k_barIn]); g.barOut = juce::jmax (0, (int) gv[key::k_barOut]);
                     g.notes = gv[key::k_takeNotes].toString();
                     g.roomTone = (bool) gv[key::k_roomTone]; g.roomToneIn = gv.hasProperty (key::k_roomToneIn) ? (double) gv[key::k_roomToneIn] : -1.0; g.roomToneOut = gv.hasProperty (key::k_roomToneOut) ? (double) gv[key::k_roomToneOut] : -1.0;
-                    g.overruns = juce::jmax (0, (int) gv[key::k_overruns]); g.lostSamples = juce::jmax<juce::int64> (0, (juce::int64) gv[key::k_lost]); g.writeFailed = (bool) gv[key::k_writeFailed];
+                    g.overruns = juce::jmax (0, (int) gv[key::k_overruns]); g.lostSamples = juce::jmax<juce::int64> (0, samplesFromVar (gv[key::k_lost])); g.writeFailed = (bool) gv[key::k_writeFailed];
                     if (auto* fs = gv[key::k_files].getArray())
                         for (auto& fv : *fs)
                         {
@@ -1864,8 +1869,8 @@ bool Project::fromVar (const var& root)
             {
                 EditRegion r;
                 r.id = juce::Uuid (rv[key::k_id].toString()); r.windowId = juce::Uuid (rv[key::k_window].toString()); r.takeId = juce::Uuid (rv[key::k_take].toString());
-                r.takeName = rv[key::k_takeName].toString(); r.srcIn = (juce::int64) rv[key::k_in]; r.srcOut = (juce::int64) rv[key::k_out];
-                r.startSample = (juce::int64) rv[key::k_start]; r.sourceLength = (juce::int64) rv[key::k_sourceLength];
+                r.takeName = rv[key::k_takeName].toString(); r.srcIn = samplesFromVar (rv[key::k_in]); r.srcOut = samplesFromVar (rv[key::k_out]);
+                r.startSample = samplesFromVar (rv[key::k_start]); r.sourceLength = samplesFromVar (rv[key::k_sourceLength]);
                 r.barIn = juce::jmax (0, (int) rv[key::k_barIn]); r.barOut = juce::jmax (0, (int) rv[key::k_barOut]);
                 r.sampleRate = (double) rv[key::k_rate]; r.curve = (FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv[key::k_curve]);
                 r.fixIn = (bool) rv[key::k_fixIn]; r.fixOut = (bool) rv[key::k_fixOut]; r.snipIn = (bool) rv[key::k_snipIn]; r.snipOut = (bool) rv[key::k_snipOut]; r.normaliseIn = (bool) rv[key::k_normaliseIn];
@@ -1876,14 +1881,14 @@ bool Project::fromVar (const var& root)
                     {
                         RegionFile f; f.trackId = juce::Uuid (fv[key::k_track].toString()); f.trackName = fv[key::k_trackName].toString();
                         f.file = getFilePath (fv, base); f.numChannels = (int) fv[key::k_channels];
-                        f.fileStart = (juce::int64) fv[key::k_fileStart];
+                        f.fileStart = samplesFromVar (fv[key::k_fileStart]);
                         r.files.push_back (f);
                     }
                 if (rv.hasProperty (key::k_waiting)) r.waiting = waitingFromVar (rv[key::k_waiting], base);
                 if (auto* gs = rv[key::k_gains].getArray())
                     for (auto& gv : *gs)
                     {
-                        GainChange g; g.at = (juce::int64) gv[key::k_at]; g.ramp = (double) gv[key::k_ramp]; g.autoNorm = (bool) gv[key::k_autoNorm];
+                        GainChange g; g.at = samplesFromVar (gv[key::k_at]); g.ramp = (double) gv[key::k_ramp]; g.autoNorm = (bool) gv[key::k_autoNorm];
                         if (auto* dbs = gv[key::k_db].getArray()) for (auto& d : *dbs) g.db.push_back ((float) (double) d);
                         g.db.resize (r.files.size(), 0.0f);
                         r.gains.push_back (g);
@@ -1901,7 +1906,7 @@ bool Project::fromVar (const var& root)
                 gd.windowId = juce::Uuid (gv["window"].toString()); gd.takeId = juce::Uuid (gv["take"].toString()); gd.trackId = juce::Uuid (gv["track"].toString());
                 gd.takeName = gv["takeName"].toString(); gd.trackName = gv["trackName"].toString();
                 gd.file = getFilePath (gv, base); gd.numChannels = juce::jmax (1, (int) gv[key::k_channels]);
-                gd.sampleRate = (double) gv["rate"]; gd.srcIn = (juce::int64) gv["in"]; gd.srcOut = (juce::int64) gv["out"]; gd.start = (juce::int64) gv["start"];
+                gd.sampleRate = (double) gv["rate"]; gd.srcIn = samplesFromVar (gv["in"]); gd.srcOut = samplesFromVar (gv["out"]); gd.start = samplesFromVar (gv["start"]);
                 if (! gd.active()) gd = EditGuide();
             }
             e->showGuide = v["showGuide"].isVoid() ? true : (bool) v["showGuide"];
@@ -1915,7 +1920,7 @@ bool Project::fromVar (const var& root)
                         for (auto& pv : *ps)
                         {
                             AutoPoint p; p.id = juce::Uuid (pv["id"].toString()); p.region = juce::Uuid (pv["region"].toString()); p.take = juce::Uuid (pv["take"].toString());
-                            p.srcPos = (juce::int64) pv["src"]; p.time = (juce::int64) pv["time"]; p.value = (float) (double) pv["value"];
+                            p.srcPos = samplesFromVar (pv["src"]); p.time = samplesFromVar (pv["time"]); p.value = (float) (double) pv["value"];
                             p.floating = (bool) pv["floating"];
                             l.pts.push_back (p);
                         }
@@ -1958,7 +1963,7 @@ bool Project::fromVar (const var& root)
         {
             ConsonantDef c;
             c.id = juce::Uuid (co["id"].toString()); c.name = co["name"].toString(); c.from = co["from"].toString();
-            c.sampleRate = (double) co["rate"]; c.length = (juce::int64) co["length"]; c.lead = (juce::int64) co["lead"];
+            c.sampleRate = (double) co["rate"]; c.length = samplesFromVar (co["length"]); c.lead = samplesFromVar (co["lead"]);
             c.made = juce::Time ((juce::int64) co["made"]);
             if (auto* ta = co["tracks"].getArray())
                 for (auto& to : *ta)
