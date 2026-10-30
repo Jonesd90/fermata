@@ -14,6 +14,50 @@ namespace td
 static constexpr int kRulerH = 34 + markerui::kStripH, kLaneH = 50;
 static int kNameW = 150;                          // width of the track-name column (drag its right edge to change it; shared by all take windows)      // (the top 14 pixels of the ruler band are the marker strip)
 
+/** 3.18.4: one word along the bottom of a take ("DUD", "LOST 0.3 s", "ROOM TONE", "Bar 17 - 39"), the shorter forms it may take on a narrow take
+    (see fitLabel), and where it ends up. */
+struct TakeStripWord { std::vector<juce::String> forms; bool cutLast = true; juce::Colour colour; juce::String text; int x = 0; };
+
+/** The words along the bottom of a take, left to right: DUD in red; CUT SHORT (a file stopped taking data, the drive was full or gone) in red, or
+    LOST (a disk overrun while it was recorded: that much silence is in the files) in orange; ROOM TONE and the bars in green-blue. */
+static std::vector<TakeStripWord> takeStripWords (const TakeGroup& grp)
+{
+    std::vector<TakeStripWord> v;
+    const auto add = [&v] (std::vector<juce::String> forms, bool cutLast, juce::Colour colour)
+    {
+        TakeStripWord w; w.forms = std::move (forms); w.cutLast = cutLast; w.colour = colour; v.push_back (std::move (w));
+    };
+    const juce::Colour red (0xffff3b3b), orange (0xffffa030), teal (0xff3ee0c0);
+    if (grp.dud) add ({ "DUD" }, true, red);
+    if (grp.writeFailed) add ({ "CUT SHORT" }, true, red);
+    else if (grp.lostSamples > 0) add ({ "LOST " + lostText (grp.lostSamples, grp.sampleRate), "LOST" }, true, orange);
+    if (grp.roomTone && grp.roomToneIn >= 0.0) add ({ "ROOM TONE " + juce::String (grp.roomToneIn, 1) + " - " + juce::String (grp.roomToneOut, 1) + " s", "ROOM TONE" }, true, teal);
+    else if (grp.roomTone) add ({ "ROOM TONE" }, true, teal);
+    if (grp.barIn > 0) add (barsLabelForms (grp.barIn, grp.barOut), false, teal);     // (a bar number is never cut in half)
+    return v;
+}
+
+/** Lays the words out in a strip at most 'maxW' wide and returns the strip's width (0: not even one letter fits). When everything fits it looks as
+    it always has (5 px either side, 10 px between words). On a narrower take the spacing tightens and each word in turn takes the longest of its
+    forms that fits in what is left, the line ending at the first that cannot show anything: a narrow take keeps what it can (the bars lose the
+    word "Bar" first) instead of losing the whole line. */
+static int layoutTakeStrip (std::vector<TakeStripWord>& words, const juce::Font& font, int maxW)
+{
+    const auto widthOf = [&font] (const juce::String& s) { return juce::GlyphArrangement::getStringWidthInt (font, s); };
+    int x = 5, right = 0;
+    for (auto& w : words) { w.text = w.forms.empty() ? juce::String() : w.forms.front(); w.x = x; right = x + widthOf (w.text); x = right + 10; }
+    if (right > 0 && right + 5 <= maxW) return right + 5;
+    x = 2; right = 0;
+    for (auto& w : words) w.text.clear();
+    for (auto& w : words)
+    {
+        w.text = fitLabel (w.forms, w.cutLast, maxW - 1 - x, widthOf);
+        if (w.text.isEmpty()) break;
+        w.x = x; right = x + widthOf (w.text); x = right + 6;
+    }
+    return right > 0 ? juce::jmin (maxW, right + 1) : 0;
+}
+
 /** The scrolling content: ruler, one lane of take names, then one row per track. */
 /** The little non-modal box for a take (right-click it): IN Bar / OUT Bar side by side, and a Notes box under them (so it can be filled in while recording, with the
     keyboard already in the IN box). Enter in IN goes to OUT, Enter in OUT saves; Tab goes on to Notes (Enter there is a new line, Ctrl + Enter saves). */
@@ -382,6 +426,7 @@ public:
         for (size_t i = 0; i < tracks.size(); ++i) { rowOf[tracks[i]->id] = (int) i; rowColour.push_back (chan::of (app.project, tracks[i]->id)); }
         const auto rowOfTrack = [&] (const juce::Uuid& id) { auto it = rowOf.find (id); return it != rowOf.end() ? it->second : -1; };
         const bool lanesVisible = clip.getY() < top;                                      // the banner strip and the flags are above the rows
+        const juce::Font stripFont { juce::FontOptions (11.5f, juce::Font::bold) };     // (the words along the bottom of each take)
         for (auto& grp : w->groups)
         {
             const bool live = recordingHere && grp.id == app.engine.currentTakeId();
@@ -427,6 +472,8 @@ public:
 
             int firstRow = 1 << 20, lastRow = -1;
             for (auto& tf : grp.files) { const int row = rowOfTrack (tf.trackId); if (row >= 0) { firstRow = juce::jmin (firstRow, row); lastRow = juce::jmax (lastRow, row); } }
+            const bool hasStrip = grp.barIn > 0 || grp.dud || grp.writeFailed || grp.lostSamples > 0 || grp.roomTone;
+            std::vector<TakeStripWord> stripWords; int stripW = -1;          // (laid out once for all the take's tracks - they are all as wide - when the first is drawn)
             for (auto& tf : grp.files)
             {
                 const int row = rowOfTrack (tf.trackId);
@@ -460,25 +507,20 @@ public:
                         }
                 g.setColour (live ? theme::text.withAlpha (0.7f) : tc.withAlpha (picked ? 1.0f : 0.85f));
                 g.drawRect (r, picked ? 2 : 1);
-                // "DUD   LOST 0.3 s   Bar 17 - 39" along the bottom of the take (DUD in red; LOST: a disk overrun while it was recorded, that much silence is in
-                // the files; CUT SHORT: a file stopped taking data, the drive was full or gone)
-                const juce::String lost = grp.writeFailed ? juce::String ("CUT SHORT") : grp.lostSamples > 0 ? "LOST " + lostText (grp.lostSamples, grp.sampleRate) : juce::String();
-                if ((grp.barIn > 0 || grp.dud || lost.isNotEmpty() || grp.roomTone) && r.getWidth() > 50 && r.getHeight() >= 22)
+                // "DUD   LOST 0.3 s   Bar 17 - 39" along the bottom of the take (takeStripWords). 3.18.4: on a take of any width, as much of it as fits
+                // (layoutTakeStrip): it used to vanish on a take 50 px wide or less
+                if (hasStrip && r.getHeight() >= 22 && clip.intersects (r.withTop (r.getBottom() - 16)))
                 {
-                    auto bars = barsLabel (grp.barIn, grp.barOut);
-                    if (grp.roomTone) bars = (grp.roomToneIn >= 0.0 ? "ROOM TONE " + juce::String (grp.roomToneIn, 1) + " - " + juce::String (grp.roomToneOut, 1) + " s" : juce::String ("ROOM TONE")) + (bars.isNotEmpty() ? "   " + bars : juce::String());
-                    g.setFont (juce::FontOptions (11.5f, juce::Font::bold));
-                    const auto font = g.getCurrentFont();
-                    const int dudW = grp.dud ? juce::GlyphArrangement::getStringWidthInt (font, "DUD") + ((bars.isNotEmpty() || lost.isNotEmpty()) ? 10 : 0) : 0;
-                    const int lostW = lost.isNotEmpty() ? juce::GlyphArrangement::getStringWidthInt (font, lost) + (bars.isNotEmpty() ? 10 : 0) : 0;
-                    const int barsW = bars.isNotEmpty() ? juce::GlyphArrangement::getStringWidthInt (font, bars) : 0;
-                    const int tw = juce::jmin (r.getWidth() - 4, dudW + lostW + barsW + 10);
-                    auto strip = juce::Rectangle<int> (r.getX() + 2, r.getBottom() - 16, tw, 14);
-                    g.setColour (juce::Colour (0xcc000000)); g.fillRect (strip);
-                    auto t = strip.reduced (5, 0);
-                    if (grp.dud) { g.setColour (juce::Colour (0xffff3b3b)); g.drawText ("DUD", t.removeFromLeft (dudW), juce::Justification::centredLeft); }
-                    if (lost.isNotEmpty()) { g.setColour (grp.writeFailed ? juce::Colour (0xffff3b3b) : juce::Colour (0xffffa030)); g.drawText (lost, t.removeFromLeft (lostW), juce::Justification::centredLeft); }
-                    if (bars.isNotEmpty()) { g.setColour (juce::Colour (0xff3ee0c0)); g.drawText (bars, t, juce::Justification::centredLeft); }
+                    if (stripW < 0) { stripWords = takeStripWords (grp); stripW = layoutTakeStrip (stripWords, stripFont, r.getWidth() - 4); }
+                    if (stripW > 0)
+                    {
+                        const auto strip = juce::Rectangle<int> (r.getX() + 2, r.getBottom() - 16, stripW, 14);
+                        g.setColour (juce::Colour (0xcc000000)); g.fillRect (strip);
+                        juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (strip);                 // (nothing reaches past the take)
+                        g.setFont (stripFont);
+                        for (auto& sw : stripWords)
+                            if (sw.text.isNotEmpty()) { g.setColour (sw.colour); g.drawText (sw.text, strip.withTrimmedLeft (sw.x), juce::Justification::centredLeft, false); }
+                    }
                 }
             }
 

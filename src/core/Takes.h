@@ -58,6 +58,35 @@ inline juce::String barsLabel (int in, int out)
     if (in <= 0) return {};
     return out > in ? "Bar " + juce::String (in) + " - " + juce::String (out) : "Bar " + juce::String (in);
 }
+/** 3.18.4: the bar range in shorter and shorter forms, for a take too narrow to show all of it: "Bar 17 - 39", "17 - 39", "17-39", "17-", "17"
+    (one bar: "Bar 17", "17"). The word "Bar" goes before any number does, and a number is never cut in half, so a narrow take never shows a
+    wrong bar. Empty when no bars were entered. */
+inline std::vector<juce::String> barsLabelForms (int in, int out)
+{
+    if (in <= 0) return {};
+    const juce::String a (in);
+    if (out <= in) return { barsLabel (in, out), a };
+    const juce::String b (out);
+    return { barsLabel (in, out), a + " - " + b, a + "-" + b, a + "-", a };
+}
+/** 3.18.4: the first of 'forms' (longest first) that is no wider than 'room', as measured by 'widthOf'. When none is: if 'cutLast', the last form
+    with letters left off its end until it fits (no "...", so a narrow take still shows what it can); otherwise nothing. (For the words along
+    the bottom of a take in a take window.) */
+template <typename WidthOf>
+juce::String fitLabel (const std::vector<juce::String>& forms, bool cutLast, int room, WidthOf&& widthOf)
+{
+    if (room <= 0 || forms.empty()) return {};
+    for (auto& f : forms) if (widthOf (f) <= room) return f;
+    if (! cutLast) return {};
+    const auto& last = forms.back();
+    int lo = 0, hi = last.length() - 1;                   // the longest start of it that fits (halving the range: a few measurements, not one per letter)
+    while (lo < hi)
+    {
+        const int mid = (lo + hi + 1) / 2;
+        if (widthOf (last.substring (0, mid).trimEnd()) <= room) lo = mid; else hi = mid - 1;
+    }
+    return last.substring (0, lo).trimEnd();
+}
 
 /** A 'Take window': all the takes for one piece. */
 struct TakeWindowDef

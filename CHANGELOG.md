@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.18.4
+- **The bars written along the bottom of a take no longer vanish when you zoom out.** On a take 50 pixels wide or less, the whole line ("DUD   LOST 0.3 s   Bar 17 - 39") used to disappear, and a take a little wider showed "Bar 1 ...". Now every take shows as much as fits, with the letters left off the end instead of "...": the bars first lose the word "Bar" ("17 - 39", then "17-39"), then the last bar ("17-", then just "17"). A bar number is never cut in half, so a narrow take never shows a wrong bar; DUD, LOST and ROOM TONE keep their place in front and are cut down the same way.
+
 ## 3.18.3
 The second code sweep, areas C (edit operations and undo), D (files and messages from outside) and E (snappiness). What was looked at and found sound is in the development notes.
 - **Find other versions no longer leaves its auditions in the undo history.** Each Audition put a version into the edit and took it out again, and both were recorded as undo steps: after Close, Ctrl+Z put the last auditioned version back in, and after Use this one a second Ctrl+Z could re-insert an earlier audition. The history is now held while the window is open, as the process windows do: Use this one is exactly one step (Ctrl+Z takes it out), Close leaves nothing.

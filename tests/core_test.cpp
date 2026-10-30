@@ -11284,6 +11284,41 @@ int main()
         dir.deleteRecursively();
     }
 
+    SECTION ("3.18.4 a narrow take still shows its bars: shorter forms, letters left off the end, and a bar number never cut in half");
+    {
+        CHECK ((barsLabelForms (17, 39) == std::vector<juce::String> { "Bar 17 - 39", "17 - 39", "17-39", "17-", "17" }));
+        CHECK ((barsLabelForms (5, 5) == std::vector<juce::String> { "Bar 5", "5" }) && barsLabelForms (5, 0).size() == 2 && barsLabelForms (0, 9).empty());
+        CHECK (barsLabelForms (17, 39).front() == barsLabel (17, 39) && barsLabelForms (5, 0).front() == barsLabel (5, 0));
+        const std::pair<int, int> ranges[] = { { 17, 39 }, { 1, 47 }, { 101, 104 }, { 9, 0 }, { 120, 120 } };
+        for (auto& pr : ranges)                                                          // every number in every form is a whole bar number
+            for (auto& f : barsLabelForms (pr.first, pr.second))
+            {
+                juce::String digits;
+                for (int i = 0; i <= f.length(); ++i)
+                {
+                    const juce::juce_wchar c = i < f.length() ? f[i] : (juce::juce_wchar) ' ';
+                    if (juce::CharacterFunctions::isDigit (c)) digits += c;
+                    else if (digits.isNotEmpty()) { CHECK (digits == juce::String (pr.first) || digits == juce::String (pr.second)); digits.clear(); }
+                }
+            }
+        const auto w7 = [] (const juce::String& s) { return 7 * s.length(); };          // (a pretend font: every letter 7 px wide)
+        const auto bars = barsLabelForms (17, 39);
+        CHECK (fitLabel (bars, false, 200, w7) == "Bar 17 - 39" && fitLabel (bars, false, 77, w7) == "Bar 17 - 39");
+        CHECK (fitLabel (bars, false, 76, w7) == "17 - 39" && fitLabel (bars, false, 35, w7) == "17-39" && fitLabel (bars, false, 34, w7) == "17-");
+        CHECK (fitLabel (bars, false, 20, w7) == "17" && fitLabel (bars, false, 13, w7).isEmpty() && fitLabel (bars, false, 0, w7).isEmpty());   // (never "1" for 17)
+        const std::vector<juce::String> lostForms { "LOST 0.3 s", "LOST" };
+        CHECK (fitLabel (lostForms, true, 70, w7) == "LOST 0.3 s" && fitLabel (lostForms, true, 69, w7) == "LOST" && fitLabel (lostForms, true, 27, w7) == "LOS");
+        CHECK (fitLabel (lostForms, true, 7, w7) == "L" && fitLabel (lostForms, true, 6, w7).isEmpty() && fitLabel ({}, true, 100, w7).isEmpty());
+        const std::vector<juce::String> roomTone { "ROOM TONE" };
+        CHECK (fitLabel (roomTone, true, 35, w7) == "ROOM" && fitLabel (roomTone, true, 41, w7) == "ROOM" && fitLabel (roomTone, true, 42, w7) == "ROOM T");   // (no space left dangling)
+        for (int room = 0; room <= 90; ++room)                                           // whatever the room, what is shown fits in it, and more room never shows less
+        {
+            const auto a = fitLabel (bars, false, room, w7), b = fitLabel (bars, false, room + 1, w7);
+            CHECK (w7 (a) <= room && b.length() >= a.length());
+            CHECK (w7 (fitLabel (lostForms, true, room, w7)) <= room && w7 (fitLabel (roomTone, true, room, w7)) <= room);
+        }
+    }
+
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;
 }
