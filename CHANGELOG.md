@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.18.1
+- **The take window's marks line has room.** "EDIT 050 - My Holy Place: Mark 1 ..." now sits to the right of the MATCHING / MAIN / 2ND / DEVICE lamps (which start under Next Take) and runs on towards the window's edge, so it is written out at its normal width instead of squeezed.
+- **The lamps' writing is a touch smaller, with room above and below,** so MATCHING / READY, MAIN / IDLE ... no longer look crammed. The boxes are the same size.
+
 ## 3.18.0
 - **Rec | Pre - one button, two halves** (where the Pre-Rec square was, at the right of the menu bar).
   - **Rec** (left half, red when on) puts Fermata into **Rec mode**, for recording and tracking: the computer is kept for the recording. The take matching stops (it carries on by itself when Rec is switched off), and heavy work asks first - a bounce, an export (mastering, DDP, AAF, video, Export for Processing), the ReTimEr, the process windows (pitch, ReTouch / DeClick / Denoise, Noise mode, ReHarmoniSer), a plug-in scan, an import, Save as - offering "Switch Rec off and start". With Rec on, the right half's outline goes red too.

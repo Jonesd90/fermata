@@ -1,5 +1,6 @@
 #pragma once
 #include "AppContext.h"
+#include "RecordMonitor.h"
 
 namespace td
 {
@@ -224,13 +225,7 @@ public:
         g.setColour (theme::border); g.drawRoundedRectangle (box.reduced (0.5f), 3.0f, 1.0f);
         g.setColour (look == takematchui::Look::Off ? theme::dimText : look == takematchui::Look::Held ? juce::Colour (0xff1a1200) : juce::Colours::white);
         auto inner = box.reduced (2.0f, 1.0f);
-        if (box.getHeight() >= 19.0f)
-        {
-            g.setFont (juce::FontOptions (7.5f, juce::Font::bold));
-            g.drawText ("MATCHING", inner.removeFromTop (8.0f), juce::Justification::centred, false);
-            g.setFont (juce::FontOptions (juce::jmin (10.0f, inner.getHeight() - 1.0f), juce::Font::bold));
-            g.drawFittedText (word, inner.toNearestInt(), juce::Justification::centred, 1, 0.65f);
-        }
+        if (box.getHeight() >= 19.0f) paintLampWords (g, box, "MATCHING", word);       // (the same writing as MAIN / 2ND / DEVICE beside it)
         else
         {
             g.setFont (juce::FontOptions (juce::jmin (11.0f, box.getHeight() * 0.5f), juce::Font::bold));

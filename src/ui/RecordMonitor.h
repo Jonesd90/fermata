@@ -4,6 +4,23 @@
 
 namespace td
 {
+/** The writing of a small two-line lamp in a take window's marks row (MATCHING, MAIN, 2ND, DEVICE): its name small on top, its word under it, with
+    equal room above, between and below. (3.18.1: a touch smaller, and squeezed sideways only when a long word - NOT DELIVERING - cannot fit otherwise;
+    they looked crammed.) The box keeps its size. */
+inline void paintLampWords (juce::Graphics& g, juce::Rectangle<float> box, const juce::String& name, const juce::String& word)
+{
+    const float h = box.getHeight();
+    const float nameH = juce::jlimit (6.5f, 7.5f, h * 0.28f), wordH = juce::jlimit (7.5f, 9.5f, h * 0.36f);
+    const float gap = juce::jmax (0.0f, (h - nameH - wordH) / 3.0f);
+    auto inner = box.reduced (3.0f, 0.0f);
+    inner.removeFromTop (gap);
+    g.setFont (juce::FontOptions (nameH, juce::Font::bold));
+    g.drawText (name, inner.removeFromTop (nameH + 1.0f), juce::Justification::centred, false);
+    inner.removeFromTop (juce::jmax (0.0f, gap - 1.0f));
+    g.setFont (juce::FontOptions (wordH, juce::Font::bold));
+    g.drawFittedText (word, inner.removeFromTop (wordH + 2.0f).toNearestInt(), juce::Justification::centred, 1, 0.7f);
+}
+
 /** The three lamps of the recording monitor (3.2.0): MAIN drive, 2ND drive, DEVICE. Each is a small box with a word in it, green when all is
     well, amber for a warning, red for a problem, grey when idle or off; the tooltip says why. Shown permanently in every take window's head, and
     at the top of the Recording monitor window. A click opens the Recording monitor. What they show comes from AppContext::recordMonitor. */
@@ -48,11 +65,7 @@ public:
             else if (box.getHeight() >= 19.0f)
             {
                 // two lines: the name small on top, the word under it (NOT DELIVERING, COPY LOST ... are too long for one line in a marks row)
-                auto inner = box.reduced (2.0f, 1.0f);
-                g.setFont (juce::FontOptions (7.5f, juce::Font::bold));
-                g.drawText (names[i], inner.removeFromTop (8.0f), juce::Justification::centred, false);
-                g.setFont (juce::FontOptions (juce::jmin (10.0f, inner.getHeight() - 1.0f), juce::Font::bold));
-                g.drawFittedText (l.word, inner.toNearestInt(), juce::Justification::centred, 1, 0.65f);
+                paintLampWords (g, box, names[i], l.word);
             }
             else
             {

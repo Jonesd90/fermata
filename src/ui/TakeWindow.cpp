@@ -1907,6 +1907,8 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     clock.onJump = [this] (double s) { goTo (s); };
     clock.onFormatChanged = [this] { resized(); };
     markLabel.setColour (juce::Label::textColourId, theme::text);
+    markLabel.setMinimumHorizontalScale (1.0f);                 // (3.18.1: never squeezed sideways - it has the room right of the lamps; "..." if it really runs out)
+    statusLabel.setMinimumHorizontalScale (0.9f);
 
     sendCaption.setText ("To edit goes into:", juce::dontSendNotification);
     nameBlock.addPair (sendCaption, sendBox);                  // "To edit goes into:" and its box under the window's name, under a line, as wide as the name box
@@ -2006,22 +2008,27 @@ void TakeWindowComponent::resized()
     clock.setBounds (x, y0, clockW, kClockH);                     x += clockW + 14;
     int headH = juce::jmax (nameBlock.getBottom(), y0 + kClockH + 4) - r.getY();
     const int btnRight = r.getRight() - grid::cornerReserve;      // (clear of the pin and sun / moon buttons in the corner)
+    int buttonsBottom = r.getY();                                 // how far down the buttons right of the readout reach (none there: the top)
     if (btnRight - x >= 300)                                  // the buttons to the right of the readout, a group never split between two lines
-        headH = juce::jmax (headH, grid::flow (juce::Rectangle<int> (x, r.getY(), btnRight - x, headH), items, true, nullptr, true));
+    {
+        const int flowH = grid::flow (juce::Rectangle<int> (x, r.getY(), btnRight - x, headH), items, true, nullptr, true);
+        headH = juce::jmax (headH, flowH);
+        buttonsBottom = r.getY() + flowH;
+    }
     else                                                          // a narrow window: the buttons go under the head, across the whole width
         headH += grid::flow (juce::Rectangle<int> (r.getX(), r.getY() + headH, r.getWidth(), 0), items, true, nullptr, true);
     // the marks (or the playhead) on the same line as the "To edit goes into" box, under Next Take, REC and the readouts: the row it had of its own
     // under the head is the timeline's now. A recording problem is shown in the same place while there is one.
     {
         const auto sb = sendBox.getBoundsInParent() + nameBlock.getPosition();
-        auto row = juce::Rectangle<int> (takeBox.getX(), sb.getY(), juce::jmax (100, clock.getRight() - takeBox.getX()), sb.getHeight());
-        // the recording monitor's three lamps at the right end of the row (3.2.0): always there, so the state of the drives and the device is a glance away
-        const int lampsW = juce::jmin (RecordLamps::idealWidth (row.getHeight()), row.getWidth() / 2);
-        recordLamps.setBounds (row.removeFromRight (lampsW));
-        row.removeFromRight (4);
-        matchLamp.setBounds (row.removeFromRight (juce::jmin (TakeMatchLamp::idealWidth (row.getHeight()), row.getWidth() / 3)));     // (3.18.0)
-        row.removeFromRight (8);
-        markLabel.setBounds (row); statusLabel.setBounds (row);
+        const int h = sb.getHeight(), y = sb.getY();
+        // 3.18.1: the lamps first, from under Next Take - MATCHING (3.18.0), then the recording monitor's MAIN / 2ND / DEVICE (3.2.0): always there, so the
+        // state of the drives and the device is a glance away - and the marks to the right of them, where they have room to be written out
+        matchLamp.setBounds (takeBox.getX(), y, TakeMatchLamp::idealWidth (h), h);
+        recordLamps.setBounds (matchLamp.getRight() + 4, y, RecordLamps::idealWidth (h), h);
+        const int lx = recordLamps.getRight() + 12;
+        const int right = buttonsBottom <= y - 2 ? r.getRight() - 6 : clock.getRight();       // (to the window's edge when the buttons above leave the line free)
+        markLabel.setBounds (lx, y, juce::jmax (80, right - lx), h); statusLabel.setBounds (markLabel.getBounds());
     }
     r.removeFromTop (headH + 4);
     // the bar-coverage map (3.4.0): a strip under the head while any take has bars entered
