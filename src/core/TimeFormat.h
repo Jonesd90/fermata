@@ -38,6 +38,20 @@ struct Text
     int dimFrom = 0, dimTo = 0;
 };
 
+/** 3.18.6: minutes and seconds as the windows write a time in their text (one helper for what five windows did each in their own way):
+    decimals 0: "4:05" (whole seconds, rounded down; nothing below 0:00) - the comment flags, the Align window, the recording monitor;
+    1 or 2: "4:05.3" / "4:05.27" - Find other versions, the consonants. */
+inline juce::String minSecText (double seconds, int decimals = 0)
+{
+    if (decimals <= 0)
+    {
+        const auto t = (juce::int64) std::floor (juce::jmax (0.0, seconds));
+        return juce::String (t / 60) + ":" + juce::String (t % 60).paddedLeft ('0', 2);
+    }
+    const int m = (int) (seconds / 60.0); const double s = seconds - 60.0 * m;
+    return juce::String (m) + ":" + (s < 10.0 ? "0" : "") + juce::String (s, decimals);
+}
+
 namespace detail
 {
 inline Text clockText (long long totalMs, bool negative, int minutesDigits)   // HH:MM:SS.mmm, or M:SS.mmm

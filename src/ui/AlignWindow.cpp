@@ -3,6 +3,7 @@
 #include "FermataLookAndFeel.h"
 #include "../core/AudioOps.h"
 #include "../core/AudioFormats.h"
+#include "../core/TimeFormat.h"
 
 namespace td
 {
@@ -353,14 +354,13 @@ AlignComponent::Source AlignComponent::makeSource() const
         auto* w = P.findTakeWindow (sourceId);
         if (w == nullptr || w->groups.empty()) { s.error = "Record a take first (the run-through for levels is ideal), then press Analyse."; s.text = "no take yet"; return s; }
         const TakeGroup* g = nullptr; double in = 0.0, out = -1.0; juce::String how;
-        auto mins = [] (double sec) { return juce::String ((int) (sec / 60)) + ":" + juce::String ((int) sec % 60).paddedLeft ('0', 2); };
         if (auto* m = w->findGroup (w->editTake); m != nullptr && w->editIn >= 0.0 && w->editOut > w->editIn)
         { g = m; in = w->editIn; out = juce::jmin (w->editOut, m->lengthSeconds()); how = "between marks 1 and 2, " + juce::String (out - in, 1) + " s"; }
-        else if (auto* c = w->findGroup (w->cursorTake)) { g = c; how = "the whole take, " + mins (c->lengthSeconds()); }
+        else if (auto* c = w->findGroup (w->cursorTake)) { g = c; how = "the whole take, " + timefmt::minSecText (c->lengthSeconds()); }
         else
         {
             for (auto& x : w->groups) if (g == nullptr || x.number > g->number) g = &x;
-            how = "the whole take, " + mins (g->lengthSeconds()) + " (the latest)";
+            how = "the whole take, " + timefmt::minSecText (g->lengthSeconds()) + " (the latest)";
         }
         if (out < 0.0) out = g->lengthSeconds();
         s.sampleRate = g->sampleRate > 0.0 ? g->sampleRate : 48000.0;

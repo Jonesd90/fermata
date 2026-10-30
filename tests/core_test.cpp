@@ -13,6 +13,7 @@
 #include "../src/core/RateBridge.h"
 #include <sstream>
 #include "../src/core/Ravenna.h"
+#include "../src/core/TimeFormat.h"
 #include "../src/core/Dither.h"
 #include "../src/core/CoreReservation.h"
 #include "../src/core/CrashReport.h"
@@ -11324,6 +11325,30 @@ int main()
             CHECK (w7 (a) <= room && b.length() >= a.length());
             CHECK (w7 (fitLabel (lostForms, true, room, w7)) <= room && w7 (fitLabel (roomTone, true, room, w7)) <= room);
         }
+    }
+
+    SECTION ("3.18.6 one minutes:seconds helper writes exactly what the five old ones wrote");
+    {
+        // the old ones, as they were: the consonants (2 decimals), Find other versions (1), the comment flags, the Align window, the recording monitor
+        const auto oldDecimals = [] (double seconds, int d) { const int m = (int) (seconds / 60.0); const double s = seconds - 60.0 * m; return juce::String (m) + ":" + (s < 10.0 ? "0" : "") + juce::String (s, d); };
+        const auto oldFlags = [] (double seconds) { const auto t = (juce::int64) std::floor (juce::jmax (0.0, seconds)); return juce::String (t / 60) + ":" + juce::String (t % 60).paddedLeft ('0', 2); };
+        const auto oldAlign = [] (double sec) { return juce::String ((int) (sec / 60)) + ":" + juce::String ((int) sec % 60).paddedLeft ('0', 2); };
+        const auto oldMonitor = [] (int secs) { return juce::String (secs / 60) + ":" + juce::String (secs % 60).paddedLeft ('0', 2); };
+        int checked = 0;
+        for (double t : { 0.0, 0.004, 0.05, 1.0, 9.949, 9.95, 9.999, 10.0, 59.4, 59.96, 59.999, 60.0, 61.25, 119.99, 599.5, 3599.9, 3600.0, 3725.437, 7384.06 })
+        {
+            CHECK (timefmt::minSecText (t, 2) == oldDecimals (t, 2) && timefmt::minSecText (t, 1) == oldDecimals (t, 1));
+            CHECK (timefmt::minSecText (t) == oldFlags (t) && timefmt::minSecText (t) == oldAlign (t));
+            CHECK (timefmt::minSecText ((double) (int) t) == oldMonitor ((int) t));
+            ++checked;
+        }
+        for (int i = 0; i < 20000; ++i)                                                 // and a spread of values in between
+        {
+            const double t = i * 0.37301;
+            if (timefmt::minSecText (t, 2) != oldDecimals (t, 2) || timefmt::minSecText (t, 1) != oldDecimals (t, 1) || timefmt::minSecText (t) != oldFlags (t)
+                || timefmt::minSecText (t) != oldAlign (t) || timefmt::minSecText ((double) (int) t) != oldMonitor ((int) t)) { CHECK (false); break; }
+        }
+        CHECK (checked == 19 && timefmt::minSecText (-3.0) == "0:00" && timefmt::minSecText (125.0) == "2:05" && timefmt::minSecText (65.3, 1) == "1:05.3");
     }
 
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

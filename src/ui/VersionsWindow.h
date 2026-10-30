@@ -5,6 +5,7 @@
 #include "FixTools.h"
 #include "../core/TakeMatch.h"
 #include "../core/AudioFormats.h"
+#include "../core/TimeFormat.h"
 
 namespace td
 {
@@ -46,7 +47,7 @@ public:
         {
             l.setText (t, juce::dontSendNotification); l.setFont (juce::FontOptions (size, bold ? juce::Font::bold : juce::Font::plain)); addAndMakeVisible (l);
         };
-        cap (title, "Other versions of " + timeText ((double) from / rate) + " - " + timeText ((double) to / rate) + "  (" + piece.takeName + ")", 16.0f, true);
+        cap (title, "Other versions of " + timefmt::minSecText ((double) from / rate, 1) + " - " + timefmt::minSecText ((double) to / rate, 1) + "  (" + piece.takeName + ")", 16.0f, true);
         cap (what, "Every place in the takes of this take window where the marked music was played, in recording order (\"possible\": only the marked part itself matches there - a false start, "
                    "or the same notes elsewhere; check by ear). Audition puts a version into the edit in place of the marked part - everything after it moves to fit - and plays it from a little before "
                    "to a little after; it comes out again when playback stops. Use this one leaves it in (Ctrl+Z takes it out).", 12.5f);
@@ -140,15 +141,10 @@ private:
         return c;
     }
 
-    static juce::String timeText (double seconds)
-    {
-        const int m = (int) (seconds / 60.0); const double s = seconds - 60.0 * m;
-        return juce::String (m) + ":" + (s < 10.0 ? "0" : "") + juce::String (s, 1);
-    }
     juce::String textOf (const Row& r) const
     {
         if (r.pending) return r.takeName + "   (analysing this take...)";
-        juce::String t = r.takeName + "   at " + timeText (r.v.start);
+        juce::String t = r.takeName + "   at " + timefmt::minSecText (r.v.start, 1);
         if (r.possible) t += "   possible - check by ear";                // (a false start, or the same notes elsewhere: the window's text says so)
         else if (r.passes > 1) t += "   (" + juce::String (r.pass) + (r.pass == 1 ? "st" : r.pass == 2 ? "nd" : r.pass == 3 ? "rd" : "th") + " of " + juce::String (r.passes) + ")";
         t += "   match " + juce::String (juce::roundToInt (100.0 * juce::jlimit (0.0, 1.0, 1.0 - r.v.cost))) + " %";

@@ -1,6 +1,7 @@
 #pragma once
 #include "AppContext.h"
 #include "Uikit.h"
+#include "../core/TimeFormat.h"
 
 namespace td
 {
@@ -166,7 +167,7 @@ private:
         if (m.recording && m.startedMs != 0)
         {
             const int secs = (int) ((juce::Time::getMillisecondCounter() - m.startedMs) / 1000);
-            take << "   " << juce::String (secs / 60) << ":" << juce::String (secs % 60).paddedLeft ('0', 2);
+            take << "   " << timefmt::minSecText ((double) secs);
         }
         takeLine.setText (take, juce::dontSendNotification);
         takeLine.setColour (juce::Label::textColourId, m.recording ? juce::Colour (0xffff6b6b) : theme::text);

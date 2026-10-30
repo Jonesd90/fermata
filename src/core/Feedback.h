@@ -278,10 +278,5 @@ inline std::vector<std::vector<int>> threads (const std::vector<FeedbackNote>& l
     return out;
 }
 
-inline juce::String timeText (double seconds)
-{
-    const auto t = (juce::int64) std::floor (juce::jmax (0.0, seconds));
-    return juce::String (t / 60) + ":" + juce::String (t % 60).paddedLeft ('0', 2);
-}
 } // namespace feedback
 } // namespace td

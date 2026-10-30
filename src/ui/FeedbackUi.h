@@ -3,6 +3,7 @@
 #include "MarkerStrip.h"
 #include "../core/Edit.h"
 #include "../core/Feedback.h"
+#include "../core/TimeFormat.h"
 
 namespace td
 {
@@ -15,7 +16,7 @@ inline juce::Font flagFont() { return juce::Font (juce::FontOptions (11.0f, juce
 inline juce::String flagText (const std::vector<FeedbackNote>& list, const std::vector<int>& thread)
 {
     const auto& first = list[(size_t) thread.front()];
-    juce::String t = first.bar.isNotEmpty() ? first.bar : feedback::timeText (first.seconds);
+    juce::String t = first.bar.isNotEmpty() ? first.bar : timefmt::minSecText (first.seconds);
     if (thread.size() > 1) t += "  +" + juce::String ((int) thread.size() - 1);
     return t;
 }
@@ -93,7 +94,7 @@ public:
             const auto& n = notes[i]; const auto r = blocks[i];
             g.setColour (juce::Colour (feedback::colourArgb (n.colour))); g.fillRect (r.getX(), r.getY(), 4, r.getHeight() - 6);
             g.setColour (juce::Colours::white); g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
-            auto head = (n.who.isNotEmpty() ? n.who : juce::String ("Someone")) + juce::String::fromUTF8 ("  \xC2\xB7  ") + feedback::timeText (n.seconds);
+            auto head = (n.who.isNotEmpty() ? n.who : juce::String ("Someone")) + juce::String::fromUTF8 ("  \xC2\xB7  ") + timefmt::minSecText (n.seconds);
             if (n.bar.isNotEmpty()) head += juce::String::fromUTF8 ("  \xC2\xB7  ") + n.bar;
             g.drawText (head, r.getX() + 12, r.getY(), r.getWidth() - 150, 20, juce::Justification::centredLeft, true);
             juce::AttributedString as; as.setJustification (juce::Justification::topLeft);

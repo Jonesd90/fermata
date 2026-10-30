@@ -6,6 +6,11 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.18.6
+Tidying with nothing to see or hear: every tool works exactly as before.
+- **The fix tools' source is split** (it was one file of 6,600 lines): `FixTools.cpp` (imports, ReHarmoniSer, copying the project, Export for Processing, the room tone, AAF import), `FixToolsEdits.cpp` (pitch, repair, Noise mode and the pitch curve from the take and edit windows), `FixToolsDialogs.h` (their windows) and `FixToolsCommon.h` (what they share). A new file in the build: `src/ui/FixToolsEdits.cpp`.
+- **Minutes and seconds are written by one helper** (`timefmt::minSecText`) instead of five slightly different copies (the consonants, Find other versions, the comment flags, the Align window, the recording monitor). A test checks it writes exactly what each of them wrote.
+
 ## 3.18.5
 - **A volume change can be changed again afterwards.** Double-click its teal line in the edit window (or right-click it: "Change this volume change..."). For a change made with "Change volume between the 1/2 marks" the box opens with the amount for each track and the fade-in and fade-out times as they are now, and you hear each change at once: **Play** in the box plays from 2 seconds before the change to 2 seconds after it. **Done** keeps it (one undo step), **Cancel** puts it back as it was, **Remove this change** takes it out. A change made with "Change volume from here to next edit" opens its own box with its values, as before.
 - **Change volume between the 1/2 marks** now has a separate **Fade in** and **Fade out**, and is heard as you move the faders (it used to be applied only when the box closed).
