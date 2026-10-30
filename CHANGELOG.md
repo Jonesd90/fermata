@@ -6,6 +6,10 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.21.0
+- **N: the end bar, quickly.** In a take window, N opens a small box with just the **OUT Bar** of the take being recorded - or, when nothing is recording, of the take recorded last - already filled in and selected. Type the bar the take really ended in and press Enter (Esc cancels). For a take abandoned early: the bars set at its start stay, only the end changes. Like the B box it stops nothing. A take with no bars yet gets the full IN / OUT box instead.
+- **V: the same bars as the take before.** While recording, V gives the take being recorded the IN and OUT Bar of the take before it in that window, at once - no box, no message; the take's waveform box shows the bars. (Only when there is nothing to copy - not recording, no earlier take, or it has no bars - does a short line in the status bar say so.)
+
 ## 3.20.0
 - **Trim window: a scroll bar under the waveforms.** At any zoom you can move left and right to audio far from the join - as far as either take goes (the view used to stop at the edit's own start and end, and moving it at all meant dragging the dark band between the waveforms, which few found). **Shift + mouse wheel** (or a sideways swipe or tilt of the wheel) does the same; the wheel alone still zooms. A sideways-only wheel movement no longer zooms out.
 - **Trim window: dragging to an edge moves the view along.** Drag a fade, the crossfade or a take to the left or right edge of the waveforms and the view follows (faster the further out you go), so a join can be taken far from where it was without zooming out.

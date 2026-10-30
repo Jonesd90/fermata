@@ -60,12 +60,14 @@ static int layoutTakeStrip (std::vector<TakeStripWord>& words, const juce::Font&
 
 /** The scrolling content: ruler, one lane of take names, then one row per track. */
 /** The little non-modal box for a take (right-click it): IN Bar / OUT Bar side by side, and a Notes box under them (so it can be filled in while recording, with the
-    keyboard already in the IN box). Enter in IN goes to OUT, Enter in OUT saves; Tab goes on to Notes (Enter there is a new line, Ctrl + Enter saves). */
+    keyboard already in the IN box). Enter in IN goes to OUT, Enter in OUT saves; Tab goes on to Notes (Enter there is a new line, Ctrl + Enter saves).
+    3.21.0, outOnly (the N key): only the OUT Bar, filled in and selected - type the bar and press Enter (the IN Bar and the notes stay as they are). */
 class BarsPopup : public juce::Component
 {
 public:
-    BarsPopup (const juce::String& title, int bin, int bout, const juce::String& notes, std::function<void (int, int, const juce::String&)> ok, std::function<void()> more, std::function<void()> close)
-        : onOk (std::move (ok)), onMore (std::move (more)), onClose (std::move (close)), origIn (juce::jmax (0, bin)), origOut (juce::jmax (0, bout)), origNotes (notes.trim())
+    BarsPopup (const juce::String& title, int bin, int bout, const juce::String& notes, std::function<void (int, int, const juce::String&)> ok, std::function<void()> more, std::function<void()> close,
+               bool outOnly = false)
+        : onOk (std::move (ok)), onMore (std::move (more)), onClose (std::move (close)), origIn (juce::jmax (0, bin)), origOut (juce::jmax (0, bout)), origNotes (notes.trim()), onlyOut (outOnly)
     {
         setSize (400, 196);
         titleLabel.setText (title, juce::dontSendNotification); titleLabel.setFont (juce::FontOptions (12.5f, juce::Font::bold)); titleLabel.setColour (juce::Label::textColourId, theme::text);
@@ -92,8 +94,13 @@ public:
         for (auto* b : { &okBtn, &moreBtn }) addAndMakeVisible (b);
         addAndMakeVisible (titleLabel);
         setFocusContainerType (FocusContainerType::keyboardFocusContainer);       // (Tab goes IN -> OUT -> Notes -> the buttons, and round)
+        if (onlyOut)                                                              // (the IN box keeps the take's IN Bar, unseen: OK passes it on as it was)
+        {
+            for (juce::Component* c : { (juce::Component*) &inLabel, (juce::Component*) &inEd, (juce::Component*) &notesLabel, (juce::Component*) &notesEd, (juce::Component*) &moreBtn }) c->setVisible (false);
+            setSize (260, 70);
+        }
     }
-    void focusFirst() { inEd.grabKeyboardFocus(); inEd.selectAll(); }
+    void focusFirst() { auto& first = onlyOut ? outEd : inEd; first.grabKeyboardFocus(); first.selectAll(); }
     /** What is typed in the box now; true when it differs from what the box opened with. */
     bool typed (int& bin, int& bout, juce::String& notes) const
     {
@@ -109,6 +116,13 @@ public:
     {
         auto r = getLocalBounds().reduced (10, 8);
         titleLabel.setBounds (r.removeFromTop (20)); r.removeFromTop (4);
+        if (onlyOut)
+        {
+            auto a = r.removeFromTop (26);
+            outLabel.setBounds (a.removeFromLeft (62)); outEd.setBounds (a.removeFromLeft (70)); a.removeFromLeft (12);
+            okBtn.setBounds (a.removeFromLeft (60).withSizeKeepingCentre (60, juce::jmin (26, grid::btnH)));
+            return;
+        }
         auto a = r.removeFromTop (26);                                                                  // IN and OUT side by side
         inLabel.setBounds (a.removeFromLeft (52)); inEd.setBounds (a.removeFromLeft (70)); a.removeFromLeft (22);
         outLabel.setBounds (a.removeFromLeft (62)); outEd.setBounds (a.removeFromLeft (70)); r.removeFromTop (6);
@@ -135,6 +149,7 @@ private:
     juce::TextButton okBtn { "OK" }, moreBtn { "More..." };
     std::function<void (int, int, const juce::String&)> onOk; std::function<void()> onMore, onClose;
     const int origIn, origOut; const juce::String origNotes;
+    const bool onlyOut;
 };
 
 class TakeTimeline : public juce::Component, public juce::TooltipClient, private juce::ChangeListener, private juce::Timer
@@ -1462,9 +1477,50 @@ private:
         return true;
     }
 
+    /** 3.21.0: the take N and V are about - the one being recorded in this window, else the one recorded last (the highest number). */
+    TakeGroup* currentOrLastTake()
+    {
+        auto* w = def();
+        if (w == nullptr) return nullptr;
+        if (app.engine.isRecording()) if (auto* live = w->findGroup (app.engine.currentTakeId())) return live;
+        TakeGroup* last = nullptr;
+        for (auto& g : w->groups) if (last == nullptr || g.number > last->number) last = &g;
+        return last;
+    }
+
+    /** 3.21.0, N: the OUT Bar of the take being recorded (or of the take recorded last): one box, filled in and selected - a take stopped early gets its
+        real last bar with N, the number, Enter. A take with no bars yet gets the whole IN / OUT box (an end bar means nothing without a start). */
+    bool openOutBar()
+    {
+        auto* g = currentOrLastTake();
+        if (g == nullptr) return false;
+        const int x = juce::jmax (xOf (g->startSeconds), viewport.getViewPositionX() + kNameW) + 8;
+        showBars (g->id, { x, viewport.getViewPositionY() + kRulerH + 4 }, g->barIn > 0);
+        return true;
+    }
+
+    /** 3.21.0, V while recording: the take being recorded gets the IN and OUT Bar of the take before it in this window, at once - no box and no notice (its
+        waveform box shows the bars). Only when there is nothing to do is there a word in the status line. */
+    void copyPreviousBars()
+    {
+        auto* w = def();
+        if (w == nullptr) return;
+        auto* live = app.engine.isRecording() ? w->findGroup (app.engine.currentTakeId()) : nullptr;
+        if (live == nullptr) { app.setNotice ("V (while recording): the take being recorded gets the bars of the take before it."); return; }
+        const TakeGroup* prev = nullptr;
+        for (auto& g : w->groups) if (g.id != live->id && g.number < live->number && (prev == nullptr || g.number > prev->number)) prev = &g;
+        if (prev == nullptr || prev->barIn <= 0)
+        {
+            app.setNotice (prev == nullptr ? juce::String ("V: there is no take before this one to copy bars from.") : "V: take " + pad3 (prev->number) + " has no bars to copy.");
+            return;
+        }
+        applyBars (live->id, prev->barIn, prev->barOut > 0 ? prev->barOut : prev->barIn);
+    }
+
     /** Right-click on a take (also one that is still being recorded): a small box with IN Bar and OUT Bar. It does not block anything, so Record / Stop still work;
-        the cursor is already in the IN box. Enter in IN goes to OUT, Enter in OUT saves, Esc closes. "More..." leads to the rename / remove menu. */
-    void showBars (const juce::Uuid& gid, juce::Point<int> where)
+        the cursor is already in the IN box. Enter in IN goes to OUT, Enter in OUT saves, Esc closes. "More..." leads to the rename / remove menu.
+        outOnly (3.21.0, N): only the OUT Bar. */
+    void showBars (const juce::Uuid& gid, juce::Point<int> where, bool outOnly = false)
     {
         auto* w = def();
         if (w == nullptr) return;
@@ -1474,7 +1530,7 @@ private:
         keepAndCloseBarsPopup();                                       // (another take's box was open: what was typed there is kept)
         barsGroup = gid;
         juce::Component::SafePointer<TakeTimeline> safe (this);
-        barsPopup.reset (new BarsPopup ("Take " + pad3 (g->number) + " - bars it starts and ends in, and notes", g->barIn, g->barOut, g->notes,
+        barsPopup.reset (new BarsPopup (outOnly ? "Take " + pad3 (g->number) + " - the bar it ends in" : "Take " + pad3 (g->number) + " - bars it starts and ends in, and notes", g->barIn, g->barOut, g->notes,
             [safe, gid] (int bin, int bout, const juce::String& notes)
             {
                 if (safe == nullptr) return;
@@ -1485,7 +1541,8 @@ private:
                 safe->closeBarsPopup();
             },
             [safe, gid] { if (safe == nullptr) return; safe->closeBarsPopup(); safe->showSettings (gid, true); },
-            [safe] { if (safe != nullptr) safe->closeBarsPopup(); }));
+            [safe] { if (safe != nullptr) safe->closeBarsPopup(); },
+            outOnly));
         host->addAndMakeVisible (barsPopup.get());
         auto pt = host->getLocalPoint (this, where);
         barsPopup->setTopLeftPosition (juce::jlimit (0, juce::jmax (0, host->getWidth() - barsPopup->getWidth()), pt.x),
@@ -2315,6 +2372,9 @@ bool TakeWindowComponent::keyPressed (const juce::KeyPress& k)
         // Shift + B: the take chart
         if (! km.isAnyModifierKeyDown() && (k.getKeyCode() == 'B' || k.getKeyCode() == 'b')) { timeline->openBarsForClicked(); return true; }
         if (km.isShiftDown() && ! km.isCtrlDown() && ! km.isCommandDown() && ! km.isAltDown() && (k.getKeyCode() == 'B' || k.getKeyCode() == 'b')) { toggleTakeChart(); return true; }
+        // 3.21.0: N - the OUT Bar of the take being recorded (or the last one); V while recording - the bars of the take before it, at once
+        if (! km.isAnyModifierKeyDown() && (k.getKeyCode() == 'N' || k.getKeyCode() == 'n')) { timeline->openOutBar(); return true; }
+        if (! km.isAnyModifierKeyDown() && (k.getKeyCode() == 'V' || k.getKeyCode() == 'v')) { timeline->copyPreviousBars(); return true; }
         if (k == juce::KeyPress::escapeKey && chart != nullptr) { closeTakeChart(); return true; }
     }
     const auto c = juce::CharacterFunctions::toLowerCase (k.getTextCharacter());

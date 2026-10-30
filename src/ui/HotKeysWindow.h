@@ -64,6 +64,8 @@ inline const std::vector<Line>& lines()
         { "Take window", ". / ,", "Bigger / smaller waveforms (the take and edit windows share the size)." },
         { "Take window", "B", "The bars and notes box of the take clicked last - also the take being recorded: type its IN Bar, Tab, its OUT Bar, Enter." },
         { "Take window", "Shift+B", "Open or close the take chart: every take as a line along the piece's bars, the bars with no take / only one / two / three or more lit up and listed." },
+        { "Take window", "N", "The OUT Bar of the take being recorded (or, when nothing is recording, of the take recorded last): one box, already filled in - type the bar it really ended in, Enter. A take with no bars yet gets the full IN / OUT box." },
+        { "Take window", "V", "While recording: the take being recorded gets the bars (IN and OUT) of the take before it, at once - its waveform box shows them." },
         { "Take window", "Ctrl+A", "Select every take." },
 
         // ---------------------------------------------------------------------------------------------------- take window: a take's bars and notes box
