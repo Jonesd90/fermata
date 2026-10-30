@@ -606,14 +606,13 @@ static constexpr int kLampW = 13;                 // the window lights after Tak
 
 /** The width the menu bar's entries need at a given writing size and space round each entry (the squares and lamps included). */
 static int menuNeed (const std::vector<MenuBarButton*>& items, const std::vector<WindowLamp*>& squares, const std::vector<StatusFlag*>& flags,
-                     const std::vector<LtcLamp*>& lamps, int takeBoxW, int lineH, float font, int pad)
+                     const std::vector<LtcLamp*>& lamps, int takeBoxW, float font, int pad)
 {
     const auto keep = menuStyle();
     menuStyle() = { font, pad };
     int w = 6 + takeBoxW;
     for (auto* b : items) w += MenuBarButton::widthFor (b->getButtonText()) + 1;
     w += (int) squares.size() * (kLampW + 2);
-    juce::ignoreUnused (lineH);
     for (auto* l : lamps) w += l->wantedWidth() + 3;
     for (auto* f : flags) w += f->wantedWidth() + 3;
     menuStyle() = keep;
@@ -624,7 +623,7 @@ int MainComponent::menuBarWidth() const
 {
     auto* self = const_cast<MainComponent*> (this);
     return menuNeed (self->menuItems(), { &self->flagT, &self->flagE, &self->flagM }, { &self->flagPre, &self->flagCr, &self->flagPb },
-                     { &self->ltcInLamp, &self->ltcOutLamp }, kTakeBoxW, 30, 10.5f, 4);       // the smallest the bar can be made
+                     { &self->ltcInLamp, &self->ltcOutLamp }, kTakeBoxW, 10.5f, 4);           // the smallest the bar can be made
 }
 
 void MainComponent::layoutMenuBar()
@@ -636,7 +635,7 @@ void MainComponent::layoutMenuBar()
     const std::vector<LtcLamp*> lamps { &ltcInLamp, &ltcOutLamp };
     // as large as the width allows: first the space round each entry gets smaller, then the writing
     float font = 14.0f; int pad = 14;
-    while (menuNeed (menuItems(), squares, flags, lamps, kTakeBoxW, lineH, font, pad) > getWidth() && (pad > 4 || font > 10.5f))
+    while (menuNeed (menuItems(), squares, flags, lamps, kTakeBoxW, font, pad) > getWidth() && (pad > 4 || font > 10.5f))
     {
         if (pad > 6) pad -= 2;
         else if (font > 10.5f) { font -= 0.5f; pad = juce::jmax (4, pad - 1); }
@@ -663,7 +662,6 @@ void MainComponent::layoutMenuBar()
         if (auto* lamp = flagFor (b)) { lamp->setBounds (x - menuStyle().pad + 2, y, kLampW, lineH); x += kLampW + 2 - menuStyle().pad + 2; }   // its light, just after the words
     }
     seps.push_back (x);
-    juce::ignoreUnused (rx);
     menuStrip->separators = seps;
     menuStrip->setSize (getWidth(), menuBarH);
     menuStrip->repaint();

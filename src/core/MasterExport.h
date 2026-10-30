@@ -130,7 +130,6 @@ private:
     std::atomic<bool> cancelFlag { false };
     mutable juce::CriticalSection lock;
     juce::String status, earlyError;
-    std::vector<double> editRates;
     juce::WaitableEvent decided; std::atomic<int> decision_ { 0 }; std::atomic<bool> waiting { false };
 };
 } // namespace td

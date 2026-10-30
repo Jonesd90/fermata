@@ -1783,7 +1783,6 @@ void ReHarmoniserEditor::resized()
         }
     }
     // the sections: headers always, the open one's body between them
-    auto place = [] (juce::Component& c, juce::Rectangle<int>& a, int h) { c.setBounds (a.removeFromTop (h)); };
     for (auto* k : { (juce::Component*) &a4Cap, (juce::Component*) &a4Box, (juce::Component*) &detectBtn, (juce::Component*) &refMode, (juce::Component*) &refInfo, (juce::Component*) &chartBtn }) k->setVisible (openIdx == 0);
     const int order[] = { 0, 1, 2, 3, 5, 4 };                  // as in the original: Corrected Notes last of the five, the See mixer after it
     for (int oi = 0; oi < (int) sections.size(); ++oi)
@@ -1881,7 +1880,6 @@ void ReHarmoniserEditor::resized()
             }
         }
     }
-    juce::ignoreUnused (place);
 }
 
 void ReHarmoniserEditor::paint (juce::Graphics& g)

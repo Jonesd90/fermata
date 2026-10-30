@@ -82,9 +82,7 @@ public:
         ready = true;
         return true;
     }
-    bool isReady() const noexcept { return ready; }
     int numChannels() const noexcept { return channels; }
-    int numTaps() const noexcept { return taps; }
     int up() const noexcept { return L; }
     int down() const noexcept { return M; }
     /** How late the output is, in seconds (the filter's centre). */
@@ -207,7 +205,6 @@ public:
         ok = true;
         return true;
     }
-    bool isReady() const noexcept { return ok; }
     double projectRate() const noexcept { return rateProject; }
     double deviceRate() const noexcept { return rateDevice; }
     /** The largest block the engine is ever asked to render (prepare it for this). */

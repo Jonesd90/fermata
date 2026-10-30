@@ -4,6 +4,7 @@
 #include <set>
 #include <map>
 #include <limits>
+#include <optional>
 #include "FixTools.h"
 #include "RetimerWindow.h"
 #include "ColourPicker.h"
@@ -937,6 +938,8 @@ public:
             repaint(); return;
         }
         if (e.mods.isPopupMenu() && e.x > kNameW && e.y >= bandH()) { showPieceMenu (e, *ed, t, rate); return; }
+        if (e.getNumberOfClicks() > 1 && ! e.mods.isAnyModifierKeyDown())                // 3.18.5: double-click a volume change's line: change it again
+            if (const auto hit = gainMarkAt (*ed, e.getPosition(), rate)) { openGainChange (*hit); return; }
 
         // the top corners at the two ends of a piece: drag the left one right for a longer fade-in, the right one left for a longer fade-out
         {
@@ -1844,6 +1847,34 @@ private:
         return nullptr;
     }
 
+    /** 3.18.5: the volume change whose teal line (or shaded glide) is under 'p', if any: the piece it is in, where, and its group. Changes Fermata
+        keeps up to date itself ("normalise volume over next take") and the level a piece starts with (its small mark on the lane) are left out. */
+    struct GainHit { juce::Uuid regionId; juce::int64 at = 0; juce::String group; };
+    std::optional<GainHit> gainMarkAt (EditDef& ed, juce::Point<int> p, double rate)
+    {
+        if (p.x <= kNameW || p.y < bandH()) return std::nullopt;
+        std::optional<GainHit> best; int bestDist = 1 << 30;
+        auto look = [&] (const EditRegion& r)
+        {
+            for (auto& gc : r.gains)
+            {
+                if (gc.autoNorm || (gc.at == 0 && gc.ramp == 0.0)) continue;
+                const int x = xOf ((double) (r.startSample + gc.at) / rate), gw = juce::jmax (0, (int) (gc.ramp * pixelsPerSecond));
+                if (p.x < x - 4 || p.x > x + gw + 4) continue;
+                const int d = p.x < x ? x - p.x : (p.x > x + gw ? p.x - x - gw : 0);
+                if (d < bestDist) { bestDist = d; best = GainHit { r.id, gc.at, gc.group }; }
+            }
+        };
+        for (auto& r : ed.regions) look (r);
+        for (auto& r : ed.overdubs) look (r);
+        return best;
+    }
+    void openGainChange (const GainHit& h)
+    {
+        if (h.group.isNotEmpty()) showRangeVolumeChange (app, editId, h.group);      // a "between the 1/2 marks" change: amounts and both fades
+        else showVolumeChange (app, editId, h.regionId, h.at);                         // a change on its own: its faders and fade, as before
+    }
+
     /** Right-click on a piece: volume changes (and deleting an overdub), and the other versions of the marked part (3.5.0). */
     void showPieceMenu (const juce::MouseEvent& e, EditDef& ed, double t, double rate)
     {
@@ -1856,6 +1887,8 @@ private:
         const bool isOver = ed.isOverdub (rid), hasGains = ! piece->gains.empty();
         juce::PopupMenu m;
         m.addSectionHeader (piece->takeName + (isOver ? "  (overdub)" : ""));
+        const auto hit = gainMarkAt (ed, e.getPosition(), rate);                     // 3.18.5: on a volume change's line: change it again
+        if (hit) { m.addItem (10, "Change this volume change..."); m.addSeparator(); }
         // the area between marks 1 and 2 for all tracks or the ones chosen with Ctrl + Alt + drag
         juce::int64 rangeFrom = 0, rangeTo = 0;
         if (ed.fixIn >= 0 && ed.fixOut > ed.fixIn) { rangeFrom = (juce::int64) std::llround (ed.fixIn * rate); rangeTo = (juce::int64) std::llround (ed.fixOut * rate); }
@@ -1886,8 +1919,10 @@ private:
         }
         auto* appPtr = &app;
         juce::Component::SafePointer<juce::Component> self (this);
-        m.showMenuAsync (juce::PopupMenu::Options(), [appPtr, eid, rid, rel, self, rangeFrom, rangeTo, redrawFiles] (int r)
+        juce::Component::SafePointer<EditTimeline> me (this);
+        m.showMenuAsync (juce::PopupMenu::Options(), [appPtr, eid, rid, rel, self, rangeFrom, rangeTo, redrawFiles, hit, me] (int r)
         {
+            if (r == 10) { if (hit && me != nullptr) me->openGainChange (*hit); return; }
             if (r == 8) { appPtr->redrawWaveforms (redrawFiles); return; }
             if (r == 9) { if (appPtr->showVersions) appPtr->showVersions (eid, self.getComponent()); return; }
             auto* ed2 = appPtr->project.findEdit (eid);
@@ -2797,9 +2832,8 @@ void EditWindowComponent::moveSelected (int delta)
 
 /** 1 / 2: the part to pitch-correct or repair starts / ends at the playhead (or the cursor when nothing plays). */
 /** A click on any empty part of the window (not a button) lets go of the selected pieces. */
-void EditWindowComponent::mouseDown (const juce::MouseEvent& e)
+void EditWindowComponent::mouseDown (const juce::MouseEvent&)
 {
-    juce::ignoreUnused (e);
     grabKeyboardFocus();
     if (timeline != nullptr)
     {

@@ -45,7 +45,6 @@ std::string noteLabel (int midi);
 // ---------------------------------------------------------------------------------------------------- numpy / scipy equivalents
 Vec hanning (size_t n);                                                   // np.hanning
 Vec interp (const Vec& x, const Vec& xp, const Vec& fp);                  // np.interp (clamped at both ends)
-double interp1 (double x, const Vec& xp, const Vec& fp);
 enum class Edge { Nearest, Reflect };
 Vec gaussianFilter1d (const Vec& in, double sigma, Edge mode = Edge::Reflect);       // scipy.ndimage.gaussian_filter1d (truncate 4)
 Vec medianFilter (const Vec& in, int size);                               // scipy.ndimage.median_filter, mode 'nearest' (odd size)

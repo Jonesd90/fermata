@@ -27,19 +27,6 @@ Vec hanning (size_t n)
     return w;
 }
 
-double interp1 (double x, const Vec& xp, const Vec& fp)
-{
-    const size_t n = xp.size();
-    if (n == 0) return 0.0;
-    if (x <= xp.front()) return fp.front();
-    if (x >= xp.back()) return fp.back();
-    const size_t j = (size_t) (std::upper_bound (xp.begin(), xp.end(), x) - xp.begin()) - 1;      // xp[j] <= x < xp[j+1]
-    if (j + 1 >= n) return fp.back();
-    const double dx = xp[j + 1] - xp[j];
-    if (dx == 0.0) return fp[j];
-    return fp[j] + (fp[j + 1] - fp[j]) * (x - xp[j]) / dx;
-}
-
 Vec interp (const Vec& x, const Vec& xp, const Vec& fp)
 {
     Vec out (x.size());

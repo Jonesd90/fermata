@@ -6,6 +6,15 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.18.5
+- **A volume change can be changed again afterwards.** Double-click its teal line in the edit window (or right-click it: "Change this volume change..."). For a change made with "Change volume between the 1/2 marks" the box opens with the amount for each track and the fade-in and fade-out times as they are now, and you hear each change at once: **Play** in the box plays from 2 seconds before the change to 2 seconds after it. **Done** keeps it (one undo step), **Cancel** puts it back as it was, **Remove this change** takes it out. A change made with "Change volume from here to next edit" opens its own box with its values, as before.
+- **Change volume between the 1/2 marks** now has a separate **Fade in** and **Fade out**, and is heard as you move the faders (it used to be applied only when the box closed).
+- Changes made before 3.18.5 between the 1/2 marks cannot be opened again as one (Fermata did not know which points belonged together); remove them and make them again if needed.
+
+The second code sweep, area F (clean-up). Nothing else you can see or hear changes: code that nothing used any more was taken out.
+- The last piece of the Trim window's old "Move the join" buttons (removed in 3.16.0), six small functions and a setting that nothing used, and values that were worked out and then thrown away in the main window, the Trim window, the edit window, the fix tools and ReHarmoniSer.
+- `tests/ravenna_mock_test.cpp` is gone (an old stand-alone test that no longer compiled; its checks are in the main tests). Delete it from the repository by hand: a zip cannot remove a file.
+
 ## 3.18.4
 - **The bars written along the bottom of a take no longer vanish when you zoom out.** On a take 50 pixels wide or less, the whole line ("DUD   LOST 0.3 s   Bar 17 - 39") used to disappear, and a take a little wider showed "Bar 1 ...". Now every take shows as much as fits, with the letters left off the end instead of "...": the bars first lose the word "Bar" ("17 - 39", then "17-39"), then the last bar ("17-", then just "17"). A bar number is never cut in half, so a narrow take never shows a wrong bar; DUD, LOST and ROOM TONE keep their place in front and are cut down the same way.
 

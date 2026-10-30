@@ -63,6 +63,11 @@ struct GainChange
     double             ramp = 0.0;
     std::vector<float> db;
     bool               autoNorm = false;   // made by "normalise volume over next take" (kept up to date by Fermata; do not edit by hand)
+    // 3.18.5: the points of one "Change volume between the 1/2 marks" share a group, so the change can be opened again and altered as one:
+    // role 1 = where the area starts (its ramp is the fade in), 2 = the area carries on into this piece from its start, 3 = the glide back
+    // at the end (its ramp is the fade out). Empty group: a change on its own.
+    juce::String       group;
+    int                role = 0;
 };
 inline float dbToLinear (float db) noexcept { return db <= -99.0f ? 0.0f : std::pow (10.0f, db / 20.0f); }
 
@@ -159,15 +164,15 @@ struct EditRegion
         if (allZero) { for (size_t i = 0; i < gains.size(); ++i) if (! gains[i].autoNorm && gains[i].at <= tol) { gains.erase (gains.begin() + (long) i); break; } return; }
         setGainChange (0, ramp, db);
     }
-    /** Adds a change (or replaces the one at the same place, within 1 ms). */
-    void setGainChange (juce::int64 at, double ramp, std::vector<float> db)
+    /** Adds a change (or replaces the one at the same place, within 1 ms) and returns it. */
+    GainChange& setGainChange (juce::int64 at, double ramp, std::vector<float> db)
     {
         db.resize (files.size(), 0.0f);
         const auto tol = (juce::int64) (0.001 * sampleRate);
         for (auto& g : gains)
-            if (std::abs (g.at - at) <= tol) { g.at = at; g.ramp = ramp; g.db = db; return; }
+            if (std::abs (g.at - at) <= tol) { g.at = at; g.ramp = ramp; g.db = db; return g; }
         GainChange c; c.at = at; c.ramp = ramp; c.db = db;
-        gains.insert (std::upper_bound (gains.begin(), gains.end(), c, [] (const GainChange& a, const GainChange& b) { return a.at < b.at; }), c);
+        return *gains.insert (std::upper_bound (gains.begin(), gains.end(), c, [] (const GainChange& a, const GainChange& b) { return a.at < b.at; }), c);
     }
     /** Removes the change at that place (within 1 ms). Returns true if there was one. */
     bool removeGainChangeAt (juce::int64 at)
@@ -947,23 +952,6 @@ struct EditDef
         b.srcIn -= d;
         if (slipRight) for (int j = k + 1; j < n; ++j) regions[(size_t) j].startSample += d;
         clampFades (k);
-        return d;
-    }
-
-    /** Trim window: move the join itself. Both audios stay where they are in time; the cut moves. */
-    juce::int64 moveJoin (int k, juce::int64 d)
-    {
-        const int n = (int) regions.size();
-        if (k < 1 || k >= n || d == 0) return 0;
-        auto& a = regions[(size_t) k - 1]; auto& b = regions[(size_t) k];
-        const auto minA = (juce::int64) (0.01 * a.sampleRate), minB = (juce::int64) (0.01 * b.sampleRate);
-        juce::int64 lo = juce::jmax (-(a.length() - minA), -b.srcIn);                   // earlier: A shorter, B gains from before its srcIn
-        juce::int64 hi = b.length() - minB;                                             // later: B shorter
-        if (a.sourceLength > 0) hi = juce::jmin (hi, a.sourceLength - a.srcOut);        // A needs source after its srcOut
-        d = juce::jlimit (lo, juce::jmax (lo, hi), d);
-        a.srcOut += d;
-        b.srcIn += d; b.startSample += d;
-        clampFades (k - 1); clampFades (k);
         return d;
     }
 

@@ -7,7 +7,6 @@ namespace td
 {
 /** The folder of fermata-log.txt and the crash reports: Documents\Fermata. */
 inline juce::File fermataLogFolder() { return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Fermata"); }
-inline juce::File fermataCrashFolder() { return fermataLogFolder().getChildFile ("Crash reports"); }
 
 /** The manual (an A4 PDF, not built into the program): the one chosen before, else a PDF with "manual" in its name next to Fermata.exe or in
     Documents\Fermata. File() if none is found. */

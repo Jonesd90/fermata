@@ -502,10 +502,6 @@ int main()
           CHECK (e.regions[1].startSample == 48000 && e.regions[1].srcIn == 7000 && e.regions[1].endSample() == 147000 && e.regions[2].startSample == 147000); }
         { auto e = three();
           CHECK (e.slipIn (1, 3000, false) == 3000 && e.regions[2].startSample == 144000 && e.regions[1].endSample() == 147000); }   // later region stays: overlap
-        // moveJoin: the cut moves, both audios stay where they are
-        { auto e = three();
-          CHECK (e.moveJoin (1, 1200) == 1200);
-          CHECK (e.regions[0].endSample() == 49200 && e.regions[1].startSample == 49200 && e.regions[1].endSample() == 144000); }
         // fades are independent and copyable
         { auto e = three();
           e.regions[0].outStart = -0.04; e.regions[0].outEnd = -0.01;
@@ -1770,9 +1766,20 @@ int main()
         p.findTrack (mainId)->inputs[1] = 7;
         p.setChannelColour (violinId, 0xff3b82c4u);                                  // channel colours are saved with the project
         if (! p.buses.empty()) p.setChannelColour (p.buses.back().id, 0xffd2579au);
+        {   // 3.18.5: the points of a "between the 1/2 marks" volume change keep their group and role, so the change can be opened again
+            auto& a = ed.regions[0].setGainChange (2000, 0.05, { 4.5f }); a.group = "range-1"; a.role = 1;
+            auto& b = ed.regions[0].setGainChange (20000, 0.1, { 0.0f }); b.group = "range-1"; b.role = 3;
+            ed.regions[0].setGainChange (30000, 0.0, { -2.0f });                       // (a change on its own: no group)
+            CHECK (ed.regions[0].gains.size() == 3 && ed.regions[0].gains[0].group == "range-1" && ed.regions[0].gains[1].role == 3);
+            auto& again = ed.regions[0].setGainChange (2010, 0.2, { 6.0f });          // (replacing a point, within 1 ms, keeps its group: it is the same point)
+            CHECK (&again == &ed.regions[0].gains[0] && again.group == "range-1" && again.role == 1 && again.db[0] == 6.0f);
+        }
         juce::String err2; CHECK (p.save (err2));
         Project q2; CHECK (q2.load (p.projectFile, err2));
         auto* e2 = q2.editForWindow (q2.takeWindows.front()->id);
+        CHECK (e2 != nullptr && e2->regions[0].gains.size() == 3 && e2->regions[0].gains[0].group == "range-1" && e2->regions[0].gains[0].role == 1
+               && e2->regions[0].gains[1].group == "range-1" && e2->regions[0].gains[1].role == 3 && e2->regions[0].gains[2].group.isEmpty() && e2->regions[0].gains[2].role == 0
+               && std::abs (e2->regions[0].gains[1].ramp - 0.1) < 1e-9);
         CHECK (e2 != nullptr && e2->regions.size() == 2 && e2->regions[1].startSample == 48700 && e2->sampleRate == 48000.0);
         CHECK (e2 != nullptr && e2->regions[1].curve == FadeCurve::Linear && std::abs (e2->regions[1].inStart + 0.003) < 1e-9 && std::abs (e2->regions[1].inEnd - 0.04) < 1e-9);
         CHECK (e2 != nullptr && std::abs (e2->regions[0].outStart + 0.02) < 1e-9 && std::abs (e2->regions[0].outEnd - 0.005) < 1e-9);

@@ -3144,12 +3144,11 @@ private:
         const auto label = w != nullptr ? w->labelFor (TakeGroup()) : juce::String ("Imported");
         auto result = std::make_shared<std::vector<std::vector<juce::File>>>();
         auto planCopy = std::make_shared<ImportPlan> (plan);
-        auto* self = this; auto& appRef = app; const auto wid = windowId; const auto eid = editId;
+        auto& appRef = app; const auto wid = windowId; const auto eid = editId;
         juce::Component::SafePointer<ImportDialog> safe (this);
         runJob ([planCopy, folder, label, numbers, result, link] (AudioJob& j) { return copyImportFiles (formats(), *planCopy, folder, label, numbers, *result, &j, link); },
-                [safe, planCopy, result, &appRef, wid, eid, self, reorder, named] (const juce::String& err)
+                [safe, planCopy, result, &appRef, wid, eid, reorder, named] (const juce::String& err)
                 {
-                    juce::ignoreUnused (self);
                     if (safe == nullptr) return;
                     if (err.isNotEmpty()) { safe->status.setText (err, juce::dontSendNotification); safe->doIt.setEnabled (true); return; }
                     busy::begin ("Adding the takes", eid.isNull() ? "Putting the imported takes into the take window" : "Putting the imported audio into the edit");
@@ -3424,9 +3423,8 @@ static bool prepRegionJob (const juce::File& folder, const EditRegion& r, Region
 }
 
 /** Job thread: makes the new short files of one region job. */
-static juce::String runRegionJob (RegionJob& j, const FixSpec& spec, AudioJob& job, float p0, float p1)
+static juce::String runRegionJob (RegionJob& j, AudioJob& job, float p0, float p1)        // (what to do is in j.ops, made by prepRegionJob)
 {
-    juce::ignoreUnused (spec);                                // (what to do is in j.ops, made by prepRegionJob)
     j.results.clear();
     for (size_t k = 0; k < j.src.size(); ++k)
     {
@@ -3612,11 +3610,11 @@ static juce::String attachRoomTone (std::vector<RegionJob>& jobs, const std::vec
 }
 /** One repair / de-click / gain job per piece of 'regions' between 'from' and 'to': the changes that fall inside each piece, in its own samples (as the
     repair window's prepare, without the OUT / IN streams), the files made (job thread). */
-static juce::String runRepairJobs (std::vector<RegionJob>& jobs, const FixSpec& last, AudioJob& j)
+static juce::String runRepairJobs (std::vector<RegionJob>& jobs, AudioJob& j)
 {
     for (size_t i = 0; i < jobs.size(); ++i)
     {
-        const auto err = runRegionJob (jobs[i], last, j, (float) i / (float) jobs.size(), (float) (i + 1) / (float) jobs.size());
+        const auto err = runRegionJob (jobs[i], j, (float) i / (float) jobs.size(), (float) (i + 1) / (float) jobs.size());
         if (err.isNotEmpty()) { for (auto& rj : jobs) for (auto& r : rj.results) r.file.deleteFile(); jobs.clear(); return err; }
     }
     return {};
@@ -3699,7 +3697,7 @@ static juce::String prepareRepairJobs (const juce::File& fixFolder, const std::v
     if (jobs.empty()) return "Nothing to do in this area.";
     if (! makeFiles) return {};
     if (const auto err = findLostTogether (jobs, rate, j); err.isNotEmpty()) { jobs.clear(); return err; }
-    return runRepairJobs (jobs, ops.back().spec, j);
+    return runRepairJobs (jobs, j);
 }
 
 /** The ReTouch window's consonant list (3.6.0): the project's kept consonants, keeping one (its files in the project's Consonants folder, then the list),
@@ -3743,7 +3741,7 @@ static void wireConsonants (RepairContext& c, AppContext& app)
 static TakeWindowDef* takeWin (AppContext& app, const juce::Uuid& wid) { return app.project.findTakeWindow (wid); }
 
 /** The take and the marked part (seconds in the take) from the take window's marks 1 / 2 marks; null + message if none. */
-static TakeGroup* markedTake (AppContext& app, TakeWindowDef& w, double& in, double& out, const juce::String& title)
+static TakeGroup* markedTake (TakeWindowDef& w, double& in, double& out, const juce::String& title)
 {
     auto* g = w.findGroup (w.editTake);
     if (g == nullptr || w.editIn < 0.0 || w.editOut <= w.editIn)
@@ -3751,7 +3749,6 @@ static TakeGroup* markedTake (AppContext& app, TakeWindowDef& w, double& in, dou
         say (title, "First mark the part with mark 1 and mark 2 (in one take). To be safe, mark a little more than you need.");
         return nullptr;
     }
-    juce::ignoreUnused (app);
     in = w.editIn; out = juce::jmin (w.editOut, g->lengthSeconds());
     return g;
 }
@@ -3768,7 +3765,7 @@ void pitchTake (AppContext& app, const juce::Uuid& wid, juce::Component* parent)
 {
     if (! gMakeProcessPage && heldByRec (app, "Pitch correction", parent, [ap = &app, wid] (juce::Component* p) { pitchTake (*ap, wid, p); })) return;
     auto* w = takeWin (app, wid); if (w == nullptr) return;
-    double in = 0, out = 0; auto* g = markedTake (app, *w, in, out, "Pitch correction"); if (g == nullptr) return;
+    double in = 0, out = 0; auto* g = markedTake (*w, in, out, "Pitch correction"); if (g == nullptr) return;
     if (app.engine.isRecording()) { say ("Pitch correction", "Stop recording first."); return; }
     const auto gid = g->id; const double rate = g->sampleRate;
     PitchContext c; c.allowPad = false;
@@ -3805,7 +3802,7 @@ void repairTake (AppContext& app, const juce::Uuid& wid, juce::Component* parent
     if (heldByRec (app, "ReTouch, DeClick & Denoise", parent, [ap = &app, wid] (juce::Component* p) { repairTake (*ap, wid, p); })) return;
     const juce::String nm = "Spectral Repair";
     auto* w = takeWin (app, wid); if (w == nullptr) return;
-    double in = 0, out = 0; auto* g = markedTake (app, *w, in, out, nm); if (g == nullptr) return;
+    double in = 0, out = 0; auto* g = markedTake (*w, in, out, nm); if (g == nullptr) return;
     if (app.engine.isRecording()) { say (nm, "Stop recording first."); return; }
     const auto gid = g->id; const double rate = g->sampleRate;
     const juce::int64 from = (juce::int64) std::llround (in * rate), to = (juce::int64) std::llround (out * rate);
@@ -3932,7 +3929,7 @@ void pitchCurveTake (AppContext& app, const juce::Uuid& wid, juce::Component* pa
 {
     if (heldByRec (app, "The pitch curve", parent, [ap = &app, wid] (juce::Component* p) { pitchCurveTake (*ap, wid, p); })) return;
     auto* w = takeWin (app, wid); if (w == nullptr) return;
-    double in = 0, out = 0; auto* g = markedTake (app, *w, in, out, "Pitch curve"); if (g == nullptr) return;
+    double in = 0, out = 0; auto* g = markedTake (*w, in, out, "Pitch curve"); if (g == nullptr) return;
     if (app.engine.isRecording()) { say ("Pitch curve", "Stop recording first."); return; }
     const auto gid = g->id; const double rate = g->sampleRate;
     const juce::int64 from = (juce::int64) std::llround (in * rate), to = (juce::int64) std::llround (out * rate);
@@ -4053,7 +4050,7 @@ void pitchEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent)
         }
         for (size_t i = 0; i < jobs->size(); ++i)
         {
-            const auto err = runRegionJob ((*jobs)[i], *spec, j, (float) i / (float) jobs->size(), (float) (i + 1) / (float) jobs->size());
+            const auto err = runRegionJob ((*jobs)[i], j, (float) i / (float) jobs->size(), (float) (i + 1) / (float) jobs->size());
             if (err.isNotEmpty()) { for (auto& done : *jobs) for (auto& r : done.results) r.file.deleteFile(); jobs->clear(); return err; }
         }
         return {};
@@ -4292,7 +4289,7 @@ static void openRepair (AppContext& app, const juce::Uuid& eid, juce::Component*
         }
         for (size_t i = 0; i < st->jobs.size(); ++i)
         {
-            const auto err = runRegionJob (st->jobs[i], ops.back().spec, j, (float) i / (float) st->jobs.size(), (float) (i + 1) / (float) st->jobs.size());
+            const auto err = runRegionJob (st->jobs[i], j, (float) i / (float) st->jobs.size(), (float) (i + 1) / (float) st->jobs.size());
             if (err.isNotEmpty()) { deleteFiles(); return err; }
         }
         return {};
@@ -5037,7 +5034,7 @@ private:
                     if (err.isNotEmpty()) return err;
                     err = attachRoomTone (jobs, ops, regions, *parts, prt, sr, j);
                     if (err.isNotEmpty()) { for (auto& rj : jobs) for (auto& r : rj.results) r.file.deleteFile(); jobs.clear(); return err; }
-                    return runRepairJobs (jobs, op.spec, j);
+                    return runRepairJobs (jobs, j);
                 });
     }
     void revert()
@@ -5666,8 +5663,7 @@ static void openPitchCurve (AppContext& app, const juce::Uuid& eid, juce::Compon
         }
         for (size_t i = 0; i < st->jobs.size(); ++i)
         {
-            FixSpec sj = spec; sj.curveZero = st->jobs[i].curveZero;
-            const auto err = runRegionJob (st->jobs[i], sj, j, (float) i / (float) st->jobs.size(), (float) (i + 1) / (float) st->jobs.size());
+            const auto err = runRegionJob (st->jobs[i], j, (float) i / (float) st->jobs.size(), (float) (i + 1) / (float) st->jobs.size());
             if (err.isNotEmpty()) { for (auto& done : st->jobs) for (auto& r : done.results) r.file.deleteFile(); st->jobs.clear(); return err; }
         }
         return {};
@@ -6235,9 +6231,8 @@ void exportForProcessingEdit (AppContext& app, const juce::Uuid& eid, juce::Comp
             w->addButton ("In stream", 2, juce::KeyPress ('i'));
             w->addButton ("Both", 3, juce::KeyPress ('b'));
             w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
-            w->enterModalState (true, juce::ModalCallbackFunction::create ([ask, haveOut, haveIn] (int r)
+            w->enterModalState (true, juce::ModalCallbackFunction::create ([ask] (int r)
             {
-                juce::ignoreUnused (haveOut, haveIn);
                 if (r == 1) ask (true, false); else if (r == 2) ask (false, true); else if (r == 3) ask (true, true);
             }), true);
             return;
@@ -6281,7 +6276,7 @@ void exportForProcessingTake (AppContext& app, const juce::Uuid& wid, juce::Comp
     if (heldByRec (app, "Export for Processing", parent, [ap = &app, wid] (juce::Component* p) { exportForProcessingTake (*ap, wid, p); })) return;
     const juce::String title = "Export for Processing";
     auto* w = takeWin (app, wid); if (w == nullptr) return;
-    double in = 0, out = 0; auto* g = markedTake (app, *w, in, out, title); if (g == nullptr) return;
+    double in = 0, out = 0; auto* g = markedTake (*w, in, out, title); if (g == nullptr) return;
     if (app.engine.isRecording()) { say (title, "Stop recording first."); return; }
     const double rate = g->sampleRate > 0 ? g->sampleRate : 48000.0;
     const auto a = juce::jmax ((juce::int64) 0, (juce::int64) std::llround (in * rate)), b = juce::jmin (g->lengthSamples, (juce::int64) std::llround (out * rate));

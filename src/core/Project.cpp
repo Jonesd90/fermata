@@ -112,6 +112,8 @@ static const juce::Identifier k_gains ("gains");
 static const juce::Identifier k_at ("at");
 static const juce::Identifier k_ramp ("ramp");
 static const juce::Identifier k_autoNorm ("autoNorm");
+static const juce::Identifier k_gainGroup ("group");
+static const juce::Identifier k_gainRole ("role");
 static const juce::Identifier k_db ("db");
 }
 
@@ -1320,7 +1322,7 @@ var Project::editToVarIn (const EditDef& eref, const juce::File& base)
         for (auto& g : r.gains)
         {
             var go = obj();
-            put (go, key::k_at, (juce::int64) g.at); put (go, key::k_ramp, g.ramp); if (g.autoNorm) put (go, key::k_autoNorm, true);
+            put (go, key::k_at, (juce::int64) g.at); put (go, key::k_ramp, g.ramp); if (g.autoNorm) put (go, key::k_autoNorm, true); if (g.group.isNotEmpty()) { put (go, key::k_gainGroup, g.group); put (go, key::k_gainRole, g.role); }
             juce::Array<var> dbs; for (float d : g.db) dbs.add ((double) d);
             put (go, key::k_db, dbs);
             gs.add (go);
@@ -1888,7 +1890,7 @@ bool Project::fromVar (const var& root)
                 if (auto* gs = rv[key::k_gains].getArray())
                     for (auto& gv : *gs)
                     {
-                        GainChange g; g.at = samplesFromVar (gv[key::k_at]); g.ramp = (double) gv[key::k_ramp]; g.autoNorm = (bool) gv[key::k_autoNorm];
+                        GainChange g; g.at = samplesFromVar (gv[key::k_at]); g.ramp = (double) gv[key::k_ramp]; g.autoNorm = (bool) gv[key::k_autoNorm]; g.group = gv[key::k_gainGroup].toString(); g.role = gv.hasProperty (key::k_gainRole) ? juce::jlimit (0, 3, (int) gv[key::k_gainRole]) : 0;
                         if (auto* dbs = gv[key::k_db].getArray()) for (auto& d : *dbs) g.db.push_back ((float) (double) d);
                         g.db.resize (r.files.size(), 0.0f);
                         r.gains.push_back (g);
@@ -2063,7 +2065,7 @@ juce::uint64 Project::undoHash (const EditDef& e)
         for (auto& f : r.files) { h.add (f.trackId); h.add (f.trackName); h.add (f.file); h.add (f.numChannels); h.add (f.fileStart); }
         h.add (r.waiting.active()); if (r.waiting.active()) h.add (r.waiting);
         h.count (r.gains.size());
-        for (auto& g : r.gains) { h.add (g.at); h.add (g.ramp); h.add (g.autoNorm); h.count (g.db.size()); for (float d : g.db) h.add (d); }
+        for (auto& g : r.gains) { h.add (g.at); h.add (g.ramp); h.add (g.autoNorm); h.add (g.group); h.add (g.role); h.count (g.db.size()); for (float d : g.db) h.add (d); }
     };
     h.count (e.regions.size());  for (auto& r : e.regions)  region (r);
     h.count (e.overdubs.size()); for (auto& r : e.overdubs) region (r);

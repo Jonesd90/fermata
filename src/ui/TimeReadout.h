@@ -88,14 +88,13 @@ public:
         repaint();
     }
 
-    /** The readout fetches the position (and the state) itself, 'hz' times a second, until stopFollowing(). */
+    /** The readout fetches the position (and the state) itself, 'hz' times a second, until another follow() or the readout goes. */
     void follow (std::function<double()> positionSeconds, std::function<State()> stateNow = {}, int hz = 30)
     {
         getPosition_ = std::move (positionSeconds); getState_ = std::move (stateNow);
         startTimerHz (juce::jlimit (1, 60, hz));
         timerCallback();
     }
-    void stopFollowing() { stopTimer(); getPosition_ = nullptr; getState_ = nullptr; }
 
     /** The width that fits the digits of the current way of writing the time, at this height. */
     int getIdealWidth (int height) const

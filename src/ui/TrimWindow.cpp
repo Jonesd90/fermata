@@ -313,12 +313,11 @@ private:
         }
         else if (hasA && hasB)                                         // in between: both fades together
         {
-            const float s0 = juce::jmin (ob, ib), s1 = juce::jmax (ob, ib), e0 = juce::jmin (oe, ie), e1 = juce::jmax (oe, ie);
+            const float s0 = juce::jmin (ob, ib), e1 = juce::jmax (oe, ie);
             if (nearTo (ob) || nearTo (ib)) return Mode::MidStart;
             if (nearTo (oe) || nearTo (ie)) return Mode::MidEnd;
             if (inside (s0, e1) && x > s0 && x < e1 && (p.y >= lanes.a.getBottom() - 6 || p.y <= lanes.b.getY() + 6 || (p.y > lanes.a.getBottom() && p.y < lanes.b.getY())))
                 return Mode::MidBody;
-            juce::ignoreUnused (s1, e0);
         }
         // not on a fade handle: dragging a waveform slides that audio under the join
         if (hasA && hasB && lanes.a.contains (p)) return Mode::SlipA;

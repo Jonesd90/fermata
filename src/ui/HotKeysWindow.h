@@ -135,6 +135,7 @@ inline const std::vector<Line>& lines()
         { "Edit window: with the mouse", "Shift+click / Ctrl+click", "A track name: every track from the last one clicked to this one / this track in or out of the selection." },
         { "Edit window: with the mouse", "double-click", "A piece: the Trim window, on the join before it." },
         { "Edit window: with the mouse", "double-click", "A numbered flag: the Trim window, on that join." },
+        { "Edit window: with the mouse", "double-click", "A volume change's teal line (or its shaded glide): change it again - the amount for each track and the fade in / fade out, heard as you change them (Play in the box). Right-click it: the same, as \"Change this volume change...\"." },
         { "Edit window: with the mouse", "right-click", "A piece: volume changes (to the next edit, between marks 1 and 2, between the fades), remove them, delete an overdub, re-draw the waveform." },
         { "Edit window: with the mouse", "right-click", "A piece, with marks 1 and 2 inside it: Find other versions - every place in the take window's takes where the marked music was played (\"possible\" ones: a false start, or the same notes elsewhere); Audition plays each in place, Use this one puts it in (everything after moves to fit; Ctrl+Z takes it out). Needs take matching switched on for that take window." },
         { "Edit window: with the mouse", "right-click", "A track name: colour, remove tracks from this edit." },
