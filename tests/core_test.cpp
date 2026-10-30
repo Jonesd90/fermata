@@ -11449,6 +11449,58 @@ int main()
         CHECK (all.first == 0 && all.second == 2 && m.hiddenStrips.empty());
     }
 
+    SECTION ("3.21.1 a mixer nobody touched is not 'changed' at quit: plug-ins rewriting their saved data, automation and new tracks do not count");
+    {
+        // a plug-in whose saved state is different every time it is asked (as many are: meters, analysis, a time stamp), with one real setting
+        struct Restless : InsertProcessor
+        {
+            void prepare (double, int, int) override {}
+            void process (juce::AudioBuffer<float>&) override {}
+            juce::String getName() const override { return "Restless"; }
+            juce::String getDescription() const override { return "<PLUGIN name=\"Restless\"/>"; }
+            juce::String getStateBase64() const override { return juce::String (++asked); }
+            int numParams() const override { return 2; }
+            bool paramAutomatable (int i) const override { return i == 0; }           // (parameter 1 is a meter: not a setting)
+            float getParamNorm (int i) const override { return i == 0 ? setting : meter; }
+            void setParamNorm (int i, float v) override { if (i == 0) setting = v; else meter = v; }
+            mutable int asked = 0; float setting = 0.25f, meter = 0.0f;
+        };
+        Project q; q.setInputCount (4); q.setOutputCount (2); q.tracks.clear();
+        q.addTrack ("A", TrackFormat::Mono, 0); q.addTrack ("B", TrackFormat::Mono, 1);
+        q.takeWindows.clear(); q.edits.clear();
+        auto& w = q.addTakeWindow ("Piece");
+        auto& e = q.addEdit ("Piece edit", w.id);
+        q.syncEditMixers(); q.syncMixers();
+        auto& m = *q.mixerOfEdit (e.id);
+        const auto A = q.tracks[0].id, B = q.tracks[1].id;
+        auto restless = std::make_unique<Restless>(); auto* fx = restless.get();
+        m.stripFor (A)->slots[0].set (std::move (restless), 48000.0, 512, 2);
+        { AutoLane l; l.id = juce::Uuid(); l.trackId = B; l.param = autoparam::fader; AutoPoint pt; pt.id = juce::Uuid(); pt.time = 0; pt.value = -6.0f; l.pts.push_back (pt); e.lanes.push_back (l); }
+        q.keepAllWindows();
+        CHECK (q.windowsChangedSinceKept().empty());
+        fx->meter = 0.9f;                                                           // the plug-in's meter moves, its saved data changes by itself
+        CHECK (fx->getStateBase64() != fx->getStateBase64());
+        m.stripFor (B)->gainDb.set (-6.0f);                                          // playback: the automation moves B's fader
+        CHECK (q.windowsChangedSinceKept().empty());
+        q.addTrack ("C", TrackFormat::Mono, 2); q.syncMixers();                      // a new track: every mixer gets a strip for it - not a change of the mixer
+        CHECK (q.windowsChangedSinceKept().empty());
+        // what the person does is still seen: a fader with no automation, a plug-in's setting, a bypass
+        m.stripFor (A)->gainDb.set (-3.0f);
+        auto changed = q.windowsChangedSinceKept();
+        CHECK (changed.size() == 1 && changed[0].kind == "mixer" && changed[0].id == m.id);
+        m.stripFor (A)->gainDb.set (0.0f);
+        CHECK (q.windowsChangedSinceKept().empty());
+        fx->setting = 0.5f;
+        CHECK (q.windowsChangedSinceKept().size() == 1);
+        fx->setting = 0.25f; m.stripFor (A)->slots[0].bypass.set (true);
+        CHECK (q.windowsChangedSinceKept().size() == 1);
+        m.stripFor (A)->slots[0].bypass.set (false);
+        CHECK (q.windowsChangedSinceKept().empty());
+        // going back, and the kept state following
+        m.stripFor (A)->gainDb.set (-9.0f);
+        CHECK (q.revertWindowToKept (m.id, juce::Uuid::null(), 48000.0, 512) && std::abs (m.stripFor (A)->gainDb.get()) < 1e-6f && q.windowsChangedSinceKept().empty());
+    }
+
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;
 }

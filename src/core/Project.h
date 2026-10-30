@@ -598,10 +598,18 @@ public:
     // last save (revertWindowToKept, which restores the way undo does: takes recorded since stay, and so does the view - marks, playhead, markers).
     // Not saved with the project: a project just opened is kept as loaded. A window made since the last keep has no entry and is never listed.
     MixerState* mixerById (const juce::Uuid& id) const;
-    struct KeptWindow { UndoSnap snap; juce::var mix; juce::String mixHash; };      // a take window / edit: snap; a mixer: its mix snapshot and that snapshot's fingerprint
+    struct KeptWindow { UndoSnap snap; juce::var mix; juce::String mixHash; std::set<juce::String> mixParts; };   // a take window / edit: snap; a mixer: its mix
+                                                                                    // snapshot (to go back to), mixKeepHash and the strips / buses / VCAs it covered
+    /** 3.21.1: what "this mixer has changed since it was kept" compares (3.19.0 compared the whole snapshot, and every mixer with plug-ins or automation
+        was listed at quit though nobody had touched it). The mixer's faders, gains, pans, mutes, solos, routing, sends, low cuts, VCAs and each plug-in's
+        kind, bypass and automatable parameters - leaving out (1) whatever an automation lane of an edit writes into this mixer (playback moves it by
+        itself) and (2) the plug-ins' saved states (many plug-ins rewrite those on their own: meters, analysis, a time stamp). Only the strips, buses and
+        VCAs in 'only' are looked at (null: all, and their names go to 'partsOut'): one a new track or bus brings to every mixer is not a change of the mixer. */
+    juce::String mixKeepHash (const MixerState&, const std::set<juce::String>* only = nullptr, std::set<juce::String>* partsOut = nullptr) const;
     std::map<juce::Uuid, KeptWindow> kept;
     void keepAllWindows();
     bool keepWindow (const juce::Uuid& id);              // false: no such window
+    KeptWindow keptMixer (const MixerState&) const;
     struct ChangedWindow { juce::String kind, name; juce::Uuid id; };       // kind: "take", "edit" or "mixer"
     std::vector<ChangedWindow> windowsChangedSinceKept() const;
     /** Puts the window back as it was kept (see above). A mixer needs the engine's rate and block for its plug-ins. False: nothing kept for it, or it is gone. */

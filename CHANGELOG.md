@@ -6,6 +6,9 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.21.1
+- **Quitting no longer lists mixers you have not touched.** The quit box (3.19.0) listed every edit's mixer as changed. It compared each plug-in's saved data, which many plug-ins rewrite on their own (meters, analysis, a time stamp), and the faders and plug-in settings that an edit's automation moves when it plays. A mixer now counts as changed only when something a person sets is different: a fader, gain, pan, mute, solo, routing, send, low cut or VCA, or a plug-in added, removed, bypassed or with a setting changed. What automation drives is left out, and so is a strip a new track brings to every mixer. (A plug-in setting kept only in its own data and not offered as a parameter - a reverb's impulse file, say - is not seen.)
+
 ## 3.21.0
 - **N: the end bar, quickly.** In a take window, N opens a small box with just the **OUT Bar** of the take being recorded - or, when nothing is recording, of the take recorded last - already filled in and selected. Type the bar the take really ended in and press Enter (Esc cancels). For a take abandoned early: the bars set at its start stay, only the end changes. Like the B box it stops nothing. A take with no bars yet gets the full IN / OUT box instead.
 - **V: the same bars as the take before.** While recording, V gives the take being recorded the IN and OUT Bar of the take before it in that window, at once - no box, no message; the take's waveform box shows the bars. (Only when there is nothing to copy - not recording, no earlier take, or it has no bars - does a short line in the status bar say so.)

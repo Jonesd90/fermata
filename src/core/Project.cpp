@@ -2702,12 +2702,121 @@ void collectIds (const var& o, std::vector<String>& out, const char* arrayKey)
 // ---- 3.19.0: what the person last kept of each window ---------------------------------------------------------------------------------------
 MixerState* Project::mixerById (const juce::Uuid& id) const { for (auto& m : mixers) if (m->id == id) return m.get(); return nullptr; }
 
+juce::String Project::mixKeepHash (const MixerState& m, const std::set<juce::String>* only, std::set<juce::String>* partsOut) const
+{
+    // what playback moves by itself: every value an automation lane of an edit writes into THIS mixer (a lane finds its mixer as automationPlanFor does)
+    std::set<std::pair<juce::String, juce::String>> automated;
+    for (auto& e : edits)
+        for (auto& lane : e->lanes)
+        {
+            if (lane.pts.empty()) continue;
+            const MixerState* to = lane.mixerId.isNull() ? mixerOfEdit (e->id) : mixerById (lane.mixerId);
+            if (to == nullptr && lane.mixerId.isNull() && ! mixers.empty()) to = mixers.front().get();
+            if (to == &m) automated.insert ({ lane.trackId.toString(), lane.param });
+        }
+    auto isAuto = [&automated] (const juce::Uuid& owner, const juce::String& param) { return automated.count ({ owner.toString(), param }) != 0; };
+    auto value = [&isAuto] (const juce::Uuid& owner, const juce::String& param, const var& v) { return isAuto (owner, param) ? var ("automated") : v; };
+    auto take = [only, partsOut] (const juce::String& part) { if (partsOut != nullptr) partsOut->insert (part); return only == nullptr || only->count (part) != 0; };
+    auto slotsOf = [&] (const juce::Uuid& owner, const InsertSlot* slots, int count, bool laneable)
+    {
+        juce::Array<var> arr;
+        for (int i = 0; i < count; ++i)
+        {
+            var o = obj();
+            put (o, "bypass", slots[i].bypass.get());
+            if (auto* p = slots[i].getProcessorUnsafe())
+            {
+                put (o, "desc", p->getDescription());
+                juce::Array<var> ps;                      // its settings, as its automatable parameters (never its saved state: see above)
+                for (int k = 0; k < p->numParams(); ++k)
+                    if (p->paramAutomatable (k))
+                    {
+                        const var v (juce::roundToInt (p->getParamNorm (k) * 10000.0f));
+                        ps.add (laneable ? value (owner, autoparam::plugin (i, k), v) : v);
+                    }
+                put (o, "params", ps);
+            }
+            else { put (o, "desc", slots[i].savedDescription); put (o, "state", slots[i].savedState); }     // (one that could not be loaded: kept as it was saved)
+            arr.add (o);
+        }
+        return var (arr);
+    };
+    auto sendsOf = [&] (const juce::Uuid& owner, const SendList& l)
+    {
+        juce::Array<var> arr;
+        for (auto& sd : l.pool)
+        {
+            bool hasInserts = false;
+            for (auto& sl : sd->slots) hasInserts = hasInserts || sl.mightBeLoaded() || sl.savedDescription.isNotEmpty();
+            if (! sd->active() && ! hasInserts && ! isAuto (owner, autoparam::send (sd->dest))) continue;     // (as saving: a send that is off is no send)
+            var o = obj();
+            put (o, "dest", sd->dest.toString()); put (o, "gainDb", value (owner, autoparam::send (sd->dest), sd->gainDb.get()));
+            put (o, "pre", sd->pre.get()); put (o, "followMute", sd->followMute.get()); put (o, "mute", sd->mute.get());
+            put (o, "slots", slotsOf (owner, sd->slots, kSendSlots, false));
+            arr.add (o);
+        }
+        return var (arr);
+    };
+    auto lowCutOf = [] (const LowCut& lc) { var o = obj(); put (o, "on", lc.on.get()); put (o, "hz", lc.hz.get()); put (o, "slope", lc.slope.load()); put (o, "linear", lc.linear.get()); return o; };
+
+    juce::Array<var> strips, bs, vs;
+    for (auto& t : tracks)
+    {
+        const StripState* st = nullptr;
+        for (auto& p : m.stripPool) if (p->trackId == t.id) st = p.get();
+        if (st == nullptr || ! take ("t:" + t.id.toString())) continue;
+        var o = obj();
+        put (o, "track", t.id.toString());
+        put (o, "gainDb", value (t.id, autoparam::fader, st->gainDb.get())); put (o, "inGainDb", value (t.id, autoparam::gain, st->inGainDb.get()));
+        put (o, "pan", value (t.id, autoparam::pan, st->pan.get())); put (o, "panL", st->panL.get()); put (o, "panR", st->panR.get());
+        put (o, "mute", st->mute.get()); put (o, "solo", st->solo.get()); put (o, "outOn", st->outOn.get()); put (o, "outDest", st->outDest.toString());
+        put (o, "vcaMask", (juce::int64) st->vcaMask.load());
+        put (o, "sends", sendsOf (t.id, st->sends)); put (o, "slots", slotsOf (t.id, st->slots, kNumSlots, true)); put (o, "lowCut", lowCutOf (st->lowCut));
+        strips.add (o);
+    }
+    for (auto& f : buses)
+    {
+        const BusState* b = nullptr;
+        for (auto& p : m.busPool) if (p->busId == f.id) b = p.get();
+        if (b == nullptr || ! take ("b:" + f.id.toString())) continue;
+        var o = obj();
+        put (o, "bus", f.id.toString());
+        put (o, "gainDb", value (f.id, autoparam::fader, b->gainDb.get())); put (o, "inGainDb", value (f.id, autoparam::gain, b->inGainDb.get()));
+        put (o, "pan", value (f.id, autoparam::pan, b->pan.get()));
+        put (o, "mute", b->mute.get()); put (o, "solo", b->solo.get()); put (o, "outOn", b->outOn.get()); put (o, "outDest", b->outDest.toString());
+        put (o, "vcaMask", (juce::int64) b->vcaMask.load());
+        put (o, "sends", sendsOf (f.id, b->sends)); put (o, "slots", slotsOf (f.id, b->slots, kNumSlots, true)); put (o, "lowCut", lowCutOf (b->lowCut));
+        bs.add (o);
+    }
+    for (auto& d : vcas)
+    {
+        if (! take ("v:" + d.id.toString())) continue;
+        const auto& vc = m.vcas[juce::jlimit (0, kMaxVcas - 1, d.number - 1)];
+        var o = obj();
+        put (o, "vca", d.id.toString()); put (o, "gainDb", value (d.id, autoparam::fader, vc.gainDb.get())); put (o, "mute", vc.mute.get()); put (o, "solo", vc.solo.get());
+        put (o, "shown", (m.vcaShown.load() & (1u << juce::jlimit (0, kMaxVcas - 1, d.number - 1))) != 0);
+        vs.add (o);
+    }
+    var root = obj(); put (root, "strips", strips); put (root, "buses", bs); put (root, "vcas", vs);
+    return fingerprintOf (root);
+}
+
+Project::KeptWindow Project::keptMixer (const MixerState& m) const
+{
+    KeptWindow k;
+    quickPluginState = true;                              // (the plug-ins' states as last fetched - by the save just made, or as loaded - not asked for again)
+    k.mix = mixSnapshot (m, true);
+    quickPluginState = false;
+    k.mixHash = mixKeepHash (m, nullptr, &k.mixParts);
+    return k;
+}
+
 void Project::keepAllWindows()
 {
     std::map<juce::Uuid, KeptWindow> next;
     for (auto& w : takeWindows) { KeptWindow k; k.snap = snapOf (*w); next[w->id] = std::move (k); }
     for (auto& e : edits)       { KeptWindow k; k.snap = snapOf (*e); next[e->id] = std::move (k); }
-    for (auto& m : mixers)      { KeptWindow k; k.mix = mixSnapshot (*m, true); k.mixHash = fingerprintOf (k.mix); next[m->id] = std::move (k); }
+    for (auto& m : mixers)      next[m->id] = keptMixer (*m);
     kept = std::move (next);                              // (a window gone since is forgotten with it)
 }
 
@@ -2715,7 +2824,7 @@ bool Project::keepWindow (const juce::Uuid& id)
 {
     if (auto* w = findTakeWindow (id)) { KeptWindow k; k.snap = snapOf (*w); kept[id] = std::move (k); return true; }
     if (auto* e = findEdit (id))       { KeptWindow k; k.snap = snapOf (*e); kept[id] = std::move (k); return true; }
-    if (auto* m = mixerById (id))      { KeptWindow k; k.mix = mixSnapshot (*m, true); k.mixHash = fingerprintOf (k.mix); kept[id] = std::move (k); return true; }
+    if (auto* m = mixerById (id))      { kept[id] = keptMixer (*m); return true; }
     return false;
 }
 
@@ -2724,7 +2833,7 @@ std::vector<Project::ChangedWindow> Project::windowsChangedSinceKept() const
     std::vector<ChangedWindow> out;
     for (auto& w : takeWindows) { auto it = kept.find (w->id); if (it != kept.end() && it->second.snap.hash != undoHash (*w)) out.push_back ({ "take", w->name, w->id }); }
     for (auto& e : edits)       { auto it = kept.find (e->id); if (it != kept.end() && it->second.snap.hash != undoHash (*e)) out.push_back ({ "edit", e->name, e->id }); }
-    for (auto& m : mixers)      { auto it = kept.find (m->id); if (it != kept.end() && it->second.mixHash != fingerprintOf (mixSnapshot (*m, true))) out.push_back ({ "mixer", m->name, m->id }); }
+    for (auto& m : mixers)      { auto it = kept.find (m->id); if (it != kept.end() && it->second.mixHash != mixKeepHash (*m, &it->second.mixParts)) out.push_back ({ "mixer", m->name, m->id }); }
     return out;
 }
 
@@ -2758,7 +2867,9 @@ bool Project::revertWindowToKept (const juce::Uuid& id, const juce::Uuid& liveTa
     if (auto* m = mixerById (id))
     {
         if (! k.mix.isObject()) return false;
+        const auto parts = k.mixParts;
         applyMix (*m, k.mix, sampleRate, maxBlock, MixParts());      // (a mixer is not part of the undo history)
+        it->second.mixHash = mixKeepHash (*m, &parts);               // (as it is now: back where it was kept)
         return true;
     }
     return false;
