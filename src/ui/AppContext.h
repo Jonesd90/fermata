@@ -242,11 +242,29 @@ private:
     juce::uint64 fixUndoHash = 0; bool fixUndoIsEdit = true; juce::Uuid fixUndoId, fixUndoGroup;
 public:
 
-    /** Session mode: every patched input is kept for the last 6 seconds, so a take starts 6 s before Record was pressed. Remembered for next time. */
+    /** Pre (session mode): every patched input is kept for the last few seconds (1 to 10, chosen: setPreRollSeconds), so a take starts that long before
+        Record was pressed. Remembered for next time, like its length. Works with or without Rec mode. */
     void setSessionMode (bool on);
     bool sessionMode() const { return engine.isSessionMode(); }
+    /** 3.18.0: the Pre length, 1 to 10 whole seconds (5 unless chosen), remembered on this PC. */
+    void setPreRollSeconds (int seconds);
 
-    /** Start recording into the given take window, or stop if already recording. */
+    /** 3.18.0 Rec mode (the left half of the Rec | Pre button): recording / tracking. While it is on, Fermata keeps the computer for the recording: the
+        take matching is held, and heavy work asked for (a bounce, an export, a process window, a plug-in scan, an import, Save as) asks first
+        (recModeHolds). Record needs it: without it, a warning offers to switch it on. Always off when Fermata starts; it cannot be switched off while a
+        take records. */
+    bool recMode() const { return recModeOn; }
+    void setRecMode (bool on);
+    /** Heavy work about to start: false when Rec mode is off (go ahead now). While it is on, true - and the person is asked whether to switch Rec off
+        and start it ('startAgain' then runs, with Rec off) or leave it; while a take records it is simply refused. 'what' names it ("The bounce"). */
+    bool recModeHolds (const juce::String& what, std::function<void()> startAgain);
+    /** 3.18.0: switches take matching on or off for a take window (saved with it; not an undo step). */
+    void setTakeMatching (const juce::Uuid& takeWindowId, bool on);
+    /** J or Find other versions in a take window whose take matching is off (or held): says why, and offers to switch it on. True when it is not
+        available yet (the caller stops there). */
+    bool takeMatchingUnavailable (const juce::Uuid& takeWindowId, const juce::String& what);
+
+    /** Start recording into the given take window, or stop if already recording. (3.18.0: starting needs Rec mode - see setRecMode.) */
     void toggleRecord (const juce::Uuid& takeWindowId);
     /** Deletes a cue mixer (never the processing mixer, which is the first one). */
     bool deleteMixer (const juce::Uuid& mixerId);
@@ -460,6 +478,8 @@ public:
     void shutdown();
 
 private:
+    bool recModeOn = false;                          // 3.18.0 (see setRecMode): never saved - Fermata always starts with Rec off
+    bool recModeAsking = false;                      // the "Rec mode is off" warning is up (R pressed again meanwhile does not stack another)
     std::vector<std::pair<juce::Uuid, juce::var>> mixUndo;
     juce::var mixClipboard; juce::String mixClipName; juce::Uuid mixClipFrom;
     struct PeakPoller : juce::Timer { std::function<void()> fn; void timerCallback() override { if (fn) fn(); } } peakPoller;

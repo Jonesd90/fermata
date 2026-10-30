@@ -134,7 +134,12 @@ public:
     juce::Uuid currentTakeId() const      { return currentGroupId; }
 
     // --- session mode: the inputs are kept for the last few seconds, so a take starts that long BEFORE Record was pressed ---
-    static constexpr double kPreRollSeconds = 6.0;
+    /** 3.18.0: how far back the take starts (the Pre button): 1 to 10 whole seconds, 5 unless the person chose otherwise (it was always 6 before). */
+    static constexpr int kPreRollMin = 1, kPreRollMax = 10, kPreRollDefault = 5;
+    /** Message thread. A new length makes a new memory in the background (as switching Pre on does); while a take records, the take keeps the one it
+        started with and the new one goes in after Stop. */
+    void setPreRollSeconds (int seconds);
+    int getPreRollSeconds() const noexcept { return preRollSeconds.load(); }
     /** Switch session mode on / off (message thread). The listening stream is never touched by this, nor by starting or stopping a recording.
         The memory that keeps the last seconds (for 40 inputs at 96 kHz about 120 MB) is made on a background thread and put in place a moment later
         (servicePreRoll), so switching it on never holds the program up. */
@@ -450,6 +455,7 @@ private:
     std::atomic<PlaybackSession*> playback { nullptr };
     std::atomic<PreRoll*> preRollPtr { nullptr };
     std::atomic<bool> sessionMode { false };
+    std::atomic<int> preRollSeconds { kPreRollDefault };
     std::atomic<const MixerState*> auditionMixer { nullptr };
     juce::Uuid offlineMixerId;                       // offline rendering (see setOfflineTarget)
     std::vector<juce::Uuid> offlineTaps, offlinePreTaps;

@@ -3,6 +3,7 @@
 #include "RecordMonitor.h"
 #include "BarCoverage.h"
 #include "TakeChart.h"
+#include "TakeMatchPanel.h"
 #include "Uikit.h"
 #include "TimeReadout.h"
 
@@ -74,6 +75,7 @@ private:
     juce::Uuid windowId;
     juce::Label nameLabel, statusLabel, markLabel;
     RecordLamps recordLamps;                         // MAIN / 2ND / DEVICE (3.2.0): at the right end of the marks row; a click opens the Recording monitor
+    TakeMatchLamp matchLamp;                         // 3.18.0: take matching for this window, just left of them (click: on / off; right-click: the panel)
     BarCoverageStrip barMap;                         // the bar-coverage map (3.4.0): under the head, when any take has bars
     juce::TextEditor nameEditor;
     StackedField nameBlock { nameLabel, nameEditor };          // "Piece / Take Window Name:" above the name box, as tall as the Next Take box

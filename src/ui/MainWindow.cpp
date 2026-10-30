@@ -10,6 +10,8 @@
 #include "ProjectRateDialog.h"
 #include "ThemeSwitch.h"
 #include "HelpMenu.h"
+#include "RecPrePanel.h"
+#include "TakeMatchPanel.h"
 
 namespace td
 {
@@ -472,7 +474,7 @@ MainComponent::MainComponent (AppContext& a) : app (a), controllerBox (a)
     menuStrip = std::make_unique<MenuBarStrip>();                  // the menu bar floats above every window (see MenuBarStrip)
     for (auto* b : menuItems()) menuStrip->addAndMakeVisible (b);
     menuStrip->addAndMakeVisible (takeBox);
-    for (auto* f : { &flagPre, &flagCr, &flagPb }) menuStrip->addAndMakeVisible (f);
+    for (StatusFlag* f : { static_cast<StatusFlag*> (&flagPre), &flagCr, &flagPb }) menuStrip->addAndMakeVisible (f);
     for (auto* f : { &flagT, &flagE, &flagM }) menuStrip->addAndMakeVisible (f);
     flagT.onClick = [this] { if (app.focusRecent) app.focusRecent ("take"); };
     flagE.onClick = [this] { if (app.focusRecent) app.focusRecent ("edit"); };
@@ -506,12 +508,10 @@ MainComponent::MainComponent (AppContext& a) : app (a), controllerBox (a)
     clickButton.setTooltip ("Click: a metronome on the outputs you choose, switched on and off by hand (lit while it runs; key I opens and closes the window)");
     clickButton.setClickingTogglesState (false);
     clickButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff1f7a46));
-    sessionButton.setClickingTogglesState (false);
-    sessionButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffd32f2f));
-    sessionButton.setTooltip ("Pre-Rec (session mode): the inputs are kept for the last 6 seconds all the time, so when you press Record the take starts 6 seconds BEFORE you pressed it. "
-                              "The red Pre-Rec square at the right of this bar shows it is on. Listening is never interrupted.");
-    // the three squares at the right of the bar are buttons
-    flagPre.onClick = [this] { app.setSessionMode (! app.sessionMode()); };
+    // the squares at the right of the bar are buttons (3.18.0: the first is the Rec | Pre button - two buttons in one)
+    flagPre.onRec = [this] { app.setRecMode (! app.recMode()); };
+    flagPre.onPre = [this] { app.setSessionMode (! app.sessionMode()); };
+    flagPre.onPreMenu = [this] { showPrePopup (app, flagPre); };
     flagCr.onClick  = [this]
     {
         if (! app.talkbackReady()) { juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Talkback mic", "Set up the talkback first: choose at least one control-room mic input and one talkback output pair in the Project Designer."); return; }
@@ -522,14 +522,22 @@ MainComponent::MainComponent (AppContext& a) : app (a), controllerBox (a)
         if (app.project.tbOutputs.empty()) { juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Talkback playback", "Set up a talkback output pair first in the Project Designer."); return; }
         app.remotePlayback();
     };
-    if (auto* st = app.props.getUserSettings()) if (st->getBoolValue ("sessionMode", false)) app.engine.setSessionMode (true);
+    if (auto* st = app.props.getUserSettings())
+    {
+        app.engine.setPreRollSeconds (st->getIntValue ("preRollSeconds", AudioEngine::kPreRollDefault));      // (3.18.0: before Pre is switched on, so the memory is made once)
+        if (st->getBoolValue ("sessionMode", false)) app.engine.setSessionMode (true);
+    }
     mediaButton.setTooltip ("A folder tree of where every file of the project is saved");
     preampsButton.setTooltip ("Set up the Anubis / Hapi / MT48 devices whose preamps Fermata controls");
-    bridgeButton.setTooltip ("Meter bridge: a meter for every driver input and output (key B)");
+    bridgeButton.setTooltip ("Meter bridge: a meter for every driver input and output (Ctrl+B)");
     mixersButton.setTooltip ("Mixers. Key M opens or closes the processing mixer.");
 
     projectBox.setFontHeight (15.0f);
     for (auto* b : { &projectBox, &rateBox, &depthBox, &diskBox }) addAndMakeVisible (b);
+    addAndMakeVisible (matchBox);                                    // 3.18.0: the take matching
+    matchBox.onClick = [this] { showTakeMatchPanel (app, matchBox); };
+    matchBox.setTooltip ("Take matching (for J and Find other versions): how many takes of the take windows switched on are analysed. It never runs while Rec is on. "
+                         "Click to see how far it has got, pause it, and switch it on or off for each take window.");
     addAndMakeVisible (controllerCaption); addAndMakeVisible (controllerBox); addAndMakeVisible (controllerLamp);     // the control surface (S1)
     controllerLamp.onClick = [this] { if (app.showSurfacePanel) app.showSurfacePanel(); };
     if (auto* st = app.props.getUserSettings())                     // the second recording drive (Project menu)
@@ -738,15 +746,16 @@ void MainComponent::resized()
         }
         line.removeFromLeft (8); headerSeps.push_back (line.getX()); line.removeFromLeft (9);      // (a thin line between the mark and the displays)
         // the displays: the project, rate and depth on the top row, the free disk space (and, while recording, the time left) under them
-        const int topW = juce::jmin (330, juce::jmax (180, projectBox.wantedWidth())) + 10 + rateBox.wantedWidth() + 10 + depthBox.wantedWidth();
+        const int topW = juce::jmin (330, juce::jmax (180, projectBox.wantedWidth())) + 10 + rateBox.wantedWidth() + 10 + depthBox.wantedWidth() + 10 + matchBox.wantedWidth();
         const int colW = juce::jmin (juce::jmax (topW, controllerRowWidth()), juce::jmax (200, line.getWidth() / 2));
         auto col = line.removeFromLeft (colW).withSizeKeepingCentre (colW, 54);
         {
             auto top = col.removeFromTop (26);
-            const int pw = juce::jmax (120, top.getWidth() - rateBox.wantedWidth() - depthBox.wantedWidth() - 20);
+            const int pw = juce::jmax (120, top.getWidth() - rateBox.wantedWidth() - depthBox.wantedWidth() - matchBox.wantedWidth() - 30);
             projectBox.setBounds (top.removeFromLeft (juce::jmin (pw, juce::jmax (180, projectBox.wantedWidth()))));
             top.removeFromLeft (10); rateBox.setBounds (top.removeFromLeft (rateBox.wantedWidth()).withSizeKeepingCentre (rateBox.wantedWidth(), 22));
             top.removeFromLeft (10); depthBox.setBounds (top.removeFromLeft (depthBox.wantedWidth()).withSizeKeepingCentre (depthBox.wantedWidth(), 22));
+            top.removeFromLeft (10); matchBox.setBounds (top.removeFromLeft (juce::jmin (top.getWidth(), matchBox.wantedWidth())).withSizeKeepingCentre (juce::jmin (top.getWidth(), matchBox.wantedWidth()), 22));
             col.removeFromTop (6);
             auto row2 = col.removeFromTop (22);                                   // the disk, then the control surface's CONTROLLER box and its lamp
             diskBox.setBounds (row2.removeFromLeft (juce::jmin (row2.getWidth(), diskBox.wantedWidth())));
@@ -847,9 +856,16 @@ void MainComponent::timerCallback()
 {
     if (startPanel != nullptr && app.hasProject()) startPanel.reset();           // a project was chosen
     else if (startPanel == nullptr && ! app.hasProject()) showStartPanel();      // the project was closed (Project > Close)
-    // The menu bar (with the Pre-Rec / C-R / P-B squares) is always there, in front of the other Fermata windows (not other programs), and goes with the main window when it is minimised.
+    // The menu bar (with the Rec | Pre button and the Talkback / Playback squares) is always there, in front of the other Fermata windows (not other programs), and goes with the main window when it is minimised.
     if (menuStrip != nullptr && getPeer() != nullptr && ! getPeer()->isMinimised() && ! menuStrip->isVisible()) menuStrip->setVisible (true);
-    flagPre.set (app.sessionMode()); flagCr.set (app.crMicOpen()); flagPb.set (app.tbPlaybackOn());
+    flagPre.setState (app.recMode(), app.sessionMode(), app.engine.getPreRollSeconds()); flagCr.set (app.crMicOpen()); flagPb.set (app.tbPlaybackOn());
+    {   // 3.18.0: the MATCHING box
+        auto look = takematchui::Look::Off;
+        const auto t = takematchui::boxText (app, look);
+        const int before = matchBox.wantedWidth();
+        matchBox.setText (t, look == takematchui::Look::Off ? theme::dimText : takematchui::colourOf (look));
+        if (matchBox.wantedWidth() != before) resized();
+    }
     if (const bool clickOn = app.engine.auxSounds().click.running(); clickButton.getToggleState() != clickOn) clickButton.setToggleState (clickOn, juce::dontSendNotification);
     {
         const auto kind = app.activeKind ? app.activeKind() : juce::String();
@@ -861,12 +877,6 @@ void MainComponent::timerCallback()
         const auto st = app.engine.ltcInStatus();
         ltcInLamp.set (app.project.ltcInput >= 0 && st.present, fpsName (st.fps, st.drop) + " fps");
         ltcOutLamp.set (app.project.ltcOutOn && app.engine.ltcOutActive(), LtcGenerator::formatName (app.project.ltcOutFormat));
-    }
-    if (sessionButton.getToggleState() != app.sessionMode())
-    {
-        sessionButton.setToggleState (app.sessionMode(), juce::dontSendNotification);
-        sessionButton.setButtonText (app.sessionMode() ? "PRE-REC ON" : "Pre-Rec");
-        repaint();
     }
     for (int i = 0; i < auditionButtons.size() && i + 1 < app.project.cueEnd(); ++i)
     {
@@ -1092,7 +1102,7 @@ void MainComponent::pickStyle (int style)
     for (auto* r : outputRows) r->refreshFromModel();
     resized(); repaint();
     if (menuStrip != nullptr) menuStrip->repaint();
-    for (auto* f : { &flagPre, &flagCr, &flagPb }) f->repaint();
+    for (StatusFlag* f : { static_cast<StatusFlag*> (&flagPre), &flagCr, &flagPb }) f->repaint();
     for (auto* f : { &flagT, &flagE, &flagM }) f->repaint();
     for (auto* b : { &projectBox, &rateBox, &depthBox, &diskBox }) b->repaint();
 }
@@ -1105,7 +1115,7 @@ void MainComponent::pickColour (int index)
     for (auto* r : outputRows) r->refreshFromModel();
     repaint();
     if (menuStrip != nullptr) menuStrip->repaint();
-    for (auto* f : { &flagPre, &flagCr, &flagPb }) f->repaint();
+    for (StatusFlag* f : { static_cast<StatusFlag*> (&flagPre), &flagCr, &flagPb }) f->repaint();
     for (auto* f : { &flagT, &flagE, &flagM }) f->repaint();
     for (auto* b : { &projectBox, &rateBox, &depthBox, &diskBox }) b->repaint();
 }

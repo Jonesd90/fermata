@@ -28,6 +28,14 @@ void say (const juce::String& title, const juce::String& text)
     juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon).withTitle (title).withMessage (text).withButton ("OK"), nullptr);
 }
 
+/** 3.18.0: heavy work asks first while Rec mode is on (AppContext::recModeHolds). True = held: the caller stops there. If the person switches Rec off,
+    'again' runs - with the window it was asked from, or nullptr if that has gone since. */
+static bool heldByRec (AppContext& app, const juce::String& what, juce::Component* parent, std::function<void (juce::Component*)> again)
+{
+    juce::Component::SafePointer<juce::Component> sp (parent);
+    return app.recModeHolds (what, [sp, again] { again (sp.getComponent()); });
+}
+
 /** The program's own little settings file for the things the offline windows remember (their size and place, the way they look). */
 static juce::PropertiesFile& uiPrefs()
 {
@@ -3339,6 +3347,8 @@ static void openImportDialog (AppContext& app, const juce::Uuid& wid, const juce
 
 void importTakes (AppContext& app, const juce::Uuid& wid, const juce::Array<juce::File>& files, juce::Component* parent, const juce::Uuid& intoEdit)
 {
+    if (heldByRec (app, intoEdit.isNull() ? "Importing takes" : "Importing into the edit", parent,
+                   [ap = &app, wid, files, intoEdit] (juce::Component* p) { importTakes (*ap, wid, files, p, intoEdit); })) return;
     if (! files.isEmpty()) { openImportDialog (app, wid, intoEdit, files, parent); return; }
     auto chooser = std::make_shared<juce::FileChooser> ("Choose the audio files of the session (select them all)", juce::File(), "*.wav;*.wave;*.bwf;*.aif;*.aiff;*.flac");
     juce::Component::SafePointer<juce::Component> safeParent (parent);
@@ -3756,6 +3766,7 @@ static std::vector<size_t> takeSel (const TakeWindowDef& w, const TakeGroup& g)
 
 void pitchTake (AppContext& app, const juce::Uuid& wid, juce::Component* parent)
 {
+    if (! gMakeProcessPage && heldByRec (app, "Pitch correction", parent, [ap = &app, wid] (juce::Component* p) { pitchTake (*ap, wid, p); })) return;
     auto* w = takeWin (app, wid); if (w == nullptr) return;
     double in = 0, out = 0; auto* g = markedTake (app, *w, in, out, "Pitch correction"); if (g == nullptr) return;
     if (app.engine.isRecording()) { say ("Pitch correction", "Stop recording first."); return; }
@@ -3791,6 +3802,7 @@ void pitchTake (AppContext& app, const juce::Uuid& wid, juce::Component* parent)
 
 void repairTake (AppContext& app, const juce::Uuid& wid, juce::Component* parent)
 {
+    if (heldByRec (app, "ReTouch, DeClick & Denoise", parent, [ap = &app, wid] (juce::Component* p) { repairTake (*ap, wid, p); })) return;
     const juce::String nm = "Spectral Repair";
     auto* w = takeWin (app, wid); if (w == nullptr) return;
     double in = 0, out = 0; auto* g = markedTake (app, *w, in, out, nm); if (g == nullptr) return;
@@ -3918,6 +3930,7 @@ void repairTake (AppContext& app, const juce::Uuid& wid, juce::Component* parent
 
 void pitchCurveTake (AppContext& app, const juce::Uuid& wid, juce::Component* parent)
 {
+    if (heldByRec (app, "The pitch curve", parent, [ap = &app, wid] (juce::Component* p) { pitchCurveTake (*ap, wid, p); })) return;
     auto* w = takeWin (app, wid); if (w == nullptr) return;
     double in = 0, out = 0; auto* g = markedTake (app, *w, in, out, "Pitch curve"); if (g == nullptr) return;
     if (app.engine.isRecording()) { say ("Pitch curve", "Stop recording first."); return; }
@@ -3998,6 +4011,7 @@ void pitchCurveTake (AppContext& app, const juce::Uuid& wid, juce::Component* pa
 /** The Pitch button of the take window: Pitch curve first, Pitch process on the second tab. */
 void pitchTabsTake (AppContext& app, const juce::Uuid& wid, juce::Component* parent)
 {
+    if (heldByRec (app, "Pitch correction", parent, [ap = &app, wid] (juce::Component* p) { pitchTabsTake (*ap, wid, p); })) return;
     gProcessPage.reset(); gMakeProcessPage = true; pitchTake (app, wid, parent); gMakeProcessPage = false;
     if (gProcessPage == nullptr) return;                                   // (a message was shown: nothing is marked)
     pitchCurveTake (app, wid, parent);
@@ -4009,6 +4023,7 @@ static EditDef* editOf (AppContext& app, const juce::Uuid& id) { return app.proj
 
 void pitchEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent)
 {
+    if (! gMakeProcessPage && heldByRec (app, "Pitch correction", parent, [ap = &app, eid] (juce::Component* p) { pitchEdit (*ap, eid, p); })) return;
     auto* e = editOf (app, eid); if (e == nullptr) return;
     if (e->fixIn < 0.0 || e->fixOut <= e->fixIn) { say ("Pitch correction", "First mark the part with keys 1 (IN) and 2 (OUT) in this window: put the white playhead where you want it and press the key."); return; }
     const double rate = e->sampleRate > 0 ? e->sampleRate : 48000.0;
@@ -4060,6 +4075,7 @@ static void openRepair (AppContext& app, const juce::Uuid& eid, juce::Component*
 
 void repairEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent)
 {
+    if (heldByRec (app, "ReTouch, DeClick & Denoise", parent, [ap = &app, eid] (juce::Component* p) { repairEdit (*ap, eid, p); })) return;
     const juce::String nm = "Spectral Repair";
     auto* e = editOf (app, eid); if (e == nullptr) return;
     if (e->fixIn < 0.0 || e->fixOut <= e->fixIn) { say (nm, "First mark the area with keys 1 (IN) and 2 (OUT) in this window: put the white playhead where you want it and press the key."); return; }
@@ -5112,6 +5128,7 @@ private:
 
 void noiseModeEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent)
 {
+    if (heldByRec (app, "Noise mode", parent, [ap = &app, eid] (juce::Component* p) { noiseModeEdit (*ap, eid, p); })) return;
     const juce::String nm = "Noise mode";
     auto* e = editOf (app, eid); if (e == nullptr) return;
     const double rate = e->sampleRate > 0 ? e->sampleRate : 48000.0;
@@ -5175,6 +5192,7 @@ static void openReharmoniser (AppContext& app, const juce::Uuid& eid, juce::Comp
 
 void reharmoniserEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent)
 {
+    if (heldByRec (app, "The ReHarmoniSer", parent, [ap = &app, eid] (juce::Component* p) { reharmoniserEdit (*ap, eid, p); })) return;
     const juce::String nm = "ReHarmoniSer";
     auto* e = editOf (app, eid); if (e == nullptr) return;
     if (app.engine.isRecording()) { say (nm, "Stop recording first."); return; }
@@ -5563,6 +5581,7 @@ static void openPitchCurve (AppContext& app, const juce::Uuid& eid, juce::Compon
 
 void pitchCurveEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent)
 {
+    if (heldByRec (app, "The pitch curve", parent, [ap = &app, eid] (juce::Component* p) { pitchCurveEdit (*ap, eid, p); })) return;
     auto* e = editOf (app, eid); if (e == nullptr) return;
     if (app.engine.isRecording()) { say ("Pitch curve", "Stop recording first."); return; }
     if (e->fixIn < 0.0 || e->fixOut <= e->fixIn) { say ("Pitch curve", "First mark the part with keys 1 (IN) and 2 (OUT) in this window: put the white playhead where you want it and press the key. The pitch line is drawn between the two marks."); return; }
@@ -5709,6 +5728,7 @@ static void openPitchCurve (AppContext& app, const juce::Uuid& eid, juce::Compon
 /** The Pitch button of the edit window: Pitch curve first, Pitch process on the second tab. */
 void pitchTabsEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent)
 {
+    if (heldByRec (app, "Pitch correction", parent, [ap = &app, eid] (juce::Component* p) { pitchTabsEdit (*ap, eid, p); })) return;
     gProcessPage.reset(); gMakeProcessPage = true; pitchEdit (app, eid, parent); gMakeProcessPage = false;
     if (gProcessPage == nullptr) return;                                   // (a message was shown: nothing is marked)
     pitchCurveEdit (app, eid, parent);
@@ -5811,6 +5831,7 @@ static std::unique_ptr<juce::FileChooser> copyChooser;
 
 void copyProject (AppContext& app, juce::Component* parent, bool saveAs)
 {
+    if (heldByRec (app, saveAs ? "Save as (it copies the audio)" : "Making a copy of the project", parent, [ap = &app, saveAs] (juce::Component* p) { copyProject (*ap, p, saveAs); })) return;
     if (app.engine.isRecording()) { say ("Recording", "Stop recording first."); return; }
     auto start = [&]
     {
@@ -6126,6 +6147,7 @@ static bool markWaiting (EditDef& e2, const juce::Uuid& rid, juce::int64 a, juce
 
 void exportForProcessingEdit (AppContext& app, const juce::Uuid& eid, juce::Component* parent)
 {
+    if (heldByRec (app, "Export for Processing", parent, [ap = &app, eid] (juce::Component* p) { exportForProcessingEdit (*ap, eid, p); })) return;
     const juce::String title = "Export for Processing";
     auto* e = editOf (app, eid); if (e == nullptr) return;
     if (e->fixIn < 0.0 || e->fixOut <= e->fixIn) { say (title, "First mark the part to send out with keys 1 (IN) and 2 (OUT) in this window: put the white playhead where you want it and press the key."); return; }
@@ -6256,6 +6278,7 @@ void exportForProcessingEdit (AppContext& app, const juce::Uuid& eid, juce::Comp
 
 void exportForProcessingTake (AppContext& app, const juce::Uuid& wid, juce::Component* parent)
 {
+    if (heldByRec (app, "Export for Processing", parent, [ap = &app, wid] (juce::Component* p) { exportForProcessingTake (*ap, wid, p); })) return;
     const juce::String title = "Export for Processing";
     auto* w = takeWin (app, wid); if (w == nullptr) return;
     double in = 0, out = 0; auto* g = markedTake (app, *w, in, out, title); if (g == nullptr) return;
@@ -6625,6 +6648,7 @@ private:
 
 void importAaf (AppContext& app, juce::Component* parent)
 {
+    if (heldByRec (app, "Importing an AAF", parent, [ap = &app] (juce::Component* p) { importAaf (*ap, p); })) return;
     auto chooser = std::make_shared<juce::FileChooser> ("Choose the AAF file", juce::File(), "*.aaf");
     juce::Component::SafePointer<juce::Component> safeParent (parent);
     chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [chooser, &app, safeParent] (const juce::FileChooser& fc)

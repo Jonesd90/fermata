@@ -594,7 +594,10 @@ private:
         if (r == 9)
         {
             auto safe = juce::Component::SafePointer<SlotButtons> (this);
-            app.plugins.startScan ([safe] { if (safe != nullptr) safe->refresh(); });
+            auto* appPtr = &app;
+            auto scanNow = [appPtr, safe] { appPtr->plugins.startScan ([safe] { if (safe != nullptr) safe->refresh(); }); };
+            if (app.recModeHolds ("A plug-in scan", scanNow)) return;          // (3.18.0: asks first while Rec is on)
+            scanNow();
             return;
         }
         if (r == 10) { showPluginManager (app); return; }

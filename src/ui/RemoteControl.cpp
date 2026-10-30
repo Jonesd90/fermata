@@ -66,6 +66,7 @@ void RemoteControlServer::execute (const remote::Command& c)
     else if (c.name == "playback") app.remotePlayback();
     else if (c.name == "mixer") app.remoteMixer (c.index);
     else if (c.name == "prerec") app.setSessionMode (! app.sessionMode());
+    else if (c.name == "recmode") app.setRecMode (! app.recMode());               // (3.18.0: the Rec half of the Rec | Pre button)
     else if (c.name == "hello") {}
     else if (app.hasProject())                                             // the Stream Deck + XL
     {
@@ -100,6 +101,7 @@ remote::State RemoteControlServer::collect() const
     s.crOpen = app.crMicOpen();
     s.pbOn = app.tbPlaybackOn();
     s.preRec = app.sessionMode();
+    s.recMode = app.recMode();
     for (int i = 0; i < 2; ++i) s.mixerOpen[i] = app.mixerOpenAt && app.mixerOpenAt (i);
     {
         const int alt = app.project.altMixerIndex();

@@ -145,7 +145,7 @@ int main (int argc, char** argv)
                 ++sends;
                 break;
             }
-            case 5: eng.setSessionMode (chance (50)); eng.servicePreRoll(); break;
+            case 5: eng.setSessionMode (chance (50)); if (chance (30)) eng.setPreRollSeconds (1 + (int) (rng() % 10)); eng.servicePreRoll(); break;     // (3.18.0: the Pre length changed too)
             case 6: (void) eng.mixerLatency (&mixA); (void) eng.offlineLatency(); (void) eng.recordedSeconds(); (void) eng.playbackSecondsSmooth(); break;
             case 7: eng.setAuditionMixer (chance (50) ? &mixB : nullptr); break;
             case 8: eng.setScopeSource (chance (50) ? (const void*) mixA.stripFor (mainId) : nullptr); { float l[4096], r[4096]; eng.readScope (l, r, 4096); } break;

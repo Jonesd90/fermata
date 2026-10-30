@@ -47,6 +47,7 @@
 #include "../src/core/Retime.h"
 #include "../src/core/AudioFormats.h"
 #include "../src/core/TextBytes.h"
+#include "../src/ui/TakeMatchService.h"
 #include <cstdio>
 #include <thread>
 
@@ -1628,6 +1629,8 @@ int main()
         auto c = remote::parseCommand ("{\"cmd\":\"talk\",\"down\":true}");
         CHECK (c.name == "talk" && c.down);
         CHECK (remote::parseCommand ("{\"cmd\":\"mixer\",\"index\":1}").index == 1);
+        CHECK (remote::parseCommand ("{\"cmd\":\"recmode\"}").name == "recmode");                  // (3.18.0: the Rec half of the Rec | Pre button)
+        { remote::State st; st.recMode = true; CHECK (juce::JSON::parse (st.toJson())["recMode"] == juce::var (true)); }
         CHECK (remote::parseCommand ("not json").name.isEmpty() && remote::parseCommand ("{\"cmd\":\"format c\"}").name.isEmpty());
         // 3.1.5: numbers from the wire are finite and within range - "nan" (which JUCE reads as a real NaN that passes every clamp) moves nothing,
         // a huge index is not cast to int as it stands (undefined), and a monitor command with no input touches no track
@@ -1820,7 +1823,7 @@ int main()
     }
 
     {
-        std::printf ("-- session mode: the take starts 6 s before Record; the listening stream carries on\n");
+        std::printf ("-- session mode (Pre): the take starts 5 s before Record (3.18.0: 1 to 10 s, chosen); the listening stream carries on\n");
         // (1) the pre-roll: the file starts preLen samples before the first block of the session, with no gap or repeat at the join
         Project q;
         q.projectFile = tmp.getChildFile ("Pre").getChildFile ("Pre.fermata");
@@ -1842,7 +1845,8 @@ int main()
         auto gidPre = e2.stopRecording();
         CHECK (e2.waitForFinishedTakes (10000)); e2.reapFinishedTakes();          // (the files are finished in the background since 2.67.1)
         auto* gPre = q.takeWindows.front()->findGroup (gidPre);
-        const juce::int64 preLen = 6 * 48000;
+        CHECK (e2.getPreRollSeconds() == 5);                               // (3.18.0: 5 s unless chosen otherwise; it was always 6)
+        const juce::int64 preLen = 5 * 48000;
         CHECK (gPre != nullptr && gPre->lengthSamples == preLen + 40 * Rig::block);
         if (gPre != nullptr && ! gPre->files.empty())
         {
@@ -1859,9 +1863,31 @@ int main()
                     const double want = 0.5 * std::sin (2.0 * 3.14159265358979 * 200.0 * (double) (posAtRecord - preLen + i) / 48000.0);
                     worst = juce::jmax (worst, std::abs (want - (double) b.getSample (0, i)));
                 }
-                CHECK (worst < 1e-5);                                      // every sample, 6 s before and 40 blocks after, in order
+                CHECK (worst < 1e-5);                                      // every sample, 5 s before and 40 blocks after, in order
             }
         }
+        // (1b) 3.18.0: the Pre length is chosen (1 to 10 whole seconds): a new length is a new memory, and the next take starts that far back
+        e2.setPreRollSeconds (0);  CHECK (e2.getPreRollSeconds() == 1);
+        e2.setPreRollSeconds (99); CHECK (e2.getPreRollSeconds() == 10);
+        e2.setPreRollSeconds (3);  CHECK (e2.getPreRollSeconds() == 3);
+        CHECK (e2.waitForPreRoll (5000));
+        r2.run (e2, 400);                                                  // more than 3 s of listening
+        CHECK (e2.startRecording (*q.takeWindows.front()).isEmpty());
+        e2.setPreRollSeconds (8);                                          // changed during the take: this take keeps its 3 s
+        r2.run (e2, 30);
+        auto gid3 = e2.stopRecording();
+        CHECK (e2.waitForFinishedTakes (10000)); e2.reapFinishedTakes();
+        auto* g3 = q.takeWindows.front()->findGroup (gid3);
+        CHECK (g3 != nullptr && g3->lengthSamples == 3 * 48000 + 30 * Rig::block);
+        CHECK (e2.getPreRollSeconds() == 8 && e2.waitForPreRoll (5000));     // the 8 s memory goes in after Stop
+        r2.run (e2, 800);
+        CHECK (e2.startRecording (*q.takeWindows.front()).isEmpty());
+        r2.run (e2, 20);
+        auto gid8 = e2.stopRecording();
+        CHECK (e2.waitForFinishedTakes (10000)); e2.reapFinishedTakes();
+        auto* g8 = q.takeWindows.front()->findGroup (gid8);
+        CHECK (g8 != nullptr && g8->lengthSamples == 8 * 48000 + 20 * Rig::block);
+        e2.setPreRollSeconds (5);
         // (2) with session mode off a take starts at the press, as before
         e2.setSessionMode (false);
         r2.run (e2, 10);
@@ -3704,6 +3730,7 @@ int main()
         expectW ("overdub", [&] { w.overdub = true; }, false);
         expectW ("markers", [&] { Marker m; m.id = juce::Uuid(); m.name = "Chorus"; m.seconds = 5.0; w.markers.push_back (m); }, false);
         expectW ("show markers", [&] { w.showMarkers = false; }, false);
+        expectW ("take matching switched on", [&] { w.takeMatching = true; }, false);    // (3.18.0: a setting, saved, never an undo step)
         // the edit: what is undone
         auto& r = e.regions[0];
         expectE ("name", [&] { e.name = "Renamed edit"; }, true);
@@ -11103,6 +11130,74 @@ int main()
         crashreport::prune (5);
         all = crashreport::allReports();
         CHECK (all.size() == 5 && all.getLast().getFileName().contains ("crash 2") && dir.getChildFile ("notes.txt").existsAsFile());
+        dir.deleteRecursively();
+    }
+
+    SECTION ("3.18.0 take matching is switched on per take window, and saved with it");
+    {
+        Project q;
+        auto& w = *q.takeWindows.front();
+        CHECK (! w.takeMatching);                                                           // off until switched on
+        { Project back; CHECK (back.fromVar (q.toVar()) && ! back.takeWindows.front()->takeMatching); }
+        CHECK (! juce::JSON::toString (q.takeWindowToVar (w)).contains ("takeMatching"));   // (an older Fermata sees nothing new)
+        w.takeMatching = true;
+        { Project back; CHECK (back.fromVar (q.toVar()) && back.takeWindows.front()->takeMatching); }
+        auto v = q.toVar();                                                                 // a project saved before 3.18.0 has no such field: off
+        if (auto* tws = v["takeWindows"].getArray()) for (auto& t : *tws) if (auto* d = t.getDynamicObject()) d->removeProperty ("takeMatching");
+        { Project back; CHECK (back.fromVar (v) && ! back.takeWindows.front()->takeMatching); }
+    }
+
+    SECTION ("3.18.0 take matching: only the take windows switched on, never while held, and how far it has got");
+    {
+        const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("fermata-takematch-318");
+        dir.deleteRecursively(); dir.createDirectory();
+        Project q;
+        auto& w = *q.takeWindows.front();
+        auto addTake = [&] (const juce::String& name)
+        {
+            TakeGroup g; g.id = juce::Uuid(); g.number = (int) w.groups.size() + 1; g.sampleRate = 48000.0; g.lengthSamples = 4 * 48000;
+            TakeFile f; f.file = makeToneWav (dir.getChildFile (name + ".wav"), 0.3, 4, false); f.numChannels = 1; f.trackName = "Main";
+            if (! q.tracks.empty()) f.trackId = q.tracks.front().id;
+            g.files.push_back (f);
+            w.groups.push_back (g);
+            return g.id;
+        };
+        const auto t1 = addTake ("a"), t2 = addTake ("b");
+        AudioEngine eng (q);
+        TakeMatchService tm (q, eng);
+        using St = TakeMatchService::State;
+        auto waitFor = [] (const std::function<bool()>& cond, int ms) { for (int t = 0; t < ms && ! cond(); t += 20) juce::Thread::sleep (20); return cond(); };
+        // off (as every window starts): nothing is analysed, even when a fingerprint is asked for
+        CHECK (! w.takeMatching && tm.fingerprintFor (t1) == nullptr);
+        tm.windowsChanged();
+        juce::Thread::sleep (300);
+        CHECK (tm.statusOf (t1).state == St::Unknown && tm.progress().windowsOn == 0 && tm.progress().total == 0);
+        // switched on while paused: queued, not touched
+        tm.setPaused (true);
+        w.takeMatching = true; tm.windowsChanged();
+        auto pr = tm.progress();
+        CHECK (pr.windowsOn == 1 && pr.total == 2 && pr.left() == 2 && pr.secondsLeft < 0.0);      // (no take done yet: the time left is not known)
+        juce::Thread::sleep (700);
+        CHECK (tm.statusOf (t1).state == St::Queued && tm.statusOf (t2).state == St::Queued);
+        // Rec mode holds it as well, even once resumed
+        tm.setRecHeld (true); tm.setPaused (false);
+        CHECK (tm.isHeld());
+        juce::Thread::sleep (700);
+        CHECK (tm.statusOf (t1).state == St::Queued && tm.statusOf (t2).state == St::Queued);
+        // let go: both are done, and nothing is left
+        tm.setRecHeld (false);
+        CHECK (waitFor ([&] { return tm.progress().left() == 0; }, 30000));
+        CHECK (tm.statusOf (t1).state == St::Ready && tm.statusOf (t2).state == St::Ready && tm.fingerprintFor (t1) != nullptr);
+        pr = tm.progress();
+        CHECK (pr.ready == 2 && pr.cannot == 0 && pr.nowTake.isNull() && pr.secondsLeft <= 0.0);
+        // switched off: a take recorded now is not queued; what was done stays usable (switched on again, it is there at once)
+        w.takeMatching = false; tm.windowsChanged();
+        const auto t3 = addTake ("c");
+        tm.takeFinished (t3);
+        juce::Thread::sleep (300);
+        CHECK (tm.statusOf (t3).state == St::Unknown && tm.fingerprintFor (t1) != nullptr && tm.progress().windowsOn == 0);
+        CHECK (tm.progress (&w).total == 3 && tm.progress (&w).ready == 2);                       // (one window asked for: on or not)
+        tm.stop();
         dir.deleteRecursively();
     }
 

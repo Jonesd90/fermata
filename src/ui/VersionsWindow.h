@@ -310,7 +310,8 @@ private:
         int found = 0, possible = 0; for (auto& r : rows) { if (r.pending) continue; if (r.possible) ++possible; else ++found; }
         juce::String s = found == 0 ? "No other version found" : found == 1 ? "1 version found" : juce::String (found) + " versions found";
         if (possible > 0) s += ", and " + juce::String (possible) + " possible (check by ear)";
-        if (waiting > 0) s += "; " + juce::String (waiting) + (waiting == 1 ? " take is" : " takes are") + " still being analysed";
+        if (waiting > 0) s += "; " + juce::String (waiting) + (waiting == 1 ? " take is" : " takes are") + " still to be analysed"
+                              + (app.recMode() ? " (held while Rec is on)" : app.takeMatch.isPaused() ? " (take matching is paused)" : "");      // (3.18.0)
         if (barLo > 0) s += "; searched only around bar" + (barHi > barLo ? "s " + juce::String (barLo) + "-" + juce::String (barHi) : " " + juce::String (barLo));
         if (leftOut > 0) s += "; " + juce::String (leftOut) + (leftOut == 1 ? " take does" : " takes do") + " not have those bars";
         if (noBars > 0) s += "; " + juce::String (noBars) + (noBars == 1 ? " take has" : " takes have") + " no bars entered (left out)";
@@ -462,6 +463,12 @@ inline void showVersions (AppContext& app, const juce::Uuid& editId, juce::Compo
     if (piece == nullptr) { fixtools::say ("Find other versions", "The marked part must lie within one piece of the main track (it runs across an edit point, or over a gap). Mark the part inside one piece."); return; }
     if (to - from < (juce::int64) (0.5 * e->sampleRate)) { fixtools::say ("Find other versions", "The marked part is too short to search for (half a second at least)."); return; }
     if (to - from > (juce::int64) (120.0 * e->sampleRate)) { fixtools::say ("Find other versions", "The marked part is too long to search for (two minutes at most)."); return; }
+    {   // 3.18.0: take matching is switched on per take window - this piece's take window needs it
+        juce::Uuid wid = piece->windowId;
+        if (app.project.findTakeWindow (wid) == nullptr)
+            for (auto& w : app.project.takeWindows) if (w->findGroup (piece->takeId) != nullptr) { wid = w->id; break; }
+        if (app.project.findTakeWindow (wid) != nullptr && app.takeMatchingUnavailable (wid, "Find other versions")) return;
+    }
     if (app.isPlaying()) app.stopPlayback();
     fixtools::launchDialog (std::make_unique<VersionsComponent> (app, editId), "Find other versions", parent);
 }

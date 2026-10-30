@@ -1402,6 +1402,10 @@ void MasteringComponent::startDdpExport()
 
 void MasteringComponent::startJob (const MasterJobSpec& spec, int kind)
 {
+    {   // 3.18.0: asks first while Rec is on
+        juce::Component::SafePointer<MasteringComponent> safe (this);
+        if (app.recModeHolds (kind == 1 ? "Making the DDP" : "The export", [safe, spec, kind] { if (safe != nullptr) safe->startJob (spec, kind); })) return;
+    }
     lastJobKind = kind; lastWasDisc = kind == 1;
     auto& status = kind == 1 ? ddpStatus : kind == 2 ? formStatus : vmStatus;
     status.setColour (juce::Label::textColourId, theme::text);

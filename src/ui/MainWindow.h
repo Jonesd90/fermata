@@ -159,10 +159,75 @@ public:
         g.setFont (juce::FontOptions (menuStyle().font - 1.0f, juce::Font::bold));
         g.drawText (label, getLocalBounds(), juce::Justification::centred, false);
     }
-    int wantedWidth() const { return label.length() <= 1 ? 0 : menuTextW (label, menuStyle().font - 1.0f, true) + juce::jmax (10, menuStyle().pad + 4); }
+    virtual int wantedWidth() const { return label.length() <= 1 ? 0 : menuTextW (label, menuStyle().font - 1.0f, true) + juce::jmax (10, menuStyle().pad + 4); }
 private:
     juce::String label; juce::Colour lit; bool isOn = false;
 };
+
+/** 3.18.0: the Rec | Pre button, where the Pre-Rec square was: one rectangle in two halves.
+    Rec (left): Rec mode - recording / tracking, the computer kept for the recording (no take matching, heavy work asks first); Record needs it.
+    Lit: the left half red, and the right half's outline red too. Always off when Fermata starts.
+    Pre (right): the take starts a few seconds before Record was pressed (what Pre-Rec did). Lit: green. Right-click: its length (1 to 10 s). */
+class RecPreFlag : public StatusFlag
+{
+public:
+    RecPreFlag() : StatusFlag ("Rec|Pre", juce::Colour (0xffe53935), {}) {}
+    void setState (bool rec, bool pre, int preSecs)
+    {
+        if (rec != recOn || pre != preOn || preSecs != secs) { recOn = rec; preOn = pre; secs = preSecs; repaint(); }
+    }
+    std::function<void()> onRec, onPre, onPreMenu;
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu()) { if (onPreMenu) onPreMenu(); return; }
+        if (e.x >= getWidth() / 2) { if (onPre) onPre(); }
+        else if (onRec) onRec();
+    }
+    juce::MouseCursor getMouseCursor() override { return juce::MouseCursor::PointingHandCursor; }
+    juce::String getTooltip() override
+    {
+        if (getMouseXYRelative().x >= getWidth() / 2)
+            return "Pre (green when on): the inputs are kept for the last " + juce::String (secs) + " seconds all the time, so a take starts " + juce::String (secs)
+                 + " seconds BEFORE you press Record - a start is never missed. Works with or without Rec. Click to switch it on or off; right-click to change how many seconds (1 to 10).";
+        return "Rec (red when on): Rec mode, for recording / tracking. Fermata keeps the computer for the recording: the take matching is held, and heavy work "
+               "(a bounce, an export, a process window, a plug-in scan) asks first. Record needs it. Off every time Fermata starts. Click to switch it on or off.";
+    }
+    int wantedWidth() const override { return 2 * (menuTextW ("Rec", menuStyle().font - 1.0f, true) + juce::jmax (12, menuStyle().pad + 6)); }
+    void paint (juce::Graphics& g) override
+    {
+        const auto red = juce::Colour (0xffe53935), green = juce::Colour (0xff2e9e4f);
+        auto b = getLocalBounds().toFloat().reduced (1.0f, 4.0f);
+        const float mid = (float) (getWidth() / 2);
+        const auto leftHalf = juce::Rectangle<float> (b.getX(), b.getY(), mid - b.getX(), b.getHeight());
+        const auto rightHalf = juce::Rectangle<float> (mid, b.getY(), b.getRight() - mid, b.getHeight());
+        g.setColour (theme::field); g.fillRoundedRectangle (b, 4.0f);
+        auto fillHalf = [&] (juce::Rectangle<float> half, juce::Colour c)
+        {
+            juce::Graphics::ScopedSaveState s (g);
+            g.reduceClipRegion (half.toNearestInt());
+            g.setColour (c); g.fillRoundedRectangle (b, 4.0f);
+        };
+        if (recOn) fillHalf (leftHalf, red);
+        if (preOn) fillHalf (rightHalf, green);
+        g.setColour (theme::border); g.drawRoundedRectangle (b.reduced (0.5f), 4.0f, 1.0f);
+        if (recOn)                                        // the right half's outline goes red with Rec
+        {
+            juce::Graphics::ScopedSaveState s (g);
+            g.reduceClipRegion (rightHalf.expanded (0.0f, 2.0f).toNearestInt());
+            g.setColour (red); g.drawRoundedRectangle (b.reduced (1.0f), 4.0f, 2.0f);
+        }
+        g.setColour (recOn ? red : theme::border); g.fillRect (mid - 0.5f, b.getY(), 1.0f, b.getHeight());     // (the line between the halves)
+        g.setFont (juce::FontOptions (menuStyle().font - 1.0f, juce::Font::bold));
+        g.setColour (recOn ? juce::Colours::white : theme::dimText.withAlpha (0.6f));
+        g.drawText ("Rec", leftHalf, juce::Justification::centred, false);
+        g.setColour (preOn ? juce::Colours::white : theme::dimText.withAlpha (0.6f));
+        g.drawText ("Pre", rightHalf, juce::Justification::centred, false);
+    }
+private:
+    bool recOn = false, preOn = false;
+    int secs = 5;
+};
+
 
 /** The small light just after Take Window, Edit Window and Mixer in the menu bar: green = a window of that kind is the one you are working in, orange = one is
     open, red = open but minimised, unlit = none is open. Click it to bring back the one you used last. */
@@ -217,6 +282,16 @@ private:
     juce::String caption, text;
     juce::Colour colour;
     float fontH = 13.0f;
+};
+
+/** 3.18.0: the MATCHING box in the top row (what the take matching is doing); a click opens its panel. */
+class MatchBox : public InfoBox
+{
+public:
+    MatchBox() : InfoBox ("MATCHING") { setInterceptsMouseClicks (true, false); }
+    std::function<void()> onClick;
+    void mouseDown (const juce::MouseEvent&) override { if (onClick) onClick(); }
+    juce::MouseCursor getMouseCursor() override { return juce::MouseCursor::PointingHandCursor; }
 };
 
 /** A lamp with a label in the menu bar: red when nothing is happening, green when LTC is arriving / being sent, with the frame rate beside it. Click for its menu. */
@@ -304,7 +379,7 @@ private:
     AppContext& app;
     MenuBarButton projectButton { "Project" }, audioButton { "Audio settings" }, preampsButton { "Preamps" }, designButton { "Project Designer" },
                   takesButton { "Take Window" }, editsButton { "Edit Window" }, mixersButton { "Mixer" }, bridgeButton { "Meter bridge" }, mediaButton { "Media" }, masteringButton { "Mastering" },
-                  sessionButton { "Pre-Rec" }, takeDisplayButton { "Take Display" }, organiserButton { "Display Organiser" }, pitchPipeButton { "Pitch pipe" }, clickButton { "Click" },
+                  takeDisplayButton { "Take Display" }, organiserButton { "Display Organiser" }, pitchPipeButton { "Pitch pipe" }, clickButton { "Click" },
                   helpButton { "Help" };
     int menuBarH = 34;
     std::unique_ptr<MenuBarStrip> menuStrip;                  // declared after the buttons: it goes first when this window is destroyed
@@ -318,8 +393,8 @@ private:
             ltcOutLamp { "LTC OUT", "LTC out: green = Fermata is sending LTC. Click to choose the output channel (route it in Aneman to the Hapi TC output), the frame rate and the start time." };
     void showLtcInMenu();
     void showLtcOutMenu();
-    StatusFlag flagPre { "Pre-Rec", juce::Colour (0xffe53935), "Pre-Rec (red): session mode is ON - the inputs are kept for the last 6 seconds, so a take starts 6 seconds before you press Record. Click it to switch Pre-Rec on or off." },
-               flagCr  { "Talkback", juce::Colour (0xffa83cff), "Talkback (purple): the talkback mic is OPEN - you are talking to the talkback speakers. Click it (or press numpad +) to open or close the mic (it stays as you leave it)." },
+    RecPreFlag flagPre;                                       // 3.18.0: the Rec | Pre button (it was the Pre-Rec square)
+    StatusFlag flagCr  { "Talkback", juce::Colour (0xffa83cff), "Talkback (purple): the talkback mic is OPEN - you are talking to the talkback speakers. Click it (or press numpad +) to open or close the mic (it stays as you leave it)." },
                flagPb  { "Playback", juce::Colour (0xffffd21f), "Playback (yellow): recorded material only is being played to the talkback output. Click it (or press numpad -) to switch it on or off." };
     // little squares to the right of Take Window / Edit Window / Mixer: bring back the one you used last (lit while that kind of window is the one you are working in)
     WindowLamp flagT { "Take windows - green: the one you are working in, orange: open, red: minimised, unlit: none open. Click to bring back the take window you used last (it opens if it was closed)." },
@@ -327,6 +402,7 @@ private:
                flagM { "Mixers - green: the one you are working in, orange: open, red: minimised, unlit: none open. Click to bring back the mixer you used last (it opens if it was closed)." };
     WindowLamp* flagFor (const juce::Component* b) { return b == &takesButton ? &flagT : b == &editsButton ? &flagE : b == &mixersButton ? &flagM : nullptr; }
     InfoBox projectBox, rateBox { "RATE" }, depthBox { "DEPTH" }, diskBox { "DISK FREE" };
+    MatchBox matchBox;                                         // 3.18.0: what the take matching is doing (a click opens its panel)
     /** The control surface (Avid S1): which mixer it controls, and a lamp (lit while it is connected) that opens the Mixer controller window. */
     struct CaptionLabel : public juce::Component
     {

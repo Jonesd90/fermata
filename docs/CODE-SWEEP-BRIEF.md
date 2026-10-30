@@ -14,7 +14,7 @@
 
 Fermata is a classical-music recording and editing DAW for Windows: JUCE 8, C++17, MSVC, built by GitHub Actions, namespace `td`.
 
-The first sweep (areas A-F, versions 3.1.2 to 3.1.7, 26 October 2026) covered everything up to 3.1.1. Since then about 30 builds (3.2.0 to 3.17.2) have added a lot, each tested on its own:
+The first sweep (areas A-F, versions 3.1.2 to 3.1.7, 26 October 2026) covered everything up to 3.1.1. Since then about 30 builds (3.2.0 to 3.18.0) have added a lot, each tested on its own:
 - the recording monitor, video export, AAF export;
 - J and Find other versions, with take matching (`TakeMatch`, `TakeMatchService`);
 - consonants, Noise mode / denoise, and the live sample-rate converter;
@@ -22,7 +22,8 @@ The first sweep (areas A-F, versions 3.1.2 to 3.1.7, 26 October 2026) covered ev
 - CPU core reservation on hybrid CPUs, the Help menu, crash reports and the helper-process freeze report;
 - the closing log and closing safety net, the opening log, and "ignore missing files permanently";
 - "the edit always begins at 0:00" (`EditDef::anchorStart`, `AppContext::anchorEdits`) with "leave space before the first edit";
-- the B / Ctrl+B swap.
+- the B / Ctrl+B swap;
+- Rec mode and the Rec | Pre button, the Pre length (1-10 s), and take matching switched on per take window with Pause and progress (3.18.0: `AppContext::setRecMode` / `recModeHolds`, `TakeMatchService::windowsChanged` / `setPaused` / `setRecHeld` / `progress`). Check every heavy job really asks in Rec mode, and that nothing else starts heavy work by itself.
 
 This sweep reads across all of it, and back into the older code it leans on.
 

@@ -72,6 +72,7 @@ struct TakeWindowDef
     std::vector<Marker> markers;                  // quick markers along the top of this window (not part of undo)
     std::vector<juce::Uuid> hiddenTracks;         // tracks removed from THIS window's view (other windows and the mixers are not touched)
     int pieceBars = 0;                            // how many bars the piece has (the take chart, 3.8.0); 0 = not entered (the chart then runs to the last bar any take reaches)
+    bool takeMatching = false;                    // 3.18.0: this window's takes are analysed for J and Find other versions (off until switched on; a setting, not part of undo)
 
     bool isHidden (const juce::Uuid& trackId) const
     {

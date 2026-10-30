@@ -1752,9 +1752,10 @@ struct ScrollRepaintViewport : public juce::Viewport
     void visibleAreaChanged (const juce::Rectangle<int>&) override { if (auto* c = getViewedComponent()) c->repaint(); }
 };
 
-TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) : app (a), windowId (wid), recordLamps (a), barMap (a)
+TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) : app (a), windowId (wid), recordLamps (a), matchLamp (a, wid), barMap (a)
 {
     addAndMakeVisible (recordLamps);
+    addAndMakeVisible (matchLamp);
     addAndMakeVisible (barMap); barMap.windowId = wid; barMap.onBarClicked = [this] (int bar) { goToBar (bar); };
     barMap.onLabelClicked = [this] { toggleTakeChart(); };              // (3.8.0: BARS drops the take chart down)
     barMap.onAskBars = [this] { askPieceBars(); };                       // (right-click: how many bars the piece has)
@@ -2017,6 +2018,8 @@ void TakeWindowComponent::resized()
         // the recording monitor's three lamps at the right end of the row (3.2.0): always there, so the state of the drives and the device is a glance away
         const int lampsW = juce::jmin (RecordLamps::idealWidth (row.getHeight()), row.getWidth() / 2);
         recordLamps.setBounds (row.removeFromRight (lampsW));
+        row.removeFromRight (4);
+        matchLamp.setBounds (row.removeFromRight (juce::jmin (TakeMatchLamp::idealWidth (row.getHeight()), row.getWidth() / 3)));     // (3.18.0)
         row.removeFromRight (8);
         markLabel.setBounds (row); statusLabel.setBounds (row);
     }
@@ -2477,6 +2480,7 @@ void TakeWindowComponent::jumpToSamePlace (bool forward)
     const double now = transportNow();
     const TakeGroup* cur = w->takeAt (now);
     if (cur == nullptr) { app.setNotice ("Put the playhead in a take first: J finds the same place in the next take, Shift + J in the one before."); return; }
+    if (app.takeMatchingUnavailable (windowId, "J (the same place in another take)")) return;             // (3.18.0: switched on per take window)
     const double inTake = now - cur->startSeconds;
     auto fpA = app.takeMatch.fingerprintFor (cur->id);
     if (fpA == nullptr)
@@ -2484,7 +2488,9 @@ void TakeWindowComponent::jumpToSamePlace (bool forward)
         const auto st = app.takeMatch.statusOf (cur->id);
         app.setNotice (st.state == TakeMatchService::State::Analysing ? "This take is still being analysed (" + juce::String (juce::roundToInt (st.progress * 100.0f)) + " %): try again in a moment."
                      : st.state == TakeMatchService::State::NoAudio || st.state == TakeMatchService::State::Failed ? "This take cannot be matched: " + st.why + "."
-                     : "This take is waiting to be analysed: try again in a moment.");
+                     : app.recMode() ? juce::String ("This take is not analysed yet, and take matching is held while Rec is on: switch Rec off to let it carry on.")
+                     : app.takeMatch.isPaused() ? juce::String ("This take is not analysed yet, and take matching is paused: resume it with the MATCHING box in the main window.")
+                     : juce::String ("This take is waiting to be analysed: try again in a moment."));
         return;
     }
     // the other takes in timeline order, from the next (or the one before) outwards; duds are passed over
@@ -2514,8 +2520,9 @@ void TakeWindowComponent::jumpToSamePlace (bool forward)
         }
         skipped.add (w->displayName (*cand) + " (" + m.why + ")");
     }
+    const juce::String held = app.recMode() ? " - held while Rec is on" : app.takeMatch.isPaused() ? " - take matching is paused" : "";      // (3.18.0)
     if (skipped.isEmpty() && waiting == 0) app.setNotice (forward ? "No take after this one to jump to." : "No take before this one to jump to.");
-    else app.setNotice ("No " + juce::String (forward ? "later" : "earlier") + " take has this place" + (waiting > 0 ? " yet (" + juce::String (waiting) + (waiting == 1 ? " take is" : " takes are") + " still being analysed)" : juce::String())
+    else app.setNotice ("No " + juce::String (forward ? "later" : "earlier") + " take has this place" + (waiting > 0 ? " yet (" + juce::String (waiting) + (waiting == 1 ? " take is" : " takes are") + " still to be analysed" + held + ")" : juce::String())
                         + (skipped.isEmpty() ? juce::String (".") : ": " + skipped.joinIntoString ("; ") + "."));
 }
 

@@ -372,6 +372,8 @@ void BounceComponent::start()
 {
     if (job != nullptr) { job->cancel(); status.setText ("Cancelling...", juce::dontSendNotification); return; }
     if (app.engine.isRecording()) { showError ("Bounce Out", "Stop recording first."); return; }
+    { juce::Component::SafePointer<BounceComponent> safe (this);
+      if (app.recModeHolds ("The bounce", [safe] { if (safe != nullptr) safe->start(); })) return; }            // (3.18.0: asks first while Rec is on)
     BounceSettings bs;
     juce::String err;
     if (! buildSettings (bs, err)) { status.setText (err, juce::dontSendNotification); status.setColour (juce::Label::textColourId, theme::warn); return; }

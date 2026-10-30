@@ -1396,6 +1396,7 @@ var Project::takeWindowToVarIn (const TakeWindowDef& w, const juce::File& base)
     if (! w.markers.empty()) put (o, "markers", markersToVar (w.markers));
     if (! w.showMarkers) put (o, "showMarkers", false);
     if (w.pieceBars > 0) put (o, "pieceBars", w.pieceBars);                // (3.8.0: the take chart)
+    if (w.takeMatching) put (o, "takeMatching", true);                    // (3.18.0: switched on for this window; older projects: off)
     juce::Array<var> gs;
     for (auto& g : w.groups)
     {
@@ -1816,6 +1817,7 @@ bool Project::fromVar (const var& root)
             w->showLtc = v.hasProperty ("showLtc") && (bool) v["showLtc"];
             markersFromVar (v["markers"], w->markers); w->showMarkers = v["showMarkers"].isVoid() ? true : (bool) v["showMarkers"];
             w->pieceBars = juce::jmax (0, (int) v["pieceBars"]);
+            w->takeMatching = v.hasProperty ("takeMatching") && (bool) v["takeMatching"];
             if (auto* hid = v["hiddenTracks"].getArray()) for (auto& h : *hid) w->hiddenTracks.push_back (juce::Uuid (h.toString()));
             if (auto* gs = v["groups"].getArray())
                 for (auto& gv : *gs)
@@ -2089,7 +2091,7 @@ juce::uint64 Project::saveHash (const TakeWindowDef& w)
     UndoHasher h; h.mix (undoHash (w));                    // everything the history looks at, plus the view state that is saved with the window
     for (auto& g : w.groups) { h.add (g.lengthSamples); h.add (g.overruns); h.add (g.lostSamples); h.add (g.writeFailed); h.add (g.verified); }     // (the recorder's fields: saved, not undone)
     h.add (w.editTake); h.add (w.editIn); h.add (w.editOut); h.count (w.editTracks.size()); for (auto& t : w.editTracks) h.add (t);
-    h.add (w.cursorTake); h.add (w.cursorSeconds); h.add (w.playheadSeconds); h.add (w.overdub); h.add (w.showMarkers);
+    h.add (w.cursorTake); h.add (w.cursorSeconds); h.add (w.playheadSeconds); h.add (w.overdub); h.add (w.showMarkers); h.add (w.takeMatching);
     h.count (w.hiddenTracks.size()); for (auto& t : w.hiddenTracks) h.add (t);
     h.count (w.markers.size()); for (auto& m : w.markers) { h.add (m.id); h.add (m.name); h.add (m.seconds); }
     return h.h;
@@ -2114,7 +2116,7 @@ void strip (const var& o, std::initializer_list<const char*> keys)
 {
     if (auto* d = o.getDynamicObject()) for (auto* k : keys) d->removeProperty (juce::Identifier (k));
 }
-const std::initializer_list<const char*> kTakeViewKeys = { "editTake", "editIn", "editOut", "editTracks", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub", "markers", "showMarkers" };
+const std::initializer_list<const char*> kTakeViewKeys = { "editTake", "editIn", "editOut", "editTracks", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub", "markers", "showMarkers", "takeMatching" };
 const std::initializer_list<const char*> kTakeMachineKeys = { "length", "overruns", "lost", "writeFailed", "verified" };     // per take: the recorder's, not the person's (3.1.4)
 const std::initializer_list<const char*> kEditViewKeys = { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex", "markers", "feedback", "showFeedback", "showMarkers", "laneRows", "showGuide" };
 }

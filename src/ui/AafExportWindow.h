@@ -100,6 +100,8 @@ private:
     {
         if (job != nullptr) { job->cancel(); say ("Cancelling...", false); return; }
         if (app.engine.isRecording()) { say ("Stop recording first.", true); return; }
+        { juce::Component::SafePointer<AafExportComponent> safe (this);
+          if (app.recModeHolds ("The AAF export", [safe] { if (safe != nullptr) safe->run(); })) return; }        // (3.18.0: asks first while Rec is on)
         auto* e = app.project.findEdit (editId);
         if (e == nullptr) { say ("The edit no longer exists.", true); return; }
         aafexport::Settings st;

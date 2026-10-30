@@ -22,7 +22,7 @@ inline const std::vector<Line>& lines()
         { "Everywhere", "", "In the main window and every window on the desk (take, edit, Trim, mixer, meter bridge ...), except while you are typing in a box: the keys then type. The repair, pitch, ReHarmoniSer and ReTimEr windows, plug-in windows and the Take Display screens have keys of their own, further down." },
         { "Everywhere", "Space", "Play or stop the take or edit window you used last, from any window that has no play of its own." },
         { "Everywhere", "Space", "While a take is recording: stop the recording, from every window." },
-        { "Everywhere", "R", "Start recording into the take window you used last, if it is open (with no take window open, R does nothing). In the edit window R butts pieces together, in ReTouch and Noise mode it does the ReTouch, on the pitch curve it previews; in ReTimEr, ReHarmoniSer and plug-in windows it does nothing." },
+        { "Everywhere", "R", "Start recording into the take window you used last, if it is open (with no take window open, R does nothing). Recording needs Rec mode (the Rec half of the Rec | Pre button): without it, a warning offers to switch it on. In the edit window R butts pieces together, in ReTouch and Noise mode it does the ReTouch, on the pitch curve it previews; in ReTimEr, ReHarmoniSer and plug-in windows it does nothing." },
         { "Everywhere", "M", "Open or close the mixer: the edit's own mixer while you work in an edit or its Trim window, otherwise the processing mixer. If it is open but behind other windows, M brings it forward." },
         { "Everywhere", "Ctrl+B", "Open or close the meter bridge." },
         { "Everywhere", "U", "Open or close the pitch pipe (a minimised one comes back)." },
@@ -32,6 +32,8 @@ inline const std::vector<Line>& lines()
         { "Everywhere", "", "Keys pressed in the mixer, phase scope, meter bridge, pitch pipe, click, Media, Take Display, Display Organiser, Align and HotKeys windows go on to the take or edit window you used last, so Space, 1, 2, L and the rest work from there too." },
 
         // ---------------------------------------------------------------------------------------------------- main window
+        { "Main window", "click", "The Rec | Pre button in the menu bar: Rec (left half) switches Rec mode on or off - recording / tracking, nothing heavy in the background; Pre (right half) switches the lead-in on or off. Right-click: how many seconds Pre keeps (1 to 10)." },
+        { "Main window", "click", "The MATCHING box (top row): how far the take matching has got, Pause / Resume, and its switch for every take window." },
         { "Main window", "Enter", "In an input or output name box: done, the name is kept." },
         { "Main window", "Esc", "In a name box: back to the name it had." },
         { "Main window", "Tab", "In a name box: on to the next one, to name the inputs one after another." },
@@ -42,7 +44,7 @@ inline const std::vector<Line>& lines()
 
         // ---------------------------------------------------------------------------------------------------- take window
         { "Take window", "Space", "Play or stop from the playhead. With Loop on and marks 1 and 2 set: round and round the marked part." },
-        { "Take window", "R", "Start recording into this take window." },
+        { "Take window", "R", "Start recording into this take window (in Rec mode: without it, a warning offers to switch it on)." },
         { "Take window", "1 / 2", "Mark 1 / mark 2 at the playhead, in the take under it." },
         { "Take window", "P", "Marks 1 and 2 round the whole of the selected take." },
         { "Take window", "5", "Take marks 1 and 2 away." },
@@ -52,7 +54,8 @@ inline const std::vector<Line>& lines()
         { "Take window", "D", "Mark the selected takes as duds, or take the mark off again (while recording: the take being recorded)." },
         { "Take window", "L", "Loop on / off." },
         { "Take window", "C", "Scroll so the playhead is in the middle of the window (the zoom stays)." },
-        { "Take window", "J / Shift+J", "The same place in the music in the next / the previous take (found by matching the takes' harmony; duds are passed over; while playing, play goes on from there)." },
+        { "Take window", "J / Shift+J", "The same place in the music in the next / the previous take (found by matching the takes' harmony; duds are passed over; while playing, play goes on from there). Needs take matching switched on for the window (the MATCHING lamp in its marks row)." },
+        { "Take window", "click / right-click", "The MATCHING lamp at the right of the marks row: switch take matching on or off for this window / how far it has got, Pause, every window's switch." },
         { "Take window", "Home / End", "Go to the start / to the end of the last take." },
         { "Take window", "Left / Right", "Zoom out / in, round the playhead." },
         { "Take window", "Shift+Left / Shift+Right", "Move the playhead 10 ms earlier / later." },
@@ -132,7 +135,7 @@ inline const std::vector<Line>& lines()
         { "Edit window: with the mouse", "double-click", "A piece: the Trim window, on the join before it." },
         { "Edit window: with the mouse", "double-click", "A numbered flag: the Trim window, on that join." },
         { "Edit window: with the mouse", "right-click", "A piece: volume changes (to the next edit, between marks 1 and 2, between the fades), remove them, delete an overdub, re-draw the waveform." },
-        { "Edit window: with the mouse", "right-click", "A piece, with marks 1 and 2 inside it: Find other versions - every place in the take window's takes where the marked music was played (\"possible\" ones: a false start, or the same notes elsewhere); Audition plays each in place, Use this one puts it in (everything after moves to fit; Ctrl+Z takes it out)." },
+        { "Edit window: with the mouse", "right-click", "A piece, with marks 1 and 2 inside it: Find other versions - every place in the take window's takes where the marked music was played (\"possible\" ones: a false start, or the same notes elsewhere); Audition plays each in place, Use this one puts it in (everything after moves to fit; Ctrl+Z takes it out). Needs take matching switched on for that take window." },
         { "Edit window: with the mouse", "right-click", "A track name: colour, remove tracks from this edit." },
         { "Edit window: with the mouse", "right-click", "The visual guide: move its start (to 0:00 or the playhead), hide it, remove it." },
         { "Edit window: with the mouse", "right-click or Shift+click or Ctrl+click", "An automation point (Automation on): delete it." },

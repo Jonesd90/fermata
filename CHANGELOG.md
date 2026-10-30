@@ -6,6 +6,19 @@ Version numbers are MAJOR.MINOR.PATCH (for example 2.1.3). The number is set in 
 - **MINOR** (2.1.0, 2.2.0 ...): a new feature or a visible change.
 - **MAJOR** (3.0.0 ...): a large change in how the program works.
 
+## 3.18.0
+- **Rec | Pre - one button, two halves** (where the Pre-Rec square was, at the right of the menu bar).
+  - **Rec** (left half, red when on) puts Fermata into **Rec mode**, for recording and tracking: the computer is kept for the recording. The take matching stops (it carries on by itself when Rec is switched off), and heavy work asks first - a bounce, an export (mastering, DDP, AAF, video, Export for Processing), the ReTimEr, the process windows (pitch, ReTouch / DeClick / Denoise, Noise mode, ReHarmoniSer), a plug-in scan, an import, Save as - offering "Switch Rec off and start". With Rec on, the right half's outline goes red too.
+  - **Record needs Rec mode.** Pressing Record (R, the button or the Stream Deck) without it shows a warning that offers "Switch Rec on and record". Rec is always off when Fermata starts, and cannot be switched off while a take is recording.
+  - **Pre** (right half, green when on) is what Pre-Rec was: the take starts a few seconds before you press Record. It works with or without Rec.
+- **Pre's length: 1 to 10 seconds, 5 unless you change it** (it was always 6). Right-click the Pre half for a slider (also in Audio settings). Remembered on this PC. Changed during a take, it applies from the next one.
+- **Take matching is now under your control - nothing heavy runs in secret.**
+  - It is **switched on per take window** and **off until you switch it on** (saved with the project). Switch it on for the pieces you are editing: click the new **MATCHING** lamp at the right of a take window's marks row, or use the panel below. Work already done for a window is used at once when it is switched on again.
+  - The **MATCHING box** in the main window's top row says what it is doing: OFF, 12 / 26, PAUSED, HELD - REC, READY. Click it for the panel: how many takes are done, the take being analysed, roughly how long is left, **Pause / Resume**, and a switch for every take window.
+  - **It never runs while Rec is on.**
+  - J and Find other versions in a take window that has it switched off say so and offer to switch it on.
+- The meter bridge button's tip now says Ctrl+B (it still said B).
+
 ## 3.17.2
 - **The real cause of the slow closing, the slow opening and the busy core is fixed.** The background take matching (which fingerprints each take for Find other versions) had a fault: when it had nothing to do, it did not rest - it made up a take that does not exist, "analysed" it, filed it away, and went round again at once, thousands of times a second, for as long as Fermata was open. That is the processor core your log showed busy at 94-100 % with nothing happening, the memory growing to tens of gigabytes (22 GB in one case, 49 % of memory in another), the disk busy, and the long wait on closing while all of it was given back. Now it rests until a take really needs analysing. The closing safety net from 3.17.0 stays, but should no longer be needed.
 

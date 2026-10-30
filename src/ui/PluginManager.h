@@ -32,6 +32,8 @@ public:
         scanButton.onClick = [this]
         {
             if (app.plugins.isScanning()) return;
+            juce::Component::SafePointer<juce::Button> again (&scanButton);
+            if (app.recModeHolds ("A plug-in scan", [again] { if (again != nullptr) again->triggerClick(); })) return;     // (3.18.0: asks first while Rec is on)
             status.setText ("Scanning for VST3 plug-ins...", juce::dontSendNotification);
             juce::Component::SafePointer<PluginManagerPanel> safe (this);
             app.plugins.startScan ([safe] { if (safe != nullptr) { safe->status.setText ("Scan finished: " + juce::String (safe->app.plugins.getKnownPlugins().getNumTypes()) + " plug-ins in use.", juce::dontSendNotification); safe->rebuild(); } });

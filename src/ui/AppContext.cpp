@@ -1333,6 +1333,72 @@ void AppContext::setSessionMode (bool on)
     project.sendChangeMessage();
 }
 
+void AppContext::setPreRollSeconds (int seconds)
+{
+    seconds = juce::jlimit (AudioEngine::kPreRollMin, AudioEngine::kPreRollMax, seconds);
+    if (seconds == engine.getPreRollSeconds()) return;
+    engine.setPreRollSeconds (seconds);
+    if (auto* st = props.getUserSettings()) { st->setValue ("preRollSeconds", seconds); props.saveIfNeeded(); }
+    juce::Logger::writeToLog ("Pre: takes now start " + juce::String (seconds) + " s before Record is pressed" + (engine.isRecording() ? " (from the next take)" : ""));
+    project.sendChangeMessage();
+}
+
+// ---------------------------------------------------------------------------- 3.18.0 Rec mode
+void AppContext::setRecMode (bool on)
+{
+    if (on == recModeOn) return;
+    if (! on && engine.isRecording()) { setNotice ("A take is recording: stop it first, then switch Rec off."); return; }
+    recModeOn = on;
+    takeMatch.setRecHeld (on);                                                 // (the only work Fermata does on its own: held while Rec is on)
+    juce::Logger::writeToLog (on ? "Rec mode ON: recording / tracking - the take matching is held and heavy work asks first"
+                                 : "Rec mode off: editing - the take matching carries on where it was");
+    project.sendChangeMessage();
+}
+
+bool AppContext::recModeHolds (const juce::String& what, std::function<void()> startAgain)
+{
+    if (! recModeOn) return false;
+    if (engine.isRecording()) { setNotice (what + " waits: a take is recording. Stop it, switch Rec off, then try again."); return true; }
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Rec mode is on")
+                                      .withMessage (what + " is heavy work for the computer. While Rec is on, Fermata keeps the computer for the recording and "
+                                                    "does no heavy work.\n\nSwitch Rec off and start it now?")
+                                      .withButton ("Switch Rec off and start").withButton ("Cancel"),
+                                  [this, startAgain] (int r)
+                                  {
+                                      if (r != 1) return;
+                                      setRecMode (false);
+                                      if (recModeOn) return;                    // (refused: a take started meanwhile)
+                                      if (startAgain) startAgain();
+                                  });
+    return true;
+}
+
+void AppContext::setTakeMatching (const juce::Uuid& takeWindowId, bool on)
+{
+    auto* w = project.findTakeWindow (takeWindowId);
+    if (w == nullptr || w->takeMatching == on) return;
+    w->takeMatching = on;
+    juce::Logger::writeToLog ("Take matching switched " + juce::String (on ? "on" : "off") + " for the take window \"" + w->name + "\" (" + juce::String ((int) w->groups.size()) + " takes)");
+    project.changed();
+    takeMatch.windowsChanged();
+}
+
+bool AppContext::takeMatchingUnavailable (const juce::Uuid& takeWindowId, const juce::String& what)
+{
+    auto* w = project.findTakeWindow (takeWindowId);
+    if (w == nullptr) return true;
+    if (! w->takeMatching)
+    {
+        const auto id = takeWindowId;
+        confirmAsync ("Take matching is off", what + " needs this take window's takes to be analysed first (take matching), and it is switched off for \"" + w->name + "\".\n\n"
+                      "Switch it on? Its " + juce::String ((int) w->groups.size()) + " takes are then analysed in the background - never while Rec is on - "
+                      "and you can follow and pause it with the MATCHING box in the main window.",
+                      "Switch take matching on", [this, id] { setTakeMatching (id, true); });
+        return true;
+    }
+    return false;                    // (on: whatever is not ready yet says so where it is used - "still being analysed", "waiting")
+}
+
 void AppContext::saveTakeDisplay()
 {
     if (auto* st = props.getUserSettings())
@@ -1512,6 +1578,26 @@ void AppContext::toggleRecord (const juce::Uuid& takeWindowId)
     if (project.audioRate() <= 0.0)                 // 3.9.0: the rate is chosen on purpose before the first take, never taken from whatever the device runs at
     {
         askProjectRate ("Choose this project's sample rate before the first take: every take in it is recorded at this rate.");
+        return;
+    }
+    if (! recModeOn)                                // 3.18.0: recording happens in Rec mode, where nothing heavy competes with it
+    {
+        if (project.findTakeWindow (takeWindowId) == nullptr) { showError ("Record", "Choose a take window to record into."); return; }
+        if (recModeAsking) return;
+        recModeAsking = true;
+        const auto id = takeWindowId;
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon).withTitle ("Rec mode is off")
+                                          .withMessage ("Fermata records in Rec mode: while it is on, the computer is kept for the recording - the take matching "
+                                                        "is held and nothing heavy runs in the background.\n\n"
+                                                        "Switch Rec on (the left half of the Rec | Pre button in the menu bar) and record?")
+                                          .withButton ("Switch Rec on and record").withButton ("Cancel"),
+                                      [this, id] (int r)
+                                      {
+                                          recModeAsking = false;
+                                          if (r != 1) return;
+                                          setRecMode (true);
+                                          if (! engine.isRecording()) toggleRecord (id);
+                                      });
         return;
     }
     stopPlayback();

@@ -561,6 +561,15 @@ void AudioEngine::setSessionMode (bool on)
     ensurePreRoll();
 }
 
+void AudioEngine::setPreRollSeconds (int seconds)
+{
+    seconds = juce::jlimit (kPreRollMin, kPreRollMax, seconds);
+    if (seconds == preRollSeconds.load()) return;
+    preRollSeconds.store (seconds);
+    const juce::ScopedLock sl (planLock);
+    ensurePreRoll();                                 // (does nothing while recording: Stop calls it again)
+}
+
 void AudioEngine::ensurePreRoll()
 {
     const juce::ScopedLock sl (planLock);
@@ -581,7 +590,7 @@ void AudioEngine::ensurePreRoll()
             if (idx >= 0 && idx < kMaxInputs && std::find (used.begin(), used.end(), idx) == used.end()) used.push_back (idx);
         }
     std::sort (used.begin(), used.end());
-    const int preLen = (int) std::lround (kPreRollSeconds * sampleRate);
+    const int preLen = (int) std::lround ((double) preRollSeconds.load() * sampleRate);
     const int cap = preLen + (int) std::lround (2.0 * sampleRate);       // two seconds of room while the pre-roll is handed to the files
     if (cur != nullptr && cur->inputs == used && cur->cap == cap) { wantedRingInputs = used; wantedRingCap = cap; return; }
     if (wantedRingCap == cap && wantedRingInputs == used) { servicePreRoll(); return; }     // already being made

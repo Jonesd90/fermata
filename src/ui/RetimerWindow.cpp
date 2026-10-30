@@ -386,6 +386,10 @@ private:
         retime::Request q; juce::String why, note;
         if (! settings (q, why, note)) { setStatus (why, true); return; }
         if (running) { then = after; return; }
+        {   // 3.18.0: asks first while Rec is on
+            juce::Component::SafePointer<RetimerPanel> again (this);
+            if (app.recModeHolds ("The ReTimEr", [again, after] { if (again != nullptr) again->make (after); })) return;
+        }
         app.stopPlayback(); takeOut(); discardMade();
         then = after;
         auto* e = edit();

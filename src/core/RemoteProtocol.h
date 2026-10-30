@@ -8,6 +8,7 @@ namespace td::remote
 
     Controller -> Fermata (the keys of the Stream Deck Neo):
         {"cmd":"record"}  {"cmd":"playpause"}  {"cmd":"talk","down":true|false}  {"cmd":"playback"}  {"cmd":"mixer","index":0}  {"cmd":"prerec"}  {"cmd":"hello"}
+        {"cmd":"recmode"}  (3.18.0: Rec mode on / off - the left half of the Rec | Pre button; "prerec" is its right half, Pre)
     Controller -> Fermata (the Stream Deck + XL: 36 keys and 6 dials; see RemoteDesk.h for what each does):
         {"cmd":"desk","on":true}                               start (or stop) the "desk" and "meters" messages below
         {"cmd":"bridge"} {"cmd":"pitchpipe"} {"cmd":"click"}   open / close that window
@@ -39,7 +40,8 @@ struct State
     bool playbackReady = false;        // a TB output is set up (enough for the Playback speaker key: it does not need the CR mic)
     bool crOpen = false;               // the CR mic is open (latched or held)
     bool pbOn = false;                 // playback is going to the TB speaker
-    bool preRec = false;
+    bool preRec = false;               // Pre: the take starts a few seconds before Record was pressed
+    bool recMode = false;              // 3.18.0: Rec mode (recording / tracking: nothing heavy runs in the background; Record needs it)
     bool mixerOpen[2] = { false, false };
     bool hasMixer2 = false;            // there is an Alt Mixer
     juce::String mixer2Name;           // its name, or "Alt-Mixer" when there is none
@@ -54,6 +56,7 @@ struct State
         o->setProperty ("type", "state");
         o->setProperty ("recording", recording); o->setProperty ("takeNumber", takeNumber); o->setProperty ("playing", playing);
         o->setProperty ("talkbackReady", talkbackReady); o->setProperty ("playbackReady", playbackReady); o->setProperty ("crOpen", crOpen); o->setProperty ("pbOn", pbOn); o->setProperty ("preRec", preRec);
+        o->setProperty ("recMode", recMode);
         o->setProperty ("mixer1Open", mixerOpen[0]); o->setProperty ("mixer2Open", mixerOpen[1]); o->setProperty ("hasMixer2", hasMixer2); o->setProperty ("mixer2Name", mixer2Name);
         o->setProperty ("hasSession", hasSession); o->setProperty ("sessionLeft", sessionLeft);
         o->setProperty ("timeOfDay", timeOfDay); o->setProperty ("sessionText", sessionText);
@@ -91,7 +94,7 @@ inline Command parseCommand (const juce::String& line)
     const auto v = juce::JSON::parse (line);
     if (! v.isObject()) return c;
     const auto name = v["cmd"].toString().toLowerCase();
-    static const char* known[] = { "record", "playpause", "talk", "playback", "mixer", "prerec", "hello",
+    static const char* known[] = { "record", "playpause", "talk", "playback", "mixer", "prerec", "hello", "recmode",
                                    "desk", "bridge", "pitchpipe", "click", "takewindow", "minimiseall", "armtoggle", "wavecolour", "loop", "wact", "openwin",
                                    "monitor", "talkin", "preamp", "gain", "mixout", "mixmute", "stage", "stagereset" };
     for (auto* k : known) if (name == k) c.name = name;

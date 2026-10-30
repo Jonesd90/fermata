@@ -29,6 +29,7 @@
 #include "ui/CpuCoresPanel.h"
 #include "ui/PluginManager.h"
 #include "ui/HotKeysWindow.h"
+#include "ui/RecPrePanel.h"
 #if JUCE_WINDOWS
  #include <shlobj.h>
 #endif
@@ -1038,6 +1039,7 @@ private:
             addAndMakeVisible (selector);
             startTimer (500);                                           // (the chooser is switched off while a take records: see timerCallback)
             addAndMakeVisible (apply); addAndMakeVisible (close); addAndMakeVisible (note); addAndMakeVisible (scan); addAndMakeVisible (cpuCores); addAndMakeVisible (pluginList);
+            addAndMakeVisible (preLength);                              // (3.18.0: the Pre length, as in the Rec | Pre button's pop-up)
             addChildComponent (rateNote);                               // (3.8.0: shown while the live rate converter is on)
             rateNote.setColour (juce::Label::textColourId, theme::warn);
             rateNote.setFont (juce::FontOptions (13.0f));
@@ -1052,6 +1054,8 @@ private:
             scan.onClick = [this]
             {
                 if (app.plugins.isScanning()) return;
+                juce::Component::SafePointer<juce::Button> again (&scan);
+                if (app.recModeHolds ("A plug-in scan", [again] { if (again != nullptr) again->triggerClick(); })) return;     // (3.18.0)
                 note.setText ("Scanning for VST3 plug-ins...", juce::dontSendNotification);
                 juce::Component::SafePointer<AudioSettingsPanel> safe (this);
                 app.plugins.startScan ([safe]
@@ -1063,7 +1067,7 @@ private:
             cpuCores.setTooltip ("Keep some CPU cores for Fermata's audio only, so that other programs cannot interrupt a recording");
             cpuCores.onClick = [this] { showCpuCoresPanel (app); };
             apply.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1f7a46));
-            setSize (680, 560);
+            setSize (680, 594);
             timerCallback();                                            // (opened while a take records: locked from the start)
         }
         /** The device chooser applies a change the moment it is made (JUCE's AudioDeviceSelectorComponent): a new rate or buffer size restarts the device,
@@ -1088,6 +1092,7 @@ private:
         {
             auto r = getLocalBounds().reduced (8);
             auto bottom = r.removeFromBottom (40);
+            preLength.setBounds (r.removeFromBottom (34).removeFromLeft (PreLengthControl::kWidth).reduced (3, 2));
             if (rateNote.isVisible()) rateNote.setBounds (r.removeFromBottom (44));
             selector.setBounds (r);
             close.setBounds (bottom.removeFromRight (110).reduced (3));
@@ -1101,6 +1106,7 @@ private:
         juce::AudioDeviceSelectorComponent selector;
         juce::TextButton apply { "Apply" }, close { "Close" }, scan { "Scan plug-ins" }, pluginList { "Plug-ins..." }, cpuCores { "CPU cores..." };
         juce::Label note, rateNote;
+        PreLengthControl preLength { app };
     };
 
     void openAudioSettings()

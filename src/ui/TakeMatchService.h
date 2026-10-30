@@ -5,6 +5,7 @@
 #include "../core/TakeMatch.h"
 #include "../core/AudioFormats.h"
 #include <map>
+#include <set>
 #include <deque>
 #include <memory>
 
@@ -15,6 +16,10 @@ namespace td
     recorded (the recording's disk writes come first: work under way is cancelled and done later). Each fingerprint is saved in the
     project folder's Analysis folder, so a project opened again does not analyse its takes afresh - unless a take's files have changed.
     Takes that have no fingerprint yet are found by a sweep every few seconds (a take just recorded, imported, or whose files came back).
+    3.18.0: nothing is analysed in secret any more. Only the take windows the person has switched take matching on for are analysed (off until then,
+    saved with each window), never while Rec mode is on (recording / tracking: Fermata keeps the computer for the recording), and never while the
+    person has paused it; progress() says how far it has got and roughly how long is left (the MATCHING box in the main window and its panel).
+    A fingerprint made (or saved) before is used at once when a window is switched on again.
     Everything here is called on the message thread except the thread's own run(). */
 class TakeMatchService : private juce::Thread, private juce::Timer
 {
@@ -50,10 +55,78 @@ public:
     /** The project has been replaced (opened, new, closed): everything known belongs to the old one. */
     void projectReplaced()
     {
-        cancel = true;
         const juce::ScopedLock sl (lock);
+        requeueOnCancel = false; cancel = true;
         queue.clear(); known.clear(); alignments.clear();
+        audioPerSecond = 0.0;
         wake.signal();
+    }
+
+    // ---- 3.18.0: the person decides when the analysis runs ----
+    /** Is take matching switched on for the take window this take is in? */
+    bool isOnFor (const juce::Uuid& takeId) const
+    {
+        for (auto& w : project.takeWindows) if (w->findGroup (takeId) != nullptr) return w->takeMatching;
+        return false;
+    }
+    /** A take window was switched on or off. The queue keeps only the takes of windows switched on; a take of a window switched off that is being
+        analysed stops at once (what was finished stays known: switched on again, it is used at once); then the sweep, at once. */
+    void windowsChanged()
+    {
+        {
+            const juce::ScopedLock sl (lock);
+            std::deque<Job> keep;
+            for (auto& j : queue)
+            {
+                if (isOnFor (j.takeId)) { keep.push_back (std::move (j)); continue; }
+                if (auto it = known.find (j.takeId); it != known.end() && it->second.state == State::Queued) known.erase (it);
+            }
+            queue.swap (keep);
+            if (! current.isNull() && ! isOnFor (current)) { requeueOnCancel = false; cancel = true; }
+        }
+        timerCallback();
+    }
+    /** Pause / resume (the MATCHING panel). Not saved: a restart resumes. Pausing stops the take under way at once; it starts again first on resume. */
+    void setPaused (bool p) { paused = p; holdChanged(); }
+    bool isPaused() const { return paused.load(); }
+    /** Rec mode: held while it is on (AppContext::setRecMode). */
+    void setRecHeld (bool h) { recHeld = h; holdChanged(); }
+    bool isHeld() const { return paused.load() || recHeld.load(); }
+
+    /** How far the analysis has got, for the take windows switched on (or for one window, switched on or not). Message thread. */
+    struct Progress
+    {
+        int windowsOn = 0;              // take windows switched on (in scope)
+        int total = 0;                  // their takes
+        int ready = 0;                  // fingerprinted (or loaded from the Analysis folder)
+        int cannot = 0;                 // no audio files, or the audio could not be read
+        juce::Uuid nowTake = juce::Uuid::null();   // the take being analysed now (null: none)
+        float nowProgress = 0.0f;
+        double secondsLeft = -1.0;      // roughly how long the rest takes (-1: not known yet - no take has been analysed since the start)
+        int left() const { return juce::jmax (0, total - ready - cannot); }
+    };
+    Progress progress (const TakeWindowDef* onlyWindow = nullptr) const
+    {
+        Progress pr;
+        double audioLeft = 0.0;
+        const juce::ScopedLock sl (lock);
+        for (auto& w : project.takeWindows)
+        {
+            if (onlyWindow != nullptr ? w.get() != onlyWindow : ! w->takeMatching) continue;
+            if (w->takeMatching) ++pr.windowsOn;
+            for (auto& g : w->groups)
+            {
+                ++pr.total;
+                auto it = known.find (g.id);
+                const State st = it != known.end() ? it->second.state : State::Unknown;
+                if (st == State::Ready) { ++pr.ready; continue; }
+                if (st == State::NoAudio || st == State::Failed) { ++pr.cannot; continue; }
+                if (st == State::Analysing) { pr.nowTake = g.id; pr.nowProgress = it->second.progress; audioLeft += g.lengthSeconds() * (1.0 - (double) it->second.progress); }
+                else if (st != State::Queued || ! it->second.hasCache) audioLeft += g.lengthSeconds();       // (one with a saved fingerprint is a moment)
+            }
+        }
+        if (audioPerSecond > 0.0) pr.secondsLeft = audioLeft / audioPerSecond;
+        return pr;
     }
     /** A take has just finished recording: its fingerprint is wanted soon (the sweep would find it anyway). */
     void takeFinished (const juce::Uuid& takeId) { enqueue (takeId, true); }
@@ -69,8 +142,8 @@ public:
         if (it == known.end()) return {};
         return { it->second.state, it->second.progress, it->second.why };
     }
-    /** The take's fingerprint, or null when it is not ready (then it is queued, so it will be). A take whose files have changed since
-        is analysed again. */
+    /** The take's fingerprint, or null when it is not ready (then it is queued, so it will be - if take matching is switched on for its window).
+        A take whose files have changed since is analysed again. */
     std::shared_ptr<const takematch::Fingerprint> fingerprintFor (const juce::Uuid& takeId)
     {
         {
@@ -113,7 +186,7 @@ public:
     }
 
 private:
-    struct Entry { State state = State::Unknown; float progress = 0.0f; juce::String why; std::shared_ptr<const takematch::Fingerprint> fp; };
+    struct Entry { State state = State::Unknown; float progress = 0.0f; juce::String why; std::shared_ptr<const takematch::Fingerprint> fp; bool hasCache = false; };
     struct Job { juce::Uuid takeId = juce::Uuid::null(); std::vector<juce::File> files; juce::File cacheFile; };
     struct Cached { std::shared_ptr<const takematch::Fingerprint> fa, fb; std::shared_ptr<const takematch::Alignment> al; };
 
@@ -161,14 +234,17 @@ private:
     }
     void enqueue (const juce::Uuid& takeId, bool front)
     {
+        if (! isOnFor (takeId)) return;                                  // (3.18.0: only the windows switched on)
         const auto files = filesOf (takeId);
+        const auto cacheFile = cacheFileFor (takeId);
+        const bool hasCache = cacheFile.existsAsFile();
         const juce::ScopedLock sl (lock);
         auto& e = known[takeId];
         if (e.state == State::Queued || e.state == State::Analysing || e.state == State::Ready) return;
         if (files.empty()) { e.state = State::NoAudio; e.why = "this take has no audio files to analyse"; return; }
         if (e.state == State::Failed && e.why.isNotEmpty()) return;      // (tried and failed: not tried again until the files change or the project is opened again)
-        e.state = State::Queued; e.progress = 0.0f; e.why.clear();
-        Job job { takeId, files, cacheFileFor (takeId) };
+        e.state = State::Queued; e.progress = 0.0f; e.why.clear(); e.hasCache = hasCache;
+        Job job { takeId, files, cacheFile };
         if (front) queue.push_front (std::move (job)); else queue.push_back (std::move (job));
         wake.signal();
     }
@@ -180,8 +256,9 @@ private:
         {
             const juce::ScopedLock sl (lock);
             for (auto& w : project.takeWindows)
-                for (auto& g : w->groups)
-                    if (known.find (g.id) == known.end()) unknown.push_back (g.id);
+                if (w->takeMatching)                                       // (3.18.0: only the windows switched on)
+                    for (auto& g : w->groups)
+                        if (known.find (g.id) == known.end()) unknown.push_back (g.id);
         }
         for (auto& id : unknown) enqueue (id, false);
     }
@@ -193,20 +270,21 @@ private:
             // 3.17.2: whether there is a job is told by the queue itself. (It used to be told by the job's take id being null - but a juce::Uuid made
             // without a value is a NEW RANDOM id, never null: with nothing queued, the thread analysed a made-up take with no files, filed it under that
             // id, and went round again at once, for ever - a whole core busy, millions of entries piling up (22 GB), and minutes to free them on closing.)
+            if (isHeld()) { wake.wait (500); continue; }                 // (3.18.0: paused, or Rec mode: nothing is touched until it is let go)
             Job job;
             bool have = false;
             {
                 const juce::ScopedLock sl (lock);
-                if (! queue.empty()) { job = std::move (queue.front()); queue.pop_front(); have = true; }
+                if (! queue.empty()) { job = std::move (queue.front()); queue.pop_front(); have = true; current = job.takeId; }
             }
             if (! have) { wake.wait (1000); continue; }
-            if (engine.isRecording())                    // not while a take records: back on the queue, tried again in a moment
-            {
-                { const juce::ScopedLock sl (lock); queue.push_front (std::move (job)); }
+            cancel = false;
+            if (engine.isRecording() || isHeld())        // not while a take records, nor once held: back on the queue, tried again later
+            {                                            // (checked after cancel was cleared: a hold that came in between still stops the work)
+                { const juce::ScopedLock sl (lock); queue.push_front (std::move (job)); current = juce::Uuid::null(); requeueOnCancel = false; }
                 wait (1500);
                 continue;
             }
-            cancel = false;
             takematch::Fingerprint fp;
             bool ok = false;
             const auto key = takematch::sourceKeyFor (job.files);
@@ -219,13 +297,31 @@ private:
                 ok = ! fp.empty() && ! cancel;
                 if (ok)
                 {
+                    const double took = (juce::Time::getMillisecondCounterHiRes() - t0) / 1000.0;       // (3.18.0: how quickly takes go, for the time left)
+                    if (took > 0.001 && fp.lengthSeconds() > 0.0)
+                    {
+                        const double r = fp.lengthSeconds() / took;
+                        const juce::ScopedLock sl (lock);
+                        audioPerSecond = audioPerSecond > 0.0 ? 0.7 * audioPerSecond + 0.3 * r : r;
+                    }
                     if (job.cacheFile != juce::File() && ! takematch::save (fp, job.cacheFile)) juce::Logger::writeToLog ("Take matching: the fingerprint could not be saved in " + job.cacheFile.getParentDirectory().getFullPathName());
                     juce::Logger::writeToLog ("Take matching: " + juce::String ((int) job.files.size()) + (job.files.size() == 1 ? " file" : " files") + " of a take analysed in "
                                               + juce::String (juce::roundToInt (juce::Time::getMillisecondCounterHiRes() - t0)) + " ms (" + juce::String (fp.lengthSeconds(), 1) + " s)");
                 }
             }
             const juce::ScopedLock sl (lock);
-            if (cancel) { known.erase (job.takeId); continue; }               // (cancelled: a recording started, or the project went; the sweep queues it again when the time is right)
+            current = juce::Uuid::null();
+            if (cancel)
+            {
+                if (requeueOnCancel)                     // (3.18.0: held - paused or Rec mode: it goes back to the front, first when the hold is let go)
+                {
+                    requeueOnCancel = false;
+                    auto& e = known[job.takeId]; e.state = State::Queued; e.progress = 0.0f;
+                    queue.push_front (std::move (job));
+                }
+                else known.erase (job.takeId);           // (cancelled: a recording started, the project went or its window was switched off; the sweep queues it again when the time is right)
+                continue;
+            }
             auto& e = known[job.takeId];
             if (ok) { e.state = State::Ready; e.progress = 1.0f; e.why.clear(); e.fp = std::make_shared<const takematch::Fingerprint> (std::move (fp)); }
             else { e.state = State::Failed; e.why = "the take's audio could not be read"; e.fp = nullptr; }
@@ -242,5 +338,20 @@ private:
     std::atomic<bool> cancel { false };
     juce::WaitableEvent wake;
     bool stopLogged = false;
+    // 3.18.0
+    std::atomic<bool> paused { false }, recHeld { false };
+    bool requeueOnCancel = false;                    // (under 'lock') a hold cancelled the take under way: it goes back on the queue, not away
+    juce::Uuid current = juce::Uuid::null();         // (under 'lock') the take the thread is working on, null when none
+    double audioPerSecond = 0.0;                     // (under 'lock') seconds of takes analysed per second, lately: 0 until the first is done
+    /** Paused or Rec mode just changed. Held: the take under way stops now and goes back on the queue. Let go: the thread wakes at once. */
+    void holdChanged()
+    {
+        if (isHeld())
+        {
+            const juce::ScopedLock sl (lock);
+            if (! current.isNull()) { requeueOnCancel = true; cancel = true; }
+        }
+        wake.signal();
+    }
 };
 } // namespace td
