@@ -295,8 +295,9 @@ void MasterRenders::clearAll()
 }
 
 // ----------------------------------------------------------------------------- the batch
-MasterRenderBatch::MasterRenderBatch (const Project& live, const std::vector<juce::Uuid>& editIds, const RenderParams& rp, bool force)
-    : folder (MasterRenders::folderFor (live))
+MasterRenderBatch::MasterRenderBatch (const Project& live, const std::vector<juce::Uuid>& editIds, const RenderParams& rp, bool force,
+                                      const std::vector<juce::Uuid>& stemIds, const juce::File& stemFolder)
+    : folder (MasterRenders::folderFor (live)), stems (stemIds), stemDir (stemFolder)
 {
     MasterRenders store (folder);
     auto& p = const_cast<Project&> (live);
@@ -313,19 +314,23 @@ MasterRenderBatch::MasterRenderBatch (const Project& live, const std::vector<juc
         else it.stale = true;
         items.push_back (std::move (it));
     }
-    // the pieces that need rendering, one Bouncer per sample rate (a Bouncer renders at one rate)
+    // the pieces that need rendering, one Bouncer per sample rate (a Bouncer renders at one rate) - and, with stems, per kind of pass: the master and the stems
+    // together (its master render is out of date), or the stems alone (it is up to date: it, and the backup in the other slot, stay as they are)
     for (int i = 0; i < (int) items.size(); ++i)
     {
-        if (! items[(size_t) i].stale) continue;
+        const bool master = items[(size_t) i].stale;
+        if (! master && stems.empty()) continue;
         Group* g = nullptr;
-        for (auto& gr : groups) if (std::abs (gr.rate - items[(size_t) i].rate) < 0.5) g = &gr;
-        if (g == nullptr) { groups.emplace_back(); g = &groups.back(); g->rate = items[(size_t) i].rate; }
+        for (auto& gr : groups) if (std::abs (gr.rate - items[(size_t) i].rate) < 0.5 && gr.master == master) g = &gr;
+        if (g == nullptr) { groups.emplace_back(); g = &groups.back(); g->rate = items[(size_t) i].rate; g->master = master; }
         g->idx.push_back (i);
     }
     for (auto& g : groups)
     {
         BounceSettings bs;
-        bs.folder = folder; bs.mixerId = rp.mixerId; bs.sources = { rp.sourceId };
+        bs.folder = folder; bs.mixerId = rp.mixerId;
+        if (g.master) bs.sources.push_back (rp.sourceId);
+        for (auto& sid : stems) bs.sources.push_back (sid);         // (one pass of the mixer makes them all: each output is captured into its own file)
         bs.addOutputName = false; bs.floatFiles = true; bs.normalise = false; bs.tailSeconds = rp.tailSeconds; bs.sampleRate = g.rate;
         for (int i : g.idx)
         {
@@ -360,6 +365,7 @@ juce::String MasterRenderBatch::run (std::atomic<float>* progress, const std::at
     MasterRenders store (folder);
     juce::AudioFormatManager fm; td::registerAudioFormats (fm);
     juce::String problem;
+    if (! stems.empty() && ! stemDir.createDirectory()) return "Cannot create the folder " + stemDir.getFullPathName();
     for (auto& g : groups)
     {
         if (g.bouncer == nullptr) continue;
@@ -367,20 +373,39 @@ juce::String MasterRenderBatch::run (std::atomic<float>* progress, const std::at
         g.bouncer.reset();
         if (br.cancelled) { store.removeTemps(); return "Cancelled."; }
         if (br.error.isNotEmpty()) { store.removeTemps(); return br.error; }
-        if (br.files.size() != (int) g.idx.size()) { store.removeTemps(); return "The renderer made a different number of files than expected."; }
+        const int perItem = (g.master ? 1 : 0) + (int) stems.size();     // (the files come piece by piece, each piece's outputs in the order asked for)
+        if (br.files.size() != (int) g.idx.size() * perItem) { store.removeTemps(); return "The renderer made a different number of files than expected."; }
         for (int k = 0; k < (int) g.idx.size(); ++k)
         {
-            auto& it = items[(size_t) g.idx[(size_t) k]];
-            const juce::File produced (br.files[k]);
-            juce::int64 frames = 0;
-            if (std::unique_ptr<juce::AudioFormatReader> r { fm.createReaderFor (produced) }) frames = r->lengthInSamples;
-            store.commit (it.editId, it.fp, it.rate, frames, produced);
-            const auto info = store.check (it.editId, it.fp);
-            it.file = info.file; it.frames = info.frames; it.stale = false; it.previous = false; it.backup = info.hasBackup;
+            const int i = g.idx[(size_t) k];
+            auto& it = items[(size_t) i];
+            int f = k * perItem;
+            if (g.master)
+            {
+                const juce::File produced (br.files[f++]);
+                juce::int64 frames = 0;
+                if (std::unique_ptr<juce::AudioFormatReader> r { fm.createReaderFor (produced) }) frames = r->lengthInSamples;
+                store.commit (it.editId, it.fp, it.rate, frames, produced);
+                const auto info = store.check (it.editId, it.fp);
+                it.file = info.file; it.frames = info.frames; it.stale = false; it.previous = false; it.backup = info.hasBackup;
+            }
+            it.stemFiles.clear();
+            for (int s = 0; s < (int) stems.size(); ++s)                     // the stems leave the renders folder (where every "mrtmp-" file is tidied away below)
+            {
+                const juce::File produced (br.files[f++]);
+                const auto dest = stemDir.getChildFile ("stem-" + juce::String (i + 1) + "-" + juce::String (s + 1) + ".wav");
+                dest.deleteFile();
+                if (! produced.moveFileTo (dest)) { store.removeTemps(); return "Cannot move a stem render to " + stemDir.getFullPathName() + " (is the drive full?)"; }
+                it.stemFiles.push_back (dest);
+            }
         }
     }
     store.removeTemps();
-    for (auto& it : items) if (it.stale || ! it.file.existsAsFile()) problem = "A render is missing.";
+    for (auto& it : items)
+    {
+        if (it.stale || ! it.file.existsAsFile()) problem = "A render is missing.";
+        if (! stems.empty()) { if ((int) it.stemFiles.size() != (int) stems.size()) problem = "A stem render is missing."; else for (auto& f : it.stemFiles) if (! f.existsAsFile()) problem = "A stem render is missing."; }
+    }
     return problem;
 }
 

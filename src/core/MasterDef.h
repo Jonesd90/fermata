@@ -99,6 +99,7 @@ struct MasteringDef
     juce::Uuid              mixerId = juce::Uuid::null();     // what is rendered: null = the processing mixer ...
     juce::Uuid              sourceId = juce::Uuid::null();    // ... and its first Ext bus
     double                  tailSeconds = 0.0;                // extra time after the last audio (reverb tails)
+    std::vector<juce::Uuid> stemIds;                          // 3.26.0: Int / Ext buses also exported by the Virtual Master, each as its own stereo file per piece (stems)
     int                     view = 0;                         // 0 = Virtual Master, 1 = DDP builder, 2 = Listening copy
     juce::Uuid              selectedItem = juce::Uuid::null(), selectedClip = juce::Uuid::null();
 

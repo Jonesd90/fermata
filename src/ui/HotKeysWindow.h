@@ -182,7 +182,9 @@ inline const std::vector<Line>& lines()
         { "Mixer", "right-click", "An insert slot: open, bypass, remove or replace the plug-in, scan for plug-ins." },
         { "Mixer", "right-click", "The LC key (or press and hold it): the low-cut panel. A click switches the low cut on or off." },
         { "Mixer", "double-click or Alt+click / double-click", "The low-cut panel's slider: back to 80 Hz / its value: type a frequency." },
-        { "Mixer", "wheel / Shift+wheel", "Over the strips: scroll left and right / up and down (when the window is shorter than the strips)." },
+        { "Mixer", "wheel / Shift+wheel", "Over the strips: scroll left and right / up and down (when the window is shorter than the strips). Over the inserts and sends when they have a scroll bar: up and down." },
+        { "Mixer", "drag", "The line above the pans (a grip in the middle of every strip): up for taller faders - the inputs, inserts and sends above it are covered and get a scroll bar at the right - down for shorter ones. Remembered for every mixer." },
+        { "Mixer", "double-click", "The line above the pans: the faders back to their normal size." },
 
         // ---------------------------------------------------------------------------------------------------- retouch, declick & denoise (spectral repair)
         { "ReTouch, DeClick & Denoise (Spectral Repair)", "Space", "Play the part of the picture in view (from the red playhead if one is placed), as \"Listen to\" says, or stop." },

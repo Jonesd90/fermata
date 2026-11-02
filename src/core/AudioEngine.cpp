@@ -876,7 +876,7 @@ void AudioEngine::process (const float* const* in, int numIn, float* const* out,
         for (int offset = 0; offset < numSamples; offset += maxBlock)
         {
             const int n = juce::jmin (maxBlock, numSamples - offset);
-            if (ps != nullptr && ps->automation != nullptr) ps->automation->apply (ps->getTimelinePosition(), ps);     // an edit's automation moves the faders (each read as early as the plug-ins before it delay the sound)
+            if (ps != nullptr) if (auto* ap = ps->autoNow.load (std::memory_order_acquire)) ap->apply (ps->getTimelinePosition(), ps);     // an edit's automation moves the faders (each read as early as the plug-ins before it delay the sound; 3.26.0: the newest plan)
             // what the plug-ins are told: playing while something plays back or records; the place on the timeline (stays put when stopped)
             transport.playing = ps != nullptr || rs != nullptr;
             transport.recording = rs != nullptr;
@@ -1536,17 +1536,83 @@ juce::String AudioEngine::startPlayback (std::unique_ptr<PlaybackSession> s, boo
                                               + pr->getName() + " / " + pr->paramName (it.paramIndex) + " set to " + juce::String (it.lastSent, 3)
                                               + (it.steps >= 2 ? " (" + juce::String (it.steps) + " positions)" : juce::String()));
     }
+    s->autoNow.store (s->automation.get(), std::memory_order_release);
     s->start (waitForPreload);
     playSession = std::move (s);
     playback.store (playSession.get(), std::memory_order_release);
     return {};
 }
 
+/** 3.26.0: 'old' was replaced by 'now' (null: no automation any more) while playing, and the audio thread has left it: what it drove that 'now' does not is
+    handed back. A send it held (kept in the mixer plan while off, see SendState::autoHeld) is let go of - true: the plan must be rebuilt; a channel it put
+    under a VCA lane (vcaAutoMask) goes back to that VCA's own fader. What 'now' drives too stays as it is, so nothing it plays is interrupted. */
+static bool handBackAutomation (const AutomationPlan& old, const AutomationPlan* now) noexcept
+{
+    bool replan = false;
+    for (auto& it : old.items)
+    {
+        if (it.send != nullptr)
+        {
+            bool kept = false;
+            if (now != nullptr) for (auto& n : now->items) if (n.send == it.send && ! n.lane.pts.empty()) kept = true;
+            if (! kept && it.send->autoHeld.exchange (false)) replan = true;
+        }
+        if (it.vcaBit != 0)
+            for (auto& mb : it.members)
+            {
+                bool kept = false;
+                if (now != nullptr)
+                    for (auto& n : now->items)
+                        if (n.vcaBit == it.vcaBit && ! n.lane.pts.empty())
+                            for (auto& nm : n.members) if (nm.mask == mb.mask) kept = true;
+                if (! kept) mb.mask->fetch_and (~it.vcaBit, std::memory_order_relaxed);
+            }
+    }
+    return replan;
+}
+
+bool AudioEngine::replaceAutomation (const juce::Uuid& editId, std::shared_ptr<AutomationPlan> next)
+{
+    if (! followsAutomationOf (editId)) return false;
+    if (next != nullptr)
+    {
+        // the sends 'next' moves are held in the mixer plan (so a send its lane brings in from off can be heard); one that was not held yet needs the plan
+        // rebuilt before 'next' plays
+        std::vector<const SendState*> heldBefore;
+        for (auto& it : next->items) if (it.send != nullptr && it.send->autoHeld.load()) heldBefore.push_back (it.send);
+        next->begin();
+        bool replan = false;
+        for (auto& it : next->items)
+            if (it.send != nullptr && ! it.lane.pts.empty() && std::find (heldBefore.begin(), heldBefore.end(), it.send) == heldBefore.end()) replan = true;
+        if (replan && ! destroying) rebuildPlan();
+    }
+    std::shared_ptr<const AutomationPlan> prev = std::move (playSession->automation);
+    playSession->automation = next;
+    playSession->autoNow.store (next.get(), std::memory_order_release);      // the next block applies 'next'
+    if (prev != nullptr) replacedPlans.push_back ({ std::move (prev), blockCounter.load() });
+    serviceReplacedAutomation();
+    return true;
+}
+
+void AudioEngine::serviceReplacedAutomation()
+{
+    if (replacedPlans.empty()) return;
+    const AutomationPlan* now = playSession != nullptr ? playSession->automation.get() : nullptr;
+    bool replan = false;
+    for (auto it = replacedPlans.begin(); it != replacedPlans.end();)
+    {
+        if (running.load() && blockCounter.load() < it->block0 + 2) { ++it; continue; }       // the audio thread may still be in it
+        replan = handBackAutomation (*it->plan, now) || replan;
+        it = replacedPlans.erase (it);
+    }
+    if (replan && ! destroying) rebuildPlan();
+}
+
 void AudioEngine::stopPlayback (bool handOff)
 {
     if (playSession == nullptr) { if (! handOff && ! destroying) waitForStoppedPlays (3000); return; }
     playback.store (nullptr, std::memory_order_release);
-    if (handOff && playSession->automation == nullptr && running.load() && ! destroying)
+    if (handOff && playSession->automation == nullptr && replacedPlans.empty() && running.load() && ! destroying)
     {
         // a transport press: nothing to put back on this thread (automation hands its controls back here, once the audio thread has left it),
         // so the rest is the tidy-up thread's (see Retirer)
@@ -1557,8 +1623,15 @@ void AudioEngine::stopPlayback (bool handOff)
     const bool left = waitForAudioThread();
     bool replan = false;
     if (playSession->automation != nullptr) replan = playSession->automation->end();      // the VCAs go back to their own faders; held sends leave the plan
-    if (left) playSession.reset();
-    else (void) playSession.release();               // the audio thread stalled: do not free what it may still be reading
+    for (auto& r : replacedPlans) replan = r.plan->end() || replan;                      // (3.26.0: and what plans replaced while it played still held)
+    if (left) { playSession.reset(); replacedPlans.clear(); }
+    else
+    {
+        (void) playSession.release();               // the audio thread stalled: do not free what it may still be reading
+        static std::vector<std::shared_ptr<const AutomationPlan>> leaked;      // (nor a plan it may still be applying)
+        for (auto& r : replacedPlans) leaked.push_back (std::move (r.plan));
+        replacedPlans.clear();
+    }
     if (replan && ! destroying) rebuildPlan();
     if (! destroying) waitForStoppedPlays (3000);    // (and what a transport press handed off before: no file that played is open any more)
 }

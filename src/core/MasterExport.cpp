@@ -32,6 +32,39 @@ MasterTags mergeTags (MasterTags t, const MasterTags& album, const juce::String&
 void appendLe32 (juce::MemoryBlock& b, juce::uint32 v) { for (int i = 0; i < 4; ++i) { const juce::uint8 x = (juce::uint8) (v >> (8 * i)); b.append (&x, 1); } }
 
 bool isRateOkForMp3 (double r) { return std::abs (r - 32000) < 1 || std::abs (r - 44100) < 1 || std::abs (r - 48000) < 1; }
+
+/** 3.26.0 (the stems): a stereo file at rate T, written as a 32-bit float WAV. "" when it went well, "Cancelled." or the problem. */
+juce::String resampleFile (juce::AudioFormatManager& fm, const juce::File& src, double T, const juce::File& outFile, const std::atomic<bool>& cancel)
+{
+    std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (src));
+    if (r == nullptr) return "Cannot read " + src.getFileName();
+    auto w = audioops::makeWavWriter (outFile, T, 2, true);
+    if (w == nullptr) return "Cannot write " + outFile.getFullPathName();
+    SincResampler rl (r->sampleRate, T), rr (r->sampleRate, T);
+    std::vector<float> ol, orr; juce::int64 written = 0; bool writeFailed = false;
+    auto flush = [&]
+    {
+        const size_t m = juce::jmin (ol.size(), orr.size());
+        if (m == 0) return;
+        const float* ptrs[2] = { ol.data(), orr.data() };
+        if (! w->writeFromFloatArrays (ptrs, 2, (int) m)) writeFailed = true;
+        written += (juce::int64) m;
+        ol.erase (ol.begin(), ol.begin() + (long) m); orr.erase (orr.begin(), orr.begin() + (long) m);
+    };
+    juce::AudioBuffer<float> buf (2, 65536);
+    for (juce::int64 pos = 0; pos < r->lengthInSamples; pos += 65536)
+    {
+        if (cancel.load()) { w.reset(); outFile.deleteFile(); return "Cancelled."; }
+        const int m = (int) juce::jmin ((juce::int64) 65536, r->lengthInSamples - pos);
+        r->read (&buf, 0, m, pos, true, true);
+        rl.process (buf.getReadPointer (0), (size_t) m, ol); rr.process (buf.getReadPointer (1), (size_t) m, orr);
+        flush();
+    }
+    rl.finish (ol); rr.finish (orr); flush();
+    w.reset();
+    if (writeFailed) { outFile.deleteFile(); return "Could not write " + outFile.getFileName() + ": the drive did not take it (is it full?)"; }
+    return audioops::checkWrittenLength (&fm, outFile, written);
+}
 } // namespace
 
 double masterTargetRate (const MasterExportSettings& o, double editRate)
@@ -156,6 +189,9 @@ juce::String makeFilesSpec (const Project& p, const MasteringDef& def, MasterJob
         const double r = def.vm.sampleRate > 0.0 ? def.vm.sampleRate : edits.front()->sampleRate;
         if (! isRateOkForMp3 (masterTargetRate (def.vm, r))) return "MP3 supports 32, 44.1 and 48 kHz only. Choose one of those sample rates.";
     }
+    for (auto& b : p.buses)                                                // 3.26.0: the stems, in the project's order of buses (gone ones and the master's own source left out)
+        if (b.id != spec.sourceId && std::find (def.stemIds.begin(), def.stemIds.end(), b.id) != def.stemIds.end())
+        { spec.stemIds.push_back (b.id); spec.stemNames.push_back (b.name.trim().isNotEmpty() ? b.name.trim() : juce::String ("Bus")); }
     int n = 0;
     for (size_t i = 0; i < edits.size(); ++i)
     {
@@ -185,6 +221,7 @@ juce::String makeFormsSpec (const Project& p, const MasteringDef& def, MasterJob
     if (def.vm.formAudio == 2 && findLame().isEmpty())
         return "MP3 inside the listening copy needs the free LAME encoder. Put lame.exe in the same folder as Fermata, or choose WAV or FLAC.";
     spec.formsOnly = true;
+    spec.stemIds.clear(); spec.stemNames.clear();            // (no stems with the listening copies)
     spec.out.feedbackForm = true;
     spec.out.formAudio = def.vm.formAudio;
     spec.formSingle = def.vm.formSingle;
@@ -234,7 +271,8 @@ MasterExportJob::MasterExportJob (const Project& live, const MasterJobSpec& s, s
     if (earlyError.isEmpty())
     {
         RenderParams rp; rp.sourceId = spec.sourceId; rp.mixerId = spec.mixerId; rp.ownMixers = spec.ownMixers; rp.tailSeconds = spec.tailSeconds;
-        batch = std::make_unique<MasterRenderBatch> (live, ids, rp);
+        const bool stems = spec.kind == MasterJobSpec::Kind::Files && ! spec.formsOnly && ! spec.stemIds.empty();
+        batch = std::make_unique<MasterRenderBatch> (live, ids, rp, false, stems ? spec.stemIds : std::vector<juce::Uuid>(), spec.workFolder.getChildFile ("stems"));
         if (batch->getPrepareError().isNotEmpty()) earlyError = batch->getPrepareError();
     }
     if (startNow) startThread (juce::Thread::Priority::normal);
@@ -447,6 +485,9 @@ MasterExportResult MasterExportJob::executeInner()
     if (batch->total() != n) { R.error = "The renderer made a different number of files than expected."; return R; }
     std::vector<juce::File> rendered;
     for (int i = 0; i < n; ++i) rendered.push_back (batch->fileFor (i));
+    const int nStems = batch->numStems();                                 // 3.26.0: each piece's stems (their renders are in the work folder)
+    std::vector<std::vector<juce::File>> stemProc ((size_t) n);
+    for (int i = 0; i < n; ++i) for (int st = 0; st < nStems; ++st) stemProc[(size_t) i].push_back (batch->stemFileFor (i, st));
     batch.reset();
 
     // ---- 2. sample rate, and the peak of every file
@@ -505,6 +546,17 @@ MasterExportResult MasterExportJob::executeInner()
             if (writeFailed) { R.error = "Could not write " + outFile.getFileName() + ": the drive did not take it (is it full?)"; return R; }
             if (const auto e = audioops::checkWrittenLength (&fm, outFile, written); e.isNotEmpty()) { R.error = e; return R; }
             proc.push_back (outFile); R.frames[(size_t) i] = written;
+        }
+        for (int st = 0; st < nStems; ++st)                               // the stems at the same rate (only the master's peaks decide the level)
+        {
+            if (std::abs (T - native) < 0.5) continue;
+            setStatus ("Converting the stems of " + juce::String (i + 1) + " of " + juce::String (n) + "...");
+            const auto outFile = spec.workFolder.getChildFile ("rs-" + juce::String (i + 1) + "-stem-" + juce::String (st + 1) + ".wav");
+            const auto e = resampleFile (fm, stemProc[(size_t) i][(size_t) st], T, outFile, cancelFlag);
+            if (e == "Cancelled.") { R.cancelled = true; return R; }
+            if (e.isNotEmpty()) { R.error = e; return R; }
+            stemProc[(size_t) i][(size_t) st].deleteFile();
+            stemProc[(size_t) i][(size_t) st] = outFile;
         }
         sub = (float) (i + 1) / (float) n;
     }
@@ -606,6 +658,23 @@ MasterExportResult MasterExportJob::executeInner()
             finals.push_back (dest);
             if (spec.kind == MasterJobSpec::Kind::Files) R.files.add (dest.getFullPathName());
         }
+        if (spec.kind == MasterJobSpec::Kind::Files && ! spec.formsOnly)
+            for (int st = 0; st < nStems && st < (int) spec.stemNames.size(); ++st)
+            {   // 3.26.0: the stems - the master's gain (they keep its balance), its main format, in the Stems folder, named after the piece and the bus
+                const auto stemsDir = spec.destFolder.getChildFile ("Stems");
+                const juce::File dest = stemsDir.getNonexistentChildFile (sanitiseForFile (item.baseName + " - " + spec.stemNames[(size_t) st]), masterFileExtension (o.format), true);
+                MasterJobItem si = item;
+                si.tags.title = (item.tags.title.isNotEmpty() ? item.tags.title : item.baseName) + " (" + spec.stemNames[(size_t) st] + ")";
+                setStatus ("Writing " + juce::String (i + 1) + " of " + juce::String (n) + ": " + dest.getFileName());
+                float pkStem = 0.0f;
+                const auto e = finalise (stemProc[(size_t) i][(size_t) st], dest, rates[(size_t) i], gain, si, pkStem, o.format);
+                if (e == "Cancelled.") { R.cancelled = true; for (auto& f : finals) f.deleteFile(); return R; }
+                if (e.isNotEmpty()) { R.error = e; for (auto& f : finals) f.deleteFile(); return R; }
+                finals.push_back (dest);
+                R.files.add (dest.getFullPathName()); ++R.stemFiles;
+                if (pkStem > 1.0f && ! (o.format == MasterFormat::Wav && o.bitDepth == 32))      // (a 32-bit float file keeps what is over 0 dB: nothing is lost)
+                    R.clippedStems.add (dest.getFileNameWithoutExtension() + "  +" + juce::String (juce::Decibels::gainToDecibels (pkStem), 1) + " dB");
+            }
         if (spec.kind == MasterJobSpec::Kind::Files && o.feedbackForm)
         {
             const auto fmtForm = o.formAudio == 2 ? MasterFormat::Mp3 : o.formAudio == 1 ? MasterFormat::Flac : MasterFormat::Wav;

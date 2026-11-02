@@ -88,8 +88,13 @@ public:
     /** Milliseconds from start() to the first sound (0 until it has started). Any thread. */
     double msToFirstSound() const noexcept { return firstSoundMs.load(); }
 
-    /** Automation applied while this plays (an edit's lanes); null = none. Set before the session is started. */
+    /** Automation applied while this plays (an edit's lanes); null = none. Set before the session is started; afterwards only the message thread touches it
+        (AudioEngine::replaceAutomation puts a newer plan here while it plays). */
     std::shared_ptr<const AutomationPlan> automation;
+    /** 3.26.0: the plan the audio thread applies in each block (set from 'automation' as the play starts, and by AudioEngine::replaceAutomation). */
+    std::atomic<const AutomationPlan*> autoNow { nullptr };
+    /** 3.26.0: an edit being played as such (not its guide): a change to its automation is heard at once (AppContext::followAutomation). */
+    bool followsAutomation = false;
     /** The Edit being played (null = a take, a clip or something else): it plays through that Edit's own mixer, and only that one. */
     juce::Uuid editId = juce::Uuid::null();
     /** >= 0: this session is a finished stereo mix (track 0, two channels). It goes straight to the driver outputs directOut and directOut + 1, at unity,

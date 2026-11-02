@@ -545,7 +545,7 @@ MasteringComponent::MasteringComponent (AppContext& a)
     for (int s = 0; s <= 10; ++s) tailBox.addItem (juce::String (s) + " s", s + 1);
     tailBox.onChange = [this] { if (updating) return; def().tailSeconds = tailBox.getSelectedId() - 1; touched(); refreshDdp(); scheduleRecheck(); };
     mixerBox.onChange = [this] { if (updating) return; const int i = mixerBox.getSelectedId() - 1; if (juce::isPositiveAndBelow (i, (int) mixerIds.size())) { def().mixerId = mixerIds[(size_t) i]; touched(); scheduleRecheck(); } };
-    sourceBox.onChange = [this] { if (updating) return; const int i = sourceBox.getSelectedId() - 1; if (juce::isPositiveAndBelow (i, (int) sourceIds.size())) { def().sourceId = sourceIds[(size_t) i]; touched(); scheduleRecheck(); } };
+    sourceBox.onChange = [this] { if (updating) return; const int i = sourceBox.getSelectedId() - 1; if (juce::isPositiveAndBelow (i, (int) sourceIds.size())) { def().sourceId = sourceIds[(size_t) i]; touched(); scheduleRecheck(); refreshStemsButton(); } };
 
     // the renders: one line under the tabs, always visible
     renderStatus.setFont (juce::FontOptions (13.0f)); addAndMakeVisible (renderStatus);
@@ -665,6 +665,10 @@ MasteringComponent::MasteringComponent (AppContext& a)
             t.onClick = [this, f] { if (updating) return; auto& m = def().vm.extraFormats; if (alsoToggle[f].getToggleState()) m |= (1 << f); else m &= ~(1 << f); touched(); };
         }
     }
+    cap (stemsCaption, "Stems"); vmHolder.addChildComponent (stemsCaption); vmHolder.addChildComponent (stemsButton);      // 3.26.0
+    stemsButton.setTooltip ("Buses (Int or Ext) to export as well, each as its own stereo file for every piece: stems. They are rendered in the same pass as the master, "
+                            "at the master's level (so they keep its balance), in its format, into a Stems folder next to the masters. A bus that goes to no outputs works too.");
+    stemsButton.onClick = [this] { chooseStems(); };
     vmHolder.addChildComponent (folderEditor); vmHolder.addChildComponent (chooseButton);
     numberToggle.onClick = [this] { def().vm.numberFiles = numberToggle.getToggleState(); touched(); };
     folderEditor.onTextChange = [this] { def().vm.folder = folderEditor.getText(); touched(); };
@@ -982,6 +986,7 @@ void MasteringComponent::refreshSource()
     sourceBox.setSelectedId (ssel > 0 ? ssel : firstExt, juce::dontSendNotification);
     tailBox.setSelectedId (juce::jlimit (0, 10, (int) std::lround (def().tailSeconds)) + 1, juce::dontSendNotification);
     updating = false;
+    refreshStemsButton();
 }
 
 void MasteringComponent::refreshVm()
@@ -1346,7 +1351,7 @@ void LevelBox::resized()
 void MasteringComponent::setBusy (bool busy)
 {
     for (juce::Component* c : std::initializer_list<juce::Component*> { &formatBox, &rateBox, &bitsBox, &ditherBox, &qualityBox, &levelBox, &formLevelBox, &numberToggle, &formSingleBox, &formAudioBox, &formRateBox, &formBitsBox, &formFolderEditor, &formChoose, &alsoCaption, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4],
-                                                                         &folderEditor, &chooseButton, &mixerBox, &sourceBox, &tailBox, &vmAll, &vmNone, &vmUp, &vmDown, &autoPq, &allGapsBox, &ddpChoose,
+                                                                         &folderEditor, &chooseButton, &stemsButton, &mixerBox, &sourceBox, &tailBox, &vmAll, &vmNone, &vmUp, &vmDown, &autoPq, &allGapsBox, &ddpChoose,
                                                                          &ddpFolderEditor, &zipToggle, &cueToggle, &ddpNorm, &ddpTogether, &ddpPeakEditor, &ddpUp, &ddpDown, &gapEditor, &ddpCheck })
         c->setEnabled (! busy);
     exportButton.setButtonText (busy && lastJobKind == 0 ? "Cancel" : "Export");
@@ -1470,7 +1475,7 @@ void MasteringComponent::jobFinished (const MasterExportResult& r, int kind)
     auto& status = disc ? ddpStatus : kind == 2 ? formStatus : vmStatus;
     progressValue = r.error.isEmpty() && ! r.cancelled ? 1.0 : 0.0;
     if (r.cancelled) { status.setColour (juce::Label::textColourId, theme::text); status.setText ("Cancelled.", juce::dontSendNotification); return; }
-    if (r.error.isNotEmpty()) { status.setColour (juce::Label::textColourId, theme::warn); status.setText (r.error, juce::dontSendNotification); return; }
+    if (r.error.isNotEmpty()) { status.setColour (juce::Label::textColourId, theme::warn); status.setText (r.error, juce::dontSendNotification); showDoneBox (r, kind); return; }
     if (! disc) { lastReport = r.report; (kind == 2 ? formReportButton : reportButton).setVisible (r.report.isNotEmpty()); }
     status.setColour (juce::Label::textColourId, r.clipped ? theme::warn : theme::text);
     if (kind == 2)
@@ -1479,10 +1484,151 @@ void MasteringComponent::jobFinished (const MasterExportResult& r, int kind)
     else if (disc)
         status.setText ("Done. Loudest peak " + juce::String (r.peakDb, 1) + " dBFS" + (r.clipped ? " (CLIPPED: lower the level)" : "") + ".\n" + r.report, juce::dontSendNotification);
     else
-        status.setText ("Done: " + juce::String (r.files.size()) + " file(s), loudest peak " + juce::String (r.peakDb, 1) + " dBFS"
-                        + (r.clipped ? "   -  THIS CLIPPED (the loudness target was pushed through the ceiling, or the pieces are too hot: set the level, or lower the faders)." : "") + "\n" + juce::File (r.files[0]).getFileName() + (r.files.size() > 1 ? "  ..." : ""), juce::dontSendNotification);
+        status.setText ("Done: " + juce::String (r.files.size() - r.stemFiles) + " file(s)" + (r.stemFiles > 0 ? " and " + juce::String (r.stemFiles) + " stem(s)" : juce::String()) + ", loudest peak " + juce::String (r.peakDb, 1) + " dBFS"
+                        + (r.clipped ? "   -  THIS CLIPPED (the loudness target was pushed through the ceiling, or the pieces are too hot: set the level, or lower the faders)." : "")
+                        + (r.clippedStems.isEmpty() ? juce::String() : "   -  " + juce::String (r.clippedStems.size()) + " stem(s) clipped")
+                        + "\n" + juce::File (r.files[0]).getFileName() + (r.files.size() > 1 ? "  ..." : ""), juce::dontSendNotification);
     if (! r.files.isEmpty()) { lastOutput = juce::File (r.files[0]); (disc ? ddpShow : kind == 2 ? formShow : showButton).setVisible (true); }
     resized();
+    showDoneBox (r, kind);                                               // 3.26.0: a box says it is finished (the bar at 100 % was easy to miss)
+}
+
+void MasteringComponent::showDoneBox (const MasterExportResult& r, int kind)
+{
+    const bool stopped = r.error.isNotEmpty();
+    juce::String text;
+    if (stopped) text = "The export did not finish:\n\n" + r.error;
+    else
+    {
+        const int audio = r.files.size() - r.stemFiles;
+        const auto where = r.files.isEmpty() ? juce::File() : juce::File (r.files[0]).getParentDirectory();
+        if (kind == 1) text = "The DDP master is written, and it passed its own check.";
+        else if (kind == 2) text = juce::String (r.files.size()) + (r.files.size() == 1 ? " listening copy" : " listening copies") + " written.";
+        else text = juce::String (audio) + (audio == 1 ? " file" : " files") + " written"
+                    + (r.stemFiles > 0 ? ", and " + juce::String (r.stemFiles) + (r.stemFiles == 1 ? " stem" : " stems") + " in its Stems folder" : juce::String()) + ".";
+        if (where != juce::File()) text << "\n\nFolder: " << where.getFullPathName();
+        text << "\nLoudest peak: " << juce::String (r.peakDb, 1) << " dBFS" << (r.clipped ? "  -  THIS CLIPPED" : "") << ".";
+        if (! r.clippedStems.isEmpty())
+        {
+            text << "\n\nThese stems went over 0 dB at the master's level, so they are clipped (turn that bus down, or export 32-bit WAV):";
+            for (int i = 0; i < juce::jmin (8, r.clippedStems.size()); ++i) text << "\n   " << r.clippedStems[i];
+            if (r.clippedStems.size() > 8) text << "\n   ... and " << (r.clippedStems.size() - 8) << " more";
+        }
+    }
+    const bool warn = stopped || r.clipped || ! r.clippedStems.isEmpty();
+    auto* aw = new juce::AlertWindow (stopped ? "Export stopped" : "Export complete", text, warn ? juce::MessageBoxIconType::WarningIcon : juce::MessageBoxIconType::InfoIcon, this);
+    const auto out = lastOutput;
+    if (! stopped && out.exists()) aw->addButton ("Show the files", 1);
+    aw->addButton ("OK", 0, juce::KeyPress (juce::KeyPress::returnKey), juce::KeyPress (juce::KeyPress::escapeKey));
+    aw->enterModalState (true, juce::ModalCallbackFunction::create ([aw, out] (int res)
+    {
+        if (res == 1 && out.exists()) out.revealToUser();
+        delete aw;
+    }));
+}
+
+namespace
+{
+/** 3.26.0: the Virtual Master's stems - a tick box for each Int and Ext bus but the one the master is rendered from, and All / None. Every tick counts at once. */
+class StemsPanel : public juce::Component
+{
+public:
+    struct Entry { juce::Uuid id; juce::String name; bool on = false; };
+    StemsPanel (std::vector<Entry> entries, std::function<void (const juce::Uuid&, bool)> setOne) : list (std::move (entries)), set (std::move (setOne))
+    {
+        title.setText ("Export these buses as stems too:", juce::dontSendNotification);
+        title.setFont (juce::FontOptions (13.0f, juce::Font::bold)); title.setColour (juce::Label::textColourId, theme::text);
+        addAndMakeVisible (title);
+        note.setText ("Each ticked bus becomes its own stereo file for every piece, at the master's level (so the stems keep its balance), in the master's format, "
+                      "in a Stems folder next to the masters. A bus that goes to no outputs works too.", juce::dontSendNotification);
+        note.setFont (juce::FontOptions (11.5f)); note.setColour (juce::Label::textColourId, theme::dimText);
+        note.setJustificationType (juce::Justification::topLeft);
+        addAndMakeVisible (note);
+        empty.setText ("There is no other Int or Ext bus in this project. Add one in a mixer (+ Strip...), send what you want to it, and it is listed here.", juce::dontSendNotification);
+        empty.setFont (juce::FontOptions (12.0f)); empty.setColour (juce::Label::textColourId, theme::text); empty.setJustificationType (juce::Justification::topLeft);
+        addChildComponent (empty); empty.setVisible (list.empty());
+        for (auto& e : list)
+        {
+            auto* b = boxes.add (new juce::ToggleButton (e.name));
+            b->setColour (juce::ToggleButton::textColourId, theme::text);
+            b->setToggleState (e.on, juce::dontSendNotification);
+            const auto id = e.id;
+            b->onClick = [this, b, id] { if (set) set (id, b->getToggleState()); };
+            addAndMakeVisible (b);
+        }
+        allBtn.setButtonText ("All"); noneBtn.setButtonText ("None");
+        allBtn.onClick = [this] { setAll (true); };
+        noneBtn.onClick = [this] { setAll (false); };
+        addAndMakeVisible (allBtn); addAndMakeVisible (noneBtn);
+        allBtn.setEnabled (! list.empty()); noneBtn.setEnabled (! list.empty());
+        setSize (cols() == 2 ? 540 : 360, 8 + 22 + 6 + listHeight() + 8 + 26 + 6 + 52 + 8);
+    }
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (10, 8);
+        title.setBounds (r.removeFromTop (22)); r.removeFromTop (6);
+        auto area = r.removeFromTop (listHeight());
+        empty.setBounds (area);
+        const int rows = rowsNeeded(), cw = area.getWidth() / cols();
+        for (int i = 0; i < boxes.size(); ++i) boxes[i]->setBounds (area.getX() + (i / rows) * cw, area.getY() + (i % rows) * 24, cw, 24);
+        r.removeFromTop (8);
+        auto btns = r.removeFromTop (26);
+        allBtn.setBounds (btns.removeFromLeft (80)); btns.removeFromLeft (6); noneBtn.setBounds (btns.removeFromLeft (80));
+        r.removeFromTop (6);
+        note.setBounds (r);
+    }
+private:
+    int cols() const { return list.size() > 12 ? 2 : 1; }
+    int rowsNeeded() const { return juce::jmax (1, ((int) list.size() + cols() - 1) / cols()); }
+    int listHeight() const { return list.empty() ? 48 : rowsNeeded() * 24; }
+    void setAll (bool on)
+    {
+        for (int i = 0; i < boxes.size(); ++i)
+        {
+            boxes[i]->setToggleState (on, juce::dontSendNotification);
+            if (set) set (list[(size_t) i].id, on);
+        }
+    }
+    std::vector<Entry> list;
+    std::function<void (const juce::Uuid&, bool)> set;
+    juce::Label title, note, empty;
+    juce::OwnedArray<juce::ToggleButton> boxes;
+    juce::TextButton allBtn, noneBtn;
+};
+} // namespace
+
+void MasteringComponent::chooseStems()
+{
+    juce::Uuid mixerId, master;
+    resolveRenderSource (app.project, def(), mixerId, master);
+    std::vector<StemsPanel::Entry> es;
+    for (int pass = 0; pass < 2; ++pass)                                  // the Ext buses, then the Int buses (as in the Render from list)
+        for (auto& b : app.project.buses)
+            if (b.external == (pass == 0) && b.id != master)
+                es.push_back ({ b.id, b.name + (b.external ? "  (Ext bus)" : "  (Int bus)"), std::find (def().stemIds.begin(), def().stemIds.end(), b.id) != def().stemIds.end() });
+    juce::Component::SafePointer<MasteringComponent> safe (this);
+    auto panel = std::make_unique<StemsPanel> (std::move (es), [safe] (const juce::Uuid& id, bool on)
+    {
+        if (safe == nullptr) return;
+        auto& v = safe->def().stemIds;
+        const auto it = std::find (v.begin(), v.end(), id);
+        if (on && it == v.end()) v.push_back (id);
+        if (! on && it != v.end()) v.erase (it);
+        safe->touched();
+        safe->refreshStemsButton();
+    });
+    juce::CallOutBox::launchAsynchronously (std::move (panel), stemsButton.getScreenBounds(), nullptr);
+}
+
+void MasteringComponent::refreshStemsButton()
+{
+    juce::Uuid mixerId, master;
+    resolveRenderSource (app.project, def(), mixerId, master);
+    juce::StringArray names;
+    for (auto& b : app.project.buses)
+        if (b.id != master && std::find (def().stemIds.begin(), def().stemIds.end(), b.id) != def().stemIds.end()) names.add (b.name);
+    stemsButton.setButtonText (names.isEmpty() ? juce::String ("None - choose buses to export as stems too...")
+                                               : juce::String (names.size()) + (names.size() == 1 ? " bus: " : " buses: ") + names.joinIntoString (", "));
 }
 
 // ----------------------------------------------------------------------------- layout
@@ -1507,7 +1653,7 @@ void MasteringComponent::setView (int v)
     formReportButton.setVisible (fm && lastReport.isNotEmpty());
     for (juce::Component* c : std::initializer_list<juce::Component*> { &fmtCaption, &rateCaption, &bitsCaption, &ditherCaption, &levelCaption, &albumCaption, &fileCaption, &nameCaption, &folderCaption,
                                                                          &formatBox, &rateBox, &bitsBox, &ditherBox, &levelBox, &numberToggle, &alsoCaption, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4],
-                                                                         &folderEditor, &chooseButton })
+                                                                         &stemsCaption, &stemsButton, &folderEditor, &chooseButton })
         c->setVisible (vm);
     reportButton.setVisible (vm && lastReport.isNotEmpty());
     feedbackToggle.setVisible (false);
@@ -1659,6 +1805,7 @@ void MasteringComponent::layoutVm (juce::Rectangle<int> area)
     y += 4;
     alsoCaption.setBounds (row (20));
     { auto r = row (24); const int cw = juce::jmax (60, r.getWidth() / 5); for (int f = 0; f < 5; ++f) alsoToggle[f].setBounds (r.removeFromLeft (cw)); }
+    { auto r = row (grid::btnH + 2); stemsCaption.setBounds (r.removeFromLeft (60)); stemsButton.setBounds (r); }
     { auto r = row (grid::btnH + 2); folderCaption.setBounds (r.removeFromLeft (60)); chooseButton.setBounds (r.removeFromRight (136)); r.removeFromRight (4); folderEditor.setBounds (r); }
     y += 6;
     int yLeft = y;
@@ -1670,7 +1817,7 @@ void MasteringComponent::layoutVm (juce::Rectangle<int> area)
     {   // Tab goes down the left column, then down the right one (the tags)
         int order = 1;
         for (juce::Component* c : std::initializer_list<juce::Component*> { &formatBox, &rateBox, &bitsBox, &ditherBox, &qualityBox, &levelBox,
-                                                                             &numberToggle, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4], &folderEditor, &chooseButton })
+                                                                             &numberToggle, &alsoToggle[0], &alsoToggle[1], &alsoToggle[2], &alsoToggle[3], &alsoToggle[4], &stemsButton, &folderEditor, &chooseButton })
             c->setExplicitFocusOrder (order++);
         for (auto* list : { &albumFields, &fileFields })
             for (auto* f : *list) f->editor.setExplicitFocusOrder (order++);

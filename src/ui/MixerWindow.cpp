@@ -14,8 +14,48 @@ constexpr int kStripWidths[] = { 66, 74, 82, 90, 104, 118 };
 int& stripWidthLevel() { static int level = 3; return level; }
 int& stripWidthGen()   { static int gen = 0; return gen; }        // goes up when the width changes, so every open mixer lays itself out again
 int stripWidth() { return kStripWidths[juce::jlimit (0, 5, stripWidthLevel())]; }
-constexpr int kBandH = 16, kPlateH = 26, kInputRowH = 19, kSlotH = 16, kSendCellH = 50, kPanRowH = 30, kMSH = 24, kFaderH = 280, kFaderMin = 110, kOutRowH = 20, kSecH = 11, kToTrackH = 20, kLatH = 13;
+constexpr int kBandH = 16, kPlateH = 26, kInputRowH = 19, kSlotH = 16, kSendCellH = 50, kPanRowH = 30, kMSH = 24, kFaderH = 280, kFaderMin = 110, kOutRowH = 20, kSecH = 11, kLatH = 13;
 constexpr int kLcRowH = 18;      // the LC key's row (audio tracks and Int Buses), between the inputs and the inserts
+constexpr int kDividerH = 9;     // 3.26.0: the line above the pans, dragged to make the faders taller (its height; the groove is in its middle)
+constexpr int kSendHdrH = 16;    // 3.26.0: the SENDS title line, with the + (a send to another track) at its right
+constexpr int kMinTopShown = 40; // 3.26.0: the least of the section above the line that stays in sight
+constexpr int kTopBarW = 12;     // 3.26.0: the scroll bar of the section above the line
+constexpr int kTopMargin = 1 + kBandH + 3, kBottomMargin = 1 + kPlateH + 3 + kLatH;      // above and below the body of a strip (the coloured bar; the delay line and the name plate)
+constexpr int kMetersMinH = 452; // the METERS strip's buttons and boxes (its own layout, from the top): the strips are never shorter, so none of them is cut off
+
+/** 3.26.0: the fader height chosen by dragging the line above the pans (0 = the normal size, kFaderH). Shared by all the mixers, remembered on this computer;
+    the generation goes up when it changes, so every open mixer follows. */
+int& mixerFaderPref() { static int h = 0; return h; }
+int& faderPrefGen()   { static int gen = 0; return gen; }
+
+/** 3.26.0: what every strip of one mixer is laid out by, so that their rows line up: the rows the inputs, the pans and the send dials take (the most any of
+    its strips needs: two inputs and two pans only when a stereo track is there, no send row when no strip has a dial), the insert slots, the fader's height,
+    how much of the section above the fader line (inputs, LC, inserts, sends) is in sight, and how far that section is scrolled. */
+struct StripLayout
+{
+    int inputRows = 2, panRows = 2, sendRows = 1, slots = 1;
+    int faderH = kFaderH;
+    int topShown = 0;
+    int topScroll = 0;
+    /** The height of the whole section above the line (the same on every strip). */
+    int topContentH() const noexcept { return inputRows * kInputRowH + 3 + kLcRowH + 2 + kSecH + slots * kSlotH + 2 + 4 + kSendHdrH + sendRows * kSendCellH + 2; }
+    /** Everything of a strip but the fader and the part of the top section in sight. */
+    int fixedH() const noexcept { return kTopMargin + kDividerH + panRows * kPanRowH + 4 + kMSH + 3 + 3 + kOutRowH + kBottomMargin; }
+    int maxScroll() const noexcept { return juce::jmax (0, topContentH() - topShown); }
+};
+
+/** 3.26.0: the fader's height and the part of the top section in sight, for strips 'h' high. faderPref: chosen by dragging the line (0 = the normal size,
+    kFaderH). The fader keeps that height - in a shorter window the top section is covered and scrolls - but never takes the last kMinTopShown of the top
+    section, and is never shorter than kFaderMin; room the top section does not need goes to the fader. */
+void fitStrip (StripLayout& L, int h, int faderPref)
+{
+    const int content = L.topContentH(), room = juce::jmax (0, h - L.fixedH());          // what the top section in sight and the fader share
+    int fader = juce::jlimit (kFaderMin, juce::jmax (kFaderMin, room - kMinTopShown), faderPref > 0 ? faderPref : kFaderH);
+    int shown = juce::jmax (0, room - fader);
+    if (shown > content) { shown = content; fader = room - content; }
+    L.faderH = fader; L.topShown = shown;
+    L.topScroll = juce::jlimit (0, L.maxScroll(), L.topScroll);
+}
 
 /** A small recessed read-out field (peak value, fader value, pan position). */
 void styleField (juce::Label& l, float size = 10.0f, bool bold = true)
@@ -990,10 +1030,36 @@ public:
     StripBase (AppContext* a, const juce::Uuid& id) : appPtr (a), nodeId (id)
     {
         if (a != nullptr) setTooltip ("Click the coloured bar to change this channel's colour (it is used in the take and edit windows too)");
+        addAndMakeVisible (topPane); topPane.addAndMakeVisible (topContent);           // 3.26.0: the section above the fader line (it scrolls when it does not fit)
+        topPane.setInterceptsMouseClicks (false, true); topContent.setInterceptsMouseClicks (false, true);     // (their own empty space is the strip's: its tooltip, the wheel)
     }
     virtual void refreshFromModel() {}
     virtual void tick() {}
     virtual void resetPeaks() {}
+    /** False for a strip without a fader (the METERS strip): the fader line does not cross it. */
+    virtual bool hasFader() const { return true; }
+    /** 3.26.0: the mixer's layout (rows, fader height, the part of the top section in sight); resized() follows it. */
+    void setLayout (const StripLayout& L) { layout = L; }
+    /** 3.26.0: the section above the fader line scrolled (the same on every strip): only moved, nothing laid out again. */
+    void setTopScroll (int sc)
+    {
+        layout.topScroll = juce::jlimit (0, juce::jmax (0, topContent.getHeight() - topPane.getHeight()), sc);
+        topContent.setTopLeftPosition (topContent.getX(), -layout.topScroll);
+    }
+
+    /** The recessed wells (around the fader, the insert slots, the send dials) and the section titles with their line, in the strip's colour. */
+    static void paintWells (juce::Graphics& g, const std::vector<juce::Rectangle<int>>& wellList, const std::vector<std::pair<juce::String, juce::Rectangle<int>>>& sectionList, juce::Colour c0)
+    {
+        const auto& t = mixTheme();
+        for (auto& w : wellList) { g.setColour (t.well.interpolatedWith (c0, t.ground ? 0.13f : 0.10f)); g.fillRect (w); g.setColour (t.soft.interpolatedWith (c0, 0.3f)); g.drawRect (w, 1); }
+        g.setFont (juce::FontOptions (8.5f, juce::Font::bold));
+        for (auto& s : sectionList)
+        {
+            const int tw = juce::GlyphArrangement::getStringWidthInt (juce::FontOptions (8.5f, juce::Font::bold), s.first);
+            g.setColour (t.dim); g.drawText (s.first, s.second.getX(), s.second.getY(), tw + 2, s.second.getHeight(), juce::Justification::centredLeft, false);
+            g.setColour (t.soft.interpolatedWith (c0, 0.3f)); g.fillRect (s.second.getX() + tw + 6, s.second.getCentreY(), juce::jmax (0, s.second.getWidth() - tw - 6), 1);
+        }
+    }
 
     juce::Colour colour() const { return appPtr != nullptr ? chan::of (appPtr->project, nodeId) : juce::Colour (0xff8a909a); }
 
@@ -1004,13 +1070,14 @@ public:
         const auto c0 = colour();
         const float rad = 6.0f;                                                                                   // the strips have rounded corners
         g.setColour (t.strip.interpolatedWith (c0, t.ground ? 0.22f : 0.16f)); g.fillRoundedRectangle (b.toFloat(), rad);   // the strip itself is tinted with the channel colour
-        for (auto& w : wells) { g.setColour (t.well.interpolatedWith (c0, t.ground ? 0.13f : 0.10f)); g.fillRect (w); g.setColour (t.soft.interpolatedWith (c0, 0.3f)); g.drawRect (w, 1); }
-        g.setFont (juce::FontOptions (8.5f, juce::Font::bold));
-        for (auto& s : sections)
-        {
-            const int tw = juce::GlyphArrangement::getStringWidthInt (juce::FontOptions (8.5f, juce::Font::bold), s.first);
-            g.setColour (t.dim); g.drawText (s.first, s.second.getX(), s.second.getY(), tw + 2, s.second.getHeight(), juce::Justification::centredLeft, false);
-            g.setColour (t.soft.interpolatedWith (c0, 0.3f)); g.fillRect (s.second.getX() + tw + 6, s.second.getCentreY(), juce::jmax (0, s.second.getWidth() - tw - 6), 1);
+        paintWells (g, wells, sections, c0);
+        if (! dividerRect.isEmpty())
+        {   // 3.26.0: the fader line - a groove across the strip, with a grip in its middle (dragged up for taller faders)
+            const int y = dividerRect.getCentreY(), x0 = dividerRect.getX() + 3, w = dividerRect.getWidth() - 6;
+            g.setColour (t.line); g.fillRect (x0, y - 1, w, 1);
+            g.setColour (t.soft.interpolatedWith (c0, 0.3f)); g.fillRect (x0, y, w, 1);
+            g.setColour (t.dim);
+            for (int k = -1; k <= 1; ++k) g.fillEllipse ((float) dividerRect.getCentreX() + (float) k * 6.0f - 1.5f, (float) y - 1.5f, 3.0f, 3.0f);
         }
         g.setColour (t.line); g.drawRoundedRectangle (b.toFloat().reduced (0.5f), rad, 1.0f);
 
@@ -1126,9 +1193,45 @@ protected:
     }
     juce::Rectangle<int> latencyRect() const { return { 1, getHeight() - 1 - kPlateH - kLatH, getWidth() - 2, kLatH }; }
 
+    /** 3.26.0: lays out the frame of a fader strip from 'layout': the part of the top section in sight (topPane; its controls are children of topContent
+        and go in 'content' - x as in the strip, y from 0 at the top of the section), the fader line, and below it the pans, M / S, the fader and the row
+        under it. alignLat: a strip without the plug-in delay line keeps its room, so its fader lines up with the others. */
+    struct Parts { juce::Rectangle<int> content, pans, ms, fader, out; };
+    Parts layoutFrame (bool alignLat = false)
+    {
+        wells.clear(); sections.clear(); topWells.clear(); topSections.clear();
+        auto r = body();
+        if (alignLat && shownLatency() < 0) r = r.withTrimmedBottom (kLatH);
+        Parts p;
+        p.out = r.removeFromBottom (kOutRowH); r.removeFromBottom (3);
+        p.fader = r.removeFromBottom (juce::jmin (layout.faderH, juce::jmax (0, r.getHeight()))); r.removeFromBottom (3);
+        p.ms = r.removeFromBottom (kMSH); r.removeFromBottom (4);
+        p.pans = r.removeFromBottom (layout.panRows * kPanRowH);
+        dividerRect = r.removeFromBottom (kDividerH).withX (1).withWidth (getWidth() - 2);
+        topPane.setBounds (1, r.getY(), getWidth() - 2, juce::jmax (0, r.getHeight()));
+        const int contentH = layout.topContentH();
+        layout.topScroll = juce::jlimit (0, juce::jmax (0, contentH - topPane.getHeight()), layout.topScroll);
+        topContent.setBounds (-1, -layout.topScroll, getWidth(), contentH);           // (x - 1: inside the pane, x is the same as in the strip)
+        p.content = juce::Rectangle<int> (r.getX(), 0, r.getWidth(), contentH);
+        return p;
+    }
+
     AppContext* appPtr; juce::Uuid nodeId;
     std::vector<juce::Rectangle<int>> wells;
     std::vector<std::pair<juce::String, juce::Rectangle<int>>> sections;
+    StripLayout layout;
+    std::vector<juce::Rectangle<int>> topWells;                                   // the same, in the section above the line (topContent's own)
+    std::vector<std::pair<juce::String, juce::Rectangle<int>>> topSections;
+    juce::Rectangle<int> dividerRect;
+    /** The section above the fader line: its controls, wells and titles (it is moved up inside topPane as it scrolls). */
+    struct TopContent : public juce::Component
+    {
+        explicit TopContent (StripBase& s) : strip (s) {}
+        void paint (juce::Graphics& g) override { StripBase::paintWells (g, strip.topWells, strip.topSections, strip.colour()); }
+        StripBase& strip;
+    };
+    juce::Component topPane;                                                      // the part of the section in sight (it clips what is scrolled away)
+    TopContent topContent { *this };
 };
 
 /** The output of a strip, after its fader: an on / off button and the place it goes to ('Main' = every Ext Bus ticked as Main out, or any Int / Ext Bus).
@@ -1272,11 +1375,11 @@ public:
                 app.project.changed();
                 refreshInputs();
             };
-            addAndMakeVisible (cb);
+            topContent.addAndMakeVisible (cb);
         }
         fillInputs();
-        addAndMakeVisible (lcKey);
-        addAndMakeVisible (slots);
+        topContent.addAndMakeVisible (lcKey);
+        topContent.addAndMakeVisible (slots);
         buildSends();
 
         // one pan slider per channel, as wide as the strip, with its exact position written beside it (L100 .. C .. R100).
@@ -1441,16 +1544,16 @@ public:
             auto* d = dials.add (new SendDial (app, mixer, trackId, dest, toTrack));
             juce::Component::SafePointer<ChannelStrip> safe (this);
             d->forOthers = [safe] (const std::function<void (GangMember&)>& fn) { if (safe != nullptr && safe->gang != nullptr) safe->gang->forOthers (safe->trackId, fn); };
-            addAndMakeVisible (d);
+            topContent.addAndMakeVisible (d);
         };
         for (auto& b : app.project.sendDialBuses (mixer, trackId)) addDial (b, false);
         for (auto& t : app.project.tracks)
             if (t.id != trackId)
                 if (auto* s = strip.sends.find (t.id)) if (s->active()) addDial (t.id, true);
-        toTrackButton.setButtonText ("+ send to track");
+        toTrackButton.setButtonText ("+");                                  // (3.26.0: on the SENDS title line, so it no longer takes a row of its own)
         toTrackButton.setTooltip ("Send this channel to another audio track of this mixer");
         toTrackButton.onClick = [this] { chooseTrack(); };
-        addAndMakeVisible (toTrackButton);
+        topContent.addAndMakeVisible (toTrackButton);
     }
     void chooseTrack()
     {
@@ -1504,63 +1607,47 @@ public:
 
     void resized() override
     {
-        wells.clear(); sections.clear();
-        auto r = body();
-        outRow.setBounds (r.removeFromBottom (kOutRowH));
-        r.removeFromBottom (3);
-        auto faderArea = r.removeFromBottom (juce::jmax (kFaderMin, kFaderH + getHeight() - heightFor (2 * juce::jmax (1, sendRows), nSlots)));   // a taller / shorter window stretches the fader
-        wells.push_back (faderArea.expanded (2, 0));
-        r.removeFromBottom (3);
-        auto ms = r.removeFromBottom (kMSH);
-        r.removeFromBottom (4);
-        auto panArea = r.removeFromBottom (2 * kPanRowH);
-
-        for (int c = 0; c < 2; ++c)
+        const auto p = layoutFrame();                                           // 3.26.0: the frame (see StripLayout): the section above the line scrolls
+        outRow.setBounds (p.out);
+        wells.push_back (p.fader.expanded (2, 0));
+        fader.setBounds (p.fader);
+        auto ms = p.ms;
+        mute->setBounds (ms.removeFromLeft (ms.getWidth() / 2).reduced (1, 0));
+        solo->setBounds (ms.reduced (1, 0));
+        auto panArea = p.pans;
+        for (int c = 0; c < pans.size(); ++c)
         {
-            auto row = r.removeFromTop (kInputRowH);
-            if (c < inBoxes.size()) inBoxes[c]->setBounds (row.reduced (0, 1));
+            auto row = c < layout.panRows ? panArea.removeFromTop (kPanRowH) : juce::Rectangle<int>();
+            auto head = row.removeFromTop (14);
+            panLabels[c]->setBounds (head.removeFromLeft (head.getWidth() / 2));
+            panValues[c]->setBounds (head.removeFromRight (36).reduced (0, 1));
+            pans[c]->setBounds (row);                                           // the whole width of the strip
         }
-        r.removeFromTop (3);
-        lcKey.setBounds (r.removeFromTop (kLcRowH));
-        r.removeFromTop (2);
-        sections.push_back ({ "INSERTS", r.removeFromTop (kSecH) });
-        auto slotArea = r.removeFromTop (nSlots * kSlotH + 2);
-        wells.push_back (slotArea.expanded (2, 0));
+
+        // the section above the line (in topContent): the inputs (one row, or two when the mixer has a stereo track), LC, the inserts, the sends
+        auto t = p.content;
+        for (int c = 0; c < inBoxes.size(); ++c)
+            inBoxes[c]->setBounds (c < layout.inputRows ? t.withHeight (kInputRowH).translated (0, c * kInputRowH).reduced (0, 1) : juce::Rectangle<int>());
+        t.removeFromTop (layout.inputRows * kInputRowH);
+        t.removeFromTop (3);
+        lcKey.setBounds (t.removeFromTop (kLcRowH));
+        t.removeFromTop (2);
+        topSections.push_back ({ "INSERTS", t.removeFromTop (kSecH) });
+        auto slotArea = t.removeFromTop (nSlots * kSlotH + 2);
+        topWells.push_back (slotArea.expanded (2, 0));
         slots.setBounds (slotArea.reduced (0, 1));
-        r.removeFromTop (4);
-        sections.push_back ({ "SENDS", r.removeFromTop (kSecH) });
-        const int rows = juce::jmax (1, sendRows);
-        auto sendArea = r.removeFromTop (rows * kSendCellH);
-        wells.push_back (sendArea.expanded (2, 0));
+        t.removeFromTop (4);
+        auto hdr = t.removeFromTop (kSendHdrH);
+        toTrackButton.setBounds (hdr.removeFromRight (18).reduced (0, 1));
+        topSections.push_back ({ "SENDS", hdr.withTrimmedRight (2) });
+        auto sendArea = t.removeFromTop (layout.sendRows * kSendCellH);          // (no row at all when no strip of this mixer has a send dial)
+        if (layout.sendRows > 0) topWells.push_back (sendArea.expanded (2, 0));
         const int cw = sendArea.getWidth() / 2;
         for (int k = 0; k < dials.size(); ++k)
             dials[k]->setBounds (juce::Rectangle<int> (sendArea.getX() + (k % 2) * cw, sendArea.getY() + (k / 2) * kSendCellH, cw, kSendCellH));
-        toTrackButton.setBounds (r.removeFromTop (kToTrackH).reduced (0, 2));
-
-        for (int c = 0; c < 2; ++c)
-        {
-            auto row = panArea.removeFromTop (kPanRowH);
-            if (c < pans.size())
-            {
-                auto head = row.removeFromTop (14);
-                panLabels[c]->setBounds (head.removeFromLeft (head.getWidth() / 2));
-                panValues[c]->setBounds (head.removeFromRight (36).reduced (0, 1));
-                pans[c]->setBounds (row.reduced (0, 0));                       // the whole width of the strip
-            }
-        }
-        mute->setBounds (ms.removeFromLeft (ms.getWidth() / 2).reduced (1, 0));
-        solo->setBounds (ms.reduced (1, 0));
-        fader.setBounds (faderArea);
+        topContent.repaint();
     }
-    void setSendRows (int rows) { sendRows = rows; }
-
-    /** The height of a strip with 'maxDials' sends on its busiest channel. */
-    static int heightFor (int maxDials, int slotCount)
-    {
-        const int rows = juce::jmax (1, (maxDials + 1) / 2);
-        return 1 + kBandH + 3 + 2 * kInputRowH + 3 + kLcRowH + 2 + kSecH + slotCount * kSlotH + 2 + 4 + kSecH + rows * kSendCellH + kToTrackH
-               + 2 * kPanRowH + 4 + kMSH + 3 + kFaderH + 3 + kOutRowH + 3 + kLatH + kPlateH + 1 + 4;
-    }
+    int inputBoxes() const { return inBoxes.size(); }
 
 protected:
     juce::String bandText() const override { return numCh == 1 ? "AUDIO  MONO" : numCh == 2 ? "AUDIO  STEREO" : "AUDIO  " + juce::String (numCh) + " CH"; }
@@ -1654,7 +1741,7 @@ public:
 private:
     AppContext& app; MixerState& mixer; juce::Uuid trackId; StripState& strip; int numCh;
     bool updating = false;
-    int sendRows = 1, nSlots = kNumSlots;
+    int nSlots = kNumSlots;
     LowCutKey lcKey { app, strip.lowCut, [this] { auto* tr = app.project.findTrack (trackId); return tr != nullptr ? tr->name : juce::String(); } };
     juce::OwnedArray<juce::ComboBox> inBoxes;
     juce::OwnedArray<SendDial> dials;
@@ -1678,7 +1765,7 @@ public:
           outRow (a, m, def.id, false, def.external, &st.outOn, &st.outDest)
     {
         nSlots = slotCount;
-        addAndMakeVisible (slots); addAndMakeVisible (fader); addAndMakeVisible (outRow);
+        topContent.addAndMakeVisible (slots); addAndMakeVisible (fader); addAndMakeVisible (outRow);
         mute = makeToggle (*this, toggles, "M", juce::Colour (0xffe0312b));
         mute->setToggleState (st.mute.get(), juce::dontSendNotification);
         mute->setTooltip ("Mute (this mixer only)");
@@ -1686,7 +1773,7 @@ public:
         if (! external)
         {
             lcKey = std::make_unique<LowCutKey> (a, st.lowCut, [this] { auto* b = app.project.findBus (busId); return b != nullptr ? b->name : juce::String(); });
-            addAndMakeVisible (*lcKey);
+            topContent.addAndMakeVisible (*lcKey);
             solo = makeToggle (*this, toggles, "S", juce::Colour (0xfff2c200));
             solo->setColour (juce::TextButton::textColourOnId, juce::Colours::black);
             solo->setToggleState (st.solo.get(), juce::dontSendNotification);
@@ -1718,30 +1805,29 @@ public:
         {
             outBox.addItem ("(nowhere)", 1);
             const int n = (int) app.project.outputs.size();
-            for (int i = 0; i + 1 < n; i += 2) outBox.addItem (juce::String (i + 1) + "-" + juce::String (i + 2), i + 2);
-            outBox.setTooltip ("An Ext Bus must go to driver outputs (a stereo pair) or nowhere");
+            for (int i = 0; i + 1 < n; i += 2) outBox.addItem ("Out " + juce::String (i + 1) + "-" + juce::String (i + 2), i + 2);     // (3.26.0: "Out": it may be shown without its title)
+            outBox.setTooltip ("The driver outputs this Ext Bus goes to: an Ext Bus must go to a stereo pair of driver outputs, or nowhere");
             outBox.onChange = [this] { if (! updating) { st.outFirst.store (outBox.getSelectedId() <= 1 ? -1 : outBox.getSelectedId() - 2); app.project.markDirty(); app.project.changed(); } };
-            addAndMakeVisible (outBox);
+            topContent.addAndMakeVisible (outBox);
             note.setText ("An Ext Bus is how sound leaves the mixer: pick the pair of driver outputs above (or nowhere). Tick Main out below to make this the bus that strips send to by default.", juce::dontSendNotification);
             note.setFont (juce::FontOptions (9.5f));
             note.setColour (juce::Label::textColourId, mixTheme().dim);
             note.setJustificationType (juce::Justification::topLeft);
-            addAndMakeVisible (note);
+            topContent.addAndMakeVisible (note);
         }
         else
         {
-            for (auto& b : app.project.sendDialBuses (mixer, busId)) { auto* d = dials.add (new SendDial (app, mixer, busId, b, false)); addAndMakeVisible (d); }     // (3.23.0: not where its fader sends)
+            for (auto& b : app.project.sendDialBuses (mixer, busId)) { auto* d = dials.add (new SendDial (app, mixer, busId, b, false)); topContent.addAndMakeVisible (d); }     // (3.23.0: not where its fader sends)
             for (auto& t : app.project.tracks)
-                if (auto* s = st.sends.find (t.id)) if (s->active()) { auto* d = dials.add (new SendDial (app, mixer, busId, t.id, true)); addAndMakeVisible (d); }
-            toTrackButton.setButtonText ("+ send to track");
+                if (auto* s = st.sends.find (t.id)) if (s->active()) { auto* d = dials.add (new SendDial (app, mixer, busId, t.id, true)); topContent.addAndMakeVisible (d); }
+            toTrackButton.setButtonText ("+");                              // (3.26.0: on the SENDS title line)
             toTrackButton.setTooltip ("Send this bus to an audio track of this mixer");
             toTrackButton.onClick = [this] { chooseTrack(); };
-            addAndMakeVisible (toTrackButton);
+            topContent.addAndMakeVisible (toTrackButton);
         }
         refreshFromModel();
     }
     int dialCount() const { return dials.size(); }
-    void setSendRows (int rows) { sendRows = rows; }
     int shownLatency() const override { int t = st.lowCut.latencySamples(); for (auto& sl : st.slots) t += sl.latencySamples(); return t; }
     juce::uint32 vcaMask() const override { return st.vcaMask.load(); }
     void refreshFromModel() override
@@ -1786,47 +1872,48 @@ public:
     void resetPeaks() override { fader.resetPeaks(); }
     void resized() override
     {
-        wells.clear(); sections.clear();
-        auto r = body();
-        outRow.setBounds (r.removeFromBottom (kOutRowH));
-        r.removeFromBottom (3);
-        auto faderArea = r.removeFromBottom (juce::jmax (kFaderMin, kFaderH + getHeight() - ChannelStrip::heightFor (2 * juce::jmax (1, sendRows), nSlots)));   // same vertical positions as on the audio track strips
-        wells.push_back (faderArea.expanded (2, 0));
-        r.removeFromBottom (3);
-        auto ms = r.removeFromBottom (kMSH);
-        r.removeFromBottom (4);
-        auto panArea = r.removeFromBottom (2 * kPanRowH);
+        const auto p = layoutFrame();                                           // 3.26.0: the same frame as the audio track strips (see StripLayout)
+        outRow.setBounds (p.out);
+        wells.push_back (p.fader.expanded (2, 0));
+        fader.setBounds (p.fader);
+        auto ms = p.ms;
+        mute->setBounds (ms.removeFromLeft (ms.getWidth() / 2).reduced (1, 0));
+        if (solo != nullptr) solo->setBounds (ms.reduced (1, 0));
         if (! external)
         {
-            auto row = panArea.removeFromTop (kPanRowH);
+            auto row = p.pans.withHeight (kPanRowH);
             auto head = row.removeFromTop (14);
             panLabel.setBounds (head.removeFromLeft (head.getWidth() / 2));
             panValue.setBounds (head.removeFromRight (36).reduced (0, 1));
             panSlider.setBounds (row);
         }
-        mute->setBounds (ms.removeFromLeft (ms.getWidth() / 2).reduced (1, 0));
-        if (solo != nullptr) solo->setBounds (ms.reduced (1, 0));
-        fader.setBounds (faderArea);
 
-        auto top = r.removeFromTop (2 * kInputRowH);                         // where audio track strips have their input selectors
-        if (external) { sections.push_back ({ "DRIVER OUTPUTS", top.removeFromTop (kSecH) }); outBox.setBounds (top.removeFromTop (kInputRowH).reduced (0, 1)); }
-        r.removeFromTop (3);
-        auto lcRow = r.removeFromTop (kLcRowH);
+        auto t = p.content;                                                    // the section above the line, as on the audio track strips
+        auto top = t.removeFromTop (layout.inputRows * kInputRowH);            // where audio track strips have their input selectors
+        if (external)
+        {
+            if (layout.inputRows >= 2) topSections.push_back ({ "DRIVER OUTPUTS", top.removeFromTop (kSecH) });       // (one row: the box alone - its items say "Out")
+            outBox.setBounds (top.removeFromTop (kInputRowH).reduced (0, 1));
+        }
+        t.removeFromTop (3);
+        auto lcRow = t.removeFromTop (kLcRowH);
         if (lcKey != nullptr) lcKey->setBounds (lcRow);
-        r.removeFromTop (2);
-        sections.push_back ({ "INSERTS", r.removeFromTop (kSecH) });
-        auto slotArea = r.removeFromTop (nSlots * kSlotH + 2);
-        wells.push_back (slotArea.expanded (2, 0));
+        t.removeFromTop (2);
+        topSections.push_back ({ "INSERTS", t.removeFromTop (kSecH) });
+        auto slotArea = t.removeFromTop (nSlots * kSlotH + 2);
+        topWells.push_back (slotArea.expanded (2, 0));
         slots.setBounds (slotArea.reduced (0, 1));
-        r.removeFromTop (4);
-        if (external) { note.placeRightOf (r.removeFromTop (22)); return; }
-        sections.push_back ({ "SENDS", r.removeFromTop (kSecH) });
-        auto sendArea = r.removeFromTop (juce::jmax (1, sendRows) * kSendCellH);
-        wells.push_back (sendArea.expanded (2, 0));
+        t.removeFromTop (4);
+        if (external) { note.placeRightOf (t.removeFromTop (22)); topContent.repaint(); return; }
+        auto hdr = t.removeFromTop (kSendHdrH);
+        toTrackButton.setBounds (hdr.removeFromRight (18).reduced (0, 1));
+        topSections.push_back ({ "SENDS", hdr.withTrimmedRight (2) });
+        auto sendArea = t.removeFromTop (layout.sendRows * kSendCellH);
+        if (layout.sendRows > 0) topWells.push_back (sendArea.expanded (2, 0));
         const int cw = sendArea.getWidth() / 2;
         for (int k = 0; k < dials.size(); ++k)
             dials[k]->setBounds (juce::Rectangle<int> (sendArea.getX() + (k % 2) * cw, sendArea.getY() + (k / 2) * kSendCellH, cw, kSendCellH));
-        toTrackButton.setBounds (r.removeFromTop (kToTrackH).reduced (0, 2));
+        topContent.repaint();
     }
 protected:
     juce::String bandText() const override { return external ? "EXT BUS" : "INT BUS"; }
@@ -1851,7 +1938,7 @@ private:
         });
     }
     AppContext& app; MixerState& mixer; juce::Uuid busId; BusState& st; bool external; SlotButtons slots; FaderBlock fader; StripOutputRow outRow;
-    bool updating = false; int sendRows = 1, nSlots = kNumSlots;
+    bool updating = false; int nSlots = kNumSlots;
     std::unique_ptr<LowCutKey> lcKey;                                   // Int Buses only
     InfoNote note; juce::ComboBox outBox;
     juce::OwnedArray<SendDial> dials; juce::TextButton toTrackButton;
@@ -1947,16 +2034,16 @@ public:
         assignBtn.setButtonText ("Assign...");
         assignBtn.setTooltip ("Choose the audio tracks and Int Buses this VCA controls. Each one gets a glowing number on its strip.");
         assignBtn.onClick = [this] { openAssign(); };
-        addAndMakeVisible (assignBtn);
+        topContent.addAndMakeVisible (assignBtn);
         countLabel.setJustificationType (juce::Justification::centred); styleField (countLabel, 9.5f);
-        addAndMakeVisible (countLabel);
+        topContent.addAndMakeVisible (countLabel);
         nameEd.setTextToShowWhenEmpty ("name (optional)", mixTheme().dim);
         nameEd.setFont (juce::FontOptions (11.0f));
         nameEd.setTooltip ("Type a name: the strip shows  " + juce::String (number) + " - name");
         nameEd.onReturnKey = [this] { commitName(); nameEd.giveAwayKeyboardFocus(); };      // Enter: done, and the box lets go of the keyboard (Space / R work again)
         nameEd.onEscapeKey = [this] { if (auto* v = app.project.findVca (vcaId)) nameEd.setText (v->name, juce::dontSendNotification); nameEd.giveAwayKeyboardFocus(); };
         nameEd.onFocusLost = [this] { commitName(); };
-        addAndMakeVisible (nameEd);
+        topContent.addAndMakeVisible (nameEd);
         removeBtn.setButtonText ("Remove strip");
         removeBtn.setTooltip ("Takes this VCA's strip out of this mixer (the VCA itself stays in the project, and its settings here are kept); add it again with + Strip");
         removeBtn.onClick = [this]
@@ -1967,8 +2054,6 @@ public:
         addAndMakeVisible (removeBtn);
         refreshFromModel();
     }
-    void setSendRows (int rows) { sendRows = rows; }
-    void setSlotCount (int n) { nSlots = n; }
     void refreshFromModel() override
     {
         mute->setToggleState (st.mute.get(), juce::dontSendNotification);
@@ -1989,24 +2074,21 @@ public:
     }
     void resized() override
     {
-        wells.clear(); sections.clear();
-        auto r = body().withTrimmedBottom (kLatH);       // (the other strips keep a line for the plug-in delay above the name plate: the same room here, so
-        removeBtn.setBounds (r.removeFromBottom (kOutRowH));   //  M / S, the fader, its meter and level line up with theirs)
-        r.removeFromBottom (3);
-        auto faderArea = r.removeFromBottom (juce::jmax (kFaderMin, kFaderH + getHeight() - ChannelStrip::heightFor (2 * juce::jmax (1, sendRows), nSlots)));
-        wells.push_back (faderArea.expanded (2, 0));
-        r.removeFromBottom (3);
-        auto ms = r.removeFromBottom (kMSH);
+        const auto p = layoutFrame (true);       // (the other strips keep a line for the plug-in delay above the name plate: the same room here, so M / S, the fader,
+        removeBtn.setBounds (p.out);              //  its meter and level line up with theirs; a VCA has no pan: that room stays empty)
+        wells.push_back (p.fader.expanded (2, 0));
+        fader.setBounds (p.fader);
+        auto ms = p.ms;
         mute->setBounds (ms.removeFromLeft (ms.getWidth() / 2).reduced (1, 0));
         solo->setBounds (ms.reduced (1, 0));
-        fader.setBounds (faderArea);
-        r.removeFromBottom (4);
-        sections.push_back ({ "CONTROLS", r.removeFromTop (kSecH) });
-        assignBtn.setBounds (r.removeFromTop (26).reduced (0, 1));
-        countLabel.setBounds (r.removeFromTop (16));
-        r.removeFromTop (6);
-        sections.push_back ({ "NAME", r.removeFromTop (kSecH) });
-        nameEd.setBounds (r.removeFromTop (22).reduced (0, 1));
+        auto t = p.content;                       // above the line, scrolling with the other strips
+        topSections.push_back ({ "CONTROLS", t.removeFromTop (kSecH) });
+        assignBtn.setBounds (t.removeFromTop (26).reduced (0, 1));
+        countLabel.setBounds (t.removeFromTop (16));
+        t.removeFromTop (6);
+        topSections.push_back ({ "NAME", t.removeFromTop (kSecH) });
+        nameEd.setBounds (t.removeFromTop (22).reduced (0, 1));
+        topContent.repaint();
     }
 protected:
     juce::String bandText() const override { return "VCA " + juce::String (number); }
@@ -2030,7 +2112,6 @@ private:
     AppContext& app; MixerState& mixer; juce::Uuid vcaId; int number; VcaState& st; FaderBlock fader;
     juce::OwnedArray<juce::TextButton> toggles; juce::TextButton *mute = nullptr, *solo = nullptr;
     juce::TextButton assignBtn, removeBtn; juce::Label countLabel; juce::TextEditor nameEd;
-    int sendRows = 1, nSlots = kNumSlots;
 };
 
 /** The last strip: what the level meters show and how they move (shared by all mixers and remembered), plus the phase scope. */
@@ -2149,6 +2230,7 @@ public:
         narrowerButton.setBounds (row.removeFromLeft (row.getWidth() / 2).reduced (0, 0).withTrimmedRight (2));
         widerButton.setBounds (row.withTrimmedLeft (2));
     }
+    bool hasFader() const override { return false; }
 protected:
     juce::String bandText() const override { return "METERS"; }
 private:
@@ -2260,20 +2342,57 @@ private:
     juce::Label ditherCap, modeCap, riseCap, fallCap, holdCap;
 };
 
+/** 3.26.0: the fader line over every strip (above the pans): drag it up for taller faders - the section above it (inputs, inserts, sends) is covered and
+    scrolls - or down for shorter ones; double-click for the normal size again. Each strip draws its own groove; this only takes the mouse, and lights up. */
+class FaderLine : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    FaderLine()
+    {
+        setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
+        setRepaintsOnMouseActivity (true);
+        setTooltip ("Drag up for taller faders (the inserts and sends above are covered and get a scroll bar), down for shorter ones. Double-click: back to the normal size.");
+    }
+    std::function<void()> onStart, onEnd, onReset;
+    std::function<void (int)> onDrag;                       // how far the mouse has moved down since it was pressed
+    void paint (juce::Graphics& g) override
+    {
+        if (isMouseOverOrDragging()) { g.setColour (theme::accent.withAlpha (0.45f)); g.fillRect (getLocalBounds().withSizeKeepingCentre (getWidth(), 3)); }
+    }
+    void mouseDown (const juce::MouseEvent&) override { if (onStart) onStart(); }
+    void mouseDrag (const juce::MouseEvent& e) override { if (onDrag) onDrag (e.getDistanceFromDragStartY()); }
+    void mouseUp (const juce::MouseEvent&) override { if (onEnd) onEnd(); }
+    void mouseDoubleClick (const juce::MouseEvent&) override { if (onReset) onReset(); }
+};
+
 class MixerStripsHolder : public juce::Component
 {
 public:
     static constexpr int kEdge = 6;                       // the dark border above and below the strips: as wide as the one on the left
+    MixerStripsHolder() { addChildComponent (faderLine); }
     void paint (juce::Graphics& g) override { g.fillAll (mixTheme().bg); }
-    void clear() { strips.clear(); widths.clear(); removeAllChildren(); }      // (the widths too: they used to be kept, so a rebuilt strip took the OLD strip's width)
+    void clear() { strips.clear(); widths.clear(); }      // (the widths too: they used to be kept, so a rebuilt strip took the OLD strip's width; a strip leaves its parent as it goes, the fader line stays)
     void add (StripBase* s, int width = -1) { strips.add (s); widths.add (width < 0 ? stripWidth() : width); addAndMakeVisible (s); }
-    void layout (int height)
+    /** Every strip 'height' high, laid out by L (3.26.0); the fader line across the strips that have a fader. */
+    void layout (int height, const StripLayout& L)
     {
-        int x = 6;
-        for (int i = 0; i < strips.size(); ++i) { strips[i]->setBounds (x, kEdge, widths[i], height); x += widths[i] + 3; }
+        int x = 6, faderRight = 6;
+        for (int i = 0; i < strips.size(); ++i)
+        {
+            strips[i]->setLayout (L);
+            strips[i]->setBounds (x, kEdge, widths[i], height);
+            strips[i]->resized();                             // (also when its size stayed: the layout may have changed)
+            x += widths[i] + 3;
+            if (strips[i]->hasFader()) faderRight = x - 3;
+        }
         naturalW = x + 3; naturalH = height + 2 * kEdge;
         setSize (juce::jmax (naturalW, minW), juce::jmax (naturalH, minH));
+        faderLine.setBounds (6, kEdge + kTopMargin + L.topShown, juce::jmax (0, faderRight - 6), kDividerH);
+        faderLine.setVisible (faderRight > 6);
+        faderLine.toFront (false);
     }
+    void setTopScroll (int sc) { for (auto* s : strips) s->setTopScroll (sc); }
+    FaderLine faderLine;
     /** Keeps the dark ground behind the strips filling the whole window. */
     void setMinimumSize (int w, int h) { minW = w; minH = h; setSize (juce::jmax (naturalW, minW), juce::jmax (naturalH, minH)); }
     int getNaturalWidth() const noexcept  { return naturalW; }
@@ -2315,8 +2434,29 @@ MixerComponent::MixerComponent (AppContext& a, const juce::Uuid& id) : app (a), 
         m.mode = st->getIntValue ("meterMode", m.mode); m.rise = st->getIntValue ("meterRise", m.rise);
         m.fall = st->getIntValue ("meterFall", m.fall); m.hold = st->getIntValue ("meterHold", m.hold);
         stripWidthLevel() = juce::jlimit (0, 5, st->getIntValue ("mixerStripWidth", stripWidthLevel()));
+        mixerFaderPref() = juce::jlimit (0, 4000, st->getIntValue ("mixerFaderHeight", mixerFaderPref()));       // 3.26.0
     }
     shownWidthGen = stripWidthGen();
+    shownFaderGen = faderPrefGen();
+    topBar.setLookAndFeel (&mixLook);
+    topBar.setAutoHide (false);
+    topBar.addListener (this);
+    addChildComponent (topBar);
+    viewport.onWheel = [this] (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) { return wheelOverTop (e, w); };
+    holder->faderLine.onStart = [this] { dragFader = lastFaderH; lineDragging = true; };
+    holder->faderLine.onDrag = [this] (int dy)                      // up = taller faders: the section above the line is covered, and scrolls
+    {
+        mixerFaderPref() = juce::jmax (kFaderMin, dragFader - dy);
+        shownFaderGen = ++faderPrefGen();
+        layoutView();
+    };
+    holder->faderLine.onEnd = [this]
+    {
+        lineDragging = false;
+        layoutView();                                               // (the empty insert slots a tall window shows, held while dragging)
+        saveFaderPref();
+    };
+    holder->faderLine.onReset = [this] { mixerFaderPref() = 0; shownFaderGen = ++faderPrefGen(); layoutView(); saveFaderPref(); };
 
     themeButton.setTooltip ("Switch the whole program between the light look and the dark look (the same colours, a shade darker)");
     themeButton.onClick = [] { if (themeSwitchHook()) themeSwitchHook() (! theme::isDark()); };
@@ -2391,6 +2531,8 @@ MixerComponent::~MixerComponent()
     app.project.removeChangeListener (this);
     app.project.structure.removeChangeListener (this);
     viewport.setLookAndFeel (nullptr);
+    topBar.removeListener (this);
+    topBar.setLookAndFeel (nullptr);
 }
 
 int MixerComponent::topBarMinWidth() const
@@ -2429,31 +2571,116 @@ int MixerComponent::slotsNeeded()
     slotsBase = juce::jlimit (1, kNumSlots, highest + 2);          // always one free slot beyond the last used
     return juce::jlimit (1, kNumSlots, slotsBase + extraSlots);    // (a big window shows more empty slots)
 }
-int MixerComponent::naturalContentW() const { return juce::jmax (topBarMinWidth(), holder->getNaturalWidth()); }
-/** The height the strips like to have (full-size fader). */
-int MixerComponent::naturalContentH() const { return 30 + ChannelStrip::heightFor (maxDialsCached, slotCount) + 2 * MixerStripsHolder::kEdge; }
-/** The least height before a scroll bar is needed (the faders shrink to their smallest). */
-int MixerComponent::minContentH() const { return 30 + ChannelStrip::heightFor (maxDialsCached, slotCount) - (kFaderH - kFaderMin) + 2 * MixerStripsHolder::kEdge; }
+namespace
+{
+StripLayout makeLayout (int inputRows, int panRows, int sendRows, int slots)
+{
+    StripLayout L; L.inputRows = inputRows; L.panRows = panRows; L.sendRows = sendRows; L.slots = slots;
+    return L;
+}
+} // namespace
 
-/** Gives the strips the height of the window: more height = more empty insert slots and a taller fader; less = a shorter fader (down to a minimum). */
+int MixerComponent::naturalContentW() const { return juce::jmax (topBarMinWidth(), holder->getNaturalWidth()); }
+/** The height the strips like to have: everything in sight, the fader at its full size. (3.26.0: the fader line's own setting does not make windows grow:
+    dragging it only shares out the room the window has.) */
+int MixerComponent::naturalContentH() const
+{
+    const auto L = makeLayout (lyInputRows, lyPanRows, lySendRows, slotCount);
+    return 30 + juce::jmax (L.fixedH() + L.topContentH() + kFaderH, kMetersMinH) + 2 * MixerStripsHolder::kEdge;
+}
+/** The least height before the whole view needs a scroll bar: the fader at its smallest, the least of the section above the fader line in sight (3.26.0: below
+    the natural height the section above the line scrolls on its own, and the faders keep their size). */
+int MixerComponent::minContentH() const
+{
+    const auto L = makeLayout (lyInputRows, lyPanRows, lySendRows, slotCount);
+    return 30 + juce::jmax (L.fixedH() + kMinTopShown + kFaderMin, kMetersMinH) + 2 * MixerStripsHolder::kEdge;
+}
+
+/** Gives the strips the height of the window: more height = more empty insert slots and a taller fader; less = (3.26.0) the section above the fader line
+    scrolls and the fader keeps its height (the normal one, or the one chosen with the fader line), down to kFaderMin only in a very short window. */
 void MixerComponent::applyHeight()
 {
     // the room under the strips: less the horizontal scroll bar when the strips are wider than the window (the bar sits over the bottom of the view, so the
     // strips used to run on under it, hiding their rounded bottom corners and name plates)
     const bool needH = holder->getNaturalWidth() > viewport.getWidth();
     const int availH = viewport.getHeight() - (needH ? viewport.getScrollBarThickness() : 0) - 2 * MixerStripsHolder::kEdge;
-    int h = ChannelStrip::heightFor (maxDialsCached, slotCount);
+    auto L = makeLayout (lyInputRows, lyPanRows, lySendRows, slotCount);
+    int h = juce::jmax (L.fixedH() + L.topContentH() + kFaderH, kMetersMinH);
     if (availH > 0)
     {
-        const int surplus = availH - ChannelStrip::heightFor (maxDialsCached, slotsBase);
+        const auto base = makeLayout (lyInputRows, lyPanRows, lySendRows, slotsBase);
+        const int surplus = availH - (base.fixedH() + base.topContentH() + juce::jmax (kFaderH, mixerFaderPref()));
         const int want = juce::jlimit (0, kNumSlots - slotsBase, surplus > 0 ? (surplus * 2 / 5) / kSlotH : 0);
-        if (want != extraSlots && ! inApply)
+        if (want != extraSlots && ! inApply && ! lineDragging)          // (not while the fader line is dragged: the strips would be made again under the mouse)
         {
             extraSlots = want; inApply = true; rebuild(); inApply = false; return;
         }
-        h = juce::jmax (ChannelStrip::heightFor (maxDialsCached, slotCount) - (kFaderH - kFaderMin), availH);
+        h = juce::jmax (juce::jmax (L.fixedH() + kMinTopShown + kFaderMin, kMetersMinH), availH);
     }
-    holder->layout (h);
+    L.topScroll = topScroll;
+    fitStrip (L, h, mixerFaderPref());
+    topScroll = L.topScroll;
+    lastTopShown = L.topShown; lastTopContent = L.topContentH(); lastFaderH = L.faderH;
+    holder->layout (h, L);
+}
+
+/** 3.26.0: the view and the strips at the window's size. When the section above the fader line is not all in sight, its scroll bar takes a strip at the right
+    of the window and the view is laid out again without it (less room can only need the bar more, so this settles at once). */
+void MixerComponent::layoutView()
+{
+    auto r = getLocalBounds().withTrimmedTop (30);
+    viewport.setBounds (r);
+    if (holder->getNumStrips() > 0)
+    {
+        applyHeight();
+        if (lastTopShown < lastTopContent) { viewport.setBounds (r.withTrimmedRight (kTopBarW)); applyHeight(); }
+    }
+    const bool bar = holder->getNumStrips() > 0 && lastTopShown < lastTopContent;
+    topBar.setVisible (bar);
+    if (bar)
+    {
+        topBar.setRangeLimits (0.0, (double) lastTopContent, juce::dontSendNotification);
+        topBar.setCurrentRange ((double) topScroll, (double) lastTopShown, juce::dontSendNotification);
+        topBar.setSingleStepSize ((double) kSlotH);
+    }
+    placeTopBar();
+    updateBars();
+}
+
+/** The top section's scroll bar beside it, at the right of the view (following the view when the whole mixer is scrolled up or down in a very short window). */
+void MixerComponent::placeTopBar()
+{
+    lastViewY = viewport.getViewPositionY();
+    if (! topBar.isVisible()) return;
+    const int y0 = viewport.getY() + MixerStripsHolder::kEdge + kTopMargin - lastViewY;
+    const auto column = juce::Rectangle<int> (viewport.getRight(), viewport.getY(), kTopBarW, viewport.getHeight());
+    topBar.setBounds (juce::Rectangle<int> (viewport.getRight(), y0, kTopBarW, lastTopShown).getIntersection (column));
+}
+
+void MixerComponent::scrollBarMoved (juce::ScrollBar* bar, double newRangeStart)
+{
+    if (bar != &topBar) return;
+    topScroll = juce::jlimit (0, juce::jmax (0, lastTopContent - lastTopShown), juce::roundToInt (newRangeStart));
+    holder->setTopScroll (topScroll);
+}
+
+/** 3.26.0: the mouse wheel over the section above the fader line (when it scrolls) moves it up and down; Shift + wheel, and the wheel anywhere else, still move the
+    strips left and right. */
+bool MixerComponent::wheelOverTop (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
+{
+    if (! topBar.isVisible() || e.mods.isShiftDown() || std::abs (w.deltaY) <= std::abs (w.deltaX)) return false;
+    const auto pos = e.getEventRelativeTo (holder.get()).getPosition();
+    const int top = MixerStripsHolder::kEdge + kTopMargin;
+    if (pos.y < top || pos.y >= top + lastTopShown || pos.x >= holder->faderLine.getRight()) return false;
+    int step = juce::roundToInt (w.deltaY * 300.0f);
+    if (step == 0) step = w.deltaY > 0.0f ? 1 : -1;
+    topBar.setCurrentRangeStart (topBar.getCurrentRangeStart() - step, juce::sendNotificationSync);
+    return true;
+}
+
+void MixerComponent::saveFaderPref()
+{
+    if (auto* st = app.props.getUserSettings()) { st->setValue ("mixerFaderHeight", mixerFaderPref()); app.props.saveIfNeeded(); }
 }
 
 /** Windows applies the biggest-size limit to the whole window, frame and title bar included, while the sizes here are for the inside: with the limit set exactly to
@@ -2584,10 +2811,13 @@ void MixerComponent::rebuild()
             auto* vs = new VcaStrip (app, *m, v);
             vcaStrips.add (vs); holder->add (vs);
         }
-    const int rows = juce::jmax (1, (maxDials + 1) / 2);
-    for (auto* c : chans) c->setSendRows (rows);
-    for (auto* b : busStrips) b->setSendRows (rows);
-    for (auto* v : vcaStrips) { v->setSendRows (rows); v->setSlotCount (slotCount); }
+    {   // 3.26.0: the rows every strip lays out - two inputs and two pans only when a stereo track is here, as many send rows as the busiest strip needs (none when no strip has a dial)
+        bool anyStereo = false;
+        for (auto* c : chans) anyStereo = anyStereo || c->inputBoxes() > 1;
+        lyInputRows = anyStereo ? 2 : 1; lyPanRows = anyStereo ? 2 : 1;
+        lySendRows = (maxDials + 1) / 2;
+        juce::ignoreUnused (busStrips, vcaStrips);
+    }
     holder->add (new MeterSettingsStrip (app, mixerId, [this] { holder->resetPeaks(); }), 112);
     {   // no fader, pan or send dial in a mixer turns with the mouse wheel: it passes the wheel on to the view, which moves the strips left / right
         std::function<void (juce::Component&)> noWheel = [&noWheel] (juce::Component& c)
@@ -2597,9 +2827,7 @@ void MixerComponent::rebuild()
         };
         noWheel (*holder);
     }
-    maxDialsCached = maxDials;
-    applyHeight();
-    updateBars();
+    layoutView();
     updateWindowLimits();
 }
 
@@ -2812,10 +3040,9 @@ void MixerComponent::resized()
     nameEditor.setBounds (top.removeFromLeft (180).reduced (0, 3));
     statusLabel.setBounds (top.reduced (8, 0));
     // Big enough for every strip: no scroll bars at all (never one that is only there because the other one takes some room). Smaller: bars.
-    viewport.setBounds (r);
     if (followCover != nullptr) followCover->setBounds (r);
-    if (! inApply && holder->getNumStrips() > 0) applyHeight();
-    updateBars();
+    if (! inApply) layoutView();
+    else { viewport.setBounds (r); updateBars(); }
     if (! inLimits) { inLimits = true; updateWindowLimits(); inLimits = false; }
 }
 
@@ -2844,6 +3071,8 @@ void MixerComponent::timerCallback()
         viewport.sendLookAndFeelChange();
         repaint();
     }
+    if (shownFaderGen != faderPrefGen()) { shownFaderGen = faderPrefGen(); layoutView(); }      // 3.26.0: the fader line was moved in another mixer
+    if (viewport.getViewPositionY() != lastViewY) placeTopBar();
     holder->tick();
     const auto scan = app.plugins.scanStatus();
     if (statusFlash > 0) --statusFlash;

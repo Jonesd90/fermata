@@ -78,8 +78,11 @@ private:
 class MixerViewport : public juce::Viewport
 {
 public:
+    /** 3.26.0: asked first - true when the wheel was used for something else (the section above the fader line, scrolled up and down). */
+    std::function<bool (const juce::MouseEvent&, const juce::MouseWheelDetails&)> onWheel;
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
     {
+        if (onWheel && onWheel (e, w)) return;
         const float d = std::abs (w.deltaX) > std::abs (w.deltaY) ? w.deltaX : w.deltaY;
         if (d == 0.0f) return;
         int step = juce::roundToInt (d * 400.0f);                  // (one notch of a mouse wheel: about one strip)
@@ -93,7 +96,7 @@ public:
 };
 
 /** One mixer. Several can be open at once; each has its own solo/mute/levels/sends/plug-ins and output pair. */
-class MixerComponent : public juce::Component, private juce::ChangeListener, private juce::Timer
+class MixerComponent : public juce::Component, private juce::ChangeListener, private juce::Timer, private juce::ScrollBar::Listener
 {
 public:
     MixerComponent (AppContext&, const juce::Uuid& mixerId);
@@ -117,7 +120,17 @@ private:
     int minContentH() const;
     void applyHeight();
     bool inApply = false;
-    int maxDialsCached = 0, slotsBase = 1, extraSlots = 0;
+    int slotsBase = 1, extraSlots = 0;
+    // 3.26.0: the rows every strip lays out (see StripLayout in MixerWindow.cpp), what the last layout gave, and the fader line / the top section's scroll bar
+    int lyInputRows = 2, lyPanRows = 2, lySendRows = 1;
+    int lastTopShown = 0, lastTopContent = 0, lastFaderH = 0, topScroll = 0, dragFader = 0, shownFaderGen = 0, lastViewY = 0;
+    bool lineDragging = false;
+    juce::ScrollBar topBar { true };
+    void layoutView();                                      // the view, the strips and the top section's scroll bar at the window's size
+    void placeTopBar();
+    void scrollBarMoved (juce::ScrollBar*, double newRangeStart) override;
+    bool wheelOverTop (const juce::MouseEvent&, const juce::MouseWheelDetails&);
+    void saveFaderPref();
     void updateWindowLimits();
     void updateBars();
     bool inLimits = false;

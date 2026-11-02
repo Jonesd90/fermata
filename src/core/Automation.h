@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.h"
+#include <cstring>
 
 namespace td
 {
@@ -89,4 +90,33 @@ struct AutoLane
         std::stable_sort (pts.begin(), pts.end(), [] (const AutoPoint& x, const AutoPoint& y) { return x.time < y.time; });
     }
 };
+
+/** 3.26.0: a number that changes whenever what these lanes play changes - a point added, deleted, moved to other audio or to another level, a lane added,
+    removed or aimed at something else - but NOT when only the pieces under the points move (a point keeps its place in its audio; while an edit plays,
+    its sound is the one it started with, so its automation must stay with that). While an edit plays, a change is heard at once (AppContext::followAutomation). */
+inline juce::uint64 lanesSignature (const std::vector<AutoLane>& lanes) noexcept
+{
+    juce::uint64 h = 14695981039346656037ull;                                 // FNV-1a, 64 bit
+    auto mix = [&h] (const void* data, size_t n) noexcept
+    {
+        const auto* b = static_cast<const unsigned char*> (data);
+        for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; }
+    };
+    auto mixId = [&mix] (const juce::Uuid& u) noexcept { mix (u.getRawData(), 16); };
+    auto mixCount = [&mix] (size_t n) noexcept { const auto v = (juce::uint64) n; mix (&v, sizeof (v)); };
+    mixCount (lanes.size());
+    for (auto& l : lanes)
+    {
+        mixId (l.id); mixId (l.trackId); mixId (l.mixerId);
+        const auto* c = l.param.toRawUTF8(); const auto len = std::strlen (c);
+        mixCount (len); mix (c, len);
+        mixCount (l.pts.size());
+        for (auto& p : l.pts)
+        {
+            mixId (p.region); mix (&p.srcPos, sizeof (p.srcPos)); mix (&p.value, sizeof (p.value));
+            if (p.region.isNull()) mix (&p.time, sizeof (p.time));                 // (a point fixed in time: its time is where it is)
+        }
+    }
+    return h;
+}
 } // namespace td

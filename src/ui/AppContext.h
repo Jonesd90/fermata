@@ -500,6 +500,11 @@ public:
     void setNotice (const juce::String& t) { notice = t; noticeUntil = juce::Time::getMillisecondCounter() + 3500; }
 private:
     struct PlaybackWatcher : juce::Timer { std::function<void()> fn; void timerCallback() override { if (fn) fn(); } } watcher;
+    /** 3.26.0, 20 Hz: while an edit plays, a change to its automation is heard at once (followAutomation). */
+    struct LiveAutoTicker : juce::Timer { std::function<void()> fn; void timerCallback() override { if (fn) fn(); } } liveAutoTicker;
+    juce::Uuid liveAutoEdit = juce::Uuid::null();     // the edit whose automation is being followed, and what it was when the playing plan was made (lanesSignature)
+    juce::uint64 liveAutoSig = 0;
+    void followAutomation();
     /** The load meter (once a second) and the timing log (a line in fermata-log.txt every minute while the audio runs, and at the end of each take). */
     struct LoadTicker : juce::Timer { std::function<void()> fn; void timerCallback() override { if (fn) fn(); } } loadTicker;
     AudioEngine::LoadStats minuteLoad;                // gathered for the next log line

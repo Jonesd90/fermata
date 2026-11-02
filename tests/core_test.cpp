@@ -11861,6 +11861,177 @@ int main()
         CHECK (! e.fixUses (t2));
     }
 
+    SECTION ("3.26.0 automation changed while an edit plays is heard at once: the new plan takes over between two blocks, and what only the old one drove is let go of");
+    {
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear(); q.buses.clear();
+        const auto ta = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        const auto ob = q.addBus ("Stem", true).id;
+        auto& m = *q.mixers.front();
+        q.setSendLevel (m, ta, ob, 0.0f); q.setSendLevel (m, ta, ob, -100.0f);        // a send that exists, switched off
+        AudioEngine e (q);
+        e.prepare (48000.0, 256);
+        const juce::int64 S = 48000;
+        EditDef ed; ed.automationOn = true;
+        auto setFader = [&] (float db) { ed.lanes.clear(); AutoPoint p0; p0.time = 0; p0.value = db; ed.addLane (ta, autoparam::fader, juce::Uuid::null()).pts = { p0 }; };
+        setFader (-20.0f);
+        std::vector<float> i0 (256, 0.0f), i1 (256, 0.0f), o0 (256), o1 (256);
+        const float* in[2] = { i0.data(), i1.data() }; float* out[2] = { o0.data(), o1.data() };
+        auto ss = std::make_unique<PlaybackSession> (std::vector<int> { 1 }, std::vector<PlaySegment> {}, 0, 60 * S, 48000.0, e.getMaxBlock());
+        ss->automation = automationPlanFor (q, ed); ss->editId = ed.id; ss->followsAutomation = true;
+        CHECK (e.startPlayback (std::move (ss)).isEmpty());
+        e.process (in, 2, out, 2, 256);
+        auto* st = m.stripFor (ta);
+        CHECK (std::abs (st->gainDb.get() + 20.0f) < 1e-4f);
+        // the line moved while it plays: heard from the next block on, without a stop or a new play
+        const auto sig0 = lanesSignature (ed.lanes);
+        setFader (-6.0f);
+        CHECK (lanesSignature (ed.lanes) != sig0);
+        CHECK (e.followsAutomationOf (ed.id) && ! e.followsAutomationOf (juce::Uuid()));
+        CHECK (e.replaceAutomation (ed.id, automationPlanFor (q, ed)));
+        e.process (in, 2, out, 2, 256);
+        CHECK (std::abs (st->gainDb.get() + 6.0f) < 1e-4f);
+        CHECK (e.isPlaying() && ! e.playbackFinished());
+        CHECK (! e.replaceAutomation (juce::Uuid(), automationPlanFor (q, ed)));      // another edit: nothing done
+        // a send lane drawn while it plays: the send is kept in the mixer plan (held) at once, and let go of when its lane goes again
+        {
+            auto& sl = ed.addLane (ta, autoparam::send (ob), juce::Uuid::null());
+            AutoPoint sp; sp.time = 0; sp.value = -3.0f; sl.pts = { sp };
+        }
+        CHECK (e.replaceAutomation (ed.id, automationPlanFor (q, ed)));
+        auto* sd = st->sends.find (ob);
+        CHECK (sd != nullptr && sd->autoHeld.load() && sd->inPlan());
+        e.process (in, 2, out, 2, 256);
+        CHECK (sd != nullptr && std::abs (sd->gainDb.get() + 3.0f) < 1e-4f);
+        setFader (-6.0f);                                                          // (only the fader lane again)
+        CHECK (e.replaceAutomation (ed.id, automationPlanFor (q, ed)));
+        e.process (in, 2, out, 2, 256);
+        e.serviceReplacedAutomation();
+        CHECK (sd != nullptr && ! sd->autoHeld.load());
+        // all of it deleted: nothing is applied any more (the fader stays where it is put)
+        ed.lanes.clear();
+        CHECK (automationPlanFor (q, ed) == nullptr);
+        CHECK (e.replaceAutomation (ed.id, nullptr));
+        st->gainDb.set (-1.0f);
+        e.process (in, 2, out, 2, 256);
+        CHECK (std::abs (st->gainDb.get() + 1.0f) < 1e-4f);
+        setFader (-9.0f);                                                          // and drawn again: back
+        CHECK (e.replaceAutomation (ed.id, automationPlanFor (q, ed)));
+        e.process (in, 2, out, 2, 256);
+        CHECK (std::abs (st->gainDb.get() + 9.0f) < 1e-4f);
+        e.stopPlayback();
+        CHECK (! e.followsAutomationOf (ed.id) && ! e.isPlaying());
+        // a play that does not follow its automation (an edit's guide, a take): nothing is replaced
+        auto ss2 = std::make_unique<PlaybackSession> (std::vector<int> { 1 }, std::vector<PlaySegment> {}, 0, 60 * S, 48000.0, e.getMaxBlock());
+        ss2->editId = ed.id;
+        CHECK (e.startPlayback (std::move (ss2)).isEmpty());
+        setFader (-12.0f);
+        CHECK (! e.followsAutomationOf (ed.id) && ! e.replaceAutomation (ed.id, automationPlanFor (q, ed)));
+        e.stopPlayback();
+        // the signature follows each point's place in its audio, not where its piece is now (the sound that plays is the one it started with)
+        {
+            std::vector<AutoLane> lanes (1); AutoPoint ap; ap.region = juce::Uuid(); ap.srcPos = 100; ap.time = 5000; ap.value = 1.0f; lanes[0].pts = { ap };
+            const auto a = lanesSignature (lanes);
+            lanes[0].pts[0].time = 9000;  CHECK (lanesSignature (lanes) == a);          // its piece moved: the same
+            lanes[0].pts[0].srcPos = 101; CHECK (lanesSignature (lanes) != a);          // moved within its audio
+            lanes[0].pts[0].srcPos = 100; lanes[0].pts[0].value = 2.0f; CHECK (lanesSignature (lanes) != a);
+            lanes[0].pts[0].value = 1.0f; CHECK (lanesSignature (lanes) == a);
+            lanes[0].param = autoparam::pan; CHECK (lanesSignature (lanes) != a);
+            lanes[0].param = autoparam::fader;
+            lanes[0].pts[0].region = juce::Uuid::null(); const auto f = lanesSignature (lanes);
+            lanes[0].pts[0].time = 9500; CHECK (lanesSignature (lanes) != f);           // a point fixed in time: its time counts
+            lanes.push_back (AutoLane()); CHECK (lanesSignature (lanes) != f);
+        }
+    }
+
+    SECTION ("3.26.0 Virtual Master stems: chosen buses come out as files of their own, rendered with the master, at the master's gain");
+    {
+        Project sp; sp.projectFile = tmp.getChildFile ("StemTest.fermata");
+        sp.setInputCount (2); sp.setOutputCount (2); sp.tracks.clear();
+        const auto tv = sp.addTrack ("violin", TrackFormat::Mono, 0).id, tc = sp.addTrack ("cello", TrackFormat::Mono, 1).id;
+        sp.retireAllMixers();
+        const auto out = sp.addBus ("Out", true).id, strings = sp.addBus ("Strings", true).id, low = sp.addBus ("Low", false).id;
+        auto& mx = sp.addMixer ("Processing");
+        auto route = [&] (MixerState& m)
+        {
+            for (auto& b : m.busPool) b->isMain.set (false);
+            for (auto* t : { &tv, &tc }) m.stripFor (*t)->outOn.set (false);           // (only the sends below feed the buses)
+            m.busFor (low)->outOn.set (false);
+            sp.setSendLevel (m, tv, out, 0.0f); sp.setSendLevel (m, tc, out, 0.0f);     // the master: both
+            sp.setSendLevel (m, tv, strings, 0.0f);                                     // a stem on an Ext Bus that goes nowhere: the violin alone
+            sp.setSendLevel (m, tc, low, 0.0f);                                         // and one on an Int Bus: the cello alone
+        };
+        route (mx);
+        for (auto& t : sp.tracks) { t.setArmed (false); t.setMonitor (Monitor::Session); }
+        const auto fv = makeConstWav (tmp.getChildFile ("stemv.wav"), 0.5, 2), fc = makeConstWav (tmp.getChildFile ("stemc.wav"), 0.25, 2);
+        auto& ed = sp.addEdit ("Stems edit", juce::Uuid::null());
+        auto* em = sp.mixerOfEdit (ed.id);                                              // (the edit plays through its own mixer: a copy made now)
+        CHECK (em != nullptr);
+        if (em != nullptr) route (*em);
+        EditRegion r; r.windowId = juce::Uuid::null(); r.takeId = juce::Uuid(); r.srcIn = 100; r.srcOut = 48100; r.sampleRate = 48000.0; r.takeName = "001"; r.sourceLength = 96000;
+        { RegionFile a; a.trackId = tv; a.trackName = "violin"; a.file = fv; r.files.push_back (a); }
+        { RegionFile c; c.trackId = tc; c.trackName = "cello"; c.file = fc; r.files.push_back (c); }
+        ed.insertRegion (r);
+        sp.mastering.sync (sp.edits);
+        auto& vm = sp.mastering.vm;
+        const auto folder = tmp.getChildFile ("stemmaster"); folder.deleteRecursively();
+        vm.folder = folder.getFullPathName(); vm.format = MasterFormat::Wav; vm.sampleRate = 0.0; vm.bitDepth = 24; vm.normalise = true; vm.peakDb = -1.0f;
+        sp.mastering.sourceId = out;
+        sp.mastering.stemIds = { low, out, strings, juce::Uuid() };                     // the master's own bus and one that is gone are left out
+        MasterJobSpec spec; CHECK (makeFilesSpec (sp, sp.mastering, spec).isEmpty());
+        CHECK (spec.stemIds.size() == 2 && spec.stemNames.size() == 2);
+        if (spec.stemNames.size() == 2) CHECK (spec.stemNames[0] == "Strings" && spec.stemNames[1] == "Low");    // (in the project's order of buses)
+        {   MasterJobSpec fs; vm.formFolder = tmp.getChildFile ("stemforms").getFullPathName();
+            CHECK (makeFormsSpec (sp, sp.mastering, fs).isEmpty() && fs.stemIds.empty());       // the listening copies have no stems
+            vm.formFolder = {}; }
+        auto readPeak = [] (const juce::File& f, juce::int64& len, float& peak)
+        {
+            juce::AudioFormatManager fm; fm.registerBasicFormats(); std::unique_ptr<juce::AudioFormatReader> rd (fm.createReaderFor (f));
+            if (rd == nullptr) return false;
+            len = rd->lengthInSamples;
+            juce::AudioBuffer<float> b ((int) rd->numChannels, (int) len); rd->read (&b, 0, (int) len, 0, true, true);
+            peak = 0; for (int c = 0; c < b.getNumChannels(); ++c) peak = juce::jmax (peak, b.getMagnitude (c, 0, (int) len));
+            return true;
+        };
+        const auto stemsDir = folder.getChildFile ("Stems");
+        auto checkExport = [&] (const char* what)
+        {
+            MasterExportJob job (sp, spec, nullptr, false); auto res = job.execute();
+            CHECK (res.error.isEmpty() && res.files.size() == 3 && res.stemFiles == 2 && res.clippedStems.isEmpty());
+            if (res.files.size() != 3) { std::printf ("    (%s: %s)\n", what, res.error.toRawUTF8()); return; }
+            const juce::File master (res.files[0]), s1 (res.files[1]), s2 (res.files[2]);
+            CHECK (master.getParentDirectory() == folder && s1.getParentDirectory() == stemsDir && s2.getParentDirectory() == stemsDir);
+            CHECK (s1.getFileName() == spec.items[0].baseName + " - Strings.wav" && s2.getFileName() == spec.items[0].baseName + " - Low.wav");
+            juce::int64 lm = 0, l1 = 0, l2 = 0; float pm = 0, p1 = 0, p2 = 0;
+            CHECK (readPeak (master, lm, pm) && readPeak (s1, l1, p1) && readPeak (s2, l2, p2));
+            CHECK (lm > 0 && l1 == lm && l2 == lm);                                       // as long as the master
+            CHECK (std::abs (pm - juce::Decibels::decibelsToGain (-1.0f)) < 0.003f);       // the master is brought to its peak ...
+            CHECK (std::abs (p1 / pm - 0.5f / 0.75f) < 0.01f && std::abs (p2 / pm - 0.25f / 0.75f) < 0.01f);     // ... and the stems get the same gain: they keep its balance
+            CHECK (! folder.getChildFile ("_fermata_work").exists());                     // (the stems' renders are not kept)
+            master.deleteFile(); s1.deleteFile(); s2.deleteFile();
+        };
+        checkExport ("first");
+        const auto renders = MasterRenders::folderFor (sp);
+        CHECK (renders.getChildFile (ed.id.toString() + "-A.wav").existsAsFile() && ! renders.getChildFile (ed.id.toString() + "-B.wav").exists());
+        checkExport ("again");                                                            // the master's render is up to date: only the stems are rendered ...
+        CHECK (! renders.getChildFile (ed.id.toString() + "-B.wav").exists());              // ... so the master's render and its backup slot are left alone
+        CHECK (renders.findChildFiles (juce::File::findFiles, false, "mrtmp-*").isEmpty());
+        // too hot: a stem over 0 dB at the master's gain is named (the master comes down by its own peak only)
+        vm.normalise = false;
+        if (em != nullptr) sp.setSendLevel (*em, tv, strings, 12.0f);
+        CHECK (makeFilesSpec (sp, sp.mastering, spec).isEmpty());
+        {   MasterExportJob job (sp, spec, nullptr, false); auto res = job.execute();
+            CHECK (res.error.isEmpty() && res.stemFiles == 2 && res.clippedStems.size() == 1 && res.clippedStems[0].contains ("Strings"));
+            for (auto& f : res.files) juce::File (f).deleteFile(); }
+        // the choice is saved with the project
+        {
+            MasteringDef d2; d2.fromVar (sp.mastering.toVar());
+            CHECK (d2.stemIds.size() == 4 && d2.stemIds[0] == low && d2.stemIds[2] == strings);
+            MasteringDef none; MasteringDef d3; d3.fromVar (none.toVar());
+            CHECK (d3.stemIds.empty() && ! none.toVar().hasProperty ("stems"));
+        }
+        folder.deleteRecursively();
+    }
+
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;
 }

@@ -33,6 +33,10 @@ struct MasterJobSpec
     bool         formSingle = false;// the listening copies: all the pieces in ONE .html (named after formTitle) instead of one per piece
     juce::String formTitle;         // the name of that one page (the album title, or the project's name)
     juce::String discName;
+    /** 3.26.0, Files only: buses exported with the master, each as its own stereo file per piece (stems) in a "Stems" folder in destFolder - rendered in the
+        same pass as the master, at the master's gain (so they keep its balance), in its main format. stemNames: what the files are named after. */
+    std::vector<juce::Uuid> stemIds;
+    std::vector<juce::String> stemNames;
     /** The answer to the loudness check (a piece that cannot reach the target under the ceiling): 0 = ask (the job pauses and calls onLoudnessCheck),
         1 = retain the peak (those pieces stop at the ceiling, below the target), 2 = ignore (the full gain; they clip), 3 = cancel. */
     int          loudnessDecision = 0;
@@ -74,6 +78,8 @@ struct MasterExportResult
     juce::String report;             // Disc: what the checker found in the finished DDP. Files with a loudness target: every piece's loudness, true peak and gain
     std::vector<juce::int64> frames; // the length of each item's audio at the target rate
     LoudnessCheck loudness;          // what was measured (a loudness target only)
+    int stemFiles = 0;               // 3.26.0: how many of 'files' are stems
+    juce::StringArray clippedStems;  // stems whose level went over 0 dBFS at the master's gain ("01 - Kyrie - Strings  +0.8 dB")
 };
 
 /** Builds the list of files for the Virtual Master (or says why it cannot): included edits, in list order, named and tagged. */

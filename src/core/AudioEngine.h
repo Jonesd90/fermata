@@ -161,6 +161,19 @@ public:
     void stopPlayback (bool handOff = false);
     /** Waits (at most ms) until the sessions handed off by Stop have been freed, their files closed. True when none is left. */
     bool waitForStoppedPlays (int ms);
+    /** 3.26.0: the automation of the edit that plays changed (a point drawn, moved or deleted): 'next' (null = it has none any more) takes over from the plan
+        playing now, between two audio blocks - no stop, no gap. A send that 'next' moves for the first time is put in the mixer plan first; what only the
+        old plan drove is handed back once the audio thread has left it (serviceReplacedAutomation). False (nothing done) unless edit 'editId' plays as
+        such (PlaybackSession::followsAutomation). Message thread. */
+    bool replaceAutomation (const juce::Uuid& editId, std::shared_ptr<AutomationPlan> next);
+    /** Message thread, often (a timer): the plans replaced while playing that the audio thread has certainly left are freed, and what they held that the
+        plan playing now does not hold goes back - a send leaves the mixer plan again, a channel under a VCA lane goes back to the VCA's own fader. */
+    void serviceReplacedAutomation();
+    /** True while edit 'editId' plays as such, so a change to its automation can be heard at once. Message thread. */
+    bool followsAutomationOf (const juce::Uuid& editId) const noexcept
+    {
+        return playSession != nullptr && playSession->followsAutomation && playSession->editId == editId && playback.load() == playSession.get();
+    }
     /** Stopped sessions still waiting to be freed by that thread (the tests). */
     int sessionsWaitingToBeFreed() const;
     /** Turns looping of the running playback on or off (off: it plays on to its end). */
@@ -461,6 +474,8 @@ private:
     std::vector<juce::Uuid> offlineTaps, offlinePreTaps;
     std::vector<juce::AudioBuffer<float>>* captureBufs = nullptr;  // only while renderOffline() runs
     std::unique_ptr<PlaybackSession> playSession;   // owned by the message thread
+    struct ReplacedPlan { std::shared_ptr<const AutomationPlan> plan; juce::uint64 block0 = 0; };
+    std::vector<ReplacedPlan> replacedPlans;        // 3.26.0, message thread: automation plans replaced while playing, kept until the audio thread has left them
     struct Retirer;                                 // frees stopped sessions on a thread of its own (see stopPlayback)
     std::unique_ptr<Retirer> retirer;
     std::atomic<juce::uint64> blockCounter { 0 };

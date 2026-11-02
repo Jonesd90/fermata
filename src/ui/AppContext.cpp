@@ -66,6 +66,8 @@ AppContext::AppContext()
         }
     };
     watcher.startTimer (100);
+    liveAutoTicker.fn = [this] { followAutomation(); };
+    liveAutoTicker.startTimer (50);
     loadTicker.fn = [this] { tickLoad(); matchEngineRate(); };
     loadTicker.startTimer (1000);
     undoTicker.fn = [this] { if (undoHold <= 0) { BusyLabel busy ("making an undo step"); anchorEdits(); project.undoTick (engine.isRecording()); } };
@@ -1635,7 +1637,7 @@ static constexpr double kOpenEndSeconds = 6.0 * 3600.0;
 
 static juce::String beginSession (AppContext& app, std::vector<PlaySegment> segs, juce::int64 start, juce::int64 end, double rate,
                                   std::shared_ptr<AutomationPlan> automation = nullptr, bool loop = false, bool allowEmpty = false,
-                                  const juce::Uuid& editId = juce::Uuid::null(), juce::int64 continueTo = -1)
+                                  const juce::Uuid& editId = juce::Uuid::null(), juce::int64 continueTo = -1, bool followAutomation = false)
 {
     if (segs.empty() && ! allowEmpty) return "There is nothing to play here";
     if (end <= start) return "Nothing to play (empty range)";
@@ -1645,6 +1647,7 @@ static juce::String beginSession (AppContext& app, std::vector<PlaySegment> segs
     auto session = std::make_unique<PlaybackSession> (counts, std::move (segs), start, end, rate, app.engine.getMaxBlock());
     session->automation = std::move (automation);
     session->editId = editId;                                  // an Edit plays through its own mixer
+    session->followsAutomation = followAutomation;             // (3.26.0: the edit itself, not its guide: a change to its automation is heard at once)
     session->setLooping (loop);
     if (continueTo > end) session->setContinueTo (continueTo);              // a loop let go of carries on to there (see PlaybackSession::releaseLoop)
     return app.engine.startPlayback (std::move (session), false);           // (returns at once: the sound starts as soon as the first moments are read)
@@ -1732,10 +1735,31 @@ juce::String AppContext::playEdit (const juce::Uuid& editId, double fromSec, dou
     setAlignOwner (project.alignOwnerFor (true, editId));
     transportFades (segs, a, b, rate, ! goOn);                            // (a loop that may be let go of has its end faded by the session)
     project.resolveAllAutomation();
+    const auto sig = lanesSignature (e->lanes);                           // (what the plan is made from: a later change is heard at once, see followAutomation)
     auto err = beginSession (*this, std::move (segs), a, b, rate, automationPlanFor (project, *e), loop, true, editId,
-                             goOn ? a + (juce::int64) std::llround (kOpenEndSeconds * rate) : -1);
-    if (err.isEmpty()) { playInfo = { PlayInfo::Kind::Edit, e->windowId, editId, (double) a / rate }; playInfo.loopLen = loop ? (double) (b - a) / rate : 0.0; }
+                             goOn ? a + (juce::int64) std::llround (kOpenEndSeconds * rate) : -1, true);
+    if (err.isEmpty())
+    {
+        playInfo = { PlayInfo::Kind::Edit, e->windowId, editId, (double) a / rate }; playInfo.loopLen = loop ? (double) (b - a) / rate : 0.0;
+        liveAutoEdit = editId; liveAutoSig = sig;
+    }
     return err;
+}
+
+/** 3.26.0: while an edit plays, a point drawn, moved or deleted in its automation (or Ctrl+Z bringing one back) is heard at once, and the mixer's fader moves with
+    it: a plan made from the lanes as they are now takes over from the one playing (AudioEngine::replaceAutomation) - before, the lanes were read once, as the
+    play started, and a change was heard only after stopping and starting again. Looked at 20 times a second; the plan is only made again when the lanes changed. */
+void AppContext::followAutomation()
+{
+    engine.serviceReplacedAutomation();                                   // (plans replaced earlier that the audio thread has left: freed)
+    if (playInfo.kind != PlayInfo::Kind::Edit || ! engine.followsAutomationOf (playInfo.id)) return;
+    auto* e = project.findEdit (playInfo.id);
+    if (e == nullptr) return;
+    const auto sig = lanesSignature (e->lanes);
+    if (liveAutoEdit != e->id) { liveAutoEdit = e->id; liveAutoSig = sig; return; }
+    if (sig == liveAutoSig) return;
+    liveAutoSig = sig;
+    engine.replaceAutomation (e->id, automationPlanFor (project, *e));
 }
 
 juce::String AppContext::playEditGuide (const juce::Uuid& editId, double fromSec, double toSec, bool loop, bool goOnAfterLoop)

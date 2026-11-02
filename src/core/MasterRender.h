@@ -68,7 +68,11 @@ private:
 class MasterRenderBatch
 {
 public:
-    MasterRenderBatch (const Project& live, const std::vector<juce::Uuid>& editIds, const RenderParams&, bool force = false);
+    /** 3.26.0 stems: every Edit is also rendered through each bus in 'stems' (in the same pass as its master render when that is out of date, else in a
+        pass of their own: an up-to-date master render and its backup are never touched). The stem renders are not kept with the master renders: they go
+        to 'stemFolder' (stemFileFor), for the caller to use and delete. */
+    MasterRenderBatch (const Project& live, const std::vector<juce::Uuid>& editIds, const RenderParams&, bool force = false,
+                       const std::vector<juce::Uuid>& stems = {}, const juce::File& stemFolder = {});
     ~MasterRenderBatch();
     const juce::String& getPrepareError() const { return prepareError; }
     int total() const { return (int) items.size(); }
@@ -83,14 +87,20 @@ public:
     bool needsRender (int i) const { return items[(size_t) i].stale; }
     bool isPrevious (int i) const { return items[(size_t) i].previous; }           // the earlier version was chosen for this Edit
     bool hasBackup (int i) const { return items[(size_t) i].backup; }
+    /** After run(): the render of the i-th Edit through stem bus s (32-bit float, the Edit's rate, as long as its master render). */
+    juce::File stemFileFor (int i, int s) const { const auto& v = items[(size_t) i].stemFiles; return juce::isPositiveAndBelow (s, (int) v.size()) ? v[(size_t) s] : juce::File(); }
+    int numStems() const { return (int) stems.size(); }
 
 private:
-    struct Item { juce::Uuid editId; juce::String fp; juce::File file; bool stale = false, previous = false, backup = false; double rate = 0.0; juce::int64 frames = 0; };
-    struct Group { double rate = 0.0; std::unique_ptr<Bouncer> bouncer; std::vector<int> idx; };
+    struct Item { juce::Uuid editId; juce::String fp; juce::File file; bool stale = false, previous = false, backup = false; double rate = 0.0; juce::int64 frames = 0;
+                  std::vector<juce::File> stemFiles; };
+    struct Group { double rate = 0.0; bool master = true; std::unique_ptr<Bouncer> bouncer; std::vector<int> idx; };     // master: this pass makes the master renders too (else only the stems)
     std::vector<Item> items;
     std::vector<Group> groups;
     juce::File folder;
     juce::String prepareError;
+    std::vector<juce::Uuid> stems;
+    juce::File stemDir;
 };
 
 /** A MasterRenderBatch on a background thread. Create and destroy on the message thread; 'done' is called on the message thread (error "", "Cancelled." or a problem). */

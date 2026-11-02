@@ -91,6 +91,11 @@ private:
     void startFormExport();
     void startJob (const MasterJobSpec&, int kind);           // kind: 0 Virtual Master, 1 DDP, 2 listening copies
     void jobFinished (const MasterExportResult&, int kind);
+    /** 3.26.0: the box at the end of an export - Export complete, what was written and where, Show the files / OK (or why it stopped). */
+    void showDoneBox (const MasterExportResult&, int kind);
+    /** 3.26.0: the Stems row of the Virtual Master - a tick box per Int / Ext bus (not the one the master is rendered from), in a box of its own. */
+    void chooseStems();
+    void refreshStemsButton();
     void layoutForms (juce::Rectangle<int> area);
     void setBusy (bool);
     void chooseFolder (bool disc, bool forms = false);
@@ -121,6 +126,7 @@ private:
     juce::Label fmtCaption, rateCaption, bitsCaption, ditherCaption, qualityCaption, levelCaption, albumCaption, fileCaption, nameCaption, folderCaption, vmStatus;
     juce::ComboBox formatBox, rateBox, bitsBox, ditherBox, qualityBox;
     juce::Label alsoCaption, formCaption, formAudioCaption, formInfo;
+    juce::Label stemsCaption; juce::TextButton stemsButton;          // 3.26.0
     juce::ToggleButton feedbackToggle { "Include Feedback Form (a listening copy of every file)" };
     juce::ComboBox formAudioBox;
     juce::ToggleButton alsoToggle[5];

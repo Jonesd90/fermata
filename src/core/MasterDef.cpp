@@ -49,6 +49,7 @@ var MasteringDef::toVar() const
 {
     var root = newObj();
     put (root, "mixer", idStr (mixerId)); put (root, "source", idStr (sourceId)); put (root, "tail", tailSeconds); put (root, "view", view);
+    if (! stemIds.empty()) { juce::Array<var> st; for (auto& id : stemIds) st.add (id.toString()); put (root, "stems", st); }      // (3.26.0; absent = none)
     {
         var s = newObj();
         put (s, "format", (int) vm.format); put (s, "rate", vm.sampleRate); put (s, "bits", vm.bitDepth); put (s, "dither", (int) vm.dither);
@@ -95,6 +96,8 @@ void MasteringDef::fromVar (const var& root)
     *this = MasteringDef();
     if (! root.isObject()) return;
     mixerId = idOf (root["mixer"]); sourceId = idOf (root["source"]); tailSeconds = juce::jlimit (0.0, 30.0, (double) root["tail"]); view = juce::jlimit (0, 2, (int) root["view"]);
+    if (auto* st = root["stems"].getArray())
+        for (auto& v : *st) if (const auto id = idOf (v); ! id.isNull() && std::find (stemIds.begin(), stemIds.end(), id) == stemIds.end()) stemIds.push_back (id);
     const auto s = root["vm"];
     if (s.isObject())
     {
