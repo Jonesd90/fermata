@@ -211,6 +211,23 @@ struct TakeWindowDef
         return ok;
     }
 };
+/** 3.25.0: Ctrl + Alt + click on a track inside marks 1 - 2 (an edit's fixTracks, a take window's editTracks; empty = every track): with every track marked,
+    only this one; otherwise this one in, or out again - and when the last one goes out, every track is marked again. */
+inline void toggleMarkedTrack (std::vector<juce::Uuid>& marked, const juce::Uuid& track)
+{
+    const auto it = std::find (marked.begin(), marked.end(), track);
+    if (it != marked.end()) marked.erase (it);
+    else marked.push_back (track);
+}
+
+/** 3.25.0: mark 1 ('first') or mark 2 dragged to 't' seconds: never before 0, and never past the other mark (kept 'gap' apart). A mark not set is -1. */
+inline void moveMark (double& in, double& out, bool first, double t, double gap = 0.001)
+{
+    t = juce::jmax (0.0, t);
+    if (first) in  = out >= 0.0 ? juce::jlimit (0.0, juce::jmax (0.0, out - gap), t) : t;
+    else       out = in  >= 0.0 ? juce::jmax (t, in + gap) : t;
+}
+
 /** Bar coverage (3.8.0, the take chart): which bars of a piece how many takes contain, from the bars entered for each take (its IN and OUT Bar). */
 namespace coverage
 {

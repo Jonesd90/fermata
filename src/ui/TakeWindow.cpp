@@ -368,7 +368,7 @@ public:
             case ctrl:         return { "Click a take or a track's name: add it to the selection or take it out", "Ctrl + A: select every take", "Ctrl + Z / Ctrl + Y: undo / redo" };
             case alt:          return { "Drag: lasso - selects every take it touches" };
             case ctrl | alt:   case ctrl | alt | shift:
-                               return { "Drag over a take: mark 1 - 2 on only the tracks you drag over" };
+                               return { "Drag over a take: mark 1 - 2 on only the tracks you drag over", "Click a track inside marks 1 - 2: mark only that track, or add one / take one out" };
             case alt | shift:  return { "Drag: lasso - selects every take it touches" };
             case shift:        return { "Click a track's name: select every track from the last one clicked", "Left / Right arrow: nudge the playhead by 10 ms", "4: send the marked part to the edit's playhead as an INSERT (the rest moves later; 4 alone replaces)" };
             case ctrl | shift: return { "Drag a clip up or down: the selected takes' clips on that track go onto another track (they stay where they are in time)", "Ctrl + Shift + Z: redo" };
@@ -710,7 +710,7 @@ public:
         markers.yOffset = hdrShift;
         if (w->showMarkers && markers.mouseDown (e)) return;                                 // the marker strip along the top: right-click for Add Marker / Clear All; drag a marker
         flagDrag = 0;
-        if (! e.mods.isPopupMenu() && (flagDrag = editFlagAt (*w, e.getPosition())) != 0) return;       // grab an marks 1 / 2 flag to move it
+        if (! e.mods.isPopupMenu() && (flagDrag = editFlagAt (*w, e.getPosition(), ! e.mods.isAnyModifierKeyDown())) != 0) return;       // grab mark 1 / 2 (its flag, or 3.25.0 its line) to move it
         if (e.mods.isPopupMenu() && e.x >= kNameW)                         // right-click on a part waiting for corrected audio: re-link it
             if (auto* wg = groupAt (e.getPosition()))
                 if (wg->sampleRate > 0)
@@ -993,7 +993,7 @@ public:
     {
         auto* w = def(); bool isIn = true;
         if (std::abs (e.x - (viewport.getViewPositionX() + kNameW)) <= 4 && e.y >= kRulerH) { setMouseCursor (juce::MouseCursor::LeftRightResizeCursor); return; }
-        setMouseCursor (w != nullptr && (fadeHandleAt (*w, e.getPosition(), isIn) != nullptr || editFlagAt (*w, e.getPosition()) != 0) ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
+        setMouseCursor (w != nullptr && (fadeHandleAt (*w, e.getPosition(), isIn) != nullptr || editFlagAt (*w, e.getPosition(), ! e.mods.isAnyModifierKeyDown()) != 0) ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
     }
 
     void mouseUpImpl (const juce::MouseEvent& e)
@@ -1022,6 +1022,25 @@ public:
             repaint(); return;
         }
         if (markers.mouseUp (e)) return;
+        if (! markDragTake.isNull() && ! markActive && markAlt)            // 3.25.0: Ctrl + Alt + click (no drag) on a track inside the marks: that track in or out
+            if (auto* w = def(); w != nullptr && w->editTake == markDragTake && w->editIn >= 0.0 && w->editOut > w->editIn && markAnchor >= w->editIn && markAnchor <= w->editOut)
+                if (auto* grp = w->findGroup (markDragTake))
+                {
+                    const auto shown = shownTracks();
+                    if (juce::isPositiveAndBelow (markRow0, (int) shown.size()))
+                    {
+                        const auto tid = shown[(size_t) markRow0]->id;
+                        bool has = false;
+                        for (auto& f : grp->files) if (f.trackId == tid) has = true;
+                        if (has)
+                        {
+                            toggleMarkedTrack (w->editTracks, tid);
+                            app.setNotice (w->editTracks.empty() ? juce::String ("Marks 1 - 2 are on every track again.")
+                                                                 : "Marks 1 - 2 are on " + juce::String ((int) w->editTracks.size()) + (w->editTracks.size() == 1 ? " track" : " tracks") + " (Ctrl + Alt + click a track to add it or take it out).");
+                            app.project.changed(); repaint();
+                        }
+                    }
+                }
         if (markActive) { markActive = false; app.project.changed(); }
         if (flagDrag != 0) { flagDrag = 0; app.project.changed(); }
         markDragTake = juce::Uuid::null();
@@ -1908,16 +1927,30 @@ private:
     std::map<juce::String, std::unique_ptr<WaveThumb>> thumbs;
     juce::Uuid dragId = juce::Uuid::null(); bool dragging = false; double dragOriginSeconds = 0.0;
     int flagDrag = 0;                                      // 1 = dragging the Edit IN flag, 2 = the Edit OUT flag
-    /** Which Edit flag (1 = IN, 2 = OUT) is under this point: the little label at the top of the take or the line itself. */
-    int editFlagAt (TakeWindowDef& w, juce::Point<int> p) const
+    /** 1 / 2: p is on the Mark 1 / Mark 2 flag at the top of the marked take - or (3.25.0, 'lines') within 5 px of its line further down, over the tracks. */
+    int editFlagAt (TakeWindowDef& w, juce::Point<int> p, bool lines = false) const
     {
-        if (p.y < kRulerH || p.y >= kRulerH + 14) return 0;
+        if (p.y < kRulerH) return 0;
         auto* eg = w.findGroup (w.editTake);
         if (eg == nullptr) return 0;
         const int gx = xOf (eg->startSeconds);
-        if (w.editIn >= 0)  { const int x = gx + (int) (w.editIn * pixelsPerSecond);  if (p.x >= x - 3 && p.x <= x + 48) return 1; }
-        if (w.editOut >= 0) { const int x = gx + (int) (w.editOut * pixelsPerSecond); if (p.x >= x - 48 && p.x <= x + 3) return 2; }
-        return 0;
+        const int xIn = gx + (int) (w.editIn * pixelsPerSecond), xOut = gx + (int) (w.editOut * pixelsPerSecond);
+        if (p.y < kRulerH + 14)
+        {
+            if (w.editIn >= 0  && p.x >= xIn - 3 && p.x <= xIn + 48) return 1;
+            if (w.editOut >= 0 && p.x >= xOut - 48 && p.x <= xOut + 3) return 2;
+            return 0;
+        }
+        // the line: over the take's tracks only (the banner above them keeps its fade corners; + 4: the name column's edge is dragged to widen it)
+        if (! lines || p.y < kRulerH + kLaneH || p.x <= viewport.getViewPositionX() + kNameW + 4) return 0;
+        const auto shown = shownTracks();
+        int lastRow = -1;                                                  // (the line goes down to the take's last track)
+        for (int r = 0; r < (int) shown.size(); ++r)
+            for (auto& tf : eg->files) if (tf.trackId == shown[(size_t) r]->id) lastRow = r;
+        if (p.y >= kRulerH + kLaneH + (lastRow + 1) * rowH) return 0;
+        const int dIn = w.editIn >= 0 ? std::abs (p.x - xIn) : 1 << 20, dOut = w.editOut >= 0 ? std::abs (p.x - xOut) : 1 << 20;
+        if (juce::jmin (dIn, dOut) > 5) return 0;
+        return dIn <= dOut ? 1 : 2;
     }
     // (3.18.2: null, and put back to null - not to "{}", which is a new random id: with a random id here, the mark-drag branch of mouseDrag claimed every drag,
     //  so dragging along the ruler never moved the playhead.)

@@ -11839,6 +11839,28 @@ int main()
         }
     }
 
+    SECTION ("3.25.0 marks 1 / 2: dragging one never passes the other; Ctrl + Alt + click picks the marked tracks one by one");
+    {
+        double in = 2.0, out = 5.0;
+        moveMark (in, out, true, 3.0);  CHECK (in == 3.0 && out == 5.0);           // mark 1 later: the range is shorter
+        moveMark (in, out, true, 7.0);  CHECK (std::abs (in - 4.999) < 1e-9);      // never past mark 2
+        moveMark (in, out, true, -4.0); CHECK (in == 0.0);                          // never before the start
+        moveMark (in, out, false, 9.0); CHECK (out == 9.0);
+        moveMark (in, out, false, -1.0); CHECK (std::abs (out - 0.001) < 1e-12);   // mark 2 stays after mark 1
+        double a = -1.0, b = 4.0;
+        moveMark (a, b, false, 6.0); CHECK (a == -1.0 && b == 6.0);                 // (mark 1 not set: mark 2 goes anywhere)
+        const juce::Uuid t1, t2, t3;
+        std::vector<juce::Uuid> marked;                                             // empty = every track
+        toggleMarkedTrack (marked, t2); CHECK (marked.size() == 1 && marked[0] == t2);          // the first click: only that track
+        toggleMarkedTrack (marked, t1); CHECK (marked.size() == 2);                             // one more
+        toggleMarkedTrack (marked, t2); CHECK (marked.size() == 1 && marked[0] == t1);          // one out again
+        toggleMarkedTrack (marked, t1); CHECK (marked.empty());                                 // the last out: every track again
+        juce::ignoreUnused (t3);
+        // the edit window's P marks every track (the tracks of an earlier Ctrl + Alt selection go)
+        EditDef e; e.fixTracks = { t1 }; e.fixIn = 1.0; e.fixOut = 2.0;
+        CHECK (! e.fixUses (t2));
+    }
+
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;
 }

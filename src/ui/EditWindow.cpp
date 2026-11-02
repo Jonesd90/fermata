@@ -315,7 +315,7 @@ public:
             case ctrl:         return { "Click a piece: select it whole (then drag it to move it); Ctrl + click more pieces to add them", "Click a track's name: add it to the selection or take it out", "Ctrl + Z / Ctrl + Y: undo / redo" };
             case alt:  case alt | shift:
                                return { "Drag: lasso - selects every piece it touches" };
-            case ctrl | alt:   return { "Drag over audio: mark 1 - 2 on only the tracks you drag over" };
+            case ctrl | alt:   return { "Drag over audio: mark 1 - 2 on only the tracks you drag over", "Click a track inside marks 1 - 2: mark only that track, or add one / take one out" };
             case shift:        return { "Drag a track's clip: move it to another track (same time)", "Click a track's name: select every track from the last one clicked", "4: insert the part marked in a take window at the playhead (the rest moves later; 4 alone replaces)" };
             case ctrl | alt | shift:
                                return { "Drag a track's clip: move it to another track (same time)" };
@@ -825,7 +825,7 @@ public:
     void mouseDownImpl (const juce::MouseEvent& e)
     {
         grabKeyboardFocus();
-        dragging = false; markDrag = false; markActive = false; lassoActive = lassoMoved = false;
+        dragging = false; markDrag = false; markActive = false; markLineDrag = 0; lassoActive = lassoMoved = false;
         auto* ed = this->edit();
         if (ed == nullptr) return;
         markers.setNameWidth (viewport.getViewPositionX() + kNameW);
@@ -927,6 +927,17 @@ public:
         {
             lassoActive = true; lassoMoved = false; lassoFrom = lassoTo = e.getPosition();
             return;
+        }
+        if (! e.mods.isPopupMenu() && ! e.mods.isAnyModifierKeyDown())                       // 3.25.0: the line of mark 1 or 2: drag it (the marked tracks stay as they are)
+        {
+            EditRegion* fh = nullptr; bool fhIn = true;
+            const bool gainLine = e.getNumberOfClicks() > 1 && gainMarkAt (*ed, e.getPosition(), rate);      // (a double-click on a volume change still opens it)
+            if (const int m = markLineAt (*ed, e.getPosition()); m != 0 && ! gainLine && ! fadeHandleAt (*ed, e.getPosition(), rate, fh, fhIn))
+            {
+                markLineDrag = m;
+                setMouseCursor (juce::MouseCursor::LeftRightResizeCursor);
+                return;
+            }
         }
         const double t = (e.x - kNameW) / pixelsPerSecond;
         cursorSeconds = juce::jmax (0.0, t);
@@ -1103,6 +1114,17 @@ public:
     {
         auto* ed = edit();
         if (ed == nullptr) return;
+        if (markLineDrag != 0)                                                          // 3.25.0: moving mark 1 or 2 (never past the other; the marked tracks stay)
+        {
+            double t = juce::jmax (0.0, (e.x - kNameW) / pixelsPerSecond);
+            const double rate = juce::jmax (1.0, ed->sampleRate);
+            for (auto& r : ed->regions)                                                 // a piece's start or end within 4 px: the mark goes exactly there
+                for (const auto edge : { r.startSample, r.endSample() })
+                    if (std::abs (xOf ((double) edge / rate) - e.x) <= 4) t = (double) edge / rate;
+            moveMark (ed->fixIn, ed->fixOut, markLineDrag == 1, t);
+            app.project.markDirty(); repaint();
+            return;
+        }
         if (lassoActive)
         {
             const auto before = lassoMoved ? lassoRect() : juce::Rectangle<int>();
@@ -1214,7 +1236,8 @@ public:
         auto* ed = edit(); EditRegion* fr = nullptr; bool isIn = true;
         if (std::abs (e.x - (viewport.getViewPositionX() + kNameW)) <= 4 && e.y >= kRulerH) { setMouseCursor (juce::MouseCursor::LeftRightResizeCursor); return; }
         if (inGuideLane (e.y) && e.x >= viewport.getViewPositionX() + kNameW) { setMouseCursor (juce::MouseCursor::DraggingHandCursor); return; }     // the guide: drag it sideways
-        const bool over = ed != nullptr && e.x > kNameW && fadeHandleAt (*ed, e.getPosition(), juce::jmax (1.0, ed->sampleRate), fr, isIn);
+        const bool overMark = ed != nullptr && ! e.mods.isAnyModifierKeyDown() && markLineAt (*ed, e.getPosition()) != 0;      // 3.25.0: a mark's line can be dragged
+        const bool over = overMark || (ed != nullptr && e.x > kNameW && fadeHandleAt (*ed, e.getPosition(), juce::jmax (1.0, ed->sampleRate), fr, isIn));
         setMouseCursor (over ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
         (void) isIn;
     }
@@ -1281,6 +1304,18 @@ public:
             }
             setMouseCursor (juce::MouseCursor::NormalCursor); repaint(); return;
         }
+        if (markLineDrag != 0) { markLineDrag = 0; app.project.changed(); setMouseCursor (juce::MouseCursor::NormalCursor); return; }
+        if (markDrag && ! markActive && markAlt)                                         // 3.25.0: Ctrl + Alt + click (no drag) on a track inside the marks: that track in or out
+            if (auto* ed = edit(); ed != nullptr && ed->fixIn >= 0.0 && ed->fixOut > ed->fixIn && markAnchor >= ed->fixIn && markAnchor <= ed->fixOut)
+            {
+                if (isTrackRow (markRow0))                                              // (an audio track's own row: not a bus, a VCA or an extra lane row)
+                {
+                    toggleMarkedTrack (ed->fixTracks, rowTracks()[(size_t) markRow0].id);
+                    app.setNotice (ed->fixTracks.empty() ? juce::String ("Marks 1 - 2 are on every track again.")
+                                                         : "Marks 1 - 2 are on " + juce::String ((int) ed->fixTracks.size()) + (ed->fixTracks.size() == 1 ? " track" : " tracks") + " (Ctrl + Alt + click a track to add it or take it out).");
+                    app.project.changed();
+                }
+            }
         if (markActive) { markActive = false; app.project.changed(); }
         markDrag = false;
         if (autoDragIndex >= 0) { autoDragIndex = -1; autoDragLane = juce::Uuid::null(); app.project.changed(); }
@@ -2115,6 +2150,25 @@ private:
     std::map<juce::String, std::unique_ptr<WaveThumb>> thumbs;
     bool dragging = false; int dragIndex = -1; std::vector<EditRegion> baseRegions;
     bool markDrag = false, markActive = false, markAlt = false; double markAnchor = 0.0; int markStartX = 0, markRow0 = 0;     // dragging over audio that is not selected sets marks 1 and 2
+    int markLineDrag = 0;                                       // 3.25.0: 1 / 2 while the line of mark 1 / mark 2 is being dragged
+    /** 3.25.0: 1 or 2 when p is within 5 px of the line of mark 1 / mark 2 (the nearer one), under the ruler: on the pieces' banners and on the tracks' own rows.
+        0 otherwise - on the ruler (a click there still moves the playhead), the visual guide, a bus or lane row, any row while the automation shows (a click there
+        is a point), and a numbered edit flag, which keeps its own click (select the join, double-click to trim) even when a mark stands on it. */
+    int markLineAt (const EditDef& ed, juce::Point<int> p) const
+    {
+        if (p.x <= viewport.getViewPositionX() + kNameW + 4 || p.y < kRulerH || inGuideLane (p.y)) return 0;      // (+ 4: the name column's edge is dragged to widen it)
+        if (p.y >= bandH() && (lanesOn (ed) || ! isTrackRow ((p.y - bandH()) / juce::jmax (1, rowH)))) return 0;
+        const double dIn = ed.fixIn >= 0.0 ? std::abs ((double) (xOf (ed.fixIn) - p.x)) : 1.0e9;
+        const double dOut = ed.fixOut >= 0.0 ? std::abs ((double) (xOf (ed.fixOut) - p.x)) : 1.0e9;
+        if (juce::jmin (dIn, dOut) > 5.0) return 0;
+        if (p.y < kRulerH + 14 && ! ed.regions.empty())
+        {
+            const double rate = juce::jmax (1.0, ed.sampleRate);
+            for (int k = 0; k <= (int) ed.regions.size(); ++k)
+                if (std::abs ((double) (xOf ((double) editPointSample (ed, k) / rate) - p.x)) < 8.0) return 0;
+        }
+        return dIn <= dOut ? 1 : 2;
+    }
     bool dragOverdub = false; juce::int64 overdubBase = 0;
     bool insertDrag = false, insertSnapped = true; int insertShownX = 0, insertDragIndex = 0;                 // the insert flag being dragged
     juce::Uuid shuffleId = juce::Uuid::null(); juce::int64 shuffleGrab = 0, shuffleSample = 0; bool shuffleMoved = false; int shuffleStartX = 0;     // a piece being shuffled by its banner (null: none; see clipMoveRegion)
@@ -2908,6 +2962,7 @@ void EditWindowComponent::markWholeSelected()
     for (auto& r : e->overdubs) take (r);
     if (to < 0) { showError ("Marks 1 and 2", "Click a piece first (or Ctrl + click several), then press P to put marks 1 and 2 round all of it."); return; }
     e->fixIn = from; e->fixOut = to;
+    e->fixTracks.clear();                  // 3.25.0: round the whole piece on every track (Ctrl + Alt + click tracks inside the marks to pick some)
     app.project.changed();
 }
 
