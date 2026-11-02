@@ -135,6 +135,8 @@ private:
     void updateFollow();
     int slotCount = 1;                    // insert slots shown on every strip: one more than the highest one in use
     int slotsNeeded();
+    juce::String routeSignature();        // 3.23.0: the strips' outputs and the Main out ticks (a change rebuilds the strips: their send dials follow it)
+    juce::String routeSig;
     int topBarMinWidth() const;
     void showCopyMenu();
     juce::TextButton pasteButton;

@@ -1,6 +1,7 @@
 #pragma once
 #include "AppContext.h"
 #include "Uikit.h"
+#include "../core/AudioOps.h"
 
 namespace td { namespace fixtools
 {
@@ -13,6 +14,21 @@ void pitchTake (AppContext&, const juce::Uuid& takeWindowId, juce::Component* pa
 /** Export for Processing: sends the marked part of all tracks out to the Processing Media folder (to be corrected in other software) and shows it as 'Waiting for corrected audio'. */
 void exportForProcessingEdit (AppContext&, const juce::Uuid& editId, juce::Component* parent);
 void exportForProcessingTake (AppContext&, const juce::Uuid& windowId, juce::Component* parent);
+/** One set of files to send out of an edit (Export for Processing: Create files to edit, or Open in a linked program): the take range [a,b) of piece 'rid', one file per track. 'label' is
+    "Out Stream" / "In Stream" when the marks hold an edit point (empty otherwise). */
+struct SendPart
+{
+    juce::Uuid rid; juce::int64 a = 0, b = 0; juce::String label;
+    std::vector<juce::File> src; std::vector<juce::String> names; std::vector<juce::int64> fstart; std::vector<juce::Uuid> trk; std::vector<int> channels;
+};
+/** 3.22.0: what marks 1 - 2 of an edit send out - the piece they are in, or with an edit point between them the OUT and / or IN stream (asked) - checked and with
+    the messages for what cannot be sent. 'go' gets the part(s), whether only some tracks were marked (Ctrl + Alt + drag), and notes for the final message. */
+void planSendOut (AppContext&, const juce::Uuid& editId, const juce::String& title,
+                  std::function<void (std::shared_ptr<std::vector<SendPart>>, bool subset, const juce::String& notes)> go);
+/** A new folder for a job inside the project's Processing Media folder, named after it ("name", "name (2)" ...). */
+juce::File processingJobFolder (AppContext&, const juce::String& name);
+/** A small window with a progress bar while 'work' runs in the background; 'onSuccess' runs (message thread) when it has finished well, and the window closes. */
+void runSimpleJob (const juce::String& text, AudioJob::Work work, std::function<void()> onSuccess, const juce::String& title, juce::Component* parent);
 /** Brings the corrected files back (checks that they have the same channels, rate and length) and shows their waveform again. */
 void relinkEdit (AppContext&, const juce::Uuid& editId, const juce::Uuid& regionId, juce::Component* parent);
 void relinkTake (AppContext&, const juce::Uuid& windowId, const juce::Uuid& takeId, juce::int64 waitingFrom, juce::Component* parent);

@@ -5,6 +5,7 @@
 #include "SpectralRepair.h"
 #include "Denoise.h"
 #include "ConsonantData.h"
+#include <unordered_map>
 
 namespace td
 {
@@ -129,8 +130,13 @@ std::unique_ptr<juce::AudioFormatReader> openReader (juce::AudioFormatManager&, 
 bool readRange (juce::AudioFormatReader&, juce::int64 start, juce::int64 n, std::vector<std::vector<float>>& out);
 /** A file name next to 'wanted' that does not exist yet ("name.wav", "name (2).wav" ...). */
 juce::File uniqueFile (const juce::File& wanted);
-/** A WAV writer (24-bit, or 32-bit float when 'floatData'); null on failure. */
-std::unique_ptr<juce::AudioFormatWriter> makeWavWriter (const juce::File&, double sampleRate, int numChannels, bool floatData = false);
+/** Extra information written into a WAV file's header (JUCE's WAV metadata names: "NumCuePoints", "Cue0Offset", "CueLabel0Text" ...). */
+using WavMetadata = std::unordered_map<juce::String, juce::String>;
+/** A WAV writer (24-bit, or 32-bit float when 'floatData'); null on failure. 'metadata' (optional): markers and the like for the header. */
+std::unique_ptr<juce::AudioFormatWriter> makeWavWriter (const juce::File&, double sampleRate, int numChannels, bool floatData = false, const WavMetadata* metadata = nullptr);
+/** 3.22.0: the header entries for markers at these sample positions of a WAV file, each with its label (a WAV "cue" chunk with "labl" names, as iZotope RX and most
+    editors show them). */
+WavMetadata cueMarkers (const std::vector<std::pair<juce::int64, juce::String>>& markers);
 /** Writes a 24-bit WAV (or 32-bit float when 'floatData'). */
 bool writeWav (const juce::File&, const std::vector<std::vector<float>>&, double sampleRate, bool floatData = false);
 /** After a writer has been closed: checks that the file holds exactly 'frames' sample frames. A full drive, or one that has gone away, can leave a
@@ -159,8 +165,16 @@ private:
     juce::File file; std::unique_ptr<juce::FileOutputStream> out; juce::int64 maxPos = 0;
 };
 
-/** Writes the samples [a, b) of 'source' (the file's sample 0 is the take's sample 'fileStart') to a new WAV file with the same channels and sample rate (24-bit, no dither, nothing held open afterwards). */
-bool exportRange (juce::AudioFormatManager&, const juce::File& source, juce::int64 fileStart, juce::int64 a, juce::int64 b, const juce::File& dest, juce::String& error);
+/** Writes the samples [a, b) of 'source' (the file's sample 0 is the take's sample 'fileStart') to a new WAV file with the same channels and sample rate (24-bit, no dither, nothing held open afterwards).
+    3.22.0: 'keepFloat' writes a source in floating point as 32-bit float (instead of 24-bit); 'metadata' goes into the header (markers). */
+bool exportRange (juce::AudioFormatManager&, const juce::File& source, juce::int64 fileStart, juce::int64 a, juce::int64 b, const juce::File& dest, juce::String& error,
+                  bool keepFloat = false, const WavMetadata* metadata = nullptr);
+/** 3.23.0: a new stereo WAV of the take range [from, to) made from a left and a right mono file, each given with the take sample its own sample 0 stands for
+    (an empty File = silence on that side; anything outside a file is silence; a file with more channels gives its first). 32-bit float when either file is
+    float, else 24-bit - dithered only when a file has more than 24 bits, so 24-bit sources are copied exactly. Checked once written. 'keepGoing' (optional)
+    is asked between blocks: false stops it ("Cancelled."). False with 'error' (and no file left behind) on failure. */
+bool joinToStereo (juce::AudioFormatManager&, const juce::File& left, juce::int64 leftStart, const juce::File& right, juce::int64 rightStart,
+                   juce::int64 from, juce::int64 to, const juce::File& dest, juce::String& error, const std::function<bool()>& keepGoing = {});
 /** Checks that 'file' (a corrected file that came back) can replace 'frames' samples with 'channels' channels at 'rate'. Returns "" if so, else a sentence saying what is wrong. */
 juce::String checkReplacement (juce::AudioFormatManager&, const juce::File& file, juce::int64 frames, int channels, double rate);
 /** A new file as long as 'source' in which [s0, s1) comes from 'replacement' (whose sample 0 is the sample s0), with a short linear crossfade inside the range at both ends. */

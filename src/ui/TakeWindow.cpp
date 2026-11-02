@@ -8,6 +8,7 @@
 #include "MarkerStrip.h"
 #include "TakeSheetExport.h"
 #include "../core/AudioFormats.h"
+#include "../core/StereoJoin.h"
 
 namespace td
 {
@@ -411,9 +412,10 @@ public:
         paintprof::Scope profGrid ("take window", "grid");
         g.setColour (theme::ruler); g.fillRect (0, 0, getWidth(), kRulerH);
         g.setColour (juce::Colours::black.withAlpha (0.22f)); g.fillRect (0, 0, getWidth(), markerui::kStripH);          // the marker strip
-        const double step = pixelsPerSecond >= 200 ? 0.5 : pixelsPerSecond >= 60 ? 1.0 : pixelsPerSecond >= 24 ? 5.0 : pixelsPerSecond >= 8 ? 10.0 : pixelsPerSecond >= 3 ? 60.0 : 300.0;
-        // fainter unlabelled lines between the labelled ones: 5 s -> every 1 s, 1 s -> every 0.5 s, then 0.25 s (two zoom steps), then 0.1 s however far in
-        const double minor = pixelsPerSecond >= 450 ? 0.1 : pixelsPerSecond >= 200 ? 0.25 : pixelsPerSecond >= 60 ? 0.5 : pixelsPerSecond >= 24 ? 1.0 : pixelsPerSecond >= 8 ? 5.0 : pixelsPerSecond >= 3 ? 10.0 : 60.0;
+        // the labelled lines, and fainter unlabelled ones between them: 5 s -> every 1 s, 1 s -> every 0.5 s, then 0.25 s (two zoom steps), then 0.1 s however far in.
+        // 3.23.0: far out the labels step on past 5 minutes (10, 15, 30 min, 1 h ...) so the times never run into each other (timefmt::rulerSteps)
+        const auto ruler = timefmt::rulerSteps (pixelsPerSecond);
+        const double step = ruler.step, minor = ruler.minor;
         const int minorPer = juce::jmax (1, (int) std::lround (step / minor));
         for (int n = 0; (double) n * minor * pixelsPerSecond < getWidth(); ++n)
         {
@@ -1376,6 +1378,92 @@ private:
         return t != nullptr && ! t->isLtc && ! app.project.trackHasAudio (trackId);
     }
 
+    /** 3.23.0: the two selected mono tracks become one stereo track (asked first: which is left, the name). One new stereo file per take, in every take window,
+        and the pieces of the edits made from them follow; the two mono tracks leave the project (their files stay on the disk). See stereojoin (StereoJoin.h). */
+    void askStereoFromSelected()
+    {
+        const juce::String title ("Make a stereo track");
+        if (selectedTracks.size() != 2) return;
+        if (app.engine.isRecording()) { showError (title, "Stop recording first."); return; }
+        // the upper track (in the project's order) is offered as the left one
+        juce::Uuid idA = selectedTracks[0], idB = selectedTracks[1];
+        {
+            int ia = -1, ib = -1;
+            for (int i = 0; i < (int) app.project.tracks.size(); ++i) { if (app.project.tracks[(size_t) i].id == idA) ia = i; if (app.project.tracks[(size_t) i].id == idB) ib = i; }
+            if (ia < 0 || ib < 0) return;
+            if (ib < ia) std::swap (idA, idB);
+        }
+        const auto* A = app.project.findTrack (idA); const auto* B = app.project.findTrack (idB);
+        if (A == nullptr || B == nullptr) return;
+        // how much it touches, for the question
+        int takes = 0, windows = 0, pieces = 0, edits = 0;
+        for (auto& w : app.project.takeWindows)
+        {
+            int n = 0;
+            for (auto& g : w->groups) for (auto& f : g.files) if (f.trackId == idA || f.trackId == idB) { ++n; break; }
+            takes += n; if (n > 0) ++windows;
+        }
+        for (auto& e : app.project.edits)
+        {
+            int n = 0;
+            for (auto* list : { &e->regions, &e->overdubs })
+                for (auto& r : *list) for (auto& f : r.files) if (f.trackId == idA || f.trackId == idB) { ++n; break; }
+            pieces += n; if (n > 0) ++edits;
+        }
+        auto plural = [] (int n, const char* one, const char* many) { return juce::String (n) + " " + (n == 1 ? one : many); };
+        juce::String msg;
+        msg << "Make one stereo track from " << A->name << " and " << B->name << ". Choose which is the left channel (the other is the right) and a name.\n\n"
+            << "A new stereo file is written for each of the " << plural (takes, "take", "takes") << " that use them (in " << plural (windows, "take window", "take windows") << ")"
+            << (pieces > 0 ? ", and the " + plural (pieces, "piece", "pieces") + " in " + plural (edits, "edit", "edits") + " made from them play it" : juce::String())
+            << ". The two mono tracks are then removed from the project; their files stay on the disk, untouched.\n\n"
+            << "The new track's mixer strips start with the left track's fader, output and sends (plug-ins are not carried over). "
+            << "This cannot be undone with Ctrl + Z.";
+        auto* aw = new juce::AlertWindow (title, msg, juce::MessageBoxIconType::QuestionIcon, this);
+        aw->addComboBox ("left", { A->name, B->name }, "Left channel");
+        aw->addTextEditor ("name", stereojoin::suggestName (A->name, B->name), "Name of the stereo track");
+        aw->addButton ("Make the stereo track", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        juce::Component::SafePointer<TakeTimeline> safe (this);
+        aw->enterModalState (true, juce::ModalCallbackFunction::create ([safe, aw, idA, idB] (int res)
+        {
+            const int leftIndex = aw->getComboBoxComponent ("left") != nullptr ? aw->getComboBoxComponent ("left")->getSelectedItemIndex() : 0;
+            const auto name = aw->getTextEditorContents ("name").trim();
+            delete aw;
+            if (res != 1 || safe == nullptr) return;
+            safe->makeStereo (leftIndex == 1 ? idB : idA, leftIndex == 1 ? idA : idB, name);
+        }));
+    }
+    void makeStereo (const juce::Uuid& leftId, const juce::Uuid& rightId, const juce::String& name)
+    {
+        const juce::String title ("Make a stereo track");
+        if (app.engine.isRecording()) { showError (title, "Stop recording first."); return; }
+        auto plan = std::make_shared<stereojoin::Plan>();
+        if (const auto why = stereojoin::plan (app.project, leftId, rightId, name, *plan); why.isNotEmpty()) { showError (title, why + "\n\nNothing was changed."); return; }
+        if (app.isPlaying()) app.stopPlayback();
+        auto& a = app;
+        juce::Component::SafePointer<TakeTimeline> safe (this);
+        AudioJob::Work work = [plan] (AudioJob& j) -> juce::String
+        {
+            juce::AudioFormatManager fm; registerAudioFormats (fm);
+            return stereojoin::writeFiles (fm, *plan, &j);
+        };
+        auto onSuccess = [&a, plan, safe, title]
+        {
+            auto dropFiles = [plan] { for (auto& j : plan->jobs) j.dest.deleteFile(); };
+            if (a.engine.isRecording()) { dropFiles(); showError (title, "A recording started meanwhile, so nothing was changed. Try again once it has stopped."); return; }
+            if (a.isPlaying()) a.stopPlayback();
+            juce::String why;
+            if (! stereojoin::apply (a.project, *plan, why)) { dropFiles(); showError (title, why + "\n\nNothing was changed. Please try again."); return; }
+            a.engine.rebuildPlan();
+            a.project.changed();
+            a.setNotice ("Made the stereo track '" + plan->name + "': " + juce::String ((int) plan->takes.size()) + (plan->takes.size() == 1 ? " take" : " takes")
+                         + (plan->pieces.empty() ? juce::String() : " and " + juce::String ((int) plan->pieces.size()) + (plan->pieces.size() == 1 ? " piece of an edit" : " pieces of edits"))
+                         + ". The mono files are still on the disk.");
+            if (safe != nullptr) { safe->selectedTracks.clear(); safe->updateSize(); safe->repaint(); }
+        };
+        fixtools::runSimpleJob ("Writing " + juce::String ((int) plan->jobs.size()) + (plan->jobs.size() == 1 ? " stereo file..." : " stereo files..."), work, onSuccess, title, this);
+    }
+
     /** Right-click on a track name: remove the track from this take window only. */
     void showTrackMenu (const juce::Uuid& trackId, const juce::String& trackName)
     {
@@ -1399,6 +1487,14 @@ private:
             m.addSubMenu ("Move its " + clips + " onto another track", to);
             if (const auto pairs = nameMatchPairs(); pairs.size() > 1)
                 m.addItem ("Move the clips of all " + juce::String ((int) pairs.size()) + " tracks named like this onto the tracks named in their names...", [safe] { if (safe != nullptr) safe->moveAllByName(); });
+            m.addSeparator();
+        }
+        if (trackSelected (trackId) && selectedTracks.size() == 2)          // 3.23.0: two mono tracks that are really a stereo pair
+        {
+            const auto* a = app.project.findTrack (selectedTracks[0]); const auto* b = app.project.findTrack (selectedTracks[1]);
+            const bool mono = a != nullptr && b != nullptr && a->format == TrackFormat::Mono && b->format == TrackFormat::Mono && ! a->isLtc && ! b->isLtc;
+            m.addItem (mono ? juce::String ("Make a stereo track from these two tracks...") : juce::String ("Make a stereo track from these two tracks (both must be mono)"),
+                       mono && ! app.engine.isRecording(), false, [safe = juce::Component::SafePointer<TakeTimeline> (this)] { if (safe != nullptr) safe->askStereoFromSelected(); });
             m.addSeparator();
         }
         if (trackSelected (trackId) && selectedTracks.size() > 1)

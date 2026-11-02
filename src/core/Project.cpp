@@ -331,7 +331,7 @@ Project::Project() { createDefaultDesign(); }
 
 void Project::createDefaultDesign()
 {
-    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); consonants.clear(); preampDevices.clear(); pitchPipe = PitchPipeDef(); click = ClickDef(); alignEnabled = true; alignSets.clear(); alignActive.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); rxSeen.clear(); consonants.clear(); preampDevices.clear(); pitchPipe = PitchPipeDef(); click = ClickDef(); alignEnabled = true; alignSets.clear(); alignActive.clear();
     sampleRate = 0.0;                                                                                 // (3.9.0: chosen for the new project by the one making it)
     windowFiles.clear(); missingWindowRefs.clear(); loadNotes.clear(); oldWindowFiles.clear();     // (nothing of the project that was open before: its missing files are not this one's)
     layouts.clear();                                                                                  // (nor its saved Display Organiser layouts)
@@ -742,6 +742,46 @@ String Project::nodeName (const juce::Uuid& id) const
     for (auto& b : buses) if (b.id == id) return b.name;
     for (auto& v : vcas)  if (v.id == id) return v.label();
     return {};
+}
+
+bool Project::faderFeeds (MixerState& m, const juce::Uuid& id, const juce::Uuid& bus) const
+{
+    bool outOn = false; juce::Uuid outDest;
+    switch (kindOf (id))
+    {
+        case NodeKind::Track:  { auto* s = m.stripFor (id); outOn = s->outOn.get(); outDest = s->outDest; break; }
+        case NodeKind::IntBus: { auto* b = m.busFor (id);   outOn = b->outOn.get(); outDest = b->outDest; break; }
+        default: return false;
+    }
+    if (! outOn || bus == id) return false;
+    if (! outDest.isNull()) return outDest == bus;
+    for (auto& b : buses) if (b.id == bus) return b.external && m.busFor (b.id)->isMain.get();       // 'Main': every Ext Bus ticked Main out
+    return false;
+}
+
+std::vector<juce::Uuid> Project::sendDialBuses (MixerState& m, const juce::Uuid& id) const
+{
+    std::vector<juce::Uuid> out;
+    SendList* sends = nullptr;
+    switch (kindOf (id))
+    {
+        case NodeKind::Track:  sends = &m.stripFor (id)->sends; break;
+        case NodeKind::IntBus: sends = &m.busFor (id)->sends; break;
+        default: return out;
+    }
+    std::set<juce::Uuid> fed;                                             // where the fader already sends
+    for (auto& b : buses) if (faderFeeds (m, id, b.id)) fed.insert (b.id);
+    auto shown = [&] (const juce::Uuid& bus)
+    {
+        if (fed.count (bus) == 0) return true;
+        auto* s = sends->find (bus);
+        return s != nullptr && s->active();                               // (a send there already turned up stays in sight)
+    };
+    auto has = [&] (const juce::Uuid& bus) { return std::find (out.begin(), out.end(), bus) != out.end(); };
+    for (auto& b : buses) if (b.external && b.id != id && fed.count (b.id) == 0 && m.busFor (b.id)->isMain.get()) out.push_back (b.id);
+    for (auto& b : buses) if (! b.external && b.id != id && shown (b.id)) out.push_back (b.id);
+    for (auto& b : buses) if (b.external && b.id != id && ! has (b.id) && shown (b.id)) out.push_back (b.id);
+    return out;
 }
 
 SendList* Project::sendsOf (MixerState& m, const juce::Uuid& id) const
@@ -1235,6 +1275,7 @@ static var waitingToVar (const WaitingPiece& w, const juce::File& base)
     for (auto& f : w.files) { var fo = obj(); putFilePath (fo, f, base); put (fo, key::k_channels, 1); fs.add (fo); }      // ("channels" marks it as an audio file for the project copy)
     put (o, "files", fs);
     if (! w.tracks.empty()) { juce::Array<var> ts; for (auto& t : w.tracks) ts.add (t.toString()); put (o, "tracks", ts); }
+    if (w.rx) { put (o, "rx", true); put (o, "fileFrom", (juce::int64) w.fileFrom); put (o, "fileLen", (juce::int64) w.fileLen); put (o, "program", w.program); }       // 3.22.0 / 3.24.0: sent to a linked program
     return o;
 }
 /** The file for a saved path: inside the project folder it is found from the relative path (so a moved or copied project uses its OWN files). */
@@ -1256,6 +1297,7 @@ static WaitingPiece waitingFromVar (const var& o, const juce::File& base)
     w.name = o["name"].toString(); w.from = samplesFromVar (o["from"]); w.to = samplesFromVar (o["to"]);
     if (auto* fs = o["files"].getArray()) for (auto& fv : *fs) w.files.push_back (getFilePath (fv, base));
     if (auto* ts = o["tracks"].getArray()) for (auto& t : *ts) w.tracks.push_back (juce::Uuid (t.toString()));
+    if ((bool) o["rx"]) { w.rx = true; w.fileFrom = samplesFromVar (o["fileFrom"]); w.fileLen = juce::jmax ((juce::int64) 0, samplesFromVar (o["fileLen"])); w.program = o["program"].toString(); }
     return w;
 }
 
@@ -1326,6 +1368,7 @@ var Project::editToVarIn (const EditDef& eref, const juce::File& base)
             put (fo, key::k_track, f.trackId.toString()); put (fo, key::k_trackName, f.trackName);
             putFilePath (fo, f.file, base); put (fo, key::k_channels, f.numChannels);
             if (f.fileStart != 0) put (fo, key::k_fileStart, (juce::int64) f.fileStart);
+            if (f.rxFrom != juce::File()) { var rxo = obj(); putFilePath (rxo, f.rxFrom, base); put (fo, "rxFrom", rxo); }      // 3.22.0: a copy of a file saved in a linked program
             rf.add (fo);
         }
         put (ro, key::k_files, rf);
@@ -1567,6 +1610,18 @@ var Project::toVar (bool withWindows) const
     if (withWindows) addWindowsToVar (root);
     put (root, "mastering", mastering.toVar());
     if (roomTone.valid()) put (root, "roomTone", roomToneToVar (roomTone));
+    if (! rxSeen.empty())                                                       // 3.22.0: the saves in linked programs already dealt with (files that are gone are left out)
+    {
+        const auto base = projectFile.getParentDirectory();
+        juce::Array<var> rs;
+        for (auto& kv : rxSeen)
+        {
+            const juce::File f (kv.first);
+            if (! juce::File::isAbsolutePath (kv.first) || ! f.existsAsFile()) continue;
+            var ro = obj(); putFilePath (ro, f, base); put (ro, "seen", (juce::int64) kv.second); rs.add (ro);
+        }
+        if (! rs.isEmpty()) put (root, "rxSeen", rs);
+    }
     if (! consonants.empty())
     {
         const auto base = projectFile.getParentDirectory();
@@ -1663,7 +1718,7 @@ bool Project::fromVar (const var& root)
     if (! root.isObject() || ! isProjectFormat (root.getProperty ("format", {}).toString()))
         return false;
 
-    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); consonants.clear();
+    inputs.clear(); tracks.clear(); buses.clear(); vcas.clear(); outputs.clear(); crMicInputs.clear(); tbOutputs.clear(); stageGainDb.clear(); stagePan.clear(); stagePlaybackDb = 0.0f; stageOutputDb = 0.0f; stageClickDb = 0.0f; stagePipeDb = 0.0f; altMixer = juce::Uuid::null(); ltcInput = -1; ltcOutput = -1; ltcOutOn = false; retireAllMixers(); takeWindows.clear(); edits.clear(); mastering = MasteringDef(); roomTone = RoomTone(); rxSeen.clear(); consonants.clear();
     sampleRate = juce::jmax (0.0, (double) root.getProperty ("sampleRate", 0.0));
     ignoredMissing.clear();
     if (auto* ig = root["ignoredMissingAudio"].getArray()) for (auto& x : *ig) if (x.toString().isNotEmpty()) ignoredMissing.insert (x.toString());
@@ -1896,6 +1951,7 @@ bool Project::fromVar (const var& root)
                         RegionFile f; f.trackId = juce::Uuid (fv[key::k_track].toString()); f.trackName = fv[key::k_trackName].toString();
                         f.file = getFilePath (fv, base); f.numChannels = (int) fv[key::k_channels];
                         f.fileStart = samplesFromVar (fv[key::k_fileStart]);
+                        if (fv.hasProperty ("rxFrom")) f.rxFrom = getFilePath (fv["rxFrom"], base);
                         r.files.push_back (f);
                     }
                 if (rv.hasProperty (key::k_waiting)) r.waiting = waitingFromVar (rv[key::k_waiting], base);
@@ -1969,6 +2025,12 @@ bool Project::fromVar (const var& root)
 
     mastering.fromVar (root["mastering"]);
     roomTone = roomToneFromVar (root["roomTone"]);
+    rxSeen.clear();
+    if (auto* ra = root["rxSeen"].getArray())
+    {
+        const auto base = loadBase();
+        for (auto& ro : *ra) { const auto f = getFilePath (ro, base); if (f != juce::File()) rxSeen[f.getFullPathName()] = samplesFromVar (ro["seen"]); }
+    }
     consonants.clear();
     if (auto* ca = root["consonants"].getArray())
     {
@@ -2039,6 +2101,7 @@ struct UndoHasher
         add (w.name); add (w.from); add (w.to);
         count (w.files.size()); for (auto& f : w.files) add (f);
         count (w.tracks.size()); for (auto& t : w.tracks) add (t);
+        if (w.rx) { add (true); add (w.fileFrom); add (w.fileLen); add (w.program); }     // (3.22.0: only for pieces sent to a program, so other hashes stay as they were)
     }
 };
 }
@@ -2074,7 +2137,7 @@ juce::uint64 Project::undoHash (const EditDef& e)
         h.add (r.barIn); h.add (r.barOut); h.add (r.sampleRate); h.add ((int) r.curve); h.add (r.outCurveOwn); if (r.outCurveOwn) h.add ((int) r.outCurve);
         h.add (r.fixIn); h.add (r.fixOut); h.add (r.snipIn); h.add (r.snipOut); h.add (r.normaliseIn); h.add (r.inStart); h.add (r.inEnd); h.add (r.outStart); h.add (r.outEnd);
         h.count (r.files.size());
-        for (auto& f : r.files) { h.add (f.trackId); h.add (f.trackName); h.add (f.file); h.add (f.numChannels); h.add (f.fileStart); }
+        for (auto& f : r.files) { h.add (f.trackId); h.add (f.trackName); h.add (f.file); h.add (f.numChannels); h.add (f.fileStart); if (f.rxFrom != juce::File()) h.add (f.rxFrom); }
         h.add (r.waiting.active()); if (r.waiting.active()) h.add (r.waiting);
         h.count (r.gains.size());
         for (auto& g : r.gains) { h.add (g.at); h.add (g.ramp); h.add (g.autoNorm); h.add (g.group); h.add (g.role); h.count (g.db.size()); for (float d : g.db) h.add (d); }

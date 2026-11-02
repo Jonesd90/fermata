@@ -50,4 +50,31 @@ void keepTopmost (juce::Component& c)
     juce::ignoreUnused (c);
 #endif
 }
+bool startProgram (const juce::StringArray& args, juce::String& error)
+{
+    if (args.isEmpty()) { error = "Nothing to start."; return false; }
+#if JUCE_WINDOWS
+    juce::String cmd;                                                    // quoted the way CommandLineToArgvW reads it back (as juce::ChildProcess does)
+    for (auto a : args)
+    {
+        if (a.containsAnyOf ("\" ")) a = a.replace ("\"", "\\\"").quoted();
+        cmd << a << ' ';
+    }
+    cmd = cmd.trimEnd();
+    std::vector<wchar_t> line (cmd.toWideCharPointer(), cmd.toWideCharPointer() + cmd.length() + 1);     // (CreateProcessW may write into it)
+    STARTUPINFOW si {}; si.cb = sizeof (si);
+    PROCESS_INFORMATION pi {};
+    if (! CreateProcessW (nullptr, line.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))      // FALSE: no handles handed on
+    {
+        error = "Windows could not start " + juce::File (args[0]).getFileName() + " (error " + juce::String ((int) GetLastError()) + ").";
+        return false;
+    }
+    CloseHandle (pi.hThread); CloseHandle (pi.hProcess);
+    return true;
+#else
+    juce::ChildProcess p;
+    if (! p.start (args, 0)) { error = "Could not start " + args[0] + "."; return false; }
+    return true;                                                         // (the program goes on running when 'p' is let go of)
+#endif
+}
 } // namespace td

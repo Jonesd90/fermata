@@ -53,6 +53,7 @@ struct RegionFile
     juce::File   file;
     int          numChannels = 1;
     juce::int64  fileStart = 0;        // the take's sample that sits at sample 0 of this file (0 for a whole take; a repaired / pitch-corrected piece is a short file that starts later)
+    juce::File   rxFrom {};            // 3.22.0: this file is a copy of a file saved in a linked program (RX, Melodyne ...); each later save of that file is brought in again (empty = not)
 };
 
 /** A volume change inside a piece of an edit: from 'at' (samples after the piece's start) each file moves to its own level 'db[i]'
@@ -86,7 +87,14 @@ struct WaitingPiece
     juce::int64  from = 0, to = 0;     // the part, in samples of the take (or of the piece's files): [from, to)
     std::vector<juce::File> files;     // the exported files, in the order of the piece's / take's files; the other program overwrites them
     std::vector<juce::Uuid> tracks;    // the track of each exported file (empty = all the files of the piece / take, in order)
+    // 3.22.0 "Edit in RX" (3.24.0: any linked program - RX, Melodyne ...): the files went to a program with up to 2 s of handle each side of the part, and
+    // each one comes back by itself when that program saves it. (Export for Processing's "Create files to edit" leaves this false: re-linked by hand.)
+    bool rx = false;
+    juce::String program;              // (rx) the linked program it went to, by the name it has in the list ("iZotope RX", "Melodyne")
+    juce::int64 fileFrom = 0, fileLen = 0;   // (rx) the take range the files hold: [fileFrom, fileFrom + fileLen), the part [from, to) inside it; 0 length = exactly the part
     bool active() const noexcept { return ! files.empty() && to > from; }
+    juce::int64 filesFrom() const noexcept   { return fileLen > 0 ? fileFrom : from; }
+    juce::int64 filesLength() const noexcept { return fileLen > 0 ? fileLen : to - from; }
 };
 
 struct EditRegion
@@ -754,6 +762,75 @@ struct EditDef
                 n.inStart = (double) (r.fadeOutBegin() - n.startSample) / rate; n.inEnd = (double) (r.fadeOutFinish() - n.startSample) / rate;
             }
         }
+    }
+
+    /** Export for Processing / Edit in RX: the stretch of piece 'rid' that the take range [a,b) covers becomes a piece of its own (cut out with fix joins: linear, not
+        edit points) that waits for the processed files described by 'w' (its from / to are set to a / b here). The range may reach past the piece into its handle
+        (an OUT / IN stream): the processed file then also gives the audio under the crossfade. False if the piece is not there or is already waiting. */
+    bool markWaiting (const juce::Uuid& rid, juce::int64 a, juce::int64 b, WaitingPiece w)
+    {
+        int i = indexOf (rid);
+        if (i < 0 || regions[(size_t) i].waiting.active()) return false;
+        const auto pa = juce::jmax (a, regions[(size_t) i].srcIn), pb = juce::jmin (b, regions[(size_t) i].srcOut);
+        if (pb <= pa) return false;
+        const bool cutAfter = pb < regions[(size_t) i].srcOut, cutBefore = pa > regions[(size_t) i].srcIn;
+        if (cutAfter)  splitRegion (i, pb - regions[(size_t) i].srcIn);
+        if (cutBefore) i = splitRegion (i, pa - regions[(size_t) i].srcIn);
+        auto& mid = regions[(size_t) i];
+        w.from = a; w.to = b;
+        mid.waiting = std::move (w);
+        if (cutBefore) { mid.setInCurve (FadeCurve::Linear); if (i > 0) regions[(size_t) i - 1].setOutCurve (FadeCurve::Linear); }
+        if (cutAfter)  { mid.setOutCurve (FadeCurve::Linear); if (i + 1 < (int) regions.size()) regions[(size_t) i + 1].setInCurve (FadeCurve::Linear); }
+        if (cutBefore) { mid.fixIn = true; if (i > 0) regions[(size_t) i - 1].fixOut = true; }                 // not edit points
+        if (cutAfter)  { mid.fixOut = true; if (i + 1 < (int) regions.size()) regions[(size_t) i + 1].fixIn = true; }
+        return true;
+    }
+
+    /** Which file of piece i the waiting piece's file k belongs to (r.files.size() if none). */
+    size_t waitingFileIndex (int i, size_t k) const
+    {
+        if (! juce::isPositiveAndBelow (i, (int) regions.size())) return 0;
+        const auto& r = regions[(size_t) i];
+        if (k >= r.waiting.files.size()) return r.files.size();
+        if (r.waiting.tracks.empty()) return k < r.files.size() ? k : r.files.size();
+        for (size_t q = 0; q < r.files.size(); ++q) if (r.files[q].trackId == r.waiting.tracks[k]) return q;
+        return r.files.size();
+    }
+
+    /** 3.22.0 Edit in RX: file k of piece i's waiting part has come back (saved in RX, copied to 'copy'). That track of the piece plays the copy from now on, from the
+        same place (the copy holds the handles too, so a crossfade can reach into them); the piece's other tracks go on waiting until theirs come back. 'from' is the
+        file RX saves (a later save of it is brought in again: see useRxSave). False (nothing changed) if the piece no longer fits the files. */
+    bool takeInWaitingFile (int i, size_t k, const juce::File& copy, const juce::File& from)
+    {
+        if (! juce::isPositiveAndBelow (i, (int) regions.size())) return false;
+        auto& r = regions[(size_t) i];
+        auto& w = r.waiting;
+        if (! w.active() || k >= w.files.size()) return false;
+        if (w.tracks.empty() && w.files.size() != r.files.size()) return false;
+        const size_t fi = waitingFileIndex (i, k);
+        if (fi >= r.files.size()) return false;
+        const auto f0 = w.filesFrom(), f1 = f0 + w.filesLength();
+        if (r.srcIn < f0 || r.srcOut > f1) return false;
+        if (w.tracks.empty()) for (auto& f : r.files) w.tracks.push_back (f.trackId);            // (from now on the tracks are named: some have come back, some have not)
+        r.files[fi].file = copy; r.files[fi].fileStart = f0; r.files[fi].rxFrom = from;
+        w.files.erase (w.files.begin() + (long) k); w.tracks.erase (w.tracks.begin() + (long) k);
+        const auto label = " (" + w.name + ")";
+        if (! r.takeName.endsWith (label)) r.takeName = r.takeName.upToFirstOccurrenceOf (" (", false, false) + label;
+        if (w.files.empty()) r.waiting = WaitingPiece();
+        keepFixFadesInside (i, f0, f1);              // the crossfades stay where the RX file has audio
+        return true;
+    }
+
+    /** 3.22.0 Edit in RX: RX saved 'from' again after it had come back: every track (of a piece or an overdub) that plays a copy of it plays 'copy' from now on.
+        Returns how many were changed. */
+    int useRxSave (const juce::File& from, const juce::File& copy)
+    {
+        int n = 0;
+        for (auto* list : { &regions, &overdubs })
+            for (auto& r : *list)
+                for (auto& f : r.files)
+                    if (f.rxFrom == from && f.file != copy) { f.file = copy; ++n; }
+        return n;
     }
 
     /** Everything on the timeline from sample 'from' onwards moves by 'delta' samples (later for a positive delta): the overdubs, the markers, the listeners'

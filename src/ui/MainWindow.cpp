@@ -5,6 +5,7 @@
 #include <set>
 #include "WinOwner.h"
 #include "FixTools.h"
+#include "RxLink.h"
 #include "PreampSetup.h"
 #include "TakeSheetExport.h"
 #include "ProjectRateDialog.h"
@@ -1032,6 +1033,7 @@ void MainComponent::showProjectMenu()
     m.addItem (17, "Recording monitor (drives, device, dropouts)...");         // 3.2.0: the floating window with the three lamps and the take's events
     m.addSeparator();
     m.addItem (14, "Mixer controller (Avid S1 / Mackie Control)...");
+    m.addItem (23, "Programs for Export for Processing (" + juce::String ((int) rxlink::programs (app).size()) + " linked)...");     // 3.24.0: RX, Melodyne ...
     m.addSeparator();
     m.addItem (16, "HotKeys...");                                         // every key and what it does
     m.addSeparator();
@@ -1049,6 +1051,7 @@ void MainComponent::showProjectMenu()
         if (r == 20 || r == 21) { pickStyle (r - 20); return; }
         if (r == 12) { chooseBackupFolder(); return; }
         if (r == 14) { if (app.showSurfacePanel) app.showSurfacePanel(); return; }
+        if (r == 23) { rxlink::showProgramsMenu (app, &projectButton); return; }
         if (r == 16) { if (app.showHotKeys) app.showHotKeys(); return; }
         if (r == 17) { if (app.showRecordMonitor) app.showRecordMonitor(); return; }
         if (r == 19) { app.askUnignoreMissingAudio(); return; }

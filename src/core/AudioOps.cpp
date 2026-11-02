@@ -51,7 +51,7 @@ juce::File uniqueFile (const juce::File& wanted)
     return result;
 }
 
-std::unique_ptr<juce::AudioFormatWriter> makeWavWriter (const juce::File& f, double sr, int numChannels, bool floatData)
+std::unique_ptr<juce::AudioFormatWriter> makeWavWriter (const juce::File& f, double sr, int numChannels, bool floatData, const WavMetadata* metadata)
 {
     f.getParentDirectory().createDirectory();
     f.deleteFile();                                  // (a file stream opens an existing file at its END: a new WAV would be added to the old one)
@@ -60,7 +60,28 @@ std::unique_ptr<juce::AudioFormatWriter> makeWavWriter (const juce::File& f, dou
     if (static_cast<juce::FileOutputStream*> (stream.get())->failedToOpen()) return nullptr;
     auto opts = juce::AudioFormatWriterOptions().withSampleRate (sr).withNumChannels (numChannels).withBitsPerSample (floatData ? 32 : 24)
                     .withSampleFormat (floatData ? juce::AudioFormatWriterOptions::SampleFormat::floatingPoint : juce::AudioFormatWriterOptions::SampleFormat::integral);
+    if (metadata != nullptr && ! metadata->empty()) opts = opts.withMetadataValues (*metadata);
     return wav.createWriterFor (stream, opts);
+}
+
+WavMetadata cueMarkers (const std::vector<std::pair<juce::int64, juce::String>>& markers)
+{
+    WavMetadata m;
+    if (markers.empty()) return m;
+    m["NumCuePoints"] = juce::String ((int) markers.size());
+    m["NumCueLabels"] = juce::String ((int) markers.size());
+    for (size_t i = 0; i < markers.size(); ++i)
+    {
+        const auto n = juce::String ((int) i), id = juce::String ((int) i + 1);               // (identifiers start at 1: some programs ignore a marker 0)
+        m["Cue" + n + "Identifier"] = id;
+        m["Cue" + n + "Order"] = n;
+        m["Cue" + n + "Offset"] = juce::String (juce::jmax ((juce::int64) 0, markers[i].first));
+        m["Cue" + n + "BlockStart"] = "0";
+        m["Cue" + n + "ChunkStart"] = "0";
+        m["CueLabel" + n + "Identifier"] = id;
+        m["CueLabel" + n + "Text"] = markers[i].second;
+    }
+    return m;
 }
 
 bool writeWav (const juce::File& f, const std::vector<std::vector<float>>& ch, double sr, bool floatData)
@@ -132,11 +153,12 @@ juce::String CheckedAudioFile::finish()
     return {};
 }
 
-bool exportRange (juce::AudioFormatManager& fm, const juce::File& src, juce::int64 fileStart, juce::int64 a, juce::int64 b, const juce::File& dest, juce::String& error)
+bool exportRange (juce::AudioFormatManager& fm, const juce::File& src, juce::int64 fileStart, juce::int64 a, juce::int64 b, const juce::File& dest, juce::String& error,
+                  bool keepFloat, const WavMetadata* metadata)
 {
     auto rd = openReader (fm, src);
     if (rd == nullptr) { error = "Could not read " + src.getFileName(); return false; }
-    auto w = makeWavWriter (dest, rd->sampleRate, (int) rd->numChannels);
+    auto w = makeWavWriter (dest, rd->sampleRate, (int) rd->numChannels, keepFloat && rd->usesFloatingPointData, metadata);
     if (w == nullptr) { error = "Could not create " + dest.getFullPathName(); return false; }
     constexpr juce::int64 block = 1 << 17;
     std::vector<std::vector<float>> ch;
@@ -150,6 +172,52 @@ bool exportRange (juce::AudioFormatManager& fm, const juce::File& src, juce::int
     w.reset();                                    // closed: no file stays open, so another program can open and overwrite it
     rd.reset();
     if (const auto e = checkWrittenLength (&fm, dest, b - a); e.isNotEmpty()) { error = e; dest.deleteFile(); return false; }
+    return true;
+}
+
+bool joinToStereo (juce::AudioFormatManager& fm, const juce::File& left, juce::int64 leftStart, const juce::File& right, juce::int64 rightStart,
+                   juce::int64 from, juce::int64 to, const juce::File& dest, juce::String& error, const std::function<bool()>& keepGoing)
+{
+    std::unique_ptr<juce::AudioFormatReader> rl, rr;
+    if (left != juce::File())  { rl = openReader (fm, left);  if (rl == nullptr) { error = "Could not read " + left.getFileName() + ".";  return false; } }
+    if (right != juce::File()) { rr = openReader (fm, right); if (rr == nullptr) { error = "Could not read " + right.getFileName() + "."; return false; } }
+    if (rl == nullptr && rr == nullptr) { error = "There is no audio to join."; return false; }
+    if (rl != nullptr && rr != nullptr && std::abs (rl->sampleRate - rr->sampleRate) > 0.5)
+    {
+        error = left.getFileName() + " is at " + juce::String (rl->sampleRate, 0) + " Hz but " + right.getFileName() + " is at " + juce::String (rr->sampleRate, 0) + " Hz.";
+        return false;
+    }
+    if (to <= from) { error = "There is no audio to join."; return false; }
+    const double sr = rl != nullptr ? rl->sampleRate : rr->sampleRate;
+    const bool floatData = (rl != nullptr && rl->usesFloatingPointData) || (rr != nullptr && rr->usesFloatingPointData);
+    const bool reduces = (rl != nullptr && ! rl->usesFloatingPointData && rl->bitsPerSample > 24) || (rr != nullptr && ! rr->usesFloatingPointData && rr->bitsPerSample > 24);
+    auto w = makeWavWriter (dest, sr, 2, floatData);
+    if (w == nullptr) { error = "Could not create " + dest.getFullPathName() + "."; return false; }
+    DitherOut dout (*w, reduces);
+    constexpr juce::int64 block = 1 << 16;
+    std::vector<std::vector<float>> ch;
+    std::vector<float> L, R;
+    auto fail = [&] (const juce::String& e) { w.reset(); dest.deleteFile(); error = e; return false; };
+    for (juce::int64 pos = from; pos < to; pos += block)
+    {
+        if (keepGoing && ! keepGoing()) return fail ("Cancelled.");
+        const auto n = juce::jmin (block, to - pos);
+        L.assign ((size_t) n, 0.0f); R.assign ((size_t) n, 0.0f);
+        if (rl != nullptr)
+        {
+            if (! readRange (*rl, pos - leftStart, n, ch)) return fail ("Could not read " + left.getFileName() + ".");
+            if (! ch.empty()) std::copy (ch[0].begin(), ch[0].begin() + (long) juce::jmin ((juce::int64) ch[0].size(), n), L.begin());
+        }
+        if (rr != nullptr)
+        {
+            if (! readRange (*rr, pos - rightStart, n, ch)) return fail ("Could not read " + right.getFileName() + ".");
+            if (! ch.empty()) std::copy (ch[0].begin(), ch[0].begin() + (long) juce::jmin ((juce::int64) ch[0].size(), n), R.begin());
+        }
+        const float* p[2] = { L.data(), R.data() };
+        if (! dout.write (p, 2, (int) n)) return fail ("Could not write " + dest.getFileName() + " (is the disk full?).");
+    }
+    w.reset();                                    // closed: the length check reads it back
+    if (const auto e = checkWrittenLength (&fm, dest, to - from); e.isNotEmpty()) { dest.deleteFile(); error = e; return false; }
     return true;
 }
 

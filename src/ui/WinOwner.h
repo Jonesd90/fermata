@@ -13,6 +13,10 @@ bool isForegroundWindow (juce::Component&);
 /** Puts a window in the topmost band of the desktop again (in front of every program, without taking the keyboard). Does nothing where unavailable. */
 void keepTopmost (juce::Component&);
 
+/** 3.22.0: starts another program ('args': the program, then its arguments) on its own: Fermata does not wait for it, and on Windows it is given none of
+    Fermata's open handles (so it never holds on to Fermata's network ports or files after Fermata closes). False with 'error' if it could not be started. */
+bool startProgram (const juce::StringArray& args, juce::String& error);
+
 /** Keeps a window (the meter bridge, the big take clock) in front of everything on the desktop: it re-asserts the topmost state every second or so,
     because Windows drops it when a window is minimised / restored or when another topmost window is raised. */
 class StayOnTop : private juce::Timer

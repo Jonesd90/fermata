@@ -48,6 +48,8 @@
 #include "../src/core/Retime.h"
 #include "../src/core/AudioFormats.h"
 #include "../src/core/TextBytes.h"
+#include "../src/core/RxWatch.h"
+#include "../src/core/StereoJoin.h"
 #include "../src/ui/TakeMatchService.h"
 #include "../src/ui/WaveThumb.h"
 #include <cstdio>
@@ -3770,6 +3772,10 @@ int main()
         expectE ("region waiting", [&] { r.waiting.name = "fix"; r.waiting.from = 1; r.waiting.to = 2; r.waiting.files.push_back (tmp.getChildFile ("rw.wav")); }, true);
         expectE ("region waiting range", [&] { r.waiting.to = 3; }, true);
         expectE ("region waiting tracks", [&] { r.waiting.tracks.push_back (q.tracks[0].id); }, true);  // (3.1.4)
+        expectE ("region waiting in RX", [&] { r.waiting.rx = true; r.waiting.fileFrom = 0; r.waiting.fileLen = 9; }, true);       // (3.22.0)
+        expectE ("region waiting RX files' range", [&] { r.waiting.fileFrom = 1; r.waiting.fileLen = 10; }, true);
+        expectE ("region waiting program", [&] { r.waiting.program = "Melodyne"; }, true);                                         // (3.24.0)
+        expectE ("region file from RX", [&] { r.files[0].rxFrom = tmp.getChildFile ("rx.wav"); }, true);
         expectE ("gain at", [&] { r.gains[0].at = 600; }, true);
         expectE ("gain ramp", [&] { r.gains[0].ramp = 0.2; }, true);
         expectE ("gain db", [&] { r.gains[0].db[0] = -5.0f; }, true);
@@ -11499,6 +11505,338 @@ int main()
         // going back, and the kept state following
         m.stripFor (A)->gainDb.set (-9.0f);
         CHECK (q.revertWindowToKept (m.id, juce::Uuid::null(), 48000.0, 512) && std::abs (m.stripFor (A)->gainDb.get()) < 1e-6f && q.windowsChangedSinceKept().empty());
+    }
+
+    SECTION ("3.22.0 Edit in RX: files with handles and markers, the In RX piece, files coming back one track at a time, later saves, saved with the project, the save watch");
+    {
+        const double sr = 48000.0; const juce::int64 S = 48000;
+        auto dir = tmp.getChildFile ("EditInRx"); dir.deleteRecursively(); dir.createDirectory();
+        // the source files: a float one (2 ch) and a 24-bit one (1 ch), 10 s each
+        std::vector<std::vector<float>> fch (2, std::vector<float> ((size_t) (10 * S)));
+        for (size_t i = 0; i < fch[0].size(); ++i) { fch[0][i] = 0.25f * (float) std::sin (0.01 * (double) i); fch[1][i] = 0.1f; }
+        const auto srcA = dir.getChildFile ("A.wav"); CHECK (audioops::writeWav (srcA, fch, sr, true));
+        const auto srcB = makeConstWav (dir.getChildFile ("B.wav"), 0.2, 10);
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        {   // the export: [a - 2 s, b + 2 s), float kept float, 24-bit kept 24-bit, two markers where the part starts and ends
+            const auto marks = audioops::cueMarkers ({ { 2 * S, "Fermata: the marked part starts" }, { 3 * S, "Fermata: the marked part ends" } });
+            const auto dA = dir.getChildFile ("A out.wav"), dB = dir.getChildFile ("B out.wav");
+            juce::String err;
+            CHECK (audioops::exportRange (fm, srcA, 0, 2 * S, 7 * S, dA, err, true, &marks));
+            CHECK (audioops::exportRange (fm, srcB, 0, 2 * S, 7 * S, dB, err, true, &marks));
+            auto ra = audioops::openReader (fm, dA); auto rb = audioops::openReader (fm, dB);
+            CHECK (ra != nullptr && rb != nullptr);
+            if (ra != nullptr && rb != nullptr)
+            {
+                CHECK (ra->lengthInSamples == 5 * S && ra->numChannels == 2 && ra->usesFloatingPointData && ra->bitsPerSample == 32);
+                CHECK (rb->lengthInSamples == 5 * S && rb->numChannels == 1 && ! rb->usesFloatingPointData && rb->bitsPerSample == 24);
+                CHECK (ra->metadataValues["NumCuePoints"] == "2" && ra->metadataValues["Cue0Offset"] == juce::String (2 * S) && ra->metadataValues["Cue1Offset"] == juce::String (3 * S));
+                CHECK (ra->metadataValues["CueLabel0Text"] == "Fermata: the marked part starts" && ra->metadataValues["CueLabel1Text"] == "Fermata: the marked part ends");
+                std::vector<std::vector<float>> got; audioops::readRange (*ra, 0, 10, got);
+                CHECK (got.size() == 2 && std::abs (got[0][5] - fch[0][(size_t) (2 * S + 5)]) < 1e-7f);              // (float: exactly the same samples)
+            }
+            CHECK (audioops::checkWrittenLength (&fm, dA, 5 * S).isEmpty());
+            juce::String err2; CHECK (audioops::exportRange (fm, srcA, 0, 2 * S, 3 * S, dir.getChildFile ("A plain.wav"), err2));       // (Export for Processing as it was: 24-bit, no markers)
+            if (auto rp = audioops::openReader (fm, dir.getChildFile ("A plain.wav"))) CHECK (rp->bitsPerSample == 24 && ! rp->usesFloatingPointData && rp->metadataValues["NumCuePoints"].isEmpty());
+        }
+        // an edit with one piece of 10 s on tracks A and B
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear();
+        q.projectFile = dir.getChildFile ("RX test.fermata");
+        const auto A = q.addTrack ("A", TrackFormat::Stereo, 0).id, B = q.addTrack ("B", TrackFormat::Mono, 1).id;
+        q.takeWindows.clear(); q.edits.clear();
+        auto& w = q.addTakeWindow ("Piece");
+        auto& e = q.addEdit ("Piece edit", w.id);
+        {
+            EditRegion r; r.srcIn = 0; r.srcOut = 10 * S; r.sampleRate = sr; r.sourceLength = 10 * S; r.takeName = "001 - Piece";
+            RegionFile fa; fa.trackId = A; fa.trackName = "A"; fa.file = srcA; fa.numChannels = 2; r.files.push_back (fa);
+            RegionFile fb; fb.trackId = B; fb.trackName = "B"; fb.file = srcB; fb.numChannels = 1; r.files.push_back (fb);
+            e.insertRegion (r);
+        }
+        const auto rxA = dir.getChildFile ("A - RX 1.wav"), rxB = dir.getChildFile ("B - RX 1.wav");
+        rxA.replaceWithText ("x"); rxB.replaceWithText ("x");
+        WaitingPiece wp; wp.name = "RX 1"; wp.files = { rxA, rxB }; wp.rx = true; wp.fileFrom = 2 * S; wp.fileLen = 5 * S;
+        const auto rid = e.regions[0].id;
+        CHECK (e.markWaiting (rid, 4 * S, 5 * S, wp));                       // the part is 4 s - 5 s; the files hold 2 s - 7 s
+        CHECK (e.regions.size() == 3);
+        auto& mid = e.regions[1];
+        CHECK (mid.waiting.active() && mid.waiting.rx && mid.waiting.from == 4 * S && mid.waiting.to == 5 * S && mid.waiting.filesFrom() == 2 * S && mid.waiting.filesLength() == 5 * S);
+        CHECK (mid.srcIn == 4 * S && mid.srcOut == 5 * S && mid.fixIn && mid.fixOut && e.regions[0].fixOut && e.regions[2].fixIn && e.isFixJoin (1) && e.isFixJoin (2));
+        CHECK (mid.curve == FadeCurve::Linear && mid.outCurveValue() == FadeCurve::Linear);
+        CHECK (! e.markWaiting (mid.id, 4 * S, 5 * S, wp));                  // (already waiting)
+        CHECK (Project::undoHash (e) != 0);
+        // B comes back first: only B plays the RX copy (from the files' start: the handle is there for the crossfade); A still waits
+        const auto cB1 = dir.getChildFile ("B - RX 1 (saved 1).wav"), cA1 = dir.getChildFile ("A - RX 1 (saved 1).wav");
+        CHECK (e.waitingFileIndex (1, 1) == 1 && e.waitingFileIndex (1, 0) == 0);
+        CHECK (e.takeInWaitingFile (1, 1, cB1, rxB));
+        CHECK (e.regions[1].files[1].file == cB1 && e.regions[1].files[1].fileStart == 2 * S && e.regions[1].files[1].rxFrom == rxB);
+        CHECK (e.regions[1].files[0].file == srcA && e.regions[1].files[0].fileStart == 0 && e.regions[1].files[0].rxFrom == juce::File());
+        CHECK (e.regions[1].waiting.active() && e.regions[1].waiting.files.size() == 1 && e.regions[1].waiting.files[0] == rxA
+               && e.regions[1].waiting.tracks.size() == 1 && e.regions[1].waiting.tracks[0] == A);   // (the tracks are named from now on)
+        CHECK (e.regions[1].takeName == "001 - Piece (RX 1)");
+        CHECK (e.regions[1].srcIn == 4 * S && e.regions[1].srcOut == 5 * S && e.regions[1].startSample == 4 * S);    // (nothing moved)
+        const double in0 = e.regions[1].inStart, out0 = e.regions[1].outEnd;
+        CHECK (e.takeInWaitingFile (1, 0, cA1, rxA));                        // A comes back: the piece is no longer waiting
+        CHECK (! e.regions[1].waiting.active() && e.regions[1].files[0].file == cA1 && e.regions[1].files[0].fileStart == 2 * S && e.regions[1].files[0].rxFrom == rxA);
+        CHECK (e.regions[1].takeName == "001 - Piece (RX 1)");
+        CHECK (std::abs (e.regions[1].inStart - in0) < 1e-12 && std::abs (e.regions[1].outEnd - out0) < 1e-12);       // (the handles cover the crossfades: they stay put)
+        CHECK (! e.takeInWaitingFile (1, 0, cA1, rxA));                      // (nothing waits any more)
+        // a later save: every track that plays a copy of that RX file plays the new copy - in both halves of a piece cut since
+        const auto cB2 = dir.getChildFile ("B - RX 1 (saved 2).wav");
+        e.splitRegion (1, S / 2);
+        CHECK (e.regions.size() == 4 && e.regions[1].files[1].rxFrom == rxB && e.regions[2].files[1].rxFrom == rxB);
+        CHECK (e.useRxSave (rxB, cB2) == 2 && e.regions[1].files[1].file == cB2 && e.regions[2].files[1].file == cB2 && e.regions[1].files[0].file == cA1);
+        CHECK (e.useRxSave (rxB, cB2) == 0);
+        // a piece whose files do not cover it (the files hold less than the part): nothing is taken in
+        {
+            EditDef e2; EditRegion r; r.srcIn = 0; r.srcOut = 10 * S; r.sampleRate = sr; r.sourceLength = 10 * S;
+            RegionFile f1; f1.trackId = A; f1.file = srcA; f1.numChannels = 2; r.files.push_back (f1);
+            e2.insertRegion (r);
+            WaitingPiece small; small.name = "RX 2"; small.files = { rxA }; small.rx = true; small.fileFrom = 4 * S + 100; small.fileLen = S / 4;
+            CHECK (e2.markWaiting (e2.regions[0].id, 4 * S, 5 * S, small));
+            CHECK (! e2.takeInWaitingFile (1, 0, cA1, rxA) && e2.regions[1].waiting.active() && e2.regions[1].files[0].file == srcA);
+            // Export for Processing's pieces (no handles) are as they were: the files hold exactly the part
+            WaitingPiece plain; plain.name = "bar 4"; plain.files = { rxA }; plain.tracks = { A };
+            CHECK (e2.markWaiting (e2.regions[0].id, 1 * S, 2 * S, plain));
+            CHECK (! e2.regions[1].waiting.rx && e2.regions[1].waiting.filesFrom() == 1 * S && e2.regions[1].waiting.filesLength() == S);
+        }
+        // saved with the project: the In RX piece, the RX files the tracks came from, and the saves already dealt with
+        {
+            WaitingPiece w2; w2.name = "RX 3 IN"; w2.files = { rxA }; w2.tracks = { A }; w2.rx = true; w2.fileFrom = 7 * S + 5; w2.fileLen = 3 * S - 5; w2.program = "iZotope RX";
+            CHECK (e.markWaiting (e.regions[3].id, 8 * S, 9 * S, w2));
+            q.rxSeen[rxA.getFullPathName()] = 1234567;
+            q.rxSeen[dir.getChildFile ("gone.wav").getFullPathName()] = 99;           // (a file that is no longer there is not kept)
+            juce::String err; CHECK (q.save (err));
+            Project q2; CHECK (q2.load (q.projectFile, err));
+            auto* e2 = q2.edits.empty() ? nullptr : q2.edits.front().get();
+            CHECK (e2 != nullptr && e2->regions.size() == 6);
+            if (e2 != nullptr && e2->regions.size() == 6)
+            {
+                const auto& w3 = e2->regions[4].waiting;
+                CHECK (w3.active() && w3.rx && w3.name == "RX 3 IN" && w3.fileFrom == 7 * S + 5 && w3.fileLen == 3 * S - 5 && w3.tracks.size() == 1 && w3.files[0] == rxA && w3.program == "iZotope RX");
+                CHECK (e2->regions[1].files[1].rxFrom == rxB && e2->regions[1].files[1].file == cB2 && e2->regions[1].files[0].rxFrom == rxA && e2->regions[0].files[0].rxFrom == juce::File());
+                CHECK (Project::undoHash (*e2) == Project::undoHash (e));
+            }
+            CHECK (q2.rxSeen.size() == 1 && q2.rxSeen[rxA.getFullPathName()] == 1234567);
+            // the RX fields are written (an Export for Processing piece writes none: see waitingToVar)
+            const auto txt = juce::JSON::toString (q.editToVar (e));
+            CHECK (txt.contains ("\"rx\": true") && txt.contains ("rxFrom"));
+        }
+        // the save watch: a file met first is taken as it is; a save is ready once it has stayed the same for one more look; Ctrl+Z does not bring it back
+        {
+            RxSaveWatch sw; std::map<juce::String, juce::int64> seen;
+            auto look = [] (const char* p, juce::int64 t, juce::int64 sz, bool exists = true) { RxSaveWatch::Look l; l.path = p; l.exists = exists; l.modified = t; l.size = sz; return l; };
+            CHECK (sw.ready ({ look ("x", 100, 10) }, seen).empty() && seen["x"] == 100);                 // first sight
+            CHECK (sw.ready ({ look ("x", 100, 10) }, seen).empty());                                       // nothing new
+            CHECK (sw.ready ({ look ("x", 200, 5) }, seen).empty());                                        // saved: being written?
+            CHECK (sw.ready ({ look ("x", 210, 12) }, seen).empty());                                       // still changing
+            auto r1 = sw.ready ({ look ("x", 210, 12) }, seen);                                             // the same twice running: ready
+            CHECK (r1.size() == 1 && r1[0] == "x");
+            sw.done ("x", 210, seen);
+            CHECK (seen["x"] == 210 && sw.ready ({ look ("x", 210, 12) }, seen).empty());                   // dealt with: not again (Ctrl+Z puts the piece back, not this)
+            CHECK (sw.ready ({ look ("x", 300, 12, false) }, seen).empty());                                // missing for a moment (being replaced)
+            CHECK (sw.ready ({ look ("x", 300, 12) }, seen).empty());
+            CHECK (sw.ready ({ look ("x", 300, 12) }, seen).size() == 1);
+            CHECK (! sw.later ("x", 3));                                                                    // could not be read: tried again
+            CHECK (sw.ready ({ look ("x", 300, 12) }, seen).empty() && sw.ready ({ look ("x", 300, 12) }, seen).size() == 1);
+            CHECK (! sw.later ("x", 3) && sw.later ("x", 3));                                               // the third failure: say so
+            CHECK (sw.ready ({ look ("y", 5, 1) }, seen).empty() && sw.pending.empty());                    // a file no longer watched is forgotten
+        }
+    }
+
+    SECTION ("3.23.0 the send dials leave out where the fader already sends: Main by default, the main Ext Bus back (first) when the fader goes elsewhere");
+    {
+        Project q; q.setInputCount (4); q.setOutputCount (4); q.tracks.clear(); q.buses.clear();
+        q.takeWindows.clear(); q.edits.clear();
+        const auto A = q.addTrack ("A", TrackFormat::Mono, 0).id, B = q.addTrack ("B", TrackFormat::Mono, 1).id;
+        const auto mainB = q.addBus ("Main", true).id;            // (the mixer's first Ext Bus: ticked Main out)
+        const auto verb = q.addBus ("Verb", false).id, cans = q.addBus ("Cans", true).id;
+        q.syncMixers();
+        auto& m = *q.mixers.front();
+        CHECK (m.busFor (mainB)->isMain.get() && ! m.busFor (cans)->isMain.get());
+        auto* sa = m.stripFor (A);
+        sa->outOn.set (true); sa->outDest = juce::Uuid::null();     // the default: the fader goes to Main
+        CHECK (q.faderFeeds (m, A, mainB) && ! q.faderFeeds (m, A, cans) && ! q.faderFeeds (m, A, verb));
+        auto d = q.sendDialBuses (m, A);
+        CHECK (d.size() == 2 && d[0] == verb && d[1] == cans);       // no dial for Main: the fader is already there
+        sa->outDest = verb;                                         // the fader goes to the Int Bus: no Verb dial, and the main Ext Bus dial comes back, first
+        d = q.sendDialBuses (m, A);
+        CHECK (d.size() == 2 && d[0] == mainB && d[1] == cans && q.faderFeeds (m, A, verb) && ! q.faderFeeds (m, A, mainB));
+        sa->outDest = cans;                                         // another Ext Bus
+        d = q.sendDialBuses (m, A);
+        CHECK (d.size() == 2 && d[0] == mainB && d[1] == verb);
+        sa->outOn.set (false);                                      // the output off: the fader feeds nothing, every dial is there
+        d = q.sendDialBuses (m, A);
+        CHECK (d.size() == 3 && d[0] == mainB && d[1] == verb && d[2] == cans);
+        sa->outOn.set (true); sa->outDest = juce::Uuid::null();
+        q.setSendLevel (m, A, mainB, -6.0f);                        // a send to Main already turned up (an older project): it stays in sight, to be turned off
+        d = q.sendDialBuses (m, A);
+        CHECK (d.size() == 3 && d[0] == verb && d[1] == mainB && d[2] == cans);      // (in its usual place among the Ext Buses)
+        m.busFor (cans)->isMain.set (true);                         // two Ext Buses ticked Main out: the fader feeds both
+        q.setSendLevel (m, A, mainB, -100.0f);
+        d = q.sendDialBuses (m, A);
+        CHECK (d.size() == 1 && d[0] == verb && q.faderFeeds (m, A, cans));
+        m.busFor (cans)->isMain.set (false);
+        // an Int Bus strip: the same rule, never a dial to itself; an Ext Bus has none
+        auto* bv = m.busFor (verb); bv->outOn.set (true); bv->outDest = juce::Uuid::null();
+        d = q.sendDialBuses (m, verb);
+        CHECK (d.size() == 1 && d[0] == cans);
+        CHECK (q.sendDialBuses (m, mainB).empty());
+        juce::ignoreUnused (B);
+    }
+
+    SECTION ("3.23.0 the time ruler zoomed far out: the labels step on past 5 minutes and never run into each other");
+    {
+        using timefmt::rulerSteps;
+        CHECK (rulerSteps (300.0).step == 0.5 && rulerSteps (300.0).minor == 0.25 && rulerSteps (30.0).step == 5.0 && rulerSteps (5.0).step == 60.0);      // (close in: as before)
+        CHECK (rulerSteps (2.99).step == 300.0 && rulerSteps (2.99).minor == 60.0 && rulerSteps (0.3).step == 300.0);                                   // (5 minutes, as before, while they fit)
+        CHECK (rulerSteps (0.29).step == 600.0 && rulerSteps (0.1).step == 900.0 && rulerSteps (0.05).step == 1800.0 && rulerSteps (0.02).step == 7200.0 && rulerSteps (0.01).step == 10800.0);
+        bool apart = true, minorOk = true;
+        for (double pps = 0.005; pps < 3.0; pps *= 1.07)
+        {
+            const auto r = rulerSteps (pps);
+            if (r.step * pps < 90.0 && r.step < 86400.0) apart = false;                                  // labels at least 90 px apart (a day is the widest step)
+            if (r.minor < r.step && (r.minor * pps < 10.0 || std::fmod (r.step, r.minor) != 0.0)) minorOk = false;
+        }
+        CHECK (apart && minorOk);
+    }
+
+    SECTION ("3.23.0 a stereo track from two mono tracks: the files joined exactly, the takes and the edits' pieces follow, the mono tracks go");
+    {
+        const double sr = 48000.0; const juce::int64 S = 48000;
+        auto dir = tmp.getChildFile ("StereoJoin"); dir.deleteRecursively(); dir.createDirectory();
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        auto readAt = [&] (const juce::File& f, juce::int64 at, int ch) -> float
+        {
+            auto r = audioops::openReader (fm, f); if (r == nullptr || ch >= (int) r->numChannels) return -9.0f;
+            std::vector<std::vector<float>> v; audioops::readRange (*r, at, 1, v); return v[(size_t) ch][0];
+        };
+        auto chans = [&] (const juce::File& f) { auto r = audioops::openReader (fm, f); return r != nullptr ? (int) r->numChannels : 0; };
+        auto lenOf = [&] (const juce::File& f) { auto r = audioops::openReader (fm, f); return r != nullptr ? r->lengthInSamples : (juce::int64) -1; };
+        // the writer: 24-bit in, the same 24-bit samples out, left and right in their places; the shorter file padded with silence; float stays float
+        {
+            const auto l = makeConstWav (dir.getChildFile ("l.wav"), 0.25, 3), r = makeConstWav (dir.getChildFile ("r.wav"), -0.5, 2);
+            const auto out = dir.getChildFile ("lr.wav");
+            juce::String err;
+            CHECK (audioops::joinToStereo (fm, l, 0, r, 0, 0, 3 * S, out, err));
+            CHECK (chans (out) == 2 && lenOf (out) == 3 * S);
+            CHECK (std::abs (readAt (out, 100, 0) - readAt (l, 100, 0)) < 1e-9f && std::abs (readAt (out, 100, 1) - readAt (r, 100, 0)) < 1e-9f);
+            CHECK (readAt (out, 2 * S + 10, 1) == 0.0f && std::abs (readAt (out, 2 * S + 10, 0) - readAt (l, 2 * S + 10, 0)) < 1e-9f);
+            if (auto rd = audioops::openReader (fm, out)) CHECK (rd->bitsPerSample == 24 && ! rd->usesFloatingPointData);
+            std::vector<std::vector<float>> fch (1, std::vector<float> ((size_t) S, 0.123456789f));
+            const auto fl = dir.getChildFile ("fl.wav"); CHECK (audioops::writeWav (fl, fch, sr, true));
+            const auto out2 = dir.getChildFile ("flr.wav");
+            CHECK (audioops::joinToStereo (fm, fl, 0, juce::File(), 0, 0, S, out2, err));         // (no right file: silence there)
+            if (auto rd = audioops::openReader (fm, out2)) CHECK (rd->usesFloatingPointData && rd->bitsPerSample == 32);
+            CHECK (readAt (out2, 5, 0) == 0.123456789f && readAt (out2, 5, 1) == 0.0f);
+            const auto o96 = makeConstWav (dir.getChildFile ("96.wav"), 0.1, 1, 96000.0);
+            CHECK (! audioops::joinToStereo (fm, l, 0, o96, 0, 0, S, dir.getChildFile ("bad.wav"), err) && err.contains ("Hz") && ! dir.getChildFile ("bad.wav").exists());
+        }
+        CHECK (stereojoin::suggestName ("Omni L", "Omni R") == "Omni" && stereojoin::suggestName ("OmniLeft", "OmniRight") == "Omni"
+               && stereojoin::suggestName ("Tr01", "Tr02") == "Tr01 + Tr02" && stereojoin::suggestName ("Viol", "Cello") == "Viol + Cello");
+        // a project: tracks Spot, Tr01, Tr02 (mono) and a stereo one; two takes in one take window (the second has nothing on Tr02); an edit
+        Project q; q.setInputCount (8); q.setOutputCount (4); q.tracks.clear(); q.buses.clear(); q.takeWindows.clear(); q.edits.clear();
+        q.projectFile = dir.getChildFile ("Join.fermata");
+        const auto spot = q.addTrack ("Spot", TrackFormat::Mono, 0).id;
+        const auto t1 = q.addTrack ("Tr01", TrackFormat::Mono, 3).id, t2 = q.addTrack ("Tr02", TrackFormat::Mono, 6).id;
+        const auto other = q.addTrack ("Pair", TrackFormat::Stereo, 1).id;
+        q.findTrack (t1)->colour = 0xff336699u; q.findTrack (t1)->alignRole = 1;
+        const auto verb = q.addBus ("Main", true).id; juce::ignoreUnused (verb);
+        const auto vb = q.addBus ("Verb", false).id;
+        auto& w = q.addTakeWindow ("Mass");
+        const auto f1L = makeConstWav (dir.getChildFile ("001 L.wav"), 0.25, 4), f1R = makeConstWav (dir.getChildFile ("001 R.wav"), -0.5, 4);
+        const auto f2L = makeConstWav (dir.getChildFile ("002 L.wav"), 0.125, 2), fSpot = makeConstWav (dir.getChildFile ("001 spot.wav"), 0.05, 4);
+        auto addFile = [] (TakeGroup& g, const juce::Uuid& tr, const juce::String& n, const juce::File& f) { TakeFile tf; tf.trackId = tr; tf.trackName = n; tf.file = f; tf.numChannels = 1; tf.sourceName = f.getFileName(); g.files.push_back (tf); };
+        TakeGroup g1; g1.id = juce::Uuid(); g1.number = 1; g1.lengthSamples = 4 * S; g1.sampleRate = sr;
+        addFile (g1, spot, "Spot", fSpot); addFile (g1, t1, "Tr01", f1L); addFile (g1, t2, "Tr02", f1R);
+        TakeGroup g2; g2.id = juce::Uuid(); g2.number = 2; g2.startSeconds = 10.0; g2.lengthSamples = 2 * S; g2.sampleRate = sr;
+        addFile (g2, t1, "Tr01", f2L);
+        w.groups.push_back (g1); w.groups.push_back (g2);
+        w.editTracks = { t2 }; w.hiddenTracks = { t1, t2 };
+        auto& e = q.addEdit ("Mass edit", w.id);
+        {   // piece 1: take 1 as it is (both whole files); piece 2: a repaired piece on Tr01 only (a short file), Tr02 still the take's file
+            EditRegion r; r.srcIn = 0; r.srcOut = 2 * S; r.sampleRate = sr; r.sourceLength = 4 * S; r.takeName = "001 - Mass"; r.takeId = g1.id; r.windowId = w.id;
+            RegionFile a; a.trackId = spot; a.trackName = "Spot"; a.file = fSpot; r.files.push_back (a);
+            RegionFile b; b.trackId = t1; b.trackName = "Tr01"; b.file = f1L; r.files.push_back (b);
+            RegionFile c; c.trackId = t2; c.trackName = "Tr02"; c.file = f1R; r.files.push_back (c);
+            GainChange gc; gc.at = 0; gc.ramp = 0.0; gc.db = { -1.0f, -2.0f, -4.0f }; r.gains.push_back (gc);
+            e.insertRegion (r);
+            const auto fix = makeConstWav (dir.getChildFile ("fix L.wav"), 0.75, 1);         // 1 s of a repaired Tr01, standing for take samples 2 s .. 3 s
+            EditRegion r2 = r; r2.id = juce::Uuid(); r2.srcIn = 2 * S + 1000; r2.srcOut = 3 * S - 1000; r2.takeName = "001 - Mass (repair)"; r2.gains.clear();
+            r2.files[1].file = fix; r2.files[1].fileStart = 2 * S;
+            e.insertRegion (r2);
+        }
+        e.trackIds = { spot, t1, t2, other }; e.fixTracks = { t2 };
+        { AutoLane l; l.id = juce::Uuid(); l.trackId = t1; l.param = autoparam::fader; e.lanes.push_back (l); }
+        { AutoLane l; l.id = juce::Uuid(); l.trackId = t1; l.param = autoparam::pan; e.lanes.push_back (l); }
+        { AutoLane l; l.id = juce::Uuid(); l.trackId = t2; l.param = autoparam::fader; e.lanes.push_back (l); }
+        q.syncMixers(); q.syncEditMixers();
+        auto& pm = *q.mixers.front();
+        pm.stripFor (t1)->gainDb.set (-3.0f); pm.stripFor (t1)->outOn.set (true); pm.stripFor (t1)->outDest = vb;
+        q.setSendLevel (pm, t1, verb, -12.0f);
+        pm.hiddenStrips = { t1 };
+        q.undoReset(); q.changed(); q.undoTick (false, true);
+        // something of Tr02 out being processed: refused, nothing planned
+        {
+            stereojoin::Plan pl;
+            auto& rw = e.regions[0];
+            rw.waiting.name = "bar 4"; rw.waiting.from = 0; rw.waiting.to = 10; rw.waiting.files = { dir.getChildFile ("w.wav") }; rw.waiting.tracks = { t2 };
+            const auto why = stereojoin::plan (q, t1, t2, "Main pair", pl);
+            CHECK (why.contains ("waiting for corrected audio") && why.contains ("Mass edit"));
+            rw.waiting = WaitingPiece();
+            CHECK (stereojoin::plan (q, t1, other, "x", pl).contains ("mono"));
+            CHECK (stereojoin::plan (q, t1, t1, "x", pl).isNotEmpty() && stereojoin::plan (q, t1, t2, "  ", pl).isNotEmpty());
+        }
+        stereojoin::Plan pl;
+        CHECK (stereojoin::plan (q, t1, t2, "Main pair", pl).isEmpty());
+        CHECK (pl.takes.size() == 2 && pl.pieces.size() == 2 && pl.jobs.size() == 3 && pl.takeWindows.size() == 1 && pl.edits.size() == 1);   // 2 takes + the repaired piece
+        CHECK (stereojoin::writeFiles (fm, pl).isEmpty());
+        juce::String why;
+        CHECK (stereojoin::apply (q, pl, why));
+        // the tracks: the stereo one where Tr01 was, with its colour, role and both inputs; the mono ones gone
+        CHECK (q.tracks.size() == 3 && q.tracks[0].id == spot && q.tracks[1].id == pl.stereo && q.tracks[2].id == other);
+        const auto& st = q.tracks[1];
+        CHECK (st.name == "Main pair" && st.format == TrackFormat::Stereo && st.colour == 0xff336699u && st.alignRole == 1 && st.inputs[0] == 3 && st.inputs[1] == 6);
+        CHECK (q.findTrack (t1) == nullptr && q.findTrack (t2) == nullptr);
+        // the takes: one stereo file each, in the left one's place; the second take's right side is silence
+        auto& G1 = w.groups[0]; auto& G2 = w.groups[1];
+        CHECK (G1.files.size() == 2 && G1.files[0].trackId == spot && G1.files[1].trackId == pl.stereo && G1.files[1].numChannels == 2);
+        CHECK (G1.files[1].sourceName == "001 L.wav" && G1.files[1].sourceName2 == "001 R.wav" && G1.files[1].file.isAChildOf (q.takeFolder (w)));
+        CHECK (std::abs (readAt (G1.files[1].file, 1000, 0) - readAt (f1L, 1000, 0)) < 1e-9f && std::abs (readAt (G1.files[1].file, 1000, 1) - readAt (f1R, 1000, 0)) < 1e-9f);
+        CHECK (lenOf (G1.files[1].file) == 4 * S && f1L.existsAsFile() && f1R.existsAsFile());                   // (the mono files are still there)
+        CHECK (G2.files.size() == 1 && G2.files[0].trackId == pl.stereo && readAt (G2.files[0].file, 50, 1) == 0.0f && std::abs (readAt (G2.files[0].file, 50, 0) - readAt (f2L, 50, 0)) < 1e-9f);
+        CHECK (w.editTracks.size() == 1 && w.editTracks[0] == pl.stereo && w.hiddenTracks.size() == 1 && w.hiddenTracks[0] == pl.stereo);
+        // the edit: piece 1 plays the take's stereo file; the repaired piece has a stereo file of its own (the repair on the left, the take on the right)
+        auto& P1 = e.regions[0]; auto& P2 = e.regions[1];
+        CHECK (P1.files.size() == 2 && P1.files[1].trackId == pl.stereo && P1.files[1].file == G1.files[1].file && P1.files[1].fileStart == 0 && P1.files[1].numChannels == 2);
+        CHECK (P1.gains.size() == 1 && P1.gains[0].db.size() == 2 && std::abs (P1.gains[0].db[0] + 1.0f) < 1e-6f && std::abs (P1.gains[0].db[1] + 3.0f) < 1e-6f);    // (-2 and -4: -3)
+        CHECK (P2.files.size() == 2 && P2.files[1].trackId == pl.stereo && P2.files[1].file != G1.files[1].file && P2.files[1].numChannels == 2);
+        const auto& pf = P2.files[1];
+        CHECK (pf.fileStart <= P2.srcIn && pf.fileStart + lenOf (pf.file) >= P2.srcOut);
+        CHECK (std::abs (readAt (pf.file, P2.srcIn + 10 - pf.fileStart, 0) - 0.75f) < 1e-4f && std::abs (readAt (pf.file, P2.srcIn + 10 - pf.fileStart, 1) - readAt (f1R, P2.srcIn + 10, 0)) < 1e-9f);
+        CHECK (e.trackIds.size() == 3 && e.trackIds[1] == pl.stereo && e.fixTracks.size() == 1 && e.fixTracks[0] == pl.stereo);
+        CHECK (e.lanes.size() == 1 && e.lanes[0].trackId == pl.stereo && e.lanes[0].param == autoparam::fader);   // (Tr01's fader carries on; its pan and Tr02's lane go)
+        // the mixer: the stereo strip starts with Tr01's fader, output and sends; hidden only if both were (Tr02 was not)
+        auto* ss = pm.stripFor (pl.stereo);
+        CHECK (std::abs (ss->gainDb.get() + 3.0f) < 1e-6f && ss->outOn.get() && ss->outDest == vb && ss->sends.find (verb) != nullptr && std::abs (ss->sends.find (verb)->gainDb.get() + 12.0f) < 1e-6f);
+        CHECK (! pm.isStripHidden (pl.stereo) && ! pm.isStripHidden (t1));
+        CHECK (q.undoDepth() == 0);                                                    // (Ctrl+Z cannot go back to the two mono tracks)
+        // the project saves and opens again as it is now
+        juce::String err; CHECK (q.save (err));
+        Project q2; CHECK (q2.load (q.projectFile, err));
+        CHECK (q2.findTrack (pl.stereo) != nullptr && q2.findTrack (pl.stereo)->format == TrackFormat::Stereo && q2.findTrack (t1) == nullptr);
+        CHECK (! q2.takeWindows.empty() && q2.takeWindows.back()->groups.size() == 2 && q2.takeWindows.back()->groups[0].files[1].numChannels == 2);
+        // planned, but the take changed meanwhile: nothing is changed
+        {
+            Project r; r.setInputCount (4); r.tracks.clear(); r.takeWindows.clear(); r.edits.clear(); r.projectFile = dir.getChildFile ("R.fermata");
+            const auto a = r.addTrack ("a", TrackFormat::Mono, 0).id, b = r.addTrack ("b", TrackFormat::Mono, 1).id;
+            auto& rw = r.addTakeWindow ("W");
+            TakeGroup g; g.id = juce::Uuid(); g.number = 1; g.lengthSamples = 4 * S; g.sampleRate = sr;
+            addFile (g, a, "a", f1L); addFile (g, b, "b", f1R); rw.groups.push_back (g);
+            stereojoin::Plan p2;
+            CHECK (stereojoin::plan (r, a, b, "ab", p2).isEmpty() && stereojoin::writeFiles (fm, p2).isEmpty());
+            rw.groups[0].files[1].file = fSpot;                                        // (someone changed it while the files were being written)
+            juce::String w2;
+            CHECK (! stereojoin::apply (r, p2, w2) && w2.isNotEmpty() && r.tracks.size() == 2 && rw.groups[0].files.size() == 2);
+        }
     }
 
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

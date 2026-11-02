@@ -99,7 +99,7 @@ inline const std::vector<Line>& lines()
         { "Take window: with the mouse", "right-click", "A take's audio: re-draw the waveform, bars and notes, room tone, or use it as the edit window's visual guide." },
         { "Take window: with the mouse", "right-click", "A \"Waiting for corrected audio\" block: re-link the corrected audio, or stop waiting and keep the original." },
         { "Take window: with the mouse", "Shift+click / Ctrl+click", "A track name: every track from the last one clicked to this one / this track in or out of the selection." },
-        { "Take window: with the mouse", "right-click", "A track name: colour, move its clips onto another track, remove or delete tracks." },
+        { "Take window: with the mouse", "right-click", "A track name: colour, move its clips onto another track, remove or delete tracks. With two mono tracks selected (click one name, Ctrl + click the other): make one stereo track from them." },
 
         // ---------------------------------------------------------------------------------------------------- take and edit windows: markers and the clock
         { "Take and edit windows: markers and the clock", "right-click", "The marker line (with Markers shown): add a marker, or clear them all." },
@@ -141,6 +141,7 @@ inline const std::vector<Line>& lines()
         { "Edit window: with the mouse", "double-click", "A volume change's teal line (or its shaded glide): change it again - the amount for each track and the fade in / fade out, heard as you change them (Play in the box). Right-click it: the same, as \"Change this volume change...\"." },
         { "Edit window: with the mouse", "right-click", "A piece: volume changes (to the next edit, between marks 1 and 2, between the fades), remove them, delete an overdub, re-draw the waveform." },
         { "Edit window: with the mouse", "right-click", "A piece, with marks 1 and 2 inside it: Find other versions - every place in the take window's takes where the marked music was played (\"possible\" ones: a false start, or the same notes elsewhere); Audition plays each in place, Use this one puts it in (everything after moves to fit; Ctrl+Z takes it out). Needs take matching switched on for that take window." },
+        { "Edit window: with the mouse", "right-click", "An \"In ...\" block (Export for Processing > Open in a program: RX, Melodyne ...): bring in what the program has saved now, open it there again, show the files, or cancel and keep the original audio. (Each file saved there comes back by itself; Ctrl+Z takes it out.)" },
         { "Edit window: with the mouse", "right-click", "A track name: colour, remove tracks from this edit." },
         { "Edit window: with the mouse", "right-click", "The visual guide: move its start (to 0:00 or the playhead), hide it, remove it." },
         { "Edit window: with the mouse", "right-click or Shift+click or Ctrl+click", "An automation point (Automation on): delete it." },

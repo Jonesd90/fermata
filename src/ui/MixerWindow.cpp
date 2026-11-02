@@ -910,7 +910,9 @@ public:
         knob.setTooltip ("Send to " + destName + ". Drag up / down to change, double-click for 0 dB (Ctrl + double-click to type a level), click once for pre / post fader, MUTE, inserts and a fader. "
                          + (pre ? "(Taken before the fader: the yellow square.)" : "(Taken after the fader.)")
                          + (own ? " MUTED (its own MUTE, in the panel)." : byChannel ? " Silenced by the channel's MUTE (red outline)." : "")
-                         + (s != nullptr && ! s->followMute.get() ? " * = does not follow mute: it carries on when the channel is muted." : ""));
+                         + (s != nullptr && ! s->followMute.get() ? " * = does not follow mute: it carries on when the channel is muted." : "")
+                         + (! destIsTrack && app.project.faderFeeds (mixer, srcId, destId)
+                                ? " NOTE: the fader already sends this channel here (its output), so this dial adds a second copy. Turned off, it is left out the next time this mixer is opened." : ""));
     }
     void resized() override
     {
@@ -1430,7 +1432,8 @@ public:
         return n == 0 ? juce::String ("C") : n < 0 ? "L" + juce::String (-n) : "R" + juce::String (n);
     }
 
-    /** One dial for every Int Bus and Ext Bus, plus one for every track this channel already sends to. */
+    /** One dial for every Int Bus and Ext Bus except where the fader already sends (3.23.0: Project::sendDialBuses - the main Ext Bus first when the fader goes
+        somewhere else), plus one for every track this channel already sends to. */
     void buildSends()
     {
         auto addDial = [this] (const juce::Uuid& dest, bool toTrack)
@@ -1440,8 +1443,7 @@ public:
             d->forOthers = [safe] (const std::function<void (GangMember&)>& fn) { if (safe != nullptr && safe->gang != nullptr) safe->gang->forOthers (safe->trackId, fn); };
             addAndMakeVisible (d);
         };
-        for (auto& b : app.project.buses) if (! b.external) addDial (b.id, false);
-        for (auto& b : app.project.buses) if (b.external)   addDial (b.id, false);
+        for (auto& b : app.project.sendDialBuses (mixer, trackId)) addDial (b, false);
         for (auto& t : app.project.tracks)
             if (t.id != trackId)
                 if (auto* s = strip.sends.find (t.id)) if (s->active()) addDial (t.id, true);
@@ -1728,8 +1730,7 @@ public:
         }
         else
         {
-            for (auto& b : app.project.buses) if (! b.external && b.id != busId) { auto* d = dials.add (new SendDial (app, mixer, busId, b.id, false)); addAndMakeVisible (d); }
-            for (auto& b : app.project.buses) if (b.external)                    { auto* d = dials.add (new SendDial (app, mixer, busId, b.id, false)); addAndMakeVisible (d); }
+            for (auto& b : app.project.sendDialBuses (mixer, busId)) { auto* d = dials.add (new SendDial (app, mixer, busId, b, false)); addAndMakeVisible (d); }     // (3.23.0: not where its fader sends)
             for (auto& t : app.project.tracks)
                 if (auto* s = st.sends.find (t.id)) if (s->active()) { auto* d = dials.add (new SendDial (app, mixer, busId, t.id, true)); addAndMakeVisible (d); }
             toTrackButton.setButtonText ("+ send to track");
@@ -2398,6 +2399,24 @@ int MixerComponent::topBarMinWidth() const
     const bool other = m != nullptr && ! app.isEngineerMixer (m->id);
     return 84 + 180 + 76 + 140 + (other ? 600 : 0);                // name, the two icons, a little room for messages (a cue mixer: audition, delete, follow)
 }
+/** 3.23.0: where every strip's fader sends (its output on / off and its place) and which Ext Buses are ticked Main out: what decides which send dials the
+    strips show (Project::sendDialBuses). When it changes the strips are built again. (A send's own level is not in it, so automation never rebuilds.) */
+juce::String MixerComponent::routeSignature()
+{
+    juce::String sig;
+    auto* m = mixer();
+    if (m == nullptr) return sig;
+    for (auto& t : app.project.tracks) { auto* st = m->stripFor (t.id); sig << (st->outOn.get() ? "1" : "0") << st->outDest.toString() << ","; }
+    for (auto& b : app.project.buses)
+    {
+        auto* bs = m->busFor (b.id);
+        if (b.external) sig << (bs->isMain.get() ? "M" : "-");
+        else sig << (bs->outOn.get() ? "1" : "0") << bs->outDest.toString();
+        sig << ";";
+    }
+    return sig;
+}
+
 int MixerComponent::slotsNeeded()
 {
     auto* m = mixer();
@@ -2539,6 +2558,7 @@ void MixerComponent::rebuild()
     if (! nameEditor.hasKeyboardFocus (true)) nameEditor.setText (m->name, juce::dontSendNotification);
     app.project.syncMixers();
     slotCount = slotsNeeded();
+    routeSig = routeSignature();
     int maxDials = 0;
     juce::Array<ChannelStrip*> chans; juce::Array<BusStrip*> busStrips;
     for (auto& t : app.project.tracks)
@@ -2834,6 +2854,7 @@ void MixerComponent::timerCallback()
     {
         app.engine.checkLatency();                          // a plug-in's delay changed (loaded, bypassed ...): line the paths up again
         if (slotsNeeded() != slotCount) { rebuild(); resized(); }        // an insert was used (or removed): every strip gets the new number of slots
+        else if (routeSignature() != routeSig) { rebuild(); resized(); }  // 3.23.0: a strip's output (or a Main out tick) changed: its send dials change with it
         else holder->refreshFromModel();
     }
 }

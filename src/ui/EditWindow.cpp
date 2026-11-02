@@ -6,6 +6,7 @@
 #include <limits>
 #include <optional>
 #include "FixTools.h"
+#include "RxLink.h"
 #include "RetimerWindow.h"
 #include "ColourPicker.h"
 #include "VolumeDialog.h"
@@ -485,9 +486,10 @@ public:
         g.setColour (theme::ruler); g.fillRect (0, 0, getWidth(), kRulerH);
         g.setColour (juce::Colours::black.withAlpha (0.22f)); g.fillRect (0, 0, getWidth(), markerui::kStripH);          // the marker strip
         g.setColour (theme::manuscript() ? theme::accent.withAlpha (0.10f) : juce::Colour (0x2635b7c9)); g.fillRect (0, markerui::kStripH, getWidth(), kFbH);   // the feedback strip (its own line, tinted)
-        const double step = pixelsPerSecond >= 200 ? 0.5 : pixelsPerSecond >= 60 ? 1.0 : pixelsPerSecond >= 24 ? 5.0 : pixelsPerSecond >= 8 ? 10.0 : pixelsPerSecond >= 3 ? 60.0 : 300.0;
-        // fainter unlabelled lines between the labelled ones: 5 s -> every 1 s, 1 s -> every 0.5 s, then 0.25 s (two zoom steps), then 0.1 s however far in
-        const double minor = pixelsPerSecond >= 450 ? 0.1 : pixelsPerSecond >= 200 ? 0.25 : pixelsPerSecond >= 60 ? 0.5 : pixelsPerSecond >= 24 ? 1.0 : pixelsPerSecond >= 8 ? 5.0 : pixelsPerSecond >= 3 ? 10.0 : 60.0;
+        // the labelled lines, and fainter unlabelled ones between them: 5 s -> every 1 s, 1 s -> every 0.5 s, then 0.25 s (two zoom steps), then 0.1 s however far in.
+        // 3.23.0: far out the labels step on past 5 minutes (10, 15, 30 min, 1 h ...) so the times never run into each other (timefmt::rulerSteps)
+        const auto ruler = timefmt::rulerSteps (pixelsPerSecond);
+        const double step = ruler.step, minor = ruler.minor;
         const int minorPer = juce::jmax (1, (int) std::lround (step / minor));
         for (int n = 0; (double) n * minor * pixelsPerSecond < getWidth(); ++n)
         {
@@ -559,7 +561,7 @@ public:
                 g.setColour (selected ? chan::clipFill (tc, true) : chan::clipFill (tc));
                 g.fillRect (rr);
                 if (r.waiting.active() && (r.waiting.tracks.empty() || std::find (r.waiting.tracks.begin(), r.waiting.tracks.end(), rf->trackId) != r.waiting.tracks.end()))
-                    drawWaitingBlock (g, rr.reduced (1), r.waiting.name, theme::text);
+                    drawWaitingBlock (g, rr.reduced (1), r.waiting.name, theme::text, r.waiting.rx);
                 else
                 {
                     setWaveColour (g, chan::waveColour (tc));
@@ -1911,7 +1913,18 @@ private:
         }
         m.addSeparator();
         m.addItem (8, "Re-draw waveform");
-        if (piece->waiting.active())
+        const bool inRx = piece->waiting.active() && piece->waiting.rx;
+        if (inRx)                                                                     // 3.22.0 Edit in RX, 3.24.0 any linked program
+        {
+            const auto prog = piece->waiting.program.isNotEmpty() ? piece->waiting.program : juce::String ("iZotope RX");
+            m.addSeparator();
+            m.addSectionHeader ("In " + prog + "  (" + piece->waiting.name + ")");
+            m.addItem (5, "Bring in what " + prog + " has saved now");
+            m.addItem (11, "Open it in " + prog + " again");
+            m.addItem (12, "Show the files");
+            m.addItem (6, "Cancel: keep the original audio");
+        }
+        else if (piece->waiting.active())
         {
             m.addSeparator();
             m.addItem (5, "Re-link corrected audio  (" + piece->waiting.name + ")");
@@ -1925,6 +1938,8 @@ private:
             if (r == 10) { if (hit && me != nullptr) me->openGainChange (*hit); return; }
             if (r == 8) { appPtr->redrawWaveforms (redrawFiles); return; }
             if (r == 9) { if (appPtr->showVersions) appPtr->showVersions (eid, self.getComponent()); return; }
+            if (r == 11) { rxlink::openAgain (*appPtr, eid, rid); return; }
+            if (r == 12) { rxlink::showFiles (*appPtr, eid, rid); return; }
             auto* ed2 = appPtr->project.findEdit (eid);
             auto* p2 = ed2 ? ed2->findAny (rid) : nullptr;
             if (p2 == nullptr) return;
@@ -2239,8 +2254,11 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     alignButton.setTooltip ("Align spot mics: measure how much earlier each spot mic hears the music than the main pair, on this edit (between marks 1 and 2, "
                             "or all of it), and delay it to line up - in every mixer; the files are not changed. Useful in post when there was no time in the session.");
     alignButton.onClick = [this] { if (app.showAlign) app.showAlign (true, editId); };
-    exportProcButton.setTooltip ("Export for Processing: sends the part between marks 1 and 2 (all tracks) to the Processing Media folder to be corrected in other software (e.g. iZotope RX). Re-link it afterwards with a right-click on the 'Waiting for corrected audio' block");
-    exportProcButton.onClick = [this] { fixtools::exportForProcessingEdit (app, editId, this); };
+    exportProcButton.setTooltip ("Export for Processing: the part between marks 1 and 2 (every track, or the ones chosen with Ctrl + Alt + drag), out to other software. "
+                                 "A menu: Create files to edit (to the Processing Media folder; re-link them afterwards with a right-click on the 'Waiting for corrected audio' block), "
+                                 "or Open in a program you have linked (iZotope RX, Melodyne ...): it opens with 2 seconds extra each side, and each file saved there comes back "
+                                 "into the edit by itself, replacing only the marked part (Ctrl+Z takes it out). Add a program... links another one");
+    exportProcButton.onClick = [this] { rxlink::showExportMenu (app, editId, &exportProcButton); };       // (3.24.0: a menu; the Edit in RX button of 3.22.0 is in it)
     undoFixButton.setTooltip ("Undo the last pitch correction, repair, de-click, denoise, ReTimEr or export for processing (the original audio files were never touched)");
     undoFixButton.onClick = [this] { fixtools::undoLastFix (app); };
     bounceButton.setTooltip ("Make a master file of this edit through its own mixer (or another mixer)");

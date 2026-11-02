@@ -30,6 +30,7 @@
 #include "ui/PluginManager.h"
 #include "ui/HotKeysWindow.h"
 #include "ui/RecPrePanel.h"
+#include "ui/RxLink.h"
 #if JUCE_WINDOWS
  #include <shlobj.h>
 #endif
@@ -458,6 +459,8 @@ public:
             splash->startCountdown ([this] { juce::MessageManager::callAsync ([this] { splash.reset(); }); });
         if (err.isNotEmpty()) showError ("Audio device", err + "\n\nOpen \"Audio settings\" to choose your ASIO device.");
         announceCrashReports();
+        rxWatcher = rxlink::makeWatcher (*ctx);                                  // 3.22.0 / 3.24.0: what is saved in a linked program (RX, Melodyne ...) comes back into the edits
+        rxlink::askAtFirstStart (*ctx);                                          // (once: link the editing programs found on this computer?)
     }
 
     /** 3.14.0: crash or freeze reports written since the last start are mentioned once (in the log, and in a message after the splash). */
@@ -500,6 +503,7 @@ public:
         for (int i = juce::ModalComponentManager::getInstance()->getNumModalComponents(); --i >= 0;)
             if (auto* dw = dynamic_cast<juce::DialogWindow*> (juce::ModalComponentManager::getInstance()->getModalComponent (i))) delete dw;
         closing::step ("tool windows closed");
+        rxWatcher.reset();                                                        // (it looks at the project: gone before the project is)
         if (ctx) ctx->surface = nullptr;
         surface.reset();                                                          // (the surface is blanked: faders down, lamps off)
         closing::step ("control surface blanked");
@@ -1208,6 +1212,7 @@ private:
     std::map<juce::String, std::unique_ptr<ToolWindow>> windows;
     std::unique_ptr<StayOnTop> bridgeTop;                    // keeps the meter bridge in front of everything (see StayOnTop)
     std::unique_ptr<StayOnTop> recMonTop;                    // the same for the Recording monitor (3.2.0)
+    std::unique_ptr<juce::Timer> rxWatcher;                  // 3.22.0 / 3.24.0: the once-a-second look for files saved in a linked program (rxlink::makeWatcher)
 };
 
 START_JUCE_APPLICATION (FermataApplication)

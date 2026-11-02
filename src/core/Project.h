@@ -232,6 +232,10 @@ public:
         const RoomToneTrack* forTrack (const juce::Uuid& id) const { for (auto& t : tracks) if (t.trackId == id) return &t; return nullptr; }
     };
     RoomTone roomTone;
+    /** 3.22.0: for each file sent to a linked program - RX, Melodyne ... - (full path), the time it was last changed (ms) that Fermata has already dealt with: as written, or as brought
+        in or turned down after a save in RX. A newer time is a new save. Saved with the project and not an undo step, so Ctrl+Z after a file came back does not bring
+        it straight back in again, and a save made while Fermata was closed is noticed at the next start. */
+    std::map<juce::String, juce::int64> rxSeen;
     /** The consonants kept for moving and re-use (3.6.0, the ReTouch window's Consonants tab): their audio is in consonantsFolder(), one float WAV per track.
         Saved with the project; not an undo step (Ctrl+Z never takes one off the list). */
     std::vector<ConsonantDef> consonants;
@@ -313,6 +317,14 @@ public:
     juce::String mixerOutputsText (const MixerState&) const;
     /** The sends of a track or bus in a mixer (nullptr if the id is neither, or an Ext Bus). */
     SendList* sendsOf (MixerState&, const juce::Uuid& nodeId) const;
+    /** 3.23.0: the buses a track's or Int Bus's strip shows a send dial for in this mixer, in order. The buses its fader already feeds (its output on, to
+        'Main' = every Ext Bus ticked Main out, or to one chosen bus) are left out - the fader and a dial would double up - unless that send is already
+        turned up (then it stays, so it can be seen and turned off). An Ext Bus ticked Main out that the fader does not feed comes first; then the Int
+        Buses, then the other Ext Buses. Empty for an Ext Bus or an unknown id. */
+    std::vector<juce::Uuid> sendDialBuses (MixerState&, const juce::Uuid& nodeId) const;
+    /** 3.23.0: does the fader of track / Int Bus 'nodeId' already send it to 'bus' (its output on, and 'bus' its chosen place or an Ext Bus ticked Main out
+        while the output is 'Main')? */
+    bool faderFeeds (MixerState&, const juce::Uuid& nodeId, const juce::Uuid& bus) const;
     /** Could 'src' send to 'dest' in this mixer? Tracks and Int Buses can send to tracks, Int Buses and Ext Buses; never to themselves or in a loop. */
     bool sendAllowed (const MixerState&, const juce::Uuid& src, const juce::Uuid& dest) const;
     /** Sets a send level (<= -60 dB = off). RoutingChanged means a send was switched on: the engine must re-plan. */

@@ -80,8 +80,9 @@ inline void fillEnvelope (juce::Graphics& g, float xFirst, const std::vector<flo
     g.setColour (base);
 }
 
-/** Instead of a waveform: a hatched block that says the audio is out being processed in other software ("Export for Processing"). */
-inline void drawWaitingBlock (juce::Graphics& g, juce::Rectangle<int> area, const juce::String& name, juce::Colour text)
+/** Instead of a waveform: a hatched block that says the audio is out being processed in other software ("Export for Processing"; 'rx' (3.22.0 / 3.24.0): sent
+    to a linked program - 'name' is the job, "RX 1", "Melodyne 2" - where it comes back by itself when it is saved). */
+inline void drawWaitingBlock (juce::Graphics& g, juce::Rectangle<int> area, const juce::String& name, juce::Colour text, bool rx = false)
 {
     if (area.isEmpty()) return;
     juce::Graphics::ScopedSaveState ss (g);
@@ -91,7 +92,10 @@ inline void drawWaitingBlock (juce::Graphics& g, juce::Rectangle<int> area, cons
     for (int x = area.getX() - area.getHeight(); x < area.getRight(); x += 10)
         g.drawLine ((float) x, (float) area.getBottom(), (float) (x + area.getHeight()), (float) area.getY(), 1.0f);
     g.setColour (text); g.setFont (juce::FontOptions (juce::jmin (13.0f, (float) area.getHeight() * 0.6f), juce::Font::bold));
-    g.drawText ("Waiting for corrected audio" + (name.isNotEmpty() ? juce::String (" - ") + name : juce::String()), area.reduced (6, 0), juce::Justification::centred, true);
+    const auto words = rx ? "In " + (name.isNotEmpty() ? name : juce::String ("another program")) + " - "
+                                + (name.containsIgnoreCase ("Melodyne") ? juce::String ("File > Replace Audio there brings it back") : juce::String ("save it there to bring it back"))
+                          : juce::String ("Waiting for corrected audio") + (name.isNotEmpty() ? juce::String (" - ") + name : juce::String());
+    g.drawText (words, area.reduced (6, 0), juce::Justification::centred, true);
 }
 
 /** The waveform of a (zoomed-out) thumbnail between t0 and t1 seconds, drawn with fillEnvelope for every channel. */
