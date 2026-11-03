@@ -352,37 +352,54 @@ public:
             }
             return out;
         };
-        ctx->windowPlacesNow = [this]
-        {
-            AppContext::WindowPlaces p;
-            if (mainWindow == nullptr) return p;
-            p.area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (mainWindow->getBounds())->userArea;
-            if (! mainWindow->isMinimised()) p.windows.push_back ({ "main", mainWindow->getBounds() });
-            for (auto& [key, w] : windows)
-            {
-                if (w == nullptr || key == "organiser" || key == "takedisplay" || ! w->isVisible() || w->isMinimised() || DockHub::get().contains (w.get())) continue;
-                const auto b = w->getBounds();
-                if (b.getWidth() < 160 || b.getHeight() < 100 || ! b.intersects (p.area)) continue;
-                if (b.getIntersection (p.area).getWidth() * b.getIntersection (p.area).getHeight() < b.getWidth() * b.getHeight() / 2) continue;   // mostly on another screen
-                p.windows.push_back ({ key, b });
-            }
-            return p;
-        };
-        ctx->placeWindows = [this] (const std::vector<std::pair<juce::String, juce::Rectangle<float>>>& items)
+        // 3.28.1: the area the Organiser arranges in - the main window's screen, below its menu bar when the main window is not one of the windows
+        // being arranged (it stays where it is, full screen or not). "Read from screen" measures against the same area, so a layout read from the
+        // screen comes back exactly as it was.
+        auto arrangeArea = [this] (bool mainIncluded)
         {
             auto area = juce::Desktop::getInstance().getDisplays().getDisplayForRect (mainWindow->getBounds())->userArea;
-            bool mainIncluded = false;
-            for (auto& it : items) if (it.first == "main") mainIncluded = true;
             if (! mainIncluded)
-            {
-                // the main window stays exactly as it is (full screen or not); the other windows are arranged below its menu bar
-                if (mainWindow->isMinimised()) mainWindow->setMinimised (false);
                 if (auto* mc = dynamic_cast<MainComponent*> (mainWindow->getContentComponent()))
                 {
                     const int bottom = mc->menuBarBottomOnScreen();
                     if (bottom > area.getY() && bottom < area.getBottom()) area.removeFromTop (juce::jlimit (0, area.getHeight() / 3, bottom - area.getY() + 2));
                 }
+            return area;
+        };
+        ctx->windowPlacesNow = [this, arrangeArea]
+        {
+            AppContext::WindowPlaces p;
+            if (mainWindow == nullptr) return p;
+            const auto screen = juce::Desktop::getInstance().getDisplays().getDisplayForRect (mainWindow->getBounds())->userArea;
+            std::vector<std::pair<juce::String, juce::Rectangle<int>>> found;
+            for (auto& [key, w] : windows)
+            {
+                if (w == nullptr || key == "organiser" || key == "takedisplay" || ! w->isVisible() || w->isMinimised() || DockHub::get().contains (w.get())) continue;
+                const auto b = w->getBounds();
+                if (b.getWidth() < 160 || b.getHeight() < 100 || ! b.intersects (screen)) continue;
+                if (b.getIntersection (screen).getWidth() * b.getIntersection (screen).getHeight() < b.getWidth() * b.getHeight() / 2) continue;   // mostly on another screen
+                found.push_back ({ key, b });
             }
+            // the main window counts only when it can be seen: hidden under an edit window and a mixer that fill the screen it is left out (3.28.1)
+            bool mainIn = false;
+            if (! mainWindow->isMinimised())
+            {
+                std::vector<std::array<int, 4>> others;
+                for (auto& [key, b] : found) others.push_back ({ b.getX(), b.getY(), b.getWidth(), b.getHeight() });
+                const auto mb = mainWindow->getBounds();
+                mainIn = coveredFraction (mb.getX(), mb.getY(), mb.getWidth(), mb.getHeight(), others) < 0.6f;
+            }
+            p.area = arrangeArea (mainIn);
+            if (mainIn) p.windows.push_back ({ "main", mainWindow->getBounds() });
+            for (auto& f : found) p.windows.push_back (f);
+            return p;
+        };
+        ctx->placeWindows = [this, arrangeArea] (const std::vector<std::pair<juce::String, juce::Rectangle<float>>>& items)
+        {
+            bool mainIncluded = false;
+            for (auto& it : items) if (it.first == "main") mainIncluded = true;
+            if (! mainIncluded && mainWindow->isMinimised()) mainWindow->setMinimised (false);     // the main window stays exactly as it is (full screen or not); the others go below its menu bar
+            const auto area = arrangeArea (mainIncluded);
             for (auto& it : items)                                         // windows that are not open yet are opened first
             {
                 if (windows.find (it.first) != windows.end() || it.first == "main") continue;
@@ -391,18 +408,36 @@ public:
                 else if (it.first.startsWith ("edit:")) openEdit (id);
                 else if (it.first.startsWith ("mixer:")) openMixer (id);
             }
+            std::vector<juce::DocumentWindow*> wins; std::vector<PlacedWindow> cells;
             for (auto& [key, cell] : items)
             {
                 juce::DocumentWindow* w = key == "main" ? static_cast<juce::DocumentWindow*> (mainWindow.get()) : nullptr;
                 if (w == nullptr) { auto it = windows.find (key); if (it != windows.end()) w = it->second.get(); }
                 if (w == nullptr) continue;
-                const juce::Rectangle<int> r (area.getX() + (int) std::round (cell.getX() * area.getWidth()), area.getY() + (int) std::round (cell.getY() * area.getHeight()),
-                                              (int) std::round (cell.getWidth() * area.getWidth()), (int) std::round (cell.getHeight() * area.getHeight()));
+                PlacedWindow pw;
+                pw.x = area.getX() + (int) std::round (cell.getX() * area.getWidth()); pw.y = area.getY() + (int) std::round (cell.getY() * area.getHeight());
+                pw.w = (int) std::round (cell.getWidth() * area.getWidth()); pw.h = (int) std::round (cell.getHeight() * area.getHeight());
+                if (auto* c = w->getConstrainer()) { pw.minW = c->getMinimumWidth(); pw.minH = c->getMinimumHeight(); }       // (3.28.1: a window that cannot be as small as its part)
+                wins.push_back (w); cells.push_back (pw);
+            }
+            const int grown = placeInCells (cells, area.getX(), area.getY(), area.getWidth(), area.getHeight());
+            juce::StringArray grownNames;
+            for (size_t i = 0; i < wins.size(); ++i)
+            {
+                auto* w = wins[i]; const auto& c = cells[i];
                 DockHub::get().show (w);                           // a minimised window comes back from the bar
                 if (w->isMinimised()) w->setMinimised (false);
                 if (w->isFullScreen()) w->setFullScreen (false);
-                w->setBounds (r);
+                w->setBounds (c.px, c.py, c.pw, c.ph);
+                if (c.pw > c.w || c.ph > c.h) grownNames.add (w->getName());
+                // whatever Windows made of it, all of it stays on the screen (its close box too)
+                auto b = w->getBounds();
+                if (b.getRight() > area.getRight()) b.setX (juce::jmax (area.getX(), area.getRight() - b.getWidth()));
+                if (b.getBottom() > area.getBottom()) b.setY (juce::jmax (area.getY(), area.getBottom() - b.getHeight()));
+                if (b != w->getBounds()) w->setTopLeftPosition (b.getX(), b.getY());
             }
+            juce::ignoreUnused (grown);
+            return grownNames;
         };
         ctx->showScope = [this] (const juce::Uuid& id)
         {

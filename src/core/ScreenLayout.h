@@ -311,4 +311,62 @@ inline LayoutDef layoutFromWindows (std::vector<std::pair<juce::String, FracRect
     }
     return best;
 }
+
+/** 3.28.1: a window being put into a part of the screen, in pixels: the part it was given ('cell'), the smallest the window can be, and where it
+    ends up ('placed'). */
+struct PlacedWindow
+{
+    int x = 0, y = 0, w = 0, h = 0;          // the cell
+    int minW = 0, minH = 0;                  // the window's smallest size (0: no limit)
+    int px = 0, py = 0, pw = 0, ph = 0;      // where it is put
+    int right() const noexcept { return x + w; }
+    int bottom() const noexcept { return y + h; }
+    int pright() const noexcept { return px + pw; }
+    int pbottom() const noexcept { return py + ph; }
+};
+
+/** 3.28.1: puts each window into its cell, allowing for its smallest size. A window that cannot be as small as its cell keeps the cell's far edge
+    (its right / bottom edge stays where the cell's is, so it stays on the screen: Windows used to enlarge it from its left edge instead, and the extra
+    went off the right of the screen with the close box) and the neighbour whose cell ends where this one starts is made narrower / shorter to leave
+    it room. Nothing is ever placed outside the area (ax, ay, aw, ah). Returns how many windows needed more than their part. */
+inline int placeInCells (std::vector<PlacedWindow>& wins, int ax, int ay, int aw, int ah)
+{
+    int grown = 0;
+    for (auto& w : wins) { w.px = w.x; w.py = w.y; w.pw = w.w; w.ph = w.h; }
+    for (size_t i = 0; i < wins.size(); ++i)
+    {
+        auto& w = wins[i];
+        const int needW = std::max (w.w, w.minW), needH = std::max (w.h, w.minH);
+        if (needW <= w.w && needH <= w.h) continue;
+        ++grown;
+        // keep the far edge, then keep the whole window within the area
+        if (needW > w.w) { w.pw = std::min (needW, aw); w.px = std::max (ax, std::min (w.right() - w.pw, ax + aw - w.pw)); }
+        if (needH > w.h) { w.ph = std::min (needH, ah); w.py = std::max (ay, std::min (w.bottom() - w.ph, ay + ah - w.ph)); }
+        for (size_t j = 0; j < wins.size(); ++j)
+        {
+            if (j == i) continue;
+            auto& o = wins[j];
+            const bool rows = o.y < w.bottom() && o.bottom() > w.y, cols = o.x < w.right() && o.right() > w.x;     // the cells share rows / columns
+            if (needW > w.w && rows && o.right() <= w.x + 1 && o.pright() > w.px) o.pw = std::max (o.minW > 0 ? std::min (o.minW, o.pw) : 1, w.px - o.px);   // the neighbour on the left gives way (never below its own smallest)
+            if (needH > w.h && cols && o.bottom() <= w.y + 1 && o.pbottom() > w.py) o.ph = std::max (o.minH > 0 ? std::min (o.minH, o.ph) : 1, w.py - o.py);  // the one above likewise
+        }
+    }
+    return grown;
+}
+
+/** 3.28.1: how much of rectangle r (pixels) the others cover, 0 .. 1 (sampled on a grid: the union of the others need not be worked out). "Read from
+    screen" leaves out a window that is hidden under the others (the main window behind an edit window and a mixer that fill the screen), which
+    used to be read as a third window and spoilt the shape. */
+inline float coveredFraction (int rx, int ry, int rw, int rh, const std::vector<std::array<int, 4>>& others)
+{
+    if (rw <= 0 || rh <= 0 || others.empty()) return 0.0f;
+    const int n = 24; int hit = 0;
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j)
+        {
+            const double px = rx + (i + 0.5) * rw / n, py = ry + (j + 0.5) * rh / n;
+            for (auto& o : others) if (px >= o[0] && px < o[0] + o[2] && py >= o[1] && py < o[1] + o[3]) { ++hit; break; }
+        }
+    return (float) hit / (float) (n * n);
+}
 } // namespace td

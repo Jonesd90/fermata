@@ -1,5 +1,6 @@
 #pragma once
 #include "AudioOps.h"
+#include <map>
 #include <set>
 #include <vector>
 
@@ -53,6 +54,23 @@ struct ImportPlan
 /** How the file names are to be read. Auto tries them all (SADiE, then Pyramix, then the take number Pro Tools-style, then the lengths); the others
     use that one way only (the import window's "Recorded with" choice, for when Auto guesses wrong). */
 enum class ImportNaming { Auto, Pyramix, ProTools, Sadie, ByLength };
+
+/** 3.28.1: "Use the existing audio tracks": import track key -> the index of the project track it goes on, in order - the n-th mono import track on the
+    project's n-th mono track, stereo likewise ('projectChannels' = each project track's channel count, in the project's order). An import track with
+    no project track of its kind left is not in the map (it gets a new track). The file names play no part. */
+inline std::map<juce::String, int> existingTrackIndices (const std::vector<int>& projectChannels, const ImportPlan& plan)
+{
+    std::map<juce::String, int> onto;
+    size_t nextMono = 0, nextStereo = 0;
+    for (auto& tr : plan.tracks)
+    {
+        size_t& next = tr.channels == 2 ? nextStereo : nextMono;
+        while (next < projectChannels.size() && projectChannels[next] != tr.channels) ++next;
+        if (next >= projectChannels.size()) continue;
+        onto[tr.key] = (int) next++;
+    }
+    return onto;
+}
 
 /** Looks at the files (header information only) and groups them. Pure logic: no files are read beyond what 'sources' already holds. */
 ImportPlan buildImportPlan (std::vector<ImportSource> sources, ImportNaming naming = ImportNaming::Auto);

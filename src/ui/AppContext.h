@@ -217,7 +217,7 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
         windowPlacesNow gives the windows on that screen as they are (for "save how the windows are now"): the screen area, and each window's bounds. */
     struct WindowEntry { juce::String key, title, kind; bool open = false; int recency = -1; };
     std::function<std::vector<WindowEntry>()> listWindows;
-    std::function<void (const std::vector<std::pair<juce::String, juce::Rectangle<float>>>&)> placeWindows;
+    std::function<juce::StringArray (const std::vector<std::pair<juce::String, juce::Rectangle<float>>>&)> placeWindows;     // (3.28.1: returns the windows that needed more room than their part)
     struct WindowPlaces { juce::Rectangle<int> area; std::vector<std::pair<juce::String, juce::Rectangle<int>>> windows; };
     std::function<WindowPlaces()> windowPlacesNow;
     /** Highlights this file in the Media window (if it is open; otherwise it is remembered for when it opens). */

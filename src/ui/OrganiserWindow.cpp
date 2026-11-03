@@ -424,20 +424,53 @@ void OrganiserComponent::arrange()
         placements.push_back ({ key, { cells[(size_t) c].x, cells[(size_t) c].y, cells[(size_t) c].w, cells[(size_t) c].h } });
     }
     if (placements.empty()) { setStatus ("Click a part of the picture and choose a window for it first.", true); return; }
-    if (app.placeWindows) app.placeWindows (placements);
+    juce::StringArray grown;
+    if (app.placeWindows) grown = app.placeWindows (placements);
     juce::String msg = juce::String (placements.size()) + (placements.size() == 1 ? " window arranged." : " windows arranged.");
+    if (! grown.isEmpty()) msg += "  " + grown.joinIntoString (", ") + (grown.size() == 1 ? " cannot be as small as its part: it keeps its smallest size and its neighbour makes room." : " cannot be as small as their parts: they keep their smallest size and their neighbours make room.");
     if (! leftOut.isEmpty()) msg += "  Nothing for: " + leftOut.joinIntoString (", ") + " (no such window in this project).";
     setStatus (msg, ! leftOut.isEmpty());
 }
 
+/** 3.28.1: "Save as..." saves the picture; moved the windows by hand since the last Arrange and the picture no longer shows them. So when the windows on the
+    screen are not where the picture has them, the screen is read into the picture first (what "Read from screen" does), and the status line says so. */
+bool OrganiserComponent::screenMatchesPicture() const
+{
+    if (! app.windowPlacesNow) return true;
+    const auto now = app.windowPlacesNow();
+    if (now.windows.empty() || now.area.isEmpty()) return true;
+    const auto cells = picture.division().cells();
+    const auto& refs = const_cast<ScreenPicture&> (picture).refs();
+    int compared = 0;
+    for (int c = 0; c < (int) cells.size() && c < (int) refs.size(); ++c)
+    {
+        const auto key = resolve (refs[(size_t) c]);
+        if (key.isEmpty()) continue;
+        for (auto& [k, b] : now.windows)
+        {
+            if (k != key) continue;
+            ++compared;
+            const auto r = b.getIntersection (now.area);
+            const FracRect have { (float) (r.getX() - now.area.getX()) / (float) now.area.getWidth(), (float) (r.getY() - now.area.getY()) / (float) now.area.getHeight(),
+                                  (float) r.getWidth() / (float) now.area.getWidth(), (float) r.getHeight() / (float) now.area.getHeight() };
+            const auto& want = cells[(size_t) c];
+            const float inter = want.intersection (have).area(), uni = want.area() + have.area() - inter;
+            if (uni <= 0.0f || inter / uni < 0.9f) return false;          // more than a little out: the person moved it
+        }
+    }
+    return compared > 0 || now.windows.size() <= 1;                       // (none of the picture's windows on the screen: nothing to compare - keep the picture)
+}
+
 void OrganiserComponent::saveAs()
 {
+    bool readFirst = false;
+    if (! screenMatchesPicture()) { saveFromScreen(); readFirst = true; }
     auto* aw = new juce::AlertWindow ("Save layout", "A name for this layout (saved with the project):", juce::MessageBoxIconType::NoIcon);
     aw->addTextEditor ("n", loadedBuiltIn || loadedName.isEmpty() ? juce::String ("My layout") : loadedName);
     aw->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
     aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
     juce::Component::SafePointer<OrganiserComponent> safe (this);
-    aw->enterModalState (true, juce::ModalCallbackFunction::create ([safe, aw] (int res)
+    aw->enterModalState (true, juce::ModalCallbackFunction::create ([safe, aw, readFirst] (int res)
     {
         const auto name = aw->getTextEditorContents ("n").trim();
         delete aw;
@@ -450,7 +483,7 @@ void OrganiserComponent::saveAs()
         safe->app.project.markDirty();
         safe->loadedName = name; safe->loadedBuiltIn = false;
         safe->rebuildRows();
-        safe->setStatus (replaced ? "Layout \"" + name + "\" updated." : "Layout \"" + name + "\" saved with the project.");
+        safe->setStatus ((replaced ? "Layout \"" + name + "\" updated." : "Layout \"" + name + "\" saved with the project.") + (readFirst ? "  (The windows as they are on the screen now, read into the picture first.)" : juce::String()));
     }));
 }
 

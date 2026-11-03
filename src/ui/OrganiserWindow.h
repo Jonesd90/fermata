@@ -79,6 +79,7 @@ private:
     juce::String resolve (const WindowRef&) const;
     void arrange();
     void saveAs();
+    bool screenMatchesPicture() const;                       // 3.28.1: are the picture's windows where the picture has them?
     void saveFromScreen();
     void deleteLayout();
     void setStatus (const juce::String&, bool warning = false);

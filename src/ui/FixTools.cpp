@@ -149,7 +149,19 @@ public:
                               "A file goes on the project's track whose name its name ends with, once the numbers at the end are taken off; a file with no such "
                               "track gets a track of its own (named without the numbers, shared by the takes). The takes are still told apart by their lengths.");
         if (auto* st = app.props.getUserSettings()) byNameBox.setToggleState (st->getBoolValue ("importByTrackName", false), juce::dontSendNotification);
-        byNameBox.onClick = [this] { if (auto* st = app.props.getUserSettings()) st->setValue ("importByTrackName", byNameBox.getToggleState()); refreshSummary(); };
+        byNameBox.onClick = [this] { if (auto* st = app.props.getUserSettings()) st->setValue ("importByTrackName", byNameBox.getToggleState()); if (byNameBox.getToggleState()) existingBox.setToggleState (false, juce::dontSendNotification); refreshSummary(); };
+        // 3.28.1: the files go on the audio tracks the project already has, in order, whatever the files are called (mixing one piece after another, each
+        // a multitrack of the same microphones: every piece used to make its own set of tracks). The project's track names are kept.
+        addAndMakeVisible (existingBox);
+        existingBox.setButtonText ("Use the existing audio tracks: the files go on the project's tracks in order, whatever they are called (no new tracks, the tracks keep their names)");
+        existingBox.setTooltip ("The first file of each take goes on the project's first audio track, the second on the second, and so on - a stereo file on the next stereo track, a mono file on the next mono one. "
+                                "The file names play no part and the tracks keep the names they have in Fermata. Only when there are more files than tracks are new tracks added for the rest. "
+                                "For mixing several pieces recorded with the same microphones: import each piece into its own edit window and they all share the one set of tracks (and the one mixer).");
+        if (auto* st = app.props.getUserSettings()) existingBox.setToggleState (st->getBoolValue ("importOntoExisting", false), juce::dontSendNotification);
+        existingBox.onClick = [this] { if (auto* st = app.props.getUserSettings()) st->setValue ("importOntoExisting", existingBox.getToggleState()); if (existingBox.getToggleState()) byNameBox.setToggleState (false, juce::dontSendNotification); refreshSummary(); };
+        existingBox.setVisible (! app.project.tracks.empty());
+        if (app.project.tracks.empty()) existingBox.setToggleState (false, juce::dontSendNotification);
+        if (existingBox.getToggleState()) byNameBox.setToggleState (false, juce::dontSendNotification);
         addAndMakeVisible (copyBox); addAndMakeVisible (linkBox);
         copyBox.setButtonText ("Copy the audio into this project's folder (recommended)"); linkBox.setButtonText ("Use the audio files where they are (nothing is copied)");
         copyBox.setRadioGroupId (4711); linkBox.setRadioGroupId (4711);
@@ -223,7 +235,8 @@ public:
         refreshSummary();
     }
     bool linking() const { return linkBox.getToggleState(); }
-    bool byName() const { return byNameBox.getToggleState(); }
+    bool byName() const { return byNameBox.getToggleState() && ! ontoExisting(); }
+    bool ontoExisting() const { return existingBox.isVisible() && existingBox.getToggleState(); }
     bool splitting() const { return pieceBox.isVisible() && pieceBox.getToggleState(); }
     /** The tracks in the order the person chose (anything not in that list keeps its place after the others). */
     void applyOrder (ImportPlan& pl) const
@@ -261,7 +274,19 @@ public:
               << ":  " << juce::String ((int) tk.parts.size()) << " track(s),  " << formatTimeShort ((double) tk.length / juce::jmax (1.0, tk.sampleRate), 2)
               << ",  " << juce::String (tk.sampleRate, 0) << " Hz\n";
         }
-        if (byName())
+        if (ontoExisting())
+        {
+            // what the tick box does: the files on the project's tracks, in order
+            t << "\nTracks (the project's own, in order; the files' names play no part):\n";
+            const auto onto = existingTrackMap (app.project, plan);
+            for (auto& tr : plan.tracks)
+            {
+                auto it = onto.find (tr.key);
+                const auto* pt = it != onto.end() ? app.project.findTrack (it->second) : nullptr;
+                t << "   " << (pt != nullptr ? pt->name : tr.name + "  (new track: no " + (tr.channels == 2 ? "stereo" : "mono") + " track left)") << "   <   " << tr.name << (tr.channels == 2 ? "  (stereo)" : "") << "\n";
+            }
+        }
+        else if (byName())
         {
             // what the tick box does: each file's track, by the name in the file name
             t << "\nTracks (each file on the track named in its file name; new ones are added):\n";
@@ -298,6 +323,7 @@ public:
         cancel.setBounds (bottom.removeFromRight (100)); bottom.removeFromRight (8); doIt.setBounds (bottom.removeFromRight (180));
         linkBox.setBounds (r.removeFromBottom (24)); copyBox.setBounds (r.removeFromBottom (24)); r.removeFromBottom (4);
         byNameBox.setBounds (r.removeFromBottom (24)); r.removeFromBottom (4);
+        if (existingBox.isVisible()) { existingBox.setBounds (r.removeFromBottom (24)); r.removeFromBottom (4); }
         { auto row = r.removeFromBottom (26); namingCap.setBounds (row.removeFromLeft (110)); namingBox.setBounds (row.removeFromLeft (juce::jmin (440, row.getWidth())).reduced (0, 1)); r.removeFromBottom (4); }
         if (pieceBox.isVisible()) pieceBox.setBounds (r.removeFromBottom (24));
         if (numBox.isVisible()) numBox.setBounds (r.removeFromBottom (24));
@@ -315,7 +341,7 @@ private:
     std::vector<ImportSource> sources; juce::StringArray problems;     // the files as read (header information), and what could not be read
     ImportPlan basePlan; std::vector<juce::String> trackOrder;
     juce::Label namingCap; juce::ComboBox namingBox;
-    juce::ToggleButton joinBox, numBox, copyBox, linkBox, pieceBox, byNameBox; juce::TextButton orderButton { "Track order..." };
+    juce::ToggleButton joinBox, numBox, copyBox, linkBox, pieceBox, byNameBox, existingBox; juce::TextButton orderButton { "Track order..." };
     std::vector<StereoPairCandidate> pairCands; juce::OwnedArray<juce::ToggleButton> pairBoxes; juce::Component pairHolder; juce::Viewport pairView;
     void start()
     {
@@ -334,7 +360,7 @@ private:
                 st->setValue ("importMonoPairs", keep.joinIntoString ("|"));
             }
         doIt.setEnabled (false); status.setText (linking() ? "Reading the files..." : "Copying the audio...", juce::dontSendNotification);
-        const bool link = linking(), named = byName();
+        const bool link = linking(); const int named = ontoExisting() ? 2 : byName() ? 1 : 0;     // (3.28.1: 2 = the existing tracks, in order)
         applyOrder (plan);
         const bool reorder = ! trackOrder.empty();
         if (reorder) if (auto* st = app.props.getUserSettings()) { juce::StringArray ks; for (auto& k : trackOrder) ks.add (k); st->setValue ("importTrackOrder", ks.joinIntoString ("|")); }
@@ -432,10 +458,23 @@ private:
     /** Finds (by name and channel count) or creates the project track of each import track. 'byName' (the "one set of tracks" box): a name that is
         not a track's goes on the track named in it (Project::trackNamedIn: "Rorate Caeli SPOT4 19 18" -> SPOT4), else on a new track named without
         the numbers at its end, shared by every import track with that name; and two files of one take never go on the same track. */
-    static std::map<juce::String, juce::Uuid> mapTracks (AppContext& app, const ImportPlan& plan, TakeWindowDef* w, bool byName = false)
+    /** 3.28.1: "Use the existing audio tracks": import track -> project track, in order - the n-th mono import track on the n-th mono track of the project,
+        stereo likewise. An import track with no project track left is not in the map (it gets a new track). Pure, so the summary can show it. */
+    static std::map<juce::String, juce::Uuid> existingTrackMap (const Project& p, const ImportPlan& plan)
     {
+        std::vector<int> channels; for (auto& t : p.tracks) channels.push_back (t.channelCount());
+        std::map<juce::String, juce::Uuid> onto;
+        for (auto& [key, index] : existingTrackIndices (channels, plan)) onto[key] = p.tracks[(size_t) index].id;
+        return onto;
+    }
+
+    /** mode: 0 = by name (a new track for a name the project has not got), 1 = "one set of tracks" (byName below), 2 = the existing tracks in order (3.28.1). */
+    static std::map<juce::String, juce::Uuid> mapTracks (AppContext& app, const ImportPlan& plan, TakeWindowDef* w, int mode = 0)
+    {
+        const bool byName = mode == 1;
         auto& p = app.project;
         std::map<juce::String, juce::Uuid> trackFor;
+        const auto existing = mode == 2 ? existingTrackMap (p, plan) : std::map<juce::String, juce::Uuid>();
         std::set<int> usedInputs; for (auto& t : p.tracks) for (int c = 0; c < t.channelCount(); ++c) if (t.inputOf (c) >= 0) usedInputs.insert (t.inputOf (c));
         auto makeTrack = [&] (const juce::String& trackName, int channels) -> juce::Uuid
         {
@@ -453,7 +492,8 @@ private:
         for (auto& tr : plan.tracks)
         {
             const TrackDef* found = nullptr;
-            for (auto& t : p.tracks) if (t.name.equalsIgnoreCase (tr.name) && t.channelCount() == tr.channels) { found = &t; break; }
+            if (mode == 2) { if (auto it = existing.find (tr.key); it != existing.end()) found = p.findTrack (it->second); }     // (the next track of the project, by order alone)
+            else for (auto& t : p.tracks) if (t.name.equalsIgnoreCase (tr.name) && t.channelCount() == tr.channels) { found = &t; break; }
             if (found == nullptr && byName) found = p.trackNamedIn (tr.name, tr.channels);
             juce::Uuid id;
             if (found != nullptr) id = found->id;
@@ -492,7 +532,7 @@ private:
                              + (folder != juce::File() ? "\n\nThe files copied for it are still in " + folder.getFullPathName() + " (nothing was deleted); import them again into another window if you want them." : juce::String()));
     }
     /** Edit window import: one piece of the edit per imported take (placed one after the other), each file on its own track. */
-    static void finishImportToEdit (AppContext& app, const juce::Uuid& eid, const ImportPlan& plan, const std::vector<std::vector<juce::File>>& files, bool reorder = false, bool byName = false)
+    static void finishImportToEdit (AppContext& app, const juce::Uuid& eid, const ImportPlan& plan, const std::vector<std::vector<juce::File>>& files, bool reorder = false, int byName = 0)
     {
         auto* e = app.project.findEdit (eid);
         if (e == nullptr) { importTargetGone ("edit", files); return; }
@@ -522,7 +562,7 @@ private:
         app.project.changed();
     }
 
-    static void finishImport (AppContext& app, const juce::Uuid& wid, const ImportPlan& plan, const std::vector<std::vector<juce::File>>& files, bool reorder = false, bool byName = false)
+    static void finishImport (AppContext& app, const juce::Uuid& wid, const ImportPlan& plan, const std::vector<std::vector<juce::File>>& files, bool reorder = false, int byName = 0)
     {
         auto* w = app.project.findTakeWindow (wid);
         if (w == nullptr) { importTargetGone ("take window", files); return; }

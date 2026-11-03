@@ -12527,6 +12527,58 @@ int main()
         CHECK (tuning::nearestNote (72.0, 440.0) == "D2 -34 cents");                 // (D2 = 73.42 Hz)
     }
 
+    SECTION ("3.28.1 the Display Organiser places windows by their smallest size: a mixer that cannot be as narrow as its part keeps its right edge on the screen and the edit window makes room");
+    {
+        // the case from the screen: 2560 wide, edit | mixer at 60 %, the mixer's smallest width 1096 > its 1024 part
+        std::vector<PlacedWindow> w (2);
+        w[0].x = 0; w[0].y = 47; w[0].w = 1536; w[0].h = 1000; w[0].minW = 700; w[0].minH = 480;
+        w[1].x = 1536; w[1].y = 47; w[1].w = 1024; w[1].h = 1000; w[1].minW = 1096; w[1].minH = 260;
+        CHECK (placeInCells (w, 0, 47, 2560, 1000) == 1);
+        CHECK (w[1].pw == 1096 && w[1].pright() == 2560 && w[1].px == 1464);        // the mixer: its smallest width, right edge on the screen
+        CHECK (w[0].px == 0 && w[0].pw == 1464 && w[0].pright() == w[1].px);        // the edit window gives way, no overlap
+        CHECK (w[0].ph == 1000 && w[1].ph == 1000 && w[0].py == 47 && w[1].py == 47);
+        // both fit: nothing moves
+        w[1].minW = 1000; CHECK (placeInCells (w, 0, 47, 2560, 1000) == 0 && w[0].pw == 1536 && w[1].pw == 1024 && w[1].px == 1536);
+        // the neighbour never goes below its own smallest width: then they overlap rather than one leaving the screen
+        w[1].minW = 2000; CHECK (placeInCells (w, 0, 47, 2560, 1000) == 1 && w[1].pw == 2000 && w[1].pright() == 2560 && w[0].pw == 700 && w[0].px == 0);
+        // wider than the whole area: as wide as the area, from its left edge
+        w[1].minW = 3000; CHECK (placeInCells (w, 0, 47, 2560, 1000) == 1 && w[1].pw == 2560 && w[1].px == 0);
+        // above / below: a window too short for its part keeps its bottom edge and the one above gives way
+        std::vector<PlacedWindow> v (2);
+        v[0].x = 0; v[0].y = 0; v[0].w = 2560; v[0].h = 500; v[0].minH = 200;
+        v[1].x = 0; v[1].y = 500; v[1].w = 2560; v[1].h = 500; v[1].minH = 700;
+        CHECK (placeInCells (v, 0, 0, 2560, 1000) == 1 && v[1].ph == 700 && v[1].py == 300 && v[1].pbottom() == 1000 && v[0].ph == 300 && v[0].py == 0);
+        // a window in another row is not touched by a neighbour's growth (1 above 2: the top window keeps its size when the bottom right grows)
+        std::vector<PlacedWindow> t (3);
+        t[0] = { 0, 0, 2560, 400, 0, 0 }; t[1] = { 0, 400, 1280, 600, 0, 0 }; t[2] = { 1280, 400, 1280, 600, 1500, 0 };
+        CHECK (placeInCells (t, 0, 0, 2560, 1000) == 1 && t[0].pw == 2560 && t[0].ph == 400 && t[2].pw == 1500 && t[2].px == 1060 && t[1].pw == 1060);
+
+        // the main window hidden under the others is left out of "Read from screen"
+        std::vector<std::array<int, 4>> others = { { 0, 47, 1449, 1000 }, { 1461, 47, 1090, 1000 } };
+        CHECK (coveredFraction (0, 0, 2560, 1047, others) > 0.9f);                 // the main window under an edit window and a mixer
+        CHECK (coveredFraction (0, 0, 2560, 500, { { 0, 500, 2560, 500 } }) == 0.0f);   // a take window below it: not covered
+        CHECK (coveredFraction (0, 0, 2560, 1000, {}) == 0.0f);
+        CHECK (std::abs (coveredFraction (0, 0, 1000, 1000, { { 0, 0, 500, 1000 } }) - 0.5f) < 0.03f);
+    }
+
+    SECTION ("3.28.1 import onto the existing audio tracks: the files go on the project's tracks in order, mono on mono and stereo on stereo, whatever they are called");
+    {
+        ImportPlan pl;
+        auto add = [&pl] (const char* key, int ch) { ImportTrack t; t.key = key; t.name = key; t.channels = ch; pl.tracks.push_back (t); };
+        add ("Piece2 mic 01", 1); add ("Piece2 mic 02", 1); add ("Piece2 AB", 2); add ("Piece2 mic 03", 1);
+        // the project: OMNI (stereo), 1, 2, 3 (mono)
+        const std::vector<int> project { 2, 1, 1, 1 };
+        const auto m = existingTrackIndices (project, pl);
+        CHECK (m.size() == 4 && m.at ("Piece2 mic 01") == 1 && m.at ("Piece2 mic 02") == 2 && m.at ("Piece2 AB") == 0 && m.at ("Piece2 mic 03") == 3);
+        // more files than tracks: the rest are not in the map (they get new tracks)
+        add ("Piece2 mic 04", 1); add ("Piece2 ORTF", 2);
+        const auto m2 = existingTrackIndices (project, pl);
+        CHECK (m2.size() == 4 && ! m2.count ("Piece2 mic 04") && ! m2.count ("Piece2 ORTF"));
+        // no project tracks at all: nothing mapped; a stereo file never goes on a mono track
+        CHECK (existingTrackIndices ({}, pl).empty());
+        CHECK (existingTrackIndices ({ 1, 1 }, pl).count ("Piece2 AB") == 0 && existingTrackIndices ({ 1, 1 }, pl).size() == 2);
+    }
+
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;
 }
