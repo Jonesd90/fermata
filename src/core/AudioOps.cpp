@@ -1,4 +1,5 @@
 #include "AudioOps.h"
+#include "Workers.h"
 #include <mutex>
 #include <set>
 #include "Dither.h"
@@ -553,17 +554,22 @@ TakeFixResult fixTakeFiles (juce::AudioFormatManager& fm, const std::vector<juce
                             const std::vector<juce::Uuid>& trackOf)
 {
     TakeFixResult r;
-    for (size_t i = 0; i < sources.size(); ++i)
+    // 3.30.0: the files side by side, on as many threads as the machine has to spare (each file's work is its own: its reader, its ops, its new file)
+    std::vector<juce::File> made (sources.size());
+    std::atomic<int> done { 0 };
+    r.error = workers::forEach ((int) sources.size(), [&] (int i) -> juce::String
     {
-        if (job != nullptr) { if (job->cancelled()) { r.error = "Cancelled."; break; } job->setProgress ((float) i / (float) juce::jmax ((size_t) 1, sources.size())); }
         juce::String err;
         auto mine = ops;
-        for (auto& o : mine) if (o.spec.kind == FixSpec::Kind::Denoise) o.spec.dnProfiles = profilesFor ? profilesFor (i, o.spec) : nullptr;
-        for (auto& o : mine) if (o.spec.kind == FixSpec::Kind::Paste) resolvePaste (o.spec, i < trackOf.size() ? trackOf[i] : juce::Uuid::null());
-        auto f = fixWholeFile (fm, sources[i], mine, dests[i], err);
-        if (f == juce::File()) { r.error = err; break; }
-        r.newFiles.push_back (f);
-    }
+        for (auto& o : mine) if (o.spec.kind == FixSpec::Kind::Denoise) o.spec.dnProfiles = profilesFor ? profilesFor ((size_t) i, o.spec) : nullptr;
+        for (auto& o : mine) if (o.spec.kind == FixSpec::Kind::Paste) resolvePaste (o.spec, (size_t) i < trackOf.size() ? trackOf[(size_t) i] : juce::Uuid::null());
+        auto f = fixWholeFile (fm, sources[(size_t) i], mine, dests[(size_t) i], err);
+        if (f == juce::File()) return err.isNotEmpty() ? err : juce::String ("Could not write " + dests[(size_t) i].getFileName());
+        made[(size_t) i] = f;
+        if (job != nullptr) job->setProgress ((float) (done.fetch_add (1) + 1) / (float) juce::jmax ((size_t) 1, sources.size()));
+        return {};
+    }, [job] { return job != nullptr && job->cancelled(); });
+    for (auto& f : made) if (f != juce::File()) r.newFiles.push_back (f);
     if (r.error.isNotEmpty()) { for (auto& f : r.newFiles) f.deleteFile(); r.newFiles.clear(); }
     return r;
 }

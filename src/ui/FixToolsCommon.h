@@ -13,6 +13,7 @@
 #include "../core/EditFix.h"
 #include "../core/SpectralPyramid.h"
 #include "../core/BoxEdges.h"
+#include "../core/Workers.h"
 #include "../core/Consonants.h"
 #include "TimeReadout.h"
 #include <array>
@@ -493,18 +494,24 @@ inline bool prepRegionJob (const juce::File& folder, const EditRegion& r, Region
 inline juce::String runRegionJob (RegionJob& j, AudioJob& job, float p0, float p1)        // (what to do is in j.ops, made by prepRegionJob)
 {
     j.results.clear();
-    for (size_t k = 0; k < j.src.size(); ++k)
+    // 3.30.0: the piece's files side by side, on as many threads as the machine has to spare (each file's work is its own: its reader, its ops, its new file)
+    std::vector<audioops::PieceResult> made (j.src.size());
+    std::atomic<int> done { 0 };
+    const auto err = workers::forEach ((int) j.src.size(), [&] (int ki) -> juce::String
     {
-        if (job.cancelled()) { for (auto& r : j.results) r.file.deleteFile(); j.results.clear(); return "Cancelled."; }
-        job.setProgress (p0 + (p1 - p0) * (float) k / (float) j.src.size());
-        juce::String err;
+        const size_t k = (size_t) ki;
+        juce::String e;
         auto ops = j.ops;                                       // a denoise: this file's own room-tone profiles go into its ops
         for (auto& o : ops) if (o.spec.kind == FixSpec::Kind::Denoise) o.spec.dnProfiles = j.profilesFor ? j.profilesFor (k, o.spec) : nullptr;
         for (auto& o : ops) if (o.spec.kind == FixSpec::Kind::Paste) audioops::resolvePaste (o.spec, k < j.trackOf.size() ? j.trackOf[k] : juce::Uuid::null());     // (its own track's channels of a pasted consonant)
-        auto res = audioops::fixPiece (formats(), j.src[k], j.fileStart[k], j.outFrom, j.outTo, ops, j.dest[k], err);
-        if (! res.ok) { for (auto& r : j.results) r.file.deleteFile(); j.results.clear(); return err; }
-        j.results.push_back (res);
-    }
+        auto res = audioops::fixPiece (formats(), j.src[k], j.fileStart[k], j.outFrom, j.outTo, ops, j.dest[k], e);
+        if (! res.ok) return e.isNotEmpty() ? e : juce::String ("Could not write " + j.dest[k].getFileName());
+        made[k] = res;
+        job.setProgress (p0 + (p1 - p0) * (float) (done.fetch_add (1) + 1) / (float) j.src.size());
+        return {};
+    }, [&job] { return job.cancelled(); });
+    if (err.isNotEmpty()) { for (auto& r : made) if (r.ok) r.file.deleteFile(); return err; }
+    for (auto& r : made) j.results.push_back (r);
     return {};
 }
 
@@ -680,6 +687,7 @@ inline juce::String attachRoomTone (std::vector<RegionJob>& jobs, const std::vec
     repair window's prepare, without the OUT / IN streams), the files made (job thread). */
 inline juce::String runRepairJobs (std::vector<RegionJob>& jobs, AudioJob& j)
 {
+    // (3.30.0: each piece's files run side by side inside runRegionJob; the pieces themselves one after another, so the progress reads in order)
     for (size_t i = 0; i < jobs.size(); ++i)
     {
         const auto err = runRegionJob (jobs[i], j, (float) i / (float) jobs.size(), (float) (i + 1) / (float) jobs.size());

@@ -1944,17 +1944,21 @@ private:
                             const auto d = SpectralRepair::consonantSides (tp, rate, (long) juce::jlimit ((juce::int64) 0, (juce::int64) L, t0), (long) juce::jlimit ((juce::int64) 0, (juce::int64) L, t1), fix.f0, fix.f1);
                             fix.repair.consonantBefore = d.first; fix.repair.consonantEdge = d.second;
                         }
-                        for (size_t i = 0; i < tracks->size(); ++i)
+                        // 3.30.0: the tracks side by side, on as many threads as the machine has to spare (each track's audio, settings and declick report are its own)
+                        std::atomic<int> doneTracks { 0 }; std::mutex repLock;
+                        const auto err = workers::forEach ((int) tracks->size(), [&] (int ti) -> juce::String
                         {
-                            if (j.cancelled()) return "Cancelled.";
-                            j.setProgress (((float) gi + (float) i / (float) tracks->size()) / (float) group.size());
+                            const size_t i = (size_t) ti;
                             std::vector<std::vector<float>> ch; ch.push_back (std::move ((*tracks)[i]));
                             auto fi = fix; if (i < dnProf.size()) fi.dnProfiles = dnProf[i];
                             if (fi.kind == FixSpec::Kind::Paste) audioops::resolvePaste (fi, i < trackIds.size() ? trackIds[i] : juce::Uuid::null());     // (the picture's row: the track's channels, averaged)
                             audioops::applyFix (ch, rate, (long) t0, (long) t1, fi, (long) (0.02 * rate));
                             (*tracks)[i] = std::move (ch[0]);
-                            if (fix.kind == FixSpec::Kind::Declick) { const auto r = SpectralRepair::lastDeclickReport(); out->rep.mended += r.mended; out->rep.lines += r.lines; out->rep.linesMended += r.linesMended; out->rep.linesLeft += r.linesLeft; }
-                        }
+                            if (fix.kind == FixSpec::Kind::Declick) { const auto r = SpectralRepair::lastDeclickReport(); std::lock_guard<std::mutex> g (repLock); out->rep.mended += r.mended; out->rep.lines += r.lines; out->rep.linesMended += r.linesMended; out->rep.linesLeft += r.linesLeft; }
+                            j.setProgress (((float) gi + (float) (doneTracks.fetch_add (1) + 1) / (float) tracks->size()) / (float) group.size());
+                            return juce::String();
+                        }, [&j] { return j.cancelled(); });
+                        if (err.isNotEmpty()) return err;
                         fix.dnProfiles = nullptr;                                                     // (the profiles are not part of the fix that is kept)
                         fix.pasteChannels = nullptr;                                                  // (nor is the one track's part of a pasted consonant: each file gets its own)
                         out->ops[gi].spec = fix;

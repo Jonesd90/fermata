@@ -38,6 +38,7 @@
 #include "../src/core/Mcu.h"
 #include "../src/core/Loudness.h"
 #include "../src/core/ScreenLayout.h"
+#include "../src/core/Workers.h"
 #include "../src/core/Tuning.h"
 #include "../src/core/PitchPipe.h"
 #include "../src/core/TimeAlign.h"
@@ -12646,6 +12647,37 @@ int main()
             std::vector<float> tiny ((size_t) (0.15 * sr), 0.01f);
             CHECK (denoise::learnProfile ({ tiny }, sr, quiet).valid());
         }
+    }
+
+    SECTION ("3.30.0 the offline jobs' threads scale with the machine: the processors less the audio's less one, never more than the items; every item done once, an error or a cancel stops the rest");
+    {
+        using workers::threadsFor;
+        CHECK (threadsFor (12, 24, 6) == 12 && threadsFor (40, 24, 6) == 16 && threadsFor (12, 14, 6) == 7);     // the studio PC: 24 threads, 6 reserved, one for the windows -> 17, so all 12 tracks at once (never past 16); a 14-thread one: 7
+        CHECK (threadsFor (12, 24, 0) == 12 && threadsFor (40, 24, 0) == 16);        // nothing reserved: 23, but never past the items or 16
+        CHECK (threadsFor (12, 4, 0) == 3 && threadsFor (12, 4, 2) == 1 && threadsFor (12, 2, 0) == 1 && threadsFor (12, 1, 0) == 1);     // a laptop; a reservation that leaves nothing
+        CHECK (threadsFor (1, 24, 0) == 1 && threadsFor (0, 24, 0) == 1 && threadsFor (3, 24, -5) == 3);
+        CHECK (threadsFor (8) >= 1 && threadsFor (8) <= 8);                           // the real machine: something sensible
+        // every item exactly once, whatever the thread count
+        for (int threads : { 1, 2, 5 })
+        {
+            std::vector<std::atomic<int>> hits (37); for (auto& h : hits) h = 0;
+            const auto err = workers::forEach (37, [&] (int i) { hits[(size_t) i]++; juce::Thread::sleep (1); return juce::String(); }, [] { return false; }, threads);
+            bool once = true; for (auto& h : hits) once = once && h.load() == 1;
+            CHECK (err.isEmpty() && once);
+        }
+        // an error: the first one comes back, and no item is started after it
+        {
+            std::atomic<int> started { 0 };
+            const auto err = workers::forEach (100, [&] (int i) { started++; juce::Thread::sleep (2); return i == 3 ? juce::String ("item 3 failed") : juce::String(); }, [] { return false; }, 2);
+            CHECK (err == "item 3 failed" && started.load() < 100);
+        }
+        // a cancel: "Cancelled.", the rest not started
+        {
+            std::atomic<int> started { 0 }; std::atomic<bool> cancel { false };
+            const auto err = workers::forEach (100, [&] (int) { if (started++ == 4) cancel = true; juce::Thread::sleep (2); return juce::String(); }, [&] { return cancel.load(); }, 2);
+            CHECK (err == "Cancelled." && started.load() < 100);
+        }
+        CHECK (workers::forEach (0, [] (int) { return juce::String ("never"); }, [] { return false; }).isEmpty());
     }
 
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
