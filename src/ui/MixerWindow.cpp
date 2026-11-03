@@ -1036,6 +1036,26 @@ public:
         if (a != nullptr) setTooltip ("Click the coloured bar to change this channel's colour (it is used in the take and edit windows too)");
         addAndMakeVisible (topPane); topPane.addAndMakeVisible (topContent);           // 3.26.0: the section above the fader line (it scrolls when it does not fit)
         topPane.setInterceptsMouseClicks (false, true); topContent.setInterceptsMouseClicks (false, true);     // (their own empty space is the strip's: its tooltip, the wheel)
+
+        // 3.28.0: the box that renames a bus from its name plate (hidden until a double-click on the plate; see startPlateRename)
+        plateEd.setFont (juce::FontOptions (11.5f, juce::Font::bold));
+        plateEd.setJustification (juce::Justification::centred);
+        plateEd.setSelectAllWhenFocused (true);
+        plateEd.onReturnKey = [this] { endPlateRename (true); };              // Enter: keep the new name
+        plateEd.onEscapeKey = [this] { endPlateRename (false); };             // Esc: back to the old one
+        plateEd.onFocusLost = [this] { endPlateRename (true); };              // a click elsewhere keeps it too (as the VCA and mixer name boxes do)
+        addChildComponent (plateEd);
+        plateTimer.fn = [this]
+        {   // the second click of a double-click did not come: it was a single click on the plate, which picks the colour as before
+            if (appPtr != nullptr && ! nodeId.isNull() && isShowing())
+                showColourPickerAt (*appPtr, nodeId, plateRect().translated (getScreenX(), getScreenY()));
+        };
+    }
+    ~StripBase() override
+    {
+        // (the box's callbacks reach this strip: they are cut before the box goes, so none can run on a half-destroyed strip)
+        plateTimer.stopTimer(); plateTimer.fn = nullptr;
+        plateEd.onReturnKey = nullptr; plateEd.onEscapeKey = nullptr; plateEd.onFocusLost = nullptr;
     }
     virtual void refreshFromModel() {}
     virtual void tick() {}
@@ -1156,8 +1176,16 @@ public:
     {
         if (appPtr == nullptr || nodeId.isNull()) return;
         if (plateRect().contains (e.getPosition()) && plateClicked (e)) return;          // an audio track's name plate: selects it (see StripGang)
-        const auto area = bandRect().contains (e.getPosition()) ? bandRect() : plateRect().contains (e.getPosition()) ? plateRect() : juce::Rectangle<int>();
+        const bool onPlate = plateRect().contains (e.getPosition());
+        const auto area = bandRect().contains (e.getPosition()) ? bandRect() : onPlate ? plateRect() : juce::Rectangle<int>();
         if (area.isEmpty()) return;
+        if (onPlate && plateRenamable() && ! e.mods.isPopupMenu())
+        {   // 3.28.0: a bus's name plate - a double-click renames the bus, so a single click's colour picker waits until a second click can no longer
+            // come (otherwise the picker would pop up under the first click of every double-click). The coloured bar at the top still opens it at once.
+            if (e.getNumberOfClicks() >= 2) { plateTimer.stopTimer(); startPlateRename(); }
+            else plateTimer.startTimer (juce::MouseEvent::getDoubleClickTimeout() + 20);
+            return;
+        }
         showColourPickerAt (*appPtr, nodeId, area.translated (getScreenX(), getScreenY()));
     }
     /** Selected strips have an outline: thin while they are only selected, bold and orange while Shift + Alt link them. */
@@ -1173,6 +1201,8 @@ public:
 protected:
     /** A click on the name plate: true if the strip dealt with it (else it is the colour picker, as on the coloured bar). */
     virtual bool plateClicked (const juce::MouseEvent&) { return false; }
+    /** 3.28.0: true for a strip whose name plate renames it on a double-click (the Int and Ext Bus strips: nodeId is the bus). */
+    virtual bool plateRenamable() const { return false; }
     /** 0: not selected; 1: selected; 2: selected and linked right now (Shift + Alt held). */
     virtual int gangLook() const { return 0; }
     virtual juce::String bandText() const { return {}; }
@@ -1202,7 +1232,8 @@ protected:
     {
         if (appPtr == nullptr) return;
         const double sr = appPtr->engine.getSampleRate() > 0 ? appPtr->engine.getSampleRate() : 48000.0;
-        setTooltip ("Click the coloured bar to change this channel's colour (it is used in the take and edit windows too)\n\n"
+        setTooltip ("Click the coloured bar to change this channel's colour (it is used in the take and edit windows too)"
+                    + juce::String (plateRenamable() ? ". Double-click the name at the bottom to rename it" : "") + "\n\n"
                     "Plug-in delay of this channel: " + juce::String (own) + " samples (" + juce::String (own * 1000.0 / sr, 2) + " ms). Fermata holds the shorter paths back by the same "
                     "amount (delay compensation), so everything stays in time. Longest path in this mixer: " + juce::String (appPtr->engine.mixerLatency (&m)) + " samples.");
     }
@@ -1247,6 +1278,40 @@ protected:
     };
     juce::Component topPane;                                                      // the part of the section in sight (it clips what is scrolled away)
     TopContent topContent { *this };
+
+private:
+    /** 3.28.0: renaming a bus from its name plate. A box opens over the plate with the name in it, all selected; Enter or a click elsewhere keeps what was
+        typed, Esc goes back. The name is the bus's one name - the same one the Project Designer edits - so every window shows the new one, and it is an undo
+        step. Not while recording (the Project Designer's design is locked then too); an empty name is refused. */
+    void startPlateRename()
+    {
+        if (appPtr == nullptr || appPtr->engine.isRecording()) return;
+        auto* b = appPtr->project.findBus (nodeId);
+        if (b == nullptr) return;
+        plateEditing = true;
+        plateEd.setText (b->name, juce::dontSendNotification);
+        plateEd.setBounds (plateRect().reduced (3, 3));
+        plateEd.setVisible (true); plateEd.toFront (false);
+        plateEd.grabKeyboardFocus();
+        plateEd.selectAll();
+    }
+    void endPlateRename (bool keep)
+    {
+        if (! plateEditing) return;
+        plateEditing = false;                      // (first: letting go of the keyboard below calls onFocusLost, which comes back here and must do nothing)
+        const auto typed = plateEd.getText().trim();
+        plateEd.giveAwayKeyboardFocus();           // (Space, R and the rest work again at once)
+        plateEd.setVisible (false);
+        if (! keep || appPtr == nullptr || appPtr->engine.isRecording()) return;
+        auto* b = appPtr->project.findBus (nodeId);
+        if (b == nullptr || typed.isEmpty() || typed == b->name) return;
+        b->name = typed;
+        appPtr->project.structureChanged();        // every window picks the new name up (the mixers are rebuilt later, from the message loop: never inside this call)
+    }
+    struct PlateTimer : public juce::Timer { std::function<void()> fn; void timerCallback() override { stopTimer(); if (fn) fn(); } };
+    juce::TextEditor plateEd;
+    PlateTimer plateTimer;
+    bool plateEditing = false;
 };
 
 /** The output of a strip, after its fader: an on / off button and the place it goes to ('Main' = every Ext Bus ticked as Main out, or any Int / Ext Bus).
@@ -1937,6 +2002,7 @@ public:
 protected:
     juce::String bandText() const override { return external ? "EXT BUS" : "INT BUS"; }
     juce::String plateText() const override { auto* b = app.project.findBus (busId); return b != nullptr ? b->name : juce::String(); }
+    bool plateRenamable() const override { return true; }                    // 3.28.0: double-click the name plate to rename the bus
 private:
     void chooseTrack()
     {

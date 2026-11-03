@@ -61,7 +61,7 @@ void repairTake (AppContext& app, const juce::Uuid& wid, juce::Component* parent
     if (sel.empty()) { say (nm, "None of the tracks you marked with Ctrl + Alt + drag are in this take."); return; }
     std::vector<juce::File> src; std::vector<juce::Uuid> srcTracks; for (auto i : sel) { src.push_back (g->files[i].file); srcTracks.push_back (g->files[i].trackId); }
     auto projectRT = std::make_shared<const Project::RoomTone> (app.project.roomTone);
-    RepairContext c; c.rate = rate; c.length = to - from;
+    RepairContext c; c.rate = rate; c.length = to - from; c.refA = app.project.pitchPipe.refA;
     c.roomSource = projectRT->source;
     for (auto& id : srcTracks) { const auto* t = projectRT->forTrack (id); c.roomMono.push_back (t != nullptr ? t->mono : denoise::Profile()); }
     c.what = "All " + juce::String ((int) src.size()) + " tracks of " + w->displayName (*g) + " are shown as one picture. Draw a box round the noise (time and pitch), then press ReTouch "
@@ -409,7 +409,7 @@ static void openRepair (AppContext& app, const juce::Uuid& eid, juce::Component*
     for (size_t i = 0; i < parts.size(); ++i) { tpArea->names.push_back (juce::String()); tpArea->parts.emplace_back(); for (auto& pt : parts[i]) tpArea->parts.back().push_back ({ pt.file, pt.fileStart, pt.srcA, pt.n, pt.dst }); }
     for (auto& r : e->regions) for (auto& f : r.files) for (size_t i = 0; i < trackIds.size(); ++i) if (f.trackId == trackIds[i] && tpArea->names[i].isEmpty()) tpArea->names[i] = f.trackName;
     auto projectRT = std::make_shared<const Project::RoomTone> (app.project.roomTone);
-    RepairContext c; c.rate = rate; c.length = to - from;
+    RepairContext c; c.rate = rate; c.length = to - from; c.refA = app.project.pitchPipe.refA;
     c.roomSource = projectRT->source;
     for (auto& id : trackIds) { const auto* t = projectRT->forTrack (id); c.roomMono.push_back (t != nullptr ? t->mono : denoise::Profile()); }
     const juce::String lead = ss.on ? ss.label + ": the sound of the " + (slot == 0 ? "take that plays up to the edit point, carried on past it (its crossfade uses that part)" : "take that plays from the edit point, started before it (its crossfade uses that part)")
@@ -651,6 +651,7 @@ public:
         view.onNote = [this] (const juce::String& t) { status.setText (t, juce::dontSendNotification); };
         view.onNeedDetail = [this] (const PictureRequest& rq) { startDetail (rq); };
         view.onView = [this] { sliceForView(); };
+        view.setReferenceA (app.project.pitchPipe.refA);                     // (3.28.0: the read-out names notes at the project's A)
         view.onSelection = [this] { refreshControls(); };
         dirBox.onChange = [this] { refreshControls(); }; methodBox.onChange = [this] { refreshControls(); };
         // the transport, as in the edit window: start, back 5 s, play / stop, forward 5 s, end - and a clock that can be typed into

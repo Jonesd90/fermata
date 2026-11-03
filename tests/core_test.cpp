@@ -12487,6 +12487,46 @@ int main()
         }
     }
 
+    SECTION ("3.28.0 the spectrogram box: drawn from the top down it keeps its height when a side is grabbed; moving it keeps its size and stops at the ends; the note read-out");
+    {
+        using boxedit::order; using boxedit::moveSpan;
+        // the bug: drawn from top left (2.625 s, 6807 Hz) down to bottom right (2.954 s, 72 Hz)
+        double ax = 2.625, ay = 6807.0, bx = 2.954, by = 72.0;
+        order (ax, ay, bx, by);
+        CHECK (ax == 2.625 && ay == 72.0 && bx == 2.954 && by == 6807.0);          // (it came out 72 - 72 Hz)
+        // every way round it can be drawn
+        const double xs[2] = { 1.0, 3.0 }, ys[2] = { 100.0, 5000.0 };
+        bool allWays = true;
+        for (int i = 0; i < 2; ++i) for (int j = 0; j < 2; ++j)
+        {
+            double x0 = xs[i], y0 = ys[j], x1 = xs[1 - i], y1 = ys[1 - j];
+            order (x0, y0, x1, y1);
+            allWays = allWays && x0 == 1.0 && x1 == 3.0 && y0 == 100.0 && y1 == 5000.0;
+        }
+        CHECK (allWays);
+        { double x0 = 2.0, y0 = 300.0, x1 = 2.0, y1 = 300.0; order (x0, y0, x1, y1); CHECK (x0 == 2.0 && x1 == 2.0 && y0 == 300.0 && y1 == 300.0); }
+
+        // moving: the length is kept, it stops at either end, a span longer than the range starts at its start
+        { double lo = 2.0, hi = 3.0; moveSpan (lo, hi, 0.5, 0.0, 10.0);  CHECK (std::abs (lo - 2.5) < 1e-12 && std::abs (hi - 3.5) < 1e-12); }
+        { double lo = 2.0, hi = 3.0; moveSpan (lo, hi, -5.0, 0.0, 10.0); CHECK (lo == 0.0 && hi == 1.0); }
+        { double lo = 2.0, hi = 3.0; moveSpan (lo, hi, 50.0, 0.0, 10.0); CHECK (lo == 9.0 && hi == 10.0); }
+        { double lo = 2.0, hi = 3.0; moveSpan (lo, hi, 0.0, 0.0, 10.0);  CHECK (lo == 2.0 && hi == 3.0); }
+        { double lo = 0.0, hi = 12.0; moveSpan (lo, hi, 3.0, 0.0, 10.0); CHECK (lo == 0.0 && hi == 12.0); }
+        bool keepsLength = true;
+        for (int k = -40; k <= 40; ++k) { double lo = 4.0, hi = 6.5; moveSpan (lo, hi, k * 0.37, 1.0, 9.0); keepsLength = keepsLength && std::abs ((hi - lo) - 2.5) < 1e-9 && lo >= 1.0 - 1e-12 && hi <= 9.0 + 1e-12; }
+        CHECK (keepsLength);
+
+        // the read-out's note: equal temperament at the reference A
+        CHECK (tuning::nearestNote (440.0, 440.0) == "A4");
+        CHECK (tuning::nearestNote (415.0, 415.0) == "A4");                        // a Baroque A
+        CHECK (tuning::nearestNote (261.6256, 440.0) == "C4");
+        CHECK (tuning::nearestNote (1047.0, 440.0) == "C6 +1 cents");                // (C6 = 1046.50 Hz)
+        CHECK (tuning::nearestNote (440.0 * std::pow (2.0, -14.0 / 1200.0), 440.0) == "A4 -14 cents");
+        CHECK (tuning::nearestNote (466.16, 440.0) == "Bb4");
+        CHECK (tuning::nearestNote (0.0, 440.0).isEmpty() && tuning::nearestNote (-5.0, 440.0).isEmpty() && tuning::nearestNote (std::nan (""), 440.0).isEmpty());
+        CHECK (tuning::nearestNote (72.0, 440.0) == "D2 -34 cents");                 // (D2 = 73.42 Hz)
+    }
+
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;
 }

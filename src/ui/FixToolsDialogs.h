@@ -1,6 +1,7 @@
 #pragma once
 // The pitch, pitch-curve and repair windows of the fix tools (3.18.6: from FixTools.cpp). Only FixToolsEdits.cpp includes this.
 #include "FixToolsCommon.h"
+#include "../core/Tuning.h"
 
 namespace td { namespace fixtools
 {
@@ -775,6 +776,7 @@ public:
             g.setColour (juce::Colours::white.withAlpha (0.75f)); g.setFont (juce::FontOptions (11.0f));
             g.drawText (juce::String (presetAt (preset).name) + "   (colour roll)", (int) k.getRight() + 8, (int) k.getY(), 300, (int) k.getHeight(), juce::Justification::centredLeft);
         }
+        paintHover (g);                                                           // 3.28.0: the frequency under the pointer
     }
     void mouseDown (const juce::MouseEvent& e) override
     {
@@ -785,19 +787,26 @@ public:
         if (e.x < pl.getX() && e.y >= pl.getY() && e.y < pl.getBottom()) { mode = Mode::pitchPan; panF = fLo; panF1 = fHi; return; }
         if (const int ed = edgesAt (e.getPosition()))                    // on an edge or corner of the box: drag it to resize the box
         {
-            a = { selT0(), selF0() }; b = { selT1(), selF1() };        // a = lower-left corner, b = upper-right
             const auto r = selRect();                                  // where the pointer is on the edge, so the edge does not jump to the pointer
+            boxedit::order (a.x, a.y, b.x, b.y);                       // a = lower-left corner, b = upper-right (3.28.0: all four read before either is set - see BoxEdges.h)
             grabDx = (ed & 3) ? e.x - ((ed & 1) ? r.getX() : r.getRight()) : 0;
             grabDy = (ed & 12) ? e.y - ((ed & 4) ? r.getY() : r.getBottom()) : 0;
             mode = Mode::resize; edgeMask = ed; return;
         }
         if (! pl.contains (e.getPosition())) return;
+        if (insideBox (e.getPosition()))
+        {   // 3.28.0: inside the box (away from its edges): drag it to move the whole box, the same size, in time and in pitch. A click without a drag leaves it as it is.
+            boxedit::order (a.x, a.y, b.x, b.y);
+            moveA = a; moveB = b; mode = Mode::move; return;
+        }
         mode = Mode::select; a = toTF (e.getPosition()); b = a; hasSel = true; repaint();
     }
     void mouseMove (const juce::MouseEvent& e) override
     {
+        setHover (e.getPosition());
         const int ed = edgesAt (e.getPosition());
         using C = juce::MouseCursor;
+        if (ed == 0 && insideBox (e.getPosition())) { setMouseCursor (C (C::UpDownLeftRightResizeCursor)); return; }     // (3.28.0: inside the box - drag to move it)
         setMouseCursor (ed == 0 ? C (C::CrosshairCursor)
                         : ed == 1 || ed == 2 ? C (C::LeftRightResizeCursor)
                         : ed == 4 || ed == 8 ? C (C::UpDownResizeCursor)
@@ -807,7 +816,23 @@ public:
     void mouseDrag (const juce::MouseEvent& e) override
     {
         auto pl = plotArea();
+        if (mode == Mode::select || mode == Mode::resize || mode == Mode::move) setHover (e.getPosition());     // (the read-out follows while a box is drawn or moved)
         if (mode == Mode::select) { b = toTF (e.getPosition()); repaint(); }
+        else if (mode == Mode::move)
+        {
+            // 3.28.0: the box moves with the pointer from where it was taken hold of. In time by seconds; in pitch in the units the scale is drawn in (as the pitch
+            // scale's drag), so the box keeps its height on the screen. It stops at the start and end of the audio and at the bottom and top of the pitch range.
+            const double dt = (double) e.getDistanceFromDragStartX() / (double) juce::jmax (1, pl.getWidth()) * (vt1 - vt0);
+            double t0 = moveA.x, t1 = moveB.x;
+            boxedit::moveSpan (t0, t1, dt, 0.0, duration);
+            auto toU = [this] (double f) { return mel ? PictureAxis::melOf (f) : warp < 0.5 ? f : std::log (f); };
+            auto fromU = [this] (double u) { return mel ? PictureAxis::hzOfMel (u) : warp < 0.5 ? u : std::exp (u); };
+            const double du = -(double) e.getDistanceFromDragStartY() / (double) juce::jmax (1, pl.getHeight() - 1) * (toU (fHi) - toU (fLo));
+            double u0 = toU (moveA.y), u1 = toU (moveB.y);
+            boxedit::moveSpan (u0, u1, du, toU (kMinHz), toU (maxHz()));
+            a = { t0, juce::jmax ((double) kMinHz, fromU (u0)) }; b = { t1, juce::jmin (maxHz(), fromU (u1)) };
+            repaint();
+        }
         else if (mode == Mode::resize)
         {
             // Each side belongs to one axis: a left / right edge changes the width and nothing else, a top / bottom edge changes the height and nothing else;
@@ -864,6 +889,7 @@ public:
             repaint(); return;
         }
         if (m == Mode::pan || m == Mode::pitchPan) { note(); return; }
+        if (m == Mode::move) { if (a != moveA || b != moveB) { repaint(); if (onSelection) onSelection(); } return; }       // (a click in the box: nothing changes)
         if (m != Mode::select && m != Mode::resize) return;
         if (selT1() - selT0() < 0.002) hasSel = false;
         repaint(); if (onSelection) onSelection();
@@ -873,6 +899,9 @@ public:
         if (knobArea().expanded (3).contains (e.getPosition())) { rollColour ((double) w.deltaY * 2.0); return; }
         Component::mouseWheelMove (e, w);
     }
+    void mouseExit (const juce::MouseEvent&) override { setHover ({ -1, -1 }); }
+    /** 3.28.0: the reference A the read-out names notes from (the project's pitch pipe: A = 415 at a Baroque session). */
+    void setReferenceA (double hz) { if (hz > 0.0 && std::isfinite (hz)) refA = hz; }
     void mouseDoubleClick (const juce::MouseEvent& e) override
     {
         if (knobArea().expanded (3).contains (e.getPosition())) { setRoll (0.0); return; }                 // back to the standard colours
@@ -882,8 +911,41 @@ public:
 private:
     static constexpr double kMinHz = 40.0;
     static constexpr int kPresets = 8;
-    enum class Mode { none, select, pan, pitchPan, knob, resize };
+    enum class Mode { none, select, pan, pitchPan, knob, resize, move };
     int edgeMask = 0;                                           // while resizing the box: 1 left, 2 right, 4 top, 8 bottom
+    juce::Point<double> moveA, moveB;                           // while moving the box: its corners (lower-left, upper-right) when it was taken hold of
+    juce::Point<int> hover { -1, -1 };                          // 3.28.0: where the pointer is over the picture, for the read-out (-1: not over it)
+    double refA = 440.0;
+    /** Inside the box and not on one of its edges (where a drag moves it). */
+    bool insideBox (juce::Point<int> p) const { return hasSel && edgesAt (p) == 0 && selRect().contains (p) && plotArea().contains (p); }
+    /** The pointer moved to p (or left: -1, -1): the read-out is drawn again where it was and where it is now. */
+    void setHover (juce::Point<int> p)
+    {
+        if (! plotArea().contains (p)) p = { -1, -1 };
+        if (p == hover) return;
+        hover = p;
+        const auto pl = plotArea();
+        repaint (0, 0, pl.getX(), getHeight());                                   // the tag on the pitch scale
+        repaint (0, pl.getBottom(), getWidth(), getHeight() - pl.getBottom());    // the line under the picture
+    }
+    /** 3.28.0: the frequency (and the time) under the pointer: a tag on the pitch scale at the pointer's height, and a line under the picture with the
+        exact frequency, the nearest note at the project's reference A and the time. Drawn only while the pointer is over the picture. */
+    void paintHover (juce::Graphics& g)
+    {
+        const auto pl = plotArea();
+        if (hover.x < 0 || ! pl.contains (hover) || spec.frames <= 0) return;
+        const auto tf = toTF (hover);
+        const double hz = tf.y;
+        const juce::String hzText = juce::String ((int) std::lround (hz));
+        auto tag = juce::Rectangle<int> (1, hover.y - 8, pl.getX() - 2, 16).constrainedWithin ({ 0, pl.getY(), pl.getX(), pl.getHeight() });
+        g.setColour (juce::Colour (0xffffd24a)); g.fillRoundedRectangle (tag.toFloat(), 3.0f);
+        g.setColour (juce::Colours::black); g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+        g.drawText (hzText, tag.reduced (2, 0), juce::Justification::centredRight, false);
+        const auto noteText = tuning::nearestNote (hz, refA);
+        const juce::String line = juce::String (hz, hz < 100.0 ? 1 : 0) + " Hz" + (noteText.isNotEmpty() ? "   " + noteText : juce::String()) + "   " + juce::String (tf.x, 3) + " s";
+        g.setColour (juce::Colours::white.withAlpha (0.9f)); g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+        g.drawText (line, juce::Rectangle<int> (pl.getRight() - 360, pl.getBottom() + 4, 360, getHeight() - pl.getBottom() - 6), juce::Justification::centredRight, false);
+    }
     int grabDx = 0, grabDy = 0;                                 // while resizing: how far the pointer was from the edge it took hold of (pixels)
     struct Stop { float t, r, g, b; };
     struct Preset { const char* name; int palette; float lo, hi, gamma; };
@@ -1126,6 +1188,7 @@ public:
         bandsBox.onChange = [this] { invalidate(); };
         multiBtn.onClick = [this] { invalidate(); };
         view.onNeedDetail = [this] (const PictureRequest& rq) { startDetail (rq); };
+        view.setReferenceA (ctx.refA);                                       // (3.28.0: the read-out names notes at the project's A)
         for (auto* x : std::initializer_list<juce::Component*> { &methodBox, &bandsBox, &multiBtn, &linkBtn, &specBtn, &dirBox, &previewBtn, &declickBtn, &compareBtn, &revertBtn, &finishBtn, &close, &playBtn, &stopBtn, &loopBtn, &hearCap, &hearBox, &scaleBox, &detailBox }) addAndMakeVisible (x);
         scaleBox.addItem ("Pitch scale: Mel (as iZotope RX)", 6); scaleBox.addItem ("Pitch scale: linear (even Hz)", 1); scaleBox.addItem ("Pitch scale: mostly linear", 2); scaleBox.addItem ("Pitch scale: halfway", 3);
         scaleBox.addItem ("Pitch scale: mostly musical", 4); scaleBox.addItem ("Pitch scale: musical (every octave the same height)", 5);

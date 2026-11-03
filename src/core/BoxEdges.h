@@ -34,4 +34,25 @@ inline int edgesAt (IRect r, int px, int py, int m = 6)
     if (cr >= 2 && dx <= cr && dy <= cr) return sx | sy;
     return r.w >= r.h ? sx : sy;                                          // near the end of a long edge but not at a corner: the short edge there (the end of the box), and only that one
 }
+
+/** 3.28.0: a box kept as two corners (a, b) in whatever order it was drawn, turned into a = lowest x and y, b = highest x and y. All four values are read
+    BEFORE either corner is written: the spectrogram's resize used to set 'a' first and then work out 'b' from the new 'a', so a box drawn from the top
+    down came out with both corners at the bottom - grabbing any side flattened it to a line (72 - 72 Hz) before the side had even moved. */
+inline void order (double& ax, double& ay, double& bx, double& by) noexcept
+{
+    const double x0 = std::min (ax, bx), x1 = std::max (ax, bx), y0 = std::min (ay, by), y1 = std::max (ay, by);
+    ax = x0; ay = y0; bx = x1; by = y1;
+}
+
+/** 3.28.0: moves the span lo .. hi by d, keeping its length, stopping it at the ends of the range mn .. mx (a span longer than the range starts at mn).
+    Dragging a box: once a side reaches the end, the box stops there - it is never squeezed. */
+inline void moveSpan (double& lo, double& hi, double d, double mn, double mx) noexcept
+{
+    const double len = hi - lo;
+    if (len >= mx - mn) { lo = mn; hi = mn + len; return; }
+    double nlo = lo + d;
+    if (nlo < mn) nlo = mn;
+    if (nlo + len > mx) nlo = mx - len;
+    lo = nlo; hi = nlo + len;
+}
 } // namespace td::boxedit

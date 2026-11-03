@@ -417,6 +417,7 @@ struct RepairContext
 {
     juce::String title, what;
     double rate = 48000.0;
+    double refA = 440.0;                                                                // 3.28.0: the project's reference A (the pitch pipe), for the picture's note read-out
     juce::int64 length = 0;                                                             // samples in the scanned area
     std::function<std::vector<std::vector<float>> (AudioJob&)> load;                     // job thread: one mono vector per track, 'length' samples
     std::function<juce::String (const std::vector<RepairOp>&, AudioJob&)> prepare;      // job thread: makes the repaired files with ALL these changes, covering the whole loaded area; nothing is changed yet

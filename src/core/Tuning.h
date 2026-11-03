@@ -175,5 +175,15 @@ inline double centsFromEqual (double hz, int midi, double refA)
 {
     return centsOf (hz / (refA * std::pow (2.0, ((double) midi - 69.0) / 12.0)));
 }
+
+/** 3.28.0: the nearest equal-tempered note to a frequency at the reference A, and how far off it is: "A4", "C6 +2 cents", "Bb3 -14 cents" (for the
+    spectrogram's read-out under the mouse). Nothing for a frequency that is not a real pitch (0, negative, not finite). */
+inline juce::String nearestNote (double hz, double refA)
+{
+    if (! (hz > 0.0) || ! std::isfinite (hz) || ! (refA > 0.0)) return {};
+    const int midi = (int) std::lround (69.0 + 12.0 * std::log2 (hz / refA));
+    const int c = (int) std::lround (centsFromEqual (hz, midi, refA));
+    return noteName (midi) + (c == 0 ? juce::String() : " " + juce::String (c > 0 ? "+" : "") + juce::String (c) + " cents");
+}
 } // namespace tuning
 } // namespace td

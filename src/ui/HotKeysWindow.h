@@ -171,6 +171,7 @@ inline const std::vector<Line>& lines()
         // ---------------------------------------------------------------------------------------------------- mixer
         { "Mixer", "Enter", "In \"Mixer name\": rename the mixer (an edit's mixer renames the edit too)." },
         { "Mixer", "Enter / Esc", "In a VCA strip's name box: keep the name / back to the old one." },
+        { "Mixer", "double-click", "An Int Bus or Ext Bus name plate (the name at the bottom of the strip): rename the bus. Enter or a click elsewhere keeps the new name, Esc goes back to the old one. The same name as in the Project Designer, and an undo step. Not while recording. (A single click on the plate still picks the colour, a moment later.)" },
         { "Mixer", "Shift+click / Ctrl+click", "A strip's name plate: every strip from the last one clicked to this one / this strip in or out of the selection." },
         { "Mixer", "Shift+Alt", "Held, with two or more strips selected: they are linked while you hold them (bold orange outlines). Faders, sends and pans move together; M, S and the sends' mute and pre are set the same; plug-ins go on, come off or are bypassed on every one." },
         { "Mixer", "right-click", "A strip's name plate: colour, hide strips from this mixer, select all or none." },
@@ -214,6 +215,10 @@ inline const std::vector<Line>& lines()
         { "Noise mode", "Esc", "Close, as \"Finished de-noising\" (asks Keep / Throw away / Cancel when fixes have not been written back)." },
 
         // ---------------------------------------------------------------------------------------------------- spectral repair and noise mode: with the mouse
+        { "Spectral Repair and Noise mode: with the mouse", "drag", "The picture, outside the box: draw a new box (time and pitch)." },
+        { "Spectral Repair and Noise mode: with the mouse", "drag", "A side of the box: move that side only (left / right: the time, top / bottom: the pitch). A corner: its two sides." },
+        { "Spectral Repair and Noise mode: with the mouse", "drag", "Inside the box (the four-way arrow): move the whole box, the same size, in time and pitch. It stops at the start and end and at the top and bottom of the pitch range." },
+        { "Spectral Repair and Noise mode: with the mouse", "", "Wherever the mouse is over the picture, the pitch scale shows the frequency at that height (yellow tag), and the line under the picture the exact frequency, the nearest note (at the pitch pipe's A) and the time." },
         { "Spectral Repair and Noise mode: with the mouse", "click / Shift+click or right-click", "The colour roll (bottom left of the picture): the next / the previous colour look." },
         { "Spectral Repair and Noise mode: with the mouse", "wheel", "Over the colour roll: roll through the colour looks." },
         { "Spectral Repair and Noise mode: with the mouse", "double-click", "The colour roll: back to the standard colours." },
