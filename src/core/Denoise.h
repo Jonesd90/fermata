@@ -47,6 +47,13 @@ struct Params
     double presLocalLo = 1.5, presLocalHi = 6.0, presGlobalLo = 0.8, presGlobalHi = 3.0, presQMax = 0.98;
     bool   tailPrior = true;           // the SNR estimate itself follows the room's decay
     double tailSeedSnr = 2.0;          // ... starting only from an SNR of at least this (linear; 2 = 3 dB)
+    /** 3.29.0: learning the profile from a box that has music in it (a noise only ever heard under the music: a car outside during the quiet passages).
+        Instead of each bin's MEAN power over the box's frames - which has the notes in it, so the denoiser then eats the music - the box's QUIETEST moments
+        are taken: the power at the given percentile of the frames (the 20 % quietest), corrected for the bias of taking a low percentile of a noise
+        (the power of a steady noise in one bin is exponentially distributed: its p-th percentile is -ln(1-p) of its mean). Between and under the notes
+        every bin has moments that hold only the noise, so the notes drop out. (What RX's adaptive mode does.) */
+    bool   quietest = false;
+    double quietestPercentile = 0.2;
 
     int fftSize (double sampleRate) const
     {
@@ -292,13 +299,45 @@ inline std::vector<double> ratePerBin (const std::vector<double>& freqs, const s
 }
 } // namespace detail
 
-/** Learns the profile of one channel from one or more room-tone regions (each at least ~0.5 s). */
+/** 3.29.0: the noise's mean power estimated from the quietest moments of one bin: the p-th percentile of the frames' powers, divided by -ln(1-p) (the
+    percentile of an exponential distribution in terms of its mean). Too few frames to pick a percentile from (under 8): the mean. 'vals' is reordered. */
+inline double quietestMean (std::vector<float>& vals, double p)
+{
+    if (vals.empty()) return 0.0;
+    p = juce::jlimit (0.02, 0.8, p);
+    if (vals.size() < 8) { double s = 0.0; for (float v : vals) s += v; return s / (double) vals.size(); }
+    const size_t k = (size_t) std::floor (p * (double) (vals.size() - 1));
+    std::nth_element (vals.begin(), vals.begin() + (long) k, vals.end());
+    return (double) vals[k] / (-std::log (1.0 - p));
+}
+/** The profile's smoothing across bins: 3 taps, or 5 for a percentile estimate (noisier). */
+inline std::vector<double> smoothPsd (const std::vector<double>& m, bool wide)
+{
+    const int bins = (int) m.size();
+    std::vector<double> out ((size_t) bins, 0.0);
+    for (int k = 0; k < bins; ++k)
+    {
+        double s = 0.0, w = 0.0;
+        const int reach = wide ? 2 : 1;
+        for (int d = -reach; d <= reach; ++d)
+        {
+            const int i = k + d; if (i < 0 || i >= bins) continue;
+            const double wt = reach == 1 ? (d == 0 ? 0.5 : 0.25) : (d == 0 ? 0.4 : std::abs (d) == 1 ? 0.2 : 0.1);
+            s += wt * m[(size_t) i]; w += wt;
+        }
+        out[(size_t) k] = juce::jmax (w > 0.0 ? s / w : m[(size_t) k], 1e-20);
+    }
+    return out;
+}
+
+/** Learns the profile of one channel from one or more room-tone regions (each at least ~0.5 s). With p.quietest, from the regions' quietest moments (see Params). */
 inline Profile learnProfile (const std::vector<std::vector<float>>& regions, double sampleRate, const Params& p)
 {
     Profile prof; prof.fftSize = p.fftSize (sampleRate); prof.sampleRate = sampleRate;
     detail::Stft st (prof.fftSize);
     const int bins = prof.fftSize / 2 + 1;
     std::vector<double> acc ((size_t) bins, 0.0); juce::int64 count = 0;
+    std::vector<std::vector<float>> vals (p.quietest ? (size_t) bins : 0);
     std::vector<std::complex<float>> X; int frames = 0;
     for (auto& r : regions)
     {
@@ -309,19 +348,14 @@ inline Profile learnProfile (const std::vector<std::vector<float>>& regions, dou
         for (int k = 0; k < bins; ++k)
         {
             double s = 0.0; const auto* row = X.data() + (size_t) k * (size_t) frames;
-            for (int t = t0; t < t1; ++t) s += (double) std::norm (row[t]);
+            for (int t = t0; t < t1; ++t) { const double v = (double) std::norm (row[t]); s += v; if (p.quietest) vals[(size_t) k].push_back ((float) v); }
             acc[(size_t) k] += s;
         }
         count += t1 - t0;
     }
     if (count == 0) return {};
-    prof.psd.assign ((size_t) bins, 0.0);
-    for (int k = 0; k < bins; ++k) acc[(size_t) k] /= (double) count;
-    for (int k = 0; k < bins; ++k)
-    {
-        const double v = k == 0 ? acc[0] : k == bins - 1 ? acc[(size_t) k] : 0.25 * acc[(size_t) k - 1] + 0.5 * acc[(size_t) k] + 0.25 * acc[(size_t) k + 1];
-        prof.psd[(size_t) k] = juce::jmax (v, 1e-20);
-    }
+    for (int k = 0; k < bins; ++k) acc[(size_t) k] = p.quietest ? quietestMean (vals[(size_t) k], p.quietestPercentile) : acc[(size_t) k] / (double) count;
+    prof.psd = smoothPsd (acc, p.quietest);
     return prof;
 }
 
@@ -333,6 +367,51 @@ inline bool selected (const std::vector<SelRect>& s, double t, double f)
     bool in = false;
     for (auto& r : s) if (t >= r.t0 && t < r.t1 && f >= r.f0 && f < r.f1) in = r.add;
     return in;
+}
+/** 3.29.0: the selection as non-overlapping rectangles (seconds, Hz; all 'add'): every box added, less every box taken out, in the order they were drawn
+    (a box with a corner cut out comes back as two or three rectangles). The grid of every box's edges is tested cell by cell, then the cells are joined:
+    up each column of time, then across columns with the same pitch span. Each rectangle is processed on its own by the repair tools. */
+inline std::vector<SelRect> selectionRects (const std::vector<SelRect>& boxes)
+{
+    std::vector<SelRect> out;
+    std::vector<SelRect> s;                                                   // (the boxes with their corners in order, whichever way they were drawn)
+    for (auto r : boxes) { if (r.t1 < r.t0) std::swap (r.t0, r.t1); if (r.f1 < r.f0) std::swap (r.f0, r.f1); s.push_back (r); }
+    std::vector<double> ts, fs;
+    for (auto& r : s) { ts.push_back (r.t0); ts.push_back (r.t1); fs.push_back (r.f0); fs.push_back (r.f1); }
+    auto tidy = [] (std::vector<double>& v) { std::sort (v.begin(), v.end()); v.erase (std::unique (v.begin(), v.end()), v.end()); };
+    tidy (ts); tidy (fs);
+    if (ts.size() < 2 || fs.size() < 2) return out;
+    // the columns: in each, the runs of selected cells up the pitch axis
+    struct Run { double f0, f1; };
+    std::vector<std::vector<Run>> cols (ts.size() - 1);
+    for (size_t i = 0; i + 1 < ts.size(); ++i)
+    {
+        const double tc = 0.5 * (ts[i] + ts[i + 1]);
+        for (size_t j = 0; j + 1 < fs.size(); ++j)
+        {
+            if (! selected (s, tc, 0.5 * (fs[j] + fs[j + 1]))) continue;
+            if (! cols[i].empty() && cols[i].back().f1 == fs[j]) cols[i].back().f1 = fs[j + 1]; else cols[i].push_back ({ fs[j], fs[j + 1] });
+        }
+    }
+    // across the columns: a run continues into the next column when that column has the very same run
+    std::vector<std::vector<bool>> used (cols.size());
+    for (size_t i = 0; i < cols.size(); ++i) used[i].assign (cols[i].size(), false);
+    for (size_t i = 0; i < cols.size(); ++i)
+        for (size_t k = 0; k < cols[i].size(); ++k)
+        {
+            if (used[i][k]) continue;
+            used[i][k] = true;
+            const Run r = cols[i][k]; size_t last = i;
+            for (size_t n = i + 1; n < cols.size(); ++n)
+            {
+                bool found = false;
+                for (size_t m = 0; m < cols[n].size(); ++m) if (! used[n][m] && cols[n][m].f0 == r.f0 && cols[n][m].f1 == r.f1) { used[n][m] = true; found = true; break; }
+                if (! found) break;
+                last = n;
+            }
+            out.push_back ({ ts[i], ts[last + 1], r.f0, r.f1, true });
+        }
+    return out;
 }
 /** The stretches of time the selection covers at all (seconds), merged and sorted. */
 inline std::vector<std::pair<double, double>> selectedSpans (const std::vector<SelRect>& s)
@@ -353,10 +432,11 @@ struct ProfileLearner
 {
     int fftSize = 0; double sampleRate = 0.0;
     std::vector<double> acc; std::vector<juce::int64> count;
+    bool quietest = false; double percentile = 0.2; mutable std::vector<std::vector<float>> vals;      // 3.29.0: the quietest moments (Params::quietest): every frame's power kept, per bin
     /** x: len samples that start at 'tOffset' seconds on the selection's time scale. Only the parts under the selection's boxes are analysed. */
     void add (const float* x, juce::int64 len, double sr, const Params& p, const std::vector<SelRect>& sel, double tOffset)
     {
-        if (fftSize == 0) { fftSize = p.fftSize (sr); sampleRate = sr; acc.assign ((size_t) fftSize / 2 + 1, 0.0); count.assign (acc.size(), 0); }
+        if (fftSize == 0) { fftSize = p.fftSize (sr); sampleRate = sr; acc.assign ((size_t) fftSize / 2 + 1, 0.0); count.assign (acc.size(), 0); quietest = p.quietest; percentile = p.quietestPercentile; if (quietest) vals.resize (acc.size()); }
         if (std::abs (sr - sampleRate) > 0.5) return;
         detail::Stft st (fftSize);
         const int bins = fftSize / 2 + 1;
@@ -387,7 +467,9 @@ struct ProfileLearner
                     if (! inTime[(size_t) t]) continue;
                     const double tc = tOffset + (double) (s0 + (juce::int64) t * st.hop - st.n / 2) / sr;
                     if (! selected (sel, tc, freqs[(size_t) k])) continue;
-                    acc[(size_t) k] += (double) std::norm (row[t]); ++count[(size_t) k];
+                    const double v = (double) std::norm (row[t]);
+                    acc[(size_t) k] += v; ++count[(size_t) k];
+                    if (quietest) vals[(size_t) k].push_back ((float) v);
                 }
             }
         }
@@ -401,7 +483,7 @@ struct ProfileLearner
         prof.fftSize = fftSize; prof.sampleRate = sampleRate;
         const int bins = fftSize / 2 + 1;
         std::vector<double> mean ((size_t) bins, 0.0); std::vector<unsigned char> has ((size_t) bins, 0);
-        for (int k = 0; k < bins; ++k) if (count[(size_t) k] > 0) { mean[(size_t) k] = acc[(size_t) k] / (double) count[(size_t) k]; has[(size_t) k] = 1; }
+        for (int k = 0; k < bins; ++k) if (count[(size_t) k] > 0) { mean[(size_t) k] = quietest ? quietestMean (vals[(size_t) k], percentile) : acc[(size_t) k] / (double) count[(size_t) k]; has[(size_t) k] = 1; }
         // uncovered bins: the nearest covered bin's power (the analysis next to the edge of the drawn part then behaves as it would with a full profile)
         for (int k = 0; k < bins; ++k)
             if (! has[(size_t) k])
@@ -410,12 +492,7 @@ struct ProfileLearner
                 for (int d = 1; d < bins && best < 0; ++d) { if (k - d >= 0 && has[(size_t) (k - d)]) best = k - d; else if (k + d < bins && has[(size_t) (k + d)]) best = k + d; }
                 mean[(size_t) k] = best >= 0 ? mean[(size_t) best] : 1e-20;
             }
-        prof.psd.assign ((size_t) bins, 0.0);
-        for (int k = 0; k < bins; ++k)
-        {
-            const double v = k == 0 ? mean[0] : k == bins - 1 ? mean[(size_t) k] : 0.25 * mean[(size_t) k - 1] + 0.5 * mean[(size_t) k] + 0.25 * mean[(size_t) k + 1];
-            prof.psd[(size_t) k] = juce::jmax (v, 1e-20);
-        }
+        prof.psd = smoothPsd (mean, quietest);
         prof.weight.assign ((size_t) bins, 0.0f);
         for (int k = 0; k < bins; ++k) prof.weight[(size_t) k] = has[(size_t) k] ? 1.0f : 0.0f;
         return prof;

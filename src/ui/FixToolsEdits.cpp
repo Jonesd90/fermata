@@ -109,17 +109,19 @@ void repairTake (AppContext& app, const juce::Uuid& wid, juce::Component* parent
         std::vector<juce::File> srcF = src, dst;
         for (auto& f : srcF) dst.push_back (takeFixDest (f, ops.back().spec));
         // a denoise: each file's room-tone profiles - learned from the box of this take (on the file itself, every channel), or the project's for its track
-        auto boxes = std::make_shared<std::map<std::pair<double, double>, std::vector<audioops::DenoiseProfiles>>>();
+        auto boxes = std::make_shared<std::map<juce::String, std::vector<audioops::DenoiseProfiles>>>();
         for (auto& o : ops)
         {
             if (o.spec.kind != FixSpec::Kind::Denoise || ! (o.spec.dnBoxT1 > o.spec.dnBoxT0)) continue;
-            const auto key = std::make_pair (o.spec.dnBoxT0, o.spec.dnBoxT1);
+            const auto key = o.spec.roomKey();
             if (boxes->count (key)) continue;
+            std::vector<std::pair<juce::int64, juce::int64>> spans;                 // (3.29.0: every stretch of the selection the room tone was learned from)
+            for (auto& sp : o.spec.roomSpans()) spans.push_back ({ from + (juce::int64) std::llround (sp.first * rate), from + (juce::int64) std::llround (sp.second * rate) });
             std::vector<audioops::DenoiseProfiles> per;
             for (auto& f : srcF)
             {
                 juce::String err;
-                per.push_back (audioops::learnDenoise (formats(), f, from + (juce::int64) std::llround (o.spec.dnBoxT0 * rate), from + (juce::int64) std::llround (o.spec.dnBoxT1 * rate), o.spec.dn, err));
+                per.push_back (audioops::learnDenoise (formats(), f, spans, o.spec.dn, err));
                 if (err.isNotEmpty()) return err;
             }
             (*boxes)[key] = std::move (per);
@@ -128,7 +130,7 @@ void repairTake (AppContext& app, const juce::Uuid& wid, juce::Component* parent
         {
             if (spec.dnBoxT1 > spec.dnBoxT0)
             {
-                auto it = boxes->find (std::make_pair (spec.dnBoxT0, spec.dnBoxT1));
+                auto it = boxes->find (spec.roomKey());
                 if (it == boxes->end() || k >= it->second.size()) return nullptr;
                 return std::make_shared<const std::vector<denoise::Profile>> (it->second[k].perChannel);
             }
@@ -682,7 +684,18 @@ public:
         clock.follow ([this] { return transportPos(); }, [this] { return isPlayingNow() ? TimeReadout::State::playing : TimeReadout::State::stopped; }, 30);
         for (auto* l : { &info, &roomCap }) { l->setFont (juce::FontOptions (12.5f)); l->setMinimumHorizontalScale (0.7f); }
         status.setFont (juce::FontOptions (12.5f)); status.setMinimumHorizontalScale (0.75f);
-        gainBtn.onClick = [this] { openGain(); }; retouchBtn.onClick = [this] { retouch (false); }; declickBtn.onClick = [this] { retouch (true); };
+        gainBtn.onClick = [this] { applyGain(); }; retouchBtn.onClick = [this] { retouch (false); }; declickBtn.onClick = [this] { retouch (true); };
+        // 3.29.0: the amount is set in the panel (remembered), and G or the button applies it at once - no pop-up to click through each time
+        gainCap.setText ("Gain", juce::dontSendNotification); gainCap.setColour (juce::Label::textColourId, theme::text); addAndMakeVisible (gainCap);
+        gainSlider.setSliderStyle (juce::Slider::LinearHorizontal); gainSlider.setRange (-60.0, 18.0, 0.1);
+        gainSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 74, 22); gainSlider.setDoubleClickReturnValue (true, 0.0);
+        gainSlider.textFromValueFunction = [] (double v) { return v <= -59.95 ? juce::String ("-inf dB") : (v > 0.0 ? "+" : "") + juce::String (v, 1) + " dB"; };
+        gainSlider.valueFromTextFunction = [] (const juce::String& t) { return t.containsIgnoreCase ("inf") ? -60.0 : t.retainCharacters ("-+0123456789.").getDoubleValue(); };
+        gainSlider.setSkewFactorFromMidPoint (-6.0);
+        gainSlider.setValue (uiPrefs().getDoubleValue (prefKey ("gainDb"), -6.0), juce::dontSendNotification);
+        gainSlider.onValueChange = [this] { uiPrefs().setValue (prefKey ("gainDb"), gainSlider.getValue()); };
+        gainSlider.setTooltip ("How much louder or quieter the box is made: set it once, then G (or the button) applies it to each box you draw. Double-click: 0 dB.");
+        addAndMakeVisible (gainSlider);
         learnBtn.onClick = [this] { roomFromBox(); }; denoiseBtn.onClick = [this] { denoise(); };
         revertBtn.onClick = [this] { revert(); }; finishBtn.onClick = [this] { writeBack(); }; doneBtn.onClick = [this] { if (running) job.requestCancel(); else if (mayClose()) closeDialogOf (this); };
         for (auto* b : { &gainBtn, &retouchBtn, &declickBtn, &learnBtn, &denoiseBtn }) b->setColour (juce::TextButton::buttonColourId, theme::accent);
@@ -690,7 +703,14 @@ public:
         gainBtn.setTooltip ("Gain: makes the sound inside the box louder or quieter (fading in and out at its edges), and nothing else. Key: G");
         retouchBtn.setTooltip ("ReTouch: rebuilds or turns down the box you drew from its surroundings, on every track, and puts it into the edit at once. Key: R");
         declickBtn.setTooltip ("De-click: finds and mends the clicks in the time span of the box (or of the whole edit if there is no box). Key: D");
-        learnBtn.setTooltip ("Draw a box over a part of the picture that holds nothing but the room (its pitch range does not matter: the whole spectrum is learned) and press this: that box is the room tone for Denoise here, instead of the project's (the edit window's Room tone button). Key: L");
+        learnBtn.setTooltip ("Draw a box over a part of the picture that holds nothing but the room (its pitch range does not matter: the whole spectrum is learned) and press this: that box is the room tone for Denoise here, instead of the project's (the edit window's Room tone button). Several boxes (Shift): every stretch they cover. Key: L");
+        // 3.29.0: a noise only ever heard under the music (a car outside during the quiet passages): no clean stretch to learn from, so the quietest moments of a box WITH music are taken
+        quietBox.setButtonText ("The box has music in it: learn the room tone from its quietest moments");
+        quietBox.setTooltip ("For a noise that is only there under the music, with no clean stretch of it to learn from. At every pitch the box's quietest moments (between and under the notes) "
+                             "are taken as the noise, so the notes drop out of the room tone. Draw the box over a few seconds of the noisy passage (longer is better; Shift adds more), tick this, press L, "
+                             "then draw the box to denoise and press N. Keep the Amount modest.");
+        quietBox.setColour (juce::ToggleButton::textColourId, theme::text);
+        addAndMakeVisible (quietBox);
         denoiseBtn.setTooltip ("Denoise: takes the background noise out of the box you drew - its time span and its pitch range, on every track - with the room tone, and puts it into the edit at once. Above and below the box's pitch range nothing is touched; the denoising fades in and out at the box's edges. Key: N");
         revertBtn.setTooltip ("Takes the last fix off again (as many times as there are fixes since the last Write back).");
         finishBtn.setTooltip ("Keeps everything done so far in the edit (the Undo fix command of the edit window brings the audio back to how it was when this window opened, or when you last wrote back) and carries on: the window stays open.");
@@ -747,9 +767,9 @@ public:
         switch (t)
         {
             case kTabTouch:   return { &methodBox, &dirBox, &bandsBox, &multiBtn, &linkBtn, &strengthCap, &strength, &surroundCap, &surround, &weightCap, &weight, &retouchBtn };
-            case kTabGain:    return { &gainBtn, &gainHint };
+            case kTabGain:    return { &gainBtn, &gainHint, &gainCap, &gainSlider };
             case kTabClick:   return { &sensCap, &sens, &declickBtn };
-            default:          return { &amountCap, &amount, &residualCap, &residual, &learnBtn, &roomCap, &denoiseBtn };
+            default:          return { &amountCap, &amount, &residualCap, &residual, &learnBtn, &roomCap, &denoiseBtn, &quietBox };
         }
     }
     /** Lights the tab that is showing and no other. (By hand, not with a radio group: JUCE's radio group runs the click action of the key it turns off, and that put ReTouch back on.) */
@@ -773,7 +793,7 @@ public:
             addAndMakeVisible (t);
         }
         lightTab();
-        gainHint.setText ("Louder or quieter inside the box, from silence up to +18 dB, and nothing else. Draw a box, then press Gain [G].", juce::dontSendNotification);
+        gainHint.setText ("Louder or quieter inside the box, from silence up to +18 dB, and nothing else. Set the amount, draw a box, press G - and G again for the next box.", juce::dontSendNotification);
         gainHint.setColour (juce::Label::textColourId, theme::dimText); gainHint.setMinimumHorizontalScale (0.8f);
         addAndMakeVisible (gainHint);
     }
@@ -807,8 +827,10 @@ public:
                 break;
             }
             case kTabGain:
-            {
-                gainBtn.setBounds (action); gainHint.setBounds (rowOf (in, 0));
+            {   // 3.29.0: the amount in the panel itself; the button (or G) applies it straight away
+                auto r0 = rowOf (in, 0); r0.removeFromRight (kActionW + 8);
+                gainCap.setBounds (r0.removeFromLeft (44)); gainSlider.setBounds (r0.removeFromLeft (juce::jmin (r0.getWidth(), sliderW + 90)));
+                gainBtn.setBounds (action); gainHint.setBounds (rowOf (in, 1));
                 break;
             }
             case kTabClick:
@@ -825,6 +847,7 @@ public:
                 residualCap.setBounds (r1.removeFromLeft (66)); residual.setBounds (r1.removeFromLeft (sliderW));
                 denoiseBtn.setBounds (action); r2.removeFromRight (kActionW + 8);
                 learnBtn.setBounds (r2.removeFromLeft (190)); r2.removeFromLeft (8); roomCap.setBounds (r2);
+                auto r3 = rowOf (in, 2); r3.removeFromRight (kActionW + 8); quietBox.setBounds (r3);
                 break;
             }
         }
@@ -835,7 +858,7 @@ public:
     {
         const int tabsW = 2 * kTabW + kRowGap;
         const int contentW = juce::jmax (100, area.getWidth() - 2 * kPanelPad - tabsW - kTabGap);
-        const int rows = juce::jmax (2, reTouchRows (contentW));                  // (the same height whichever tab shows, so the picture does not jump)
+        const int rows = juce::jmax (3, reTouchRows (contentW));                  // (the same height whichever tab shows, so the picture does not jump; 3.29.0: Denoise has three)
         const int panelH = 2 * kPanelPad + rows * kRowH + (rows - 1) * kRowGap;
         const int trRows = transportRows (area.getWidth());
         const int total = panelH + trRows * (kRowGap + kTransportH);
@@ -902,7 +925,7 @@ protected:
         if (! k.getModifiers().isAnyModifierKeyDown())
         {
             if (ch == 'r' || ch == 'R') { selectTab (kTabTouch); if (retouchBtn.isEnabled()) retouch (false); return true; }
-            if (ch == 'g' || ch == 'G') { selectTab (kTabGain); if (gainBtn.isEnabled()) openGain(); return true; }
+            if (ch == 'g' || ch == 'G') { selectTab (kTabGain); if (gainBtn.isEnabled()) applyGain(); return true; }
             if (ch == 'd' || ch == 'D') { selectTab (kTabClick); if (declickBtn.isEnabled()) retouch (true); return true; }
             if (ch == 'l' || ch == 'L') { selectTab (kTabDenoise); if (learnBtn.isEnabled()) roomFromBox(); return true; }
             if (ch == 'n' || ch == 'N') { selectTab (kTabDenoise); if (denoiseBtn.isEnabled()) denoise(); return true; }
@@ -976,7 +999,7 @@ private:
         revertBtn.setEnabled (ready && ! steps.empty()); finishBtn.setEnabled (ready && ! steps.empty());
         roomCap.setText (roomShortText(), juce::dontSendNotification); roomCap.setTooltip (roomText());
         juce::String t;
-        if (view.hasSelection()) t << "Box: " << juce::String (view.selT0(), 2) << " - " << juce::String (view.selT1(), 2) << " s, " << (int) view.selF0() << " - " << (int) view.selF1() << " Hz.  ";
+        if (view.hasSelection()) t << (view.boxCount() > 1 ? "Selected: " + juce::String (view.boxCount()) + " boxes, " : juce::String ("Box: ")) << juce::String (view.selT0(), 2) << " - " << juce::String (view.selT1(), 2) << " s, " << (int) view.selF0() << " - " << (int) view.selF1() << " Hz.  ";
         t << juce::String ((int) steps.size()) << " fix(es) not yet written back";
         info.setText (t, juce::dontSendNotification);
         resized();                                                               // (what is shown decides how the controls are packed)
@@ -1173,6 +1196,21 @@ private:
                 },
                 [jobs] (const juce::String&) { for (auto& rj : *jobs) for (auto& r : rj.results) r.file.deleteFile(); jobs->clear(); });   // (the window was closed meanwhile: its new files go)
     }
+    /** 3.29.0: one change per rectangle of the selection (a selection made of several boxes, or a box with parts taken out), each with the same settings and its
+        own time span and pitch range. No selection: one change over the whole stretch (De-click). */
+    std::vector<RepairOp> opsForSelection (FixSpec spec) const
+    {
+        std::vector<RepairOp> ops;
+        if (! view.hasSelection()) { ops.push_back ({ spec, 0, length }); return ops; }
+        for (auto& r : view.selectionRects())
+        {
+            auto sp = spec; sp.f0 = r.f0; sp.f1 = r.f1;
+            ops.push_back ({ sp, (juce::int64) std::llround (r.t0 * rate), (juce::int64) std::llround (r.t1 * rate) });
+        }
+        return ops;
+    }
+    static juce::int64 opsStart (const std::vector<RepairOp>& ops) { juce::int64 v = ops.empty() ? 0 : ops.front().t0; for (auto& o : ops) v = juce::jmin (v, o.t0); return v; }
+    static juce::int64 opsEnd (const std::vector<RepairOp>& ops) { juce::int64 v = ops.empty() ? 0 : ops.front().t1; for (auto& o : ops) v = juce::jmax (v, o.t1); return v; }
     FixSpec repairSpec (bool declick) const
     {
         FixSpec spec;
@@ -1189,99 +1227,73 @@ private:
     void retouch (bool declick)
     {
         if (! declick && ! view.hasSelection()) return;
-        juce::int64 t0 = 0, t1 = length;
-        if (view.hasSelection()) { t0 = (juce::int64) std::llround (view.selT0() * rate); t1 = (juce::int64) std::llround (view.selT1() * rate); }
-        const auto spec = repairSpec (declick);
-        const RepairOp op { spec, t0, t1 };
+        const auto ops = opsForSelection (repairSpec (declick));
+        const juce::int64 t0 = opsStart (ops), t1 = opsEnd (ops);
         const auto folder = fixFolder; const double sr = rate; const auto len = length; const auto onlyT = only;
         runFix (declick ? "De-click" : "ReTouch", declick ? "declick" : "repair", (double) t0 / rate, (double) t1 / rate,
-                [folder, sr, len, onlyT, op] (const std::vector<EditRegion>& regions, std::vector<RegionJob>& jobs, AudioJob& j) { return prepareRepairJobs (folder, regions, 0, len, sr, { op }, onlyT, jobs, j); });
+                [folder, sr, len, onlyT, ops] (const std::vector<EditRegion>& regions, std::vector<RegionJob>& jobs, AudioJob& j) { return prepareRepairJobs (folder, regions, 0, len, sr, ops, onlyT, jobs, j); });
     }
-    void openGain()
+    /** G: the gain set in the panel applied to the selection (3.29.0: no pop-up - the slider sits in the panel), straight into the edit. */
+    void applyGain()
     {
         if (! built || running || ! view.hasSelection()) return;
-        struct GainPop : public juce::Component
-        {
-            juce::Slider sl; juce::TextButton apply { "Apply" }, cancel { "Cancel" }; juce::Label cap;
-            std::function<void (double)> onApply;
-            GainPop (double start)
-            {
-                cap.setText ("Gain of the box", juce::dontSendNotification); cap.setColour (juce::Label::textColourId, theme::text); addAndMakeVisible (cap);
-                sl.setSliderStyle (juce::Slider::LinearHorizontal); sl.setRange (-60.0, 18.0, 0.1); sl.setValue (start, juce::dontSendNotification);
-                sl.setTextBoxStyle (juce::Slider::TextBoxRight, false, 74, 22); sl.setDoubleClickReturnValue (true, 0.0);
-                sl.textFromValueFunction = [] (double v) { return v <= -59.95 ? juce::String ("-inf dB") : (v > 0.0 ? "+" : "") + juce::String (v, 1) + " dB"; };
-                sl.valueFromTextFunction = [] (const juce::String& t) { return t.containsIgnoreCase ("inf") ? -60.0 : t.retainCharacters ("-+0123456789.").getDoubleValue(); };
-                sl.setSkewFactorFromMidPoint (-6.0);
-                addAndMakeVisible (sl); addAndMakeVisible (apply); addAndMakeVisible (cancel);
-                apply.setColour (juce::TextButton::buttonColourId, theme::accent);
-                apply.onClick = [this] { const double v = sl.getValue(); auto cb = onApply; if (auto* box = findParentComponentOfClass<juce::CallOutBox>()) box->dismiss(); if (cb) cb (v); };
-                cancel.onClick = [this] { if (auto* box = findParentComponentOfClass<juce::CallOutBox>()) box->dismiss(); };
-                setSize (380, 92);
-            }
-            void resized() override
-            {
-                auto r = getLocalBounds().reduced (8);
-                cap.setBounds (r.removeFromTop (20)); sl.setBounds (r.removeFromTop (28)); r.removeFromTop (6);
-                cancel.setBounds (r.removeFromRight (80)); r.removeFromRight (6); apply.setBounds (r.removeFromRight (80));
-            }
-        };
-        auto pop = std::make_unique<GainPop> (uiPrefs().getDoubleValue (prefKey ("gainDb"), -6.0));
-        juce::Component::SafePointer<NoiseModeDialog> self (this);
-        pop->onApply = [self] (double db)
-        {
-            if (self == nullptr || ! self->view.hasSelection()) return;
-            uiPrefs().setValue (self->prefKey ("gainDb"), db);
-            if (std::abs (db) < 0.05) { self->status.setText ("Gain 0 dB: nothing to change.", juce::dontSendNotification); return; }
-            auto spec = self->repairSpec (false);
-            spec.repair.mode = RepairMode::Gain; spec.repair.gainDb = db <= -59.95 ? -200.0 : db; spec.repair.strength = 1.0; spec.repair.consonant = false;
-            const juce::int64 t0 = (juce::int64) std::llround (self->view.selT0() * self->rate), t1 = (juce::int64) std::llround (self->view.selT1() * self->rate);
-            const RepairOp op { spec, t0, t1 };
-            const auto folder = self->fixFolder; const double sr = self->rate; const auto len = self->length; const auto onlyT = self->only;
-            self->runFix ("Gain", "gain", (double) t0 / sr, (double) t1 / sr,
-                          [folder, sr, len, onlyT, op] (const std::vector<EditRegion>& regions, std::vector<RegionJob>& jobs, AudioJob& j) { return prepareRepairJobs (folder, regions, 0, len, sr, { op }, onlyT, jobs, j); });
-        };
-        juce::CallOutBox::launchAsynchronously (std::move (pop), gainBtn.getScreenBounds(), nullptr);
+        const double db = gainSlider.getValue();
+        if (std::abs (db) < 0.05) { status.setText ("Gain 0 dB: nothing to change. Set the amount beside Gain first.", juce::dontSendNotification); return; }
+        auto spec = repairSpec (false);
+        spec.repair.mode = RepairMode::Gain; spec.repair.gainDb = db <= -59.95 ? -200.0 : db; spec.repair.strength = 1.0; spec.repair.consonant = false;
+        const auto ops = opsForSelection (spec);
+        const juce::int64 t0 = opsStart (ops), t1 = opsEnd (ops);
+        const auto folder = fixFolder; const double sr = rate; const auto len = length; const auto onlyT = only;
+        runFix ("Gain", "gain", (double) t0 / sr, (double) t1 / sr,
+                [folder, sr, len, onlyT, ops] (const std::vector<EditRegion>& regions, std::vector<RegionJob>& jobs, AudioJob& j) { return prepareRepairJobs (folder, regions, 0, len, sr, ops, onlyT, jobs, j); });
     }
     bool haveRoomTone() const { return rtBoxT1 > rtBoxT0 || projectRT->valid(); }
     /** The same in a few words, for the little caption in the Denoise box (the full sentence is its tooltip). */
+    juce::String roomSpanText() const
+    {
+        if (rtSpans.size() > 1) return juce::String ((int) rtSpans.size()) + " stretches, " + juce::String (rtBoxT0, 2) + " - " + juce::String (rtBoxT1, 2) + " s";
+        return "box at " + juce::String (rtBoxT0, 2) + " - " + juce::String (rtBoxT1, 2) + " s";
+    }
     juce::String roomShortText() const
     {
-        if (rtBoxT1 > rtBoxT0) return "Room tone: box at " + juce::String (rtBoxT0, 2) + " - " + juce::String (rtBoxT1, 2) + " s";
+        if (rtBoxT1 > rtBoxT0) return "Room tone: " + roomSpanText() + (rtQuietest ? " (quietest moments)" : "");
         if (projectRT->valid()) return "Room tone: the project's";
         return "Room tone: none yet";
     }
     juce::String roomText() const
     {
-        if (rtBoxT1 > rtBoxT0) return "Room tone: the box at " + juce::String (rtBoxT0, 2) + " - " + juce::String (rtBoxT1, 2) + " s";
+        if (rtBoxT1 > rtBoxT0) return "Room tone: the " + roomSpanText() + (rtQuietest ? ", learned from its quietest moments (the notes left out)" : "");
         if (projectRT->valid()) return "Room tone: the project's (" + projectRT->source + ")";
         return "Room tone: none yet - draw a box over room only and press L, or use the edit window's Room tone button";
     }
-    /** L: the box is the room tone (learned from the files under it when a denoise is made). */
+    /** L: the box is the room tone (learned from the files under it when a denoise is made). 3.29.0: a selection of several boxes - every stretch of time it
+        covers; with "quietest moments" ticked, from the quietest moments of them (a box with music in it). */
     void roomFromBox()
     {
         if (! built || running || ! view.hasSelection()) return;
-        rtBoxT0 = view.selT0(); rtBoxT1 = view.selT1();
-        if (rtBoxT1 - rtBoxT0 < 0.5) { status.setText ("The room-tone box is too short: make it at least half a second long (a second or more is better).", juce::dontSendNotification); rtBoxT0 = rtBoxT1 = -1.0; refreshControls(); return; }     // (what learnDenoise needs: a shorter box was taken here, then refused at Write back)
+        rtBoxT0 = view.selT0(); rtBoxT1 = view.selT1(); rtSpans = view.selectionSpans(); rtQuietest = quietBox.getToggleState();
+        double total = 0.0; for (auto& sp : rtSpans) total += sp.second - sp.first;
+        if (total < 0.5) { status.setText ("The room-tone box is too short: make it at least half a second long (a second or more is better).", juce::dontSendNotification); rtBoxT0 = rtBoxT1 = -1.0; rtSpans.clear(); refreshControls(); return; }     // (what learnDenoise needs: a shorter box was taken here, then refused at Write back)
         rtParts = cur;
         status.setText (roomText() + ". Now draw a box round the noise to take out and press Denoise (N).", juce::dontSendNotification);
         refreshControls();
     }
-    /** N: the box denoised - its time span and pitch range, every track - with the room tone, straight into the edit. */
+    /** N: the selection denoised - each rectangle's time span and pitch range, every track - with the room tone, straight into the edit. */
     void denoise()
     {
         if (! built || running || ! view.hasSelection() || ! haveRoomTone() || cur == nullptr) return;
-        FixSpec spec; spec.kind = FixSpec::Kind::Denoise; spec.f0 = view.selF0(); spec.f1 = view.selF1();
-        spec.dn.amountDb = amount.getValue(); spec.dn.residualDb = residual.getValue();
+        FixSpec spec; spec.kind = FixSpec::Kind::Denoise;
+        spec.dn.amountDb = amount.getValue(); spec.dn.residualDb = residual.getValue(); spec.dn.quietest = rtBoxT1 > rtBoxT0 && rtQuietest;
         spec.dnBoxT0 = rtBoxT1 > rtBoxT0 ? rtBoxT0 : -1.0; spec.dnBoxT1 = rtBoxT1 > rtBoxT0 ? rtBoxT1 : -1.0;
-        const juce::int64 t0 = (juce::int64) std::llround (view.selT0() * rate), t1 = (juce::int64) std::llround (view.selT1() * rate);
-        const RepairOp op { spec, t0, t1 };
+        if (rtBoxT1 > rtBoxT0 && rtSpans.size() > 1) spec.dnSpans = rtSpans;
+        const auto ops = opsForSelection (spec);
+        const juce::int64 t0 = opsStart (ops), t1 = opsEnd (ops);
         const auto folder = fixFolder; const double sr = rate; const auto len = length; const auto onlyT = only; auto prt = projectRT;
         auto parts = rtBoxT1 > rtBoxT0 && rtParts != nullptr ? rtParts : cur;      // (the room-tone box is learned from the sound as it was when it was marked)
         runFix ("Denoise", "denoise", (double) t0 / rate, (double) t1 / rate,
-                [folder, sr, len, onlyT, op, parts, prt] (const std::vector<EditRegion>& regions, std::vector<RegionJob>& jobs, AudioJob& j)
+                [folder, sr, len, onlyT, ops, parts, prt] (const std::vector<EditRegion>& regions, std::vector<RegionJob>& jobs, AudioJob& j)
                 {
                     // the jobs are made (the files not yet): their room-tone profiles first, then the files
-                    std::vector<RepairOp> ops { op };
                     auto err = prepareRepairJobs (folder, regions, 0, len, sr, ops, onlyT, jobs, j, false);
                     if (err.isNotEmpty()) return err;
                     err = attachRoomTone (jobs, ops, regions, *parts, prt, sr, j);
@@ -1372,6 +1384,10 @@ private:
     std::vector<Step> steps;                                            // the fixes since, each with the state before it (for Undo)
     std::shared_ptr<const Project::RoomTone> projectRT;                 // the project's room tone as it was when the window opened
     double rtBoxT0 = -1.0, rtBoxT1 = -1.0;                              // a box of the picture marked as the room tone (seconds), else the project's
+    std::vector<std::pair<double, double>> rtSpans;                     // 3.29.0: every stretch of time the room-tone selection covered (several boxes)
+    bool rtQuietest = false;                                            // 3.29.0: it is learned from the quietest moments (the box had music in it)
+    juce::ToggleButton quietBox;
+    juce::Slider gainSlider; juce::Label gainCap;                       // 3.29.0: the Gain tab's amount, in the panel (G applies it at once)
     double lastPlayTo = 0.0;
 };
 

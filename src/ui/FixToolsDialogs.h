@@ -567,7 +567,7 @@ public:
     {
         const bool same = spec.frames > 0 && std::abs (seconds - duration) < 1.0e-9;
         spec = std::move (s); duration = juce::jmax (0.001, seconds); dT0 = 0.0; dT1 = duration;
-        if (! keepSelection) hasSel = false;
+        if (! keepSelection) { boxes.clear(); rects.clear(); hasSel = false; }
         if (! same) resetView();
         detailStale = true; scheduleDetail();
         dirty = true; repaint();
@@ -594,13 +594,19 @@ public:
     void setSettings (const SpectroSettings& n) { ss = n; buildLut(); detailStale = ss.sharp ? true : detailStale; dirty = true; repaint(); scheduleDetail(); }
     void resized() override { scheduleDetail(); }
     bool hasSelection() const { return hasSel; }
+    /** 3.29.0: the selection as non-overlapping rectangles (seconds, Hz): every box added (Shift) less every part taken out (Alt). What the tools process, one by one. */
+    const std::vector<denoise::SelRect>& selectionRects() const { return rects; }
+    /** The stretches of time the selection covers (seconds; merged): what the room tone is learned from. */
+    std::vector<std::pair<double, double>> selectionSpans() const { return denoise::selectedSpans (rects); }
+    int boxCount() const { return (int) rects.size(); }
     /** Shows the sound around the box that the repair learns from (dotted): 'pct' is a % of the box, 'direction' 0 = left and right, 1 = up and down, 2 = both. */
     void setSurround (bool show, double pct, int direction, double afterWeight = 0.5) { showSurround = show; surroundPct = pct; surroundDir = direction; surroundAfter = juce::jlimit (0.0, 1.0, afterWeight); repaint(); }
-    double selT0() const { return juce::jmin (a.x, b.x); }   // seconds
-    double selT1() const { return juce::jmax (a.x, b.x); }
-    double selF0() const { return juce::jmin (a.y, b.y); }   // Hz
-    double selF1() const { return juce::jmax (a.y, b.y); }
-    void clearSelection() { hasSel = false; repaint(); if (onSelection) onSelection(); }
+    // the whole selection's extent (3.29.0: of every rectangle together; one box = that box)
+    double selT0() const { double v = 1.0e30; for (auto& r : rects) v = juce::jmin (v, r.t0); return rects.empty() ? 0.0 : v; }   // seconds
+    double selT1() const { double v = -1.0e30; for (auto& r : rects) v = juce::jmax (v, r.t1); return rects.empty() ? 0.0 : v; }
+    double selF0() const { double v = 1.0e30; for (auto& r : rects) v = juce::jmin (v, r.f0); return rects.empty() ? 0.0 : v; }   // Hz
+    double selF1() const { double v = -1.0e30; for (auto& r : rects) v = juce::jmax (v, r.f1); return rects.empty() ? 0.0 : v; }
+    void clearSelection() { boxes.clear(); selectionChanged (true); }
     /** Seconds from the start of the area; < 0 hides the playhead. */
     void setPlayhead (double t) { if (std::abs (t - playT) > 1.0e-6) { playT = t; repaint(); } }
     /** The playhead you place by clicking the time ruler: where Play starts, and the point the zoom keys keep still. */
@@ -724,29 +730,38 @@ public:
             juce::Graphics::ScopedSaveState saved (g);
             g.reduceClipRegion (plot);
             if (hasSel && showSurround)
-            {
-                const double t0 = selT0(), t1 = selT1(), f0 = selF0(), f1 = selF1();
-                const double dt = (t1 - t0) * surroundPct / 100.0, df = (f1 - f0) * surroundPct / 100.0;
-                auto box = [&] (double ta, double tb, double fa, double fb)
+                for (auto& sr : rects)                                                  // (3.29.0: the surround of every rectangle of the selection: each is repaired on its own)
                 {
-                    ta = juce::jmax (0.0, ta); tb = juce::jmin (duration, tb); fa = juce::jmax (kMinHz, fa); fb = juce::jmin (maxHz(), fb);
-                    if (tb <= ta || fb <= fa) return;
-                    const int x0 = tToX (ta, plot), x1 = tToX (tb, plot), y0 = hzToY (fb, plot), y1 = hzToY (fa, plot);
-                    juce::Rectangle<int> r (x0, y0, juce::jmax (2, x1 - x0), juce::jmax (2, y1 - y0));
-                    g.setColour (juce::Colour (0x2229d3ff)); g.fillRect (r);
-                    juce::Path p; p.addRectangle (r.toFloat());
-                    juce::Path dashed; const float pattern[] = { 4.0f, 4.0f };
-                    juce::PathStrokeType (1.5f).createDashedStroke (dashed, p, pattern, 2);
-                    g.setColour (juce::Colour (0xff29d3ff)); g.fillPath (dashed);
-                };
-                if (surroundDir != 1) { box (t0 - 2.0 * dt * (1.0 - surroundAfter), t0, f0, f1); box (t1, t1 + 2.0 * dt * surroundAfter, f0, f1); }      // before and after the box: shared out by the before / after weighting (50/50 = equal, 0 = all before)
-                if (surroundDir != 0) { box (t0, t1, f1, f1 + df); box (t0, t1, f0 - df, f0); }          // above and below it
-            }
+                    const double t0 = sr.t0, t1 = sr.t1, f0 = sr.f0, f1 = sr.f1;
+                    const double dt = (t1 - t0) * surroundPct / 100.0, df = (f1 - f0) * surroundPct / 100.0;
+                    auto box = [&] (double ta, double tb, double fa, double fb)
+                    {
+                        ta = juce::jmax (0.0, ta); tb = juce::jmin (duration, tb); fa = juce::jmax (kMinHz, fa); fb = juce::jmin (maxHz(), fb);
+                        if (tb <= ta || fb <= fa) return;
+                        const int x0 = tToX (ta, plot), x1 = tToX (tb, plot), y0 = hzToY (fb, plot), y1 = hzToY (fa, plot);
+                        juce::Rectangle<int> r (x0, y0, juce::jmax (2, x1 - x0), juce::jmax (2, y1 - y0));
+                        g.setColour (juce::Colour (0x2229d3ff)); g.fillRect (r);
+                        juce::Path p; p.addRectangle (r.toFloat());
+                        juce::Path dashed; const float pattern[] = { 4.0f, 4.0f };
+                        juce::PathStrokeType (1.5f).createDashedStroke (dashed, p, pattern, 2);
+                        g.setColour (juce::Colour (0xff29d3ff)); g.fillPath (dashed);
+                    };
+                    if (surroundDir != 1) { box (t0 - 2.0 * dt * (1.0 - surroundAfter), t0, f0, f1); box (t1, t1 + 2.0 * dt * surroundAfter, f0, f1); }      // before and after the box: shared out by the before / after weighting (50/50 = equal, 0 = all before)
+                    if (surroundDir != 0) { box (t0, t1, f1, f1 + df); box (t0, t1, f0 - df, f0); }          // above and below it
+                }
             if (hasSel)
-            {
-                auto r = selRect();
-                g.setColour (juce::Colour (0x44ffd24a)); g.fillRect (r);
-                g.setColour (juce::Colour (0xffffd24a)); g.drawRect (r, 2);
+            {   // 3.29.0: the selection as one shape: its rectangles filled, and a border round the outside of the shape (a part taken out shows as a hole)
+                juce::RectangleList<int> inner, outer;
+                for (auto& sr : rects) { const auto r = rectOf (sr); inner.add (r); outer.add (r.expanded (2)); }
+                g.setColour (juce::Colour (0x44ffd24a)); g.fillRectList (inner);
+                outer.subtract (inner);
+                g.setColour (juce::Colour (0xffffd24a)); g.fillRectList (outer);
+            }
+            if (mode == Mode::select && drawing)
+            {   // the box being drawn: added (yellow) or taken out (red), outline only until the mouse is let go
+                const auto r = rectOf (denoise::SelRect { juce::jmin (a.x, b.x), juce::jmax (a.x, b.x), juce::jmin (a.y, b.y), juce::jmax (a.y, b.y), drawAdd });
+                g.setColour (drawAdd ? juce::Colour (0xffffd24a) : juce::Colour (0xffff5a4a)); g.drawRect (r, 2);
+                if (! drawAdd) { g.setColour (juce::Colour (0x55ff5a4a)); g.fillRect (r); }
             }
             if (playT < 0.0 && cueT >= vt0 && cueT <= vt1 && duration > 0.0)          // the playhead you placed on the ruler
             {
@@ -785,28 +800,42 @@ public:
         if (rulerArea().contains (e.getPosition())) { mode = Mode::pan; panT0 = vt0; return; }
         auto pl = plotArea();
         if (e.x < pl.getX() && e.y >= pl.getY() && e.y < pl.getBottom()) { mode = Mode::pitchPan; panF = fLo; panF1 = fHi; return; }
-        if (const int ed = edgesAt (e.getPosition()))                    // on an edge or corner of the box: drag it to resize the box
+        const bool shift = e.mods.isShiftDown(), alt = e.mods.isAltDown();       // 3.29.0: Shift = another box added to the selection, Alt = a box taken out of it
+        if (! shift && ! alt)
         {
-            const auto r = selRect();                                  // where the pointer is on the edge, so the edge does not jump to the pointer
-            boxedit::order (a.x, a.y, b.x, b.y);                       // a = lower-left corner, b = upper-right (3.28.0: all four read before either is set - see BoxEdges.h)
-            grabDx = (ed & 3) ? e.x - ((ed & 1) ? r.getX() : r.getRight()) : 0;
-            grabDy = (ed & 12) ? e.y - ((ed & 4) ? r.getY() : r.getBottom()) : 0;
-            mode = Mode::resize; edgeMask = ed; return;
+            int hit = -1;
+            if (const int ed = edgesAt (e.getPosition(), &hit))               // on an edge or corner of a box: drag it to resize that box
+            {
+                editing = hit;
+                a = { boxes[(size_t) hit].t0, boxes[(size_t) hit].f0 }; b = { boxes[(size_t) hit].t1, boxes[(size_t) hit].f1 };
+                boxedit::order (a.x, a.y, b.x, b.y);                       // a = lower-left corner, b = upper-right (3.28.0: all four read before either is set - see BoxEdges.h)
+                const auto r = rectOf (boxes[(size_t) hit]);               // where the pointer is on the edge, so the edge does not jump to the pointer
+                grabDx = (ed & 3) ? e.x - ((ed & 1) ? r.getX() : r.getRight()) : 0;
+                grabDy = (ed & 12) ? e.y - ((ed & 4) ? r.getY() : r.getBottom()) : 0;
+                mode = Mode::resize; edgeMask = ed; return;
+            }
+            if (! pl.contains (e.getPosition())) return;
+            if ((hit = boxAt (e.getPosition())) >= 0)
+            {   // 3.28.0: inside a box (away from its edges): drag it to move that box, the same size, in time and in pitch. A click without a drag leaves it as it is.
+                editing = hit;
+                a = { boxes[(size_t) hit].t0, boxes[(size_t) hit].f0 }; b = { boxes[(size_t) hit].t1, boxes[(size_t) hit].f1 };
+                boxedit::order (a.x, a.y, b.x, b.y);
+                moveA = a; moveB = b; mode = Mode::move; return;
+            }
         }
         if (! pl.contains (e.getPosition())) return;
-        if (insideBox (e.getPosition()))
-        {   // 3.28.0: inside the box (away from its edges): drag it to move the whole box, the same size, in time and in pitch. A click without a drag leaves it as it is.
-            boxedit::order (a.x, a.y, b.x, b.y);
-            moveA = a; moveB = b; mode = Mode::move; return;
-        }
-        mode = Mode::select; a = toTF (e.getPosition()); b = a; hasSel = true; repaint();
+        if (alt && boxes.empty()) return;                                      // nothing is selected: nothing to take out
+        if (! shift && ! alt) boxes.clear();                                   // a plain drag starts afresh
+        drawAdd = ! alt; drawing = true;
+        mode = Mode::select; a = toTF (e.getPosition()); b = a; repaint();
     }
     void mouseMove (const juce::MouseEvent& e) override
     {
         setHover (e.getPosition());
-        const int ed = edgesAt (e.getPosition());
         using C = juce::MouseCursor;
-        if (ed == 0 && insideBox (e.getPosition())) { setMouseCursor (C (C::UpDownLeftRightResizeCursor)); return; }     // (3.28.0: inside the box - drag to move it)
+        if (e.mods.isShiftDown() || e.mods.isAltDown()) { setMouseCursor (C (C::CrosshairCursor)); return; }       // (3.29.0: a box is about to be added / taken out)
+        const int ed = edgesAt (e.getPosition());
+        if (ed == 0 && boxAt (e.getPosition()) >= 0) { setMouseCursor (C (C::UpDownLeftRightResizeCursor)); return; }     // (3.28.0: inside a box - drag to move it)
         setMouseCursor (ed == 0 ? C (C::CrosshairCursor)
                         : ed == 1 || ed == 2 ? C (C::LeftRightResizeCursor)
                         : ed == 4 || ed == 8 ? C (C::UpDownResizeCursor)
@@ -831,7 +860,7 @@ public:
             double u0 = toU (moveA.y), u1 = toU (moveB.y);
             boxedit::moveSpan (u0, u1, du, toU (kMinHz), toU (maxHz()));
             a = { t0, juce::jmax ((double) kMinHz, fromU (u0)) }; b = { t1, juce::jmin (maxHz(), fromU (u1)) };
-            repaint();
+            if (editing >= 0 && editing < (int) boxes.size()) { writeBack (editing); selectionChanged (false); }     // (3.29.0: the shape follows while it is moved)
         }
         else if (mode == Mode::resize)
         {
@@ -869,7 +898,7 @@ public:
                 }
                 if (yy >= yTop && yy <= yBottom) mv = toTF ({ pl2.getX(), yy }).y;
             }
-            repaint();
+            if (editing >= 0 && editing < (int) boxes.size()) { writeBack (editing); selectionChanged (false); }     // (3.29.0: the shape follows while it is resized)
         }
         else if (mode == Mode::pan) setWindow (panT0 - (double) e.getDistanceFromDragStartX() / (double) juce::jmax (1, pl.getWidth()) * (vt1 - vt0), vt1 - vt0);
         else if (mode == Mode::pitchPan) dragPitchWindow ((double) e.getDistanceFromDragStartY() / (double) juce::jmax (1, pl.getHeight()));
@@ -889,10 +918,17 @@ public:
             repaint(); return;
         }
         if (m == Mode::pan || m == Mode::pitchPan) { note(); return; }
-        if (m == Mode::move) { if (a != moveA || b != moveB) { repaint(); if (onSelection) onSelection(); } return; }       // (a click in the box: nothing changes)
-        if (m != Mode::select && m != Mode::resize) return;
-        if (selT1() - selT0() < 0.002) hasSel = false;
-        repaint(); if (onSelection) onSelection();
+        if (m == Mode::move)                                                     // (a click in the box: nothing changes)
+        {
+            if ((a != moveA || b != moveB) && editing >= 0 && editing < (int) boxes.size()) { writeBack (editing); selectionChanged (true); }
+            editing = -1; return;
+        }
+        if (m == Mode::resize) { if (editing >= 0 && editing < (int) boxes.size()) writeBack (editing); editing = -1; selectionChanged (true); return; }
+        if (m != Mode::select) return;
+        drawing = false;
+        const double t0 = juce::jmin (a.x, b.x), t1 = juce::jmax (a.x, b.x);
+        if (t1 - t0 >= 0.002) boxes.push_back (denoise::SelRect { t0, t1, juce::jmin (a.y, b.y), juce::jmax (a.y, b.y), drawAdd });
+        selectionChanged (true);
     }
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
     {
@@ -914,10 +950,39 @@ private:
     enum class Mode { none, select, pan, pitchPan, knob, resize, move };
     int edgeMask = 0;                                           // while resizing the box: 1 left, 2 right, 4 top, 8 bottom
     juce::Point<double> moveA, moveB;                           // while moving the box: its corners (lower-left, upper-right) when it was taken hold of
+    // 3.29.0: the selection is a list of boxes in the order they were drawn, each added (Shift, or the first) or taken out (Alt); 'rects' is what that comes to
+    std::vector<denoise::SelRect> boxes, rects;
+    int editing = -1;                                           // the box being resized or moved (an index into boxes)
+    bool drawing = false, drawAdd = true;                       // a box is being drawn: added or taken out
+    /** The box, in pixels, of a rectangle in seconds and Hz. */
+    juce::Rectangle<int> rectOf (const denoise::SelRect& r) const
+    {
+        auto pl = plotArea();
+        const int x0 = tToX (juce::jmin (r.t0, r.t1), pl), x1 = tToX (juce::jmax (r.t0, r.t1), pl);
+        const int y0 = hzToY (juce::jmax (r.f0, r.f1), pl), y1 = hzToY (juce::jmin (r.f0, r.f1), pl);
+        return { x0, y0, juce::jmax (2, x1 - x0), juce::jmax (2, y1 - y0) };
+    }
+    /** The box (added, so that there is something to see) under the point, away from its edges: the last one drawn first. -1: none. */
+    int boxAt (juce::Point<int> p) const
+    {
+        if (! plotArea().contains (p)) return -1;
+        for (int i = (int) boxes.size(); i-- > 0;) if (boxes[(size_t) i].add && rectOf (boxes[(size_t) i]).contains (p)) return i;
+        return -1;
+    }
+    /** The edited corners a / b written back into box i. */
+    void writeBack (int i) { auto& r = boxes[(size_t) i]; r.t0 = juce::jmin (a.x, b.x); r.t1 = juce::jmax (a.x, b.x); r.f0 = juce::jmin (a.y, b.y); r.f1 = juce::jmax (a.y, b.y); }
+    /** The boxes changed: the rectangles they come to are worked out again; a selection that has nothing left in it is no selection. */
+    void selectionChanged (bool tell)
+    {
+        rects = denoise::selectionRects (boxes);
+        if (rects.empty()) boxes.clear();
+        hasSel = ! rects.empty();
+        repaint();
+        if (tell && onSelection) onSelection();
+    }
     juce::Point<int> hover { -1, -1 };                          // 3.28.0: where the pointer is over the picture, for the read-out (-1: not over it)
     double refA = 440.0;
-    /** Inside the box and not on one of its edges (where a drag moves it). */
-    bool insideBox (juce::Point<int> p) const { return hasSel && edgesAt (p) == 0 && selRect().contains (p) && plotArea().contains (p); }
+
     /** The pointer moved to p (or left: -1, -1): the read-out is drawn again where it was and where it is now. */
     void setHover (juce::Point<int> p)
     {
@@ -1049,19 +1114,18 @@ private:
         const int yy = juce::jlimit (0, pl.getHeight() - 1, p.y - pl.getY());
         return { t, hzOf (1.0 - (double) yy / (double) juce::jmax (1, pl.getHeight() - 1)) };
     }
-    /** Which edges of the box the point is on (1 left, 2 right, 4 top, 8 bottom, or two of them at a corner); 0 = not on the box's border. */
-    int edgesAt (juce::Point<int> p) const
+    /** Which edges of a box the point is on (1 left, 2 right, 4 top, 8 bottom, or two of them at a corner); 0 = not on any box's border. 'which' (may be null)
+        gets the box (the last one drawn first; the boxes added, not those taken out). */
+    int edgesAt (juce::Point<int> p, int* which = nullptr) const
     {
         if (! hasSel) return 0;
-        const auto r = selRect();                                             // (the rules - sides belong to one axis, only a real corner takes both - are in core/BoxEdges.h, with a test)
-        return boxedit::edgesAt ({ r.getX(), r.getY(), r.getWidth(), r.getHeight() }, p.x, p.y);
-    }
-    juce::Rectangle<int> selRect() const
-    {
-        auto pl = plotArea();
-        const int x0 = tToX (selT0(), pl), x1 = tToX (selT1(), pl);
-        const int y0 = hzToY (selF1(), pl), y1 = hzToY (selF0(), pl);
-        return { x0, y0, juce::jmax (2, x1 - x0), juce::jmax (2, y1 - y0) };
+        for (int i = (int) boxes.size(); i-- > 0;)
+        {
+            if (! boxes[(size_t) i].add) continue;
+            const auto r = rectOf (boxes[(size_t) i]);                        // (the rules - sides belong to one axis, only a real corner takes both - are in core/BoxEdges.h, with a test)
+            if (const int ed = boxedit::edgesAt ({ r.getX(), r.getY(), r.getWidth(), r.getHeight() }, p.x, p.y)) { if (which != nullptr) *which = i; return ed; }
+        }
+        return 0;
     }
     /** The picture of what is in view, made at the size it is shown (so zooming in shows more detail, within what was scanned). */
     void rebuildImage (juce::Rectangle<int> pl)
@@ -1156,11 +1220,18 @@ public:
         residual.setTooltip ("Denoise: how much of the room tone is left in the box (the gain never goes below this). -12 dB leaves a quiet, natural floor; -24 dB is a lot. Double-click for -12.");
         roomBtn.onClick = [this] { roomFromBox(); };
         denoiseBtn.onClick = [this] { preview (2); };
-        roomBtn.setTooltip ("Draw a box over a part of THIS picture that holds nothing but the room (its pitch range does not matter: the whole spectrum is learned) and press this: that box is the room tone for Denoise here, instead of the project's. Key: L");
+        roomBtn.setTooltip ("Draw a box over a part of THIS picture that holds nothing but the room (its pitch range does not matter: the whole spectrum is learned) and press this: that box is the room tone for Denoise here, instead of the project's. Several boxes (Shift): every stretch they cover. Key: L");
         denoiseBtn.setTooltip ("Denoise: takes the background noise out of the box you drew - its time span and its pitch range, on every track - with the room tone (the project's, from the edit window's Room tone button, or a box of this picture marked with L). "
                                "Above and below the box's pitch range nothing is touched; the denoising fades in and out at the box's edges. Same rules as ReTouch: nothing is written yet, Play to listen, Undo if it did not work. Key: N");
         denoiseBtn.setColour (juce::TextButton::buttonColourId, theme::accent);
         addAndMakeVisible (roomBtn); addAndMakeVisible (denoiseBtn);
+        // 3.29.0: a noise only ever heard under the music (a car outside during the quiet passages): no clean stretch to learn from, so the quietest moments of a box WITH music are taken
+        quietBox.setButtonText ("The box has music in it: learn the room tone from its quietest moments");
+        quietBox.setTooltip ("For a noise that is only there under the music, with no clean stretch of it to learn from. At every pitch the box's quietest moments (between and under the notes) "
+                             "are taken as the noise, so the notes drop out of the room tone. Draw the box over a few seconds of the noisy passage (longer is better; Shift adds more), tick this, press L, "
+                             "then draw the box to denoise and press N. Keep the Amount modest.");
+        quietBox.setColour (juce::ToggleButton::textColourId, theme::text);
+        addAndMakeVisible (quietBox);
         strength.setTooltip ("How much of the repair replaces the original sound inside the box. 100 % is a full repair; less keeps some of the original.");
         surround.setTooltip ("How much of the sound around the box is used, as a percentage of the box: its length in time (left and right) and its height in pitch (up and down).");
         weight.setTooltip ("0 uses only the sound before the box, 100 only the sound after it, 50 uses both equally (a cross-fade). Applies to left and right.\n"
@@ -1214,7 +1285,18 @@ public:
         ticker.owner = this; ticker.startTimerHz (30);
         if (ctx.hold) ctx.hold (true);
         previewBtn.onClick = [this] { preview (0); };
-        gainBtn.onClick = [this] { openGain(); };
+        gainBtn.onClick = [this] { applyGain(); };
+        // 3.29.0: the amount is set in the panel (remembered), and G or the button applies it at once - no pop-up to click through each time
+        gainCap.setText ("Gain", juce::dontSendNotification); gainCap.setColour (juce::Label::textColourId, theme::text); addAndMakeVisible (gainCap);
+        gainSlider.setSliderStyle (juce::Slider::LinearHorizontal); gainSlider.setRange (-60.0, 18.0, 0.1);
+        gainSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 74, 22); gainSlider.setDoubleClickReturnValue (true, 0.0);
+        gainSlider.textFromValueFunction = [] (double v) { return v <= -59.95 ? juce::String ("-inf dB") : (v > 0.0 ? "+" : "") + juce::String (v, 1) + " dB"; };
+        gainSlider.valueFromTextFunction = [] (const juce::String& t) { return t.containsIgnoreCase ("inf") ? -60.0 : t.retainCharacters ("-+0123456789.").getDoubleValue(); };
+        gainSlider.setSkewFactorFromMidPoint (-6.0);
+        gainSlider.setValue (uiPrefs().getDoubleValue (prefKey ("gainDb"), -6.0), juce::dontSendNotification);
+        gainSlider.onValueChange = [this] { uiPrefs().setValue (prefKey ("gainDb"), gainSlider.getValue()); };
+        gainSlider.setTooltip ("How much louder or quieter the box is made: set it once, then G (or the button) applies it to each box you draw. Double-click: 0 dB.");
+        addAndMakeVisible (gainSlider);
         gainBtn.setTooltip ("Gain: makes the sound inside the box louder or quieter (from silence up to +18 dB), and nothing else: for a resonance, a ring or a note in one spot that should stand out less, or more. "
                             "Draw the box round it and press G. The gain fades in and out smoothly at the box's edges.");
         addAndMakeVisible (gainBtn); gainBtn.setWantsKeyboardFocus (false);
@@ -1356,11 +1438,11 @@ public:
         switch (t)
         {
             case kTabTouch:   return { &methodBox, &dirBox, &bandsBox, &multiBtn, &linkBtn, &strengthCap, &strength, &surroundCap, &surround, &weightCap, &weight, &previewBtn };
-            case kTabGain:    return { &gainBtn, &gainHint };
+            case kTabGain:    return { &gainBtn, &gainHint, &gainCap, &gainSlider };
             case kTabClick:   return { &sensCap, &sens, &declickBtn };
             case kTabConsonant: return { &copyBtn, &copyMoveBtn, &consHint, &consCap, &consBox, &renameBtn, &forgetBtn, &levelCap, &level,
                                          &nudgeCap, &nudgeL5, &nudgeL1, &nudgeRead, &nudgeR1, &nudgeR5, &pasteBtn };
-            default:          return { &amountCap, &amount, &residualCap, &residual, &roomBtn, &roomCap, &denoiseBtn };
+            default:          return { &amountCap, &amount, &residualCap, &residual, &roomBtn, &roomCap, &denoiseBtn, &quietBox };
         }
     }
     /** Lights the tab that is showing and no other. (By hand, not with a radio group: JUCE's radio group runs the click action of the key it turns off, and that put ReTouch back on.) */
@@ -1385,7 +1467,7 @@ public:
             addAndMakeVisible (t);
         }
         lightTab();
-        gainHint.setText ("Louder or quieter inside the box, from silence up to +18 dB, and nothing else. Draw a box, then press Gain [G].", juce::dontSendNotification);
+        gainHint.setText ("Louder or quieter inside the box, from silence up to +18 dB, and nothing else. Set the amount, draw a box, press G - and G again for the next box.", juce::dontSendNotification);
         gainHint.setColour (juce::Label::textColourId, theme::dimText); gainHint.setMinimumHorizontalScale (0.8f);
         addAndMakeVisible (gainHint);
     }
@@ -1419,8 +1501,10 @@ public:
                 break;
             }
             case kTabGain:
-            {
-                gainBtn.setBounds (action); gainHint.setBounds (rowOf (in, 0));
+            {   // 3.29.0: the amount in the panel itself; the button (or G) applies it straight away
+                auto r0 = rowOf (in, 0); r0.removeFromRight (kActionW + 8);
+                gainCap.setBounds (r0.removeFromLeft (44)); gainSlider.setBounds (r0.removeFromLeft (juce::jmin (r0.getWidth(), sliderW + 90)));
+                gainBtn.setBounds (action); gainHint.setBounds (rowOf (in, 1));
                 break;
             }
             case kTabClick:
@@ -1453,6 +1537,7 @@ public:
                 residualCap.setBounds (r1.removeFromLeft (66)); residual.setBounds (r1.removeFromLeft (sliderW));
                 denoiseBtn.setBounds (action); r2.removeFromRight (kActionW + 8);
                 roomBtn.setBounds (r2.removeFromLeft (190)); r2.removeFromLeft (8); roomCap.setBounds (r2);
+                auto r3 = rowOf (in, 2); r3.removeFromRight (kActionW + 8); quietBox.setBounds (r3);        // (3.29.0)
                 break;
             }
         }
@@ -1544,7 +1629,7 @@ protected:
         if ((k.getTextCharacter() == 'g' || k.getTextCharacter() == 'G') && ! k.getModifiers().isAnyModifierKeyDown())      // G: change the gain of the box
         {
             selectTab (kTabGain);
-            if (gainBtn.isEnabled()) openGain();
+            if (gainBtn.isEnabled()) applyGain();
             return true;
         }
         if ((k.getTextCharacter() == 'd' || k.getTextCharacter() == 'D') && ! k.getModifiers().isAnyModifierKeyDown())
@@ -1580,23 +1665,29 @@ private:
     /** The room tone Denoise uses: a box of this picture marked with L (its time span; the whole spectrum of it), else the project's. */
     bool haveRoomTone() const { if (rtBoxT1 > rtBoxT0) return true; for (auto& p : ctx.roomMono) if (p.valid()) return true; return false; }
     /** The same in a few words, for the little caption in the Denoise box (the full sentence is its tooltip). */
+    juce::String roomSpanText() const
+    {
+        if (rtSpans.size() > 1) return juce::String ((int) rtSpans.size()) + " stretches, " + juce::String (rtBoxT0, 2) + " - " + juce::String (rtBoxT1, 2) + " s";
+        return "box at " + juce::String (rtBoxT0, 2) + " - " + juce::String (rtBoxT1, 2) + " s";
+    }
     juce::String roomShortText() const
     {
-        if (rtBoxT1 > rtBoxT0) return "Room tone: box at " + juce::String (rtBoxT0, 2) + " - " + juce::String (rtBoxT1, 2) + " s";
+        if (rtBoxT1 > rtBoxT0) return "Room tone: " + roomSpanText() + (rtQuietest ? " (quietest moments)" : "");
         if (ctx.roomSource.isNotEmpty()) return "Room tone: the project's";
         return "Room tone: none yet";
     }
     juce::String roomText() const
     {
-        if (rtBoxT1 > rtBoxT0) return "Room tone: the box at " + juce::String (rtBoxT0, 2) + " - " + juce::String (rtBoxT1, 2) + " s of this picture";
+        if (rtBoxT1 > rtBoxT0) return "Room tone: the " + roomSpanText() + " of this picture" + (rtQuietest ? ", learned from its quietest moments (the notes left out)" : "");
         if (ctx.roomSource.isNotEmpty()) return "Room tone: the project's (" + ctx.roomSource + ")";
         return "Room tone: none yet - draw a box over room only and press L, or use the edit window's Room tone button";
     }
     void roomFromBox()
     {
         if (! scanned || running || ! view.hasSelection()) return;
-        rtBoxT0 = view.selT0(); rtBoxT1 = view.selT1();
-        if (rtBoxT1 - rtBoxT0 < 0.5) { status.setText ("The room-tone box is too short: make it at least half a second long (a second or more is better).", juce::dontSendNotification); rtBoxT0 = rtBoxT1 = -1.0; refreshControls(); return; }     // (what learnDenoise needs: a shorter box was taken here, then refused at Write back)
+        rtBoxT0 = view.selT0(); rtBoxT1 = view.selT1(); rtSpans = view.selectionSpans(); rtQuietest = quietBox.getToggleState();     // (3.29.0: every stretch of the selection; the quietest moments)
+        double total = 0.0; for (auto& sp : rtSpans) total += sp.second - sp.first;
+        if (total < 0.5) { status.setText ("The room-tone box is too short: make it at least half a second long (a second or more is better).", juce::dontSendNotification); rtBoxT0 = rtBoxT1 = -1.0; rtSpans.clear(); refreshControls(); return; }     // (what learnDenoise needs: a shorter box was taken here, then refused at Write back)
         status.setText (roomText() + ". Now draw a box round the noise to take out and press Denoise (N).", juce::dontSendNotification);
         refreshControls();
     }      // one window for both: ReTouch and De-click share the picture, the box and the list of fixes
@@ -1700,7 +1791,7 @@ private:
         sens.setVisible (true); sensCap.setVisible (true);
         for (int t = 0; t < kTabCount; ++t) if (t != tab) for (auto* c : tabControls (t)) c->setVisible (false);      // only the tab that is showing
         if (view.hasSelection())
-            info.setText ("Selected: " + juce::String (view.selT0(), 3) + " - " + juce::String (view.selT1(), 3) + " s  ("
+            info.setText ("Selected: " + (view.boxCount() > 1 ? juce::String (view.boxCount()) + " boxes, " : juce::String()) + juce::String (view.selT0(), 3) + " - " + juce::String (view.selT1(), 3) + " s  ("
                           + juce::String ((view.selT1() - view.selT0()) * 1000.0, 0) + " ms),  " + juce::String ((int) view.selF0()) + " - " + juce::String ((int) view.selF1()) + " Hz"
                           + (committed.empty() ? juce::String() : juce::String ("      ") + juce::String ((int) committed.size()) + " fix(es) made"), juce::dontSendNotification);
         else info.setText (juce::String ("Nothing selected")
@@ -1733,8 +1824,9 @@ private:
         if (what == 2)
         {
             spec.kind = FixSpec::Kind::Denoise; spec.f0 = view.selF0(); spec.f1 = view.selF1();
-            spec.dn.amountDb = amount.getValue(); spec.dn.residualDb = residual.getValue();
+            spec.dn.amountDb = amount.getValue(); spec.dn.residualDb = residual.getValue(); spec.dn.quietest = rtBoxT1 > rtBoxT0 && rtQuietest;
             spec.dnBoxT0 = rtBoxT1 > rtBoxT0 ? rtBoxT0 : -1.0; spec.dnBoxT1 = rtBoxT1 > rtBoxT0 ? rtBoxT1 : -1.0;
+            if (rtBoxT1 > rtBoxT0 && rtSpans.size() > 1) spec.dnSpans = rtSpans;
         }
         else if (what == 0)
         {
@@ -1752,66 +1844,51 @@ private:
         return spec;
     }
     double seconds() const { return (double) ctx.length / ctx.rate; }
-    /** The Gain pop-up: a slider from silence to +18 dB for the box; Apply makes it a fix like ReTouch (Undo takes it off). */
-    void openGain()
+    /** G: the gain set in the panel applied to the box (3.29.0: no pop-up - the slider sits in the panel), a fix like ReTouch (Undo takes it off). */
+    void applyGain()
     {
         if (! scanned || running || ! view.hasSelection()) return;
-        struct GainPop : public juce::Component
-        {
-            juce::Slider sl; juce::TextButton apply { "Apply" }, cancel { "Cancel" }; juce::Label cap;
-            std::function<void (double)> onApply;
-            GainPop (double start)
-            {
-                cap.setText ("Gain of the box", juce::dontSendNotification); cap.setColour (juce::Label::textColourId, theme::text); addAndMakeVisible (cap);
-                sl.setSliderStyle (juce::Slider::LinearHorizontal); sl.setRange (-60.0, 18.0, 0.1); sl.setValue (start, juce::dontSendNotification);
-                sl.setTextBoxStyle (juce::Slider::TextBoxRight, false, 74, 22); sl.setDoubleClickReturnValue (true, 0.0);
-                sl.textFromValueFunction = [] (double v) { return v <= -59.95 ? juce::String ("-inf dB") : (v > 0.0 ? "+" : "") + juce::String (v, 1) + " dB"; };
-                sl.valueFromTextFunction = [] (const juce::String& t) { return t.containsIgnoreCase ("inf") ? -60.0 : t.retainCharacters ("-+0123456789.").getDoubleValue(); };
-                sl.setSkewFactorFromMidPoint (-6.0);
-                addAndMakeVisible (sl); addAndMakeVisible (apply); addAndMakeVisible (cancel);
-                apply.setColour (juce::TextButton::buttonColourId, theme::accent);
-                apply.onClick = [this] { const double v = sl.getValue(); auto cb = onApply; if (auto* box = findParentComponentOfClass<juce::CallOutBox>()) box->dismiss(); if (cb) cb (v); };
-                cancel.onClick = [this] { if (auto* box = findParentComponentOfClass<juce::CallOutBox>()) box->dismiss(); };
-                setSize (380, 92);
-            }
-            void resized() override
-            {
-                auto r = getLocalBounds().reduced (8);
-                cap.setBounds (r.removeFromTop (20)); sl.setBounds (r.removeFromTop (28)); r.removeFromTop (6);
-                cancel.setBounds (r.removeFromRight (80)); r.removeFromRight (6); apply.setBounds (r.removeFromRight (80));
-            }
-        };
-        auto pop = std::make_unique<GainPop> (uiPrefs().getDoubleValue (prefKey ("gainDb"), -6.0));
-        juce::Component::SafePointer<RepairDialog> self (this);
-        pop->onApply = [self] (double db)
-        {
-            if (self == nullptr) return;
-            uiPrefs().setValue (self->prefKey ("gainDb"), db);
-            if (std::abs (db) < 0.05) { self->status.setText ("Gain 0 dB: nothing to change.", juce::dontSendNotification); return; }
-            self->gainNext = true; self->gainNextDb = db <= -59.95 ? -200.0 : db;
-            self->preview (0);
-            self->gainNext = false;
-        };
-        juce::CallOutBox::launchAsynchronously (std::move (pop), gainBtn.getScreenBounds(), nullptr);
+        const double db = gainSlider.getValue();
+        if (std::abs (db) < 0.05) { status.setText ("Gain 0 dB: nothing to change. Set the amount beside Gain first.", juce::dontSendNotification); return; }
+        gainNext = true; gainNextDb = db <= -59.95 ? -200.0 : db;
+        preview (0);
+        gainNext = false;
     }
     void preview (int what)
     {
         if (! scanned || running || origTracks == nullptr) return;
         if (what == 2 && ! haveRoomTone()) { status.setText ("No room tone: draw a box over a part that is only room and press L, or use the edit window's Room tone button first.", juce::dontSendNotification); return; }
         juce::int64 t0 = 0, t1 = 0; const auto spec = buildSpec (t0, t1, what);
-        startFix (spec, t0, t1);
+        // 3.29.0: one change per rectangle of the selection (several boxes, or a box with parts taken out), the same settings each; De-click with no box: the whole stretch
+        std::vector<RepairOp> group;
+        if (view.hasSelection())
+            for (auto& r : view.selectionRects())
+            {
+                auto sp = spec; sp.f0 = r.f0; sp.f1 = r.f1;
+                group.push_back ({ sp, (juce::int64) std::llround (r.t0 * ctx.rate), (juce::int64) std::llround (r.t1 * ctx.rate) });
+            }
+        else group.push_back ({ spec, t0, t1 });
+        startFixes (group);
     }
     /** Makes one change on a job thread - on the picture's sound as it is now (every fix so far), track by track - and keeps it as the next fix (Undo takes it
         off). 'placed': a pasted consonant, where it was first put (a nudge keeps it, so the window can say how far it has been moved). */
     void startFix (const FixSpec& spec, juce::int64 t0, juce::int64 t1, juce::int64 placed = -1)
     {
-        if (! scanned || running || origTracks == nullptr) return;
+        startFixes ({ RepairOp { spec, t0, t1, placed } });
+    }
+    /** 3.29.0: a group of changes made together, as one fix (one Undo step): one per rectangle of a selection made of several boxes, each with its own time span and
+        pitch range and the same settings. Every op has the same kind. */
+    void startFixes (const std::vector<RepairOp>& group)
+    {
+        if (! scanned || running || origTracks == nullptr || group.empty()) return;
         dropPendingPrepared();
-        pvSpec = spec; pvT0 = t0; pvT1 = t1; pvPlaced = placed;
+        const auto spec = group.front().spec;
+        pvSpec = spec; pvT0 = group.front().t0; pvT1 = group.back().t1; pvPlaced = group.front().placed;
+        for (auto& o : group) { pvT0 = juce::jmin (pvT0, o.t0); pvT1 = juce::jmax (pvT1, o.t1); }
         pasteRunning = spec.kind == FixSpec::Kind::Paste;
         auto src = origTracks; const double rate = ctx.rate;
         const auto trackIds = ctx.trackIds;
-        struct Out { MergedSpectrogram spec; std::shared_ptr<std::vector<std::vector<float>>> tracks; FixSpec fix; SpectralRepair::DeclickReport rep { 0, 0, 0, 0 }; };
+        struct Out { MergedSpectrogram spec; std::shared_ptr<std::vector<std::vector<float>>> tracks; std::vector<RepairOp> ops; SpectralRepair::DeclickReport rep { 0, 0, 0, 0 }; };
         auto out = std::make_shared<Out>();
         status.setText (spec.kind == FixSpec::Kind::Denoise ? "Denoising the box..." : spec.kind == FixSpec::Kind::Paste ? "Pasting the consonant..." : "Fixing...", juce::dontSendNotification);
         previewBtn.setEnabled (false); declickBtn.setEnabled (false); denoiseBtn.setEnabled (false); finishBtn.setEnabled (false); revertBtn.setEnabled (false); compareBtn.setEnabled (false);
@@ -1819,7 +1896,7 @@ private:
         const int detailN = detailSize();
         auto roomMono = std::make_shared<std::vector<denoise::Profile>> (ctx.roomMono);
         auto firstTracks = history.empty() ? origTracks : history.front().tracks;   // the sound as it was loaded, before any of these fixes
-        runJob ([src, firstTracks, out, spec, t0, t1, rate, detailN, roomMono, trackIds] (AudioJob& j) -> juce::String
+        runJob ([src, firstTracks, out, group, spec, rate, detailN, roomMono, trackIds] (AudioJob& j) -> juce::String
                 {
                     auto tracks = std::make_shared<std::vector<std::vector<float>>> (*src);       // from the last accepted state
                     // a denoise: each picture track's room tone - the box of this picture, learned from the track as it was loaded (as the files are, when they are
@@ -1832,46 +1909,56 @@ private:
                             if (spec.dnBoxT1 > spec.dnBoxT0)
                             {
                                 const auto& x = firstTracks != nullptr && i < firstTracks->size() ? (*firstTracks)[i] : (*tracks)[i];
-                                const auto a = juce::jlimit ((juce::int64) 0, (juce::int64) x.size(), (juce::int64) std::llround (spec.dnBoxT0 * rate)), b = juce::jlimit ((juce::int64) 0, (juce::int64) x.size(), (juce::int64) std::llround (spec.dnBoxT1 * rate));
-                                if (b > a) pr = denoise::learnProfile ({ std::vector<float> (x.begin() + a, x.begin() + b) }, rate, spec.dn);
+                                std::vector<std::vector<float>> regions;                                     // (3.29.0: every stretch of the selection)
+                                for (auto& sp : spec.roomSpans())
+                                {
+                                    const auto a = juce::jlimit ((juce::int64) 0, (juce::int64) x.size(), (juce::int64) std::llround (sp.first * rate)), b = juce::jlimit ((juce::int64) 0, (juce::int64) x.size(), (juce::int64) std::llround (sp.second * rate));
+                                    if (b > a) regions.push_back (std::vector<float> (x.begin() + a, x.begin() + b));
+                                }
+                                if (! regions.empty()) pr = denoise::learnProfile (regions, rate, spec.dn);
                             }
                             else if (i < roomMono->size()) pr = (*roomMono)[i];
                             if (! pr.valid()) return "There is no room tone for track " + juce::String ((int) i + 1) + " (learn it with the edit window's Room tone button, or mark a box of this picture with L).";
                             dnProf.push_back (std::make_shared<const std::vector<denoise::Profile>> (std::vector<denoise::Profile> { pr }));
                         }
-                    // lost samples (a digital jump where a block of samples went missing) are one event on every track: they are found on all the tracks together, and the
-                    // list goes with the fix, so the files are written with exactly the same mend
-                    auto fix = spec;
-                    if (audioops::findsLost (spec, rate, t0, t1) && ! tracks->empty())
+                    out->ops = group;
+                    for (size_t gi = 0; gi < group.size(); ++gi)                                  // (3.29.0: each rectangle of the selection in turn, on the result of the last)
                     {
-                        const long L = (long) (*tracks)[0].size();
-                        fix.lost = audioops::findLost (*tracks, rate, (long) juce::jlimit ((juce::int64) 0, (juce::int64) L, t0), (long) juce::jlimit ((juce::int64) 0, (juce::int64) L, t1), spec.sensitivity);
-                        for (auto& l : fix.lost) l.at += juce::jlimit ((juce::int64) 0, (juce::int64) L, t0) - t0;          // (from t0 itself)
-                        fix.lostKnown = true;
+                        const juce::int64 t0 = group[gi].t0, t1 = group[gi].t1;
+                        // lost samples (a digital jump where a block of samples went missing) are one event on every track: they are found on all the tracks together, and the
+                        // list goes with the fix, so the files are written with exactly the same mend
+                        auto fix = group[gi].spec;
+                        if (audioops::findsLost (fix, rate, t0, t1) && ! tracks->empty())
+                        {
+                            const long L = (long) (*tracks)[0].size();
+                            fix.lost = audioops::findLost (*tracks, rate, (long) juce::jlimit ((juce::int64) 0, (juce::int64) L, t0), (long) juce::jlimit ((juce::int64) 0, (juce::int64) L, t1), fix.sensitivity);
+                            for (auto& l : fix.lost) l.at += juce::jlimit ((juce::int64) 0, (juce::int64) L, t0) - t0;          // (from t0 itself)
+                            fix.lostKnown = true;
+                        }
+                        // a stray consonant: which side of the box the main consonant is on is ONE answer for all the tracks (found on all of them together); it goes with
+                        // the fix so the files are written the same way
+                        if (fix.kind == FixSpec::Kind::Patch && fix.repair.mode == RepairMode::Attenuate && fix.repair.consonant && std::abs (fix.repair.weighting - 0.5) < 0.04 && ! tracks->empty())
+                        {
+                            const long L = (long) (*tracks)[0].size();
+                            std::vector<const std::vector<float>*> tp; for (auto& t : *tracks) tp.push_back (&t);
+                            const auto d = SpectralRepair::consonantSides (tp, rate, (long) juce::jlimit ((juce::int64) 0, (juce::int64) L, t0), (long) juce::jlimit ((juce::int64) 0, (juce::int64) L, t1), fix.f0, fix.f1);
+                            fix.repair.consonantBefore = d.first; fix.repair.consonantEdge = d.second;
+                        }
+                        for (size_t i = 0; i < tracks->size(); ++i)
+                        {
+                            if (j.cancelled()) return "Cancelled.";
+                            j.setProgress (((float) gi + (float) i / (float) tracks->size()) / (float) group.size());
+                            std::vector<std::vector<float>> ch; ch.push_back (std::move ((*tracks)[i]));
+                            auto fi = fix; if (i < dnProf.size()) fi.dnProfiles = dnProf[i];
+                            if (fi.kind == FixSpec::Kind::Paste) audioops::resolvePaste (fi, i < trackIds.size() ? trackIds[i] : juce::Uuid::null());     // (the picture's row: the track's channels, averaged)
+                            audioops::applyFix (ch, rate, (long) t0, (long) t1, fi, (long) (0.02 * rate));
+                            (*tracks)[i] = std::move (ch[0]);
+                            if (fix.kind == FixSpec::Kind::Declick) { const auto r = SpectralRepair::lastDeclickReport(); out->rep.mended += r.mended; out->rep.lines += r.lines; out->rep.linesMended += r.linesMended; out->rep.linesLeft += r.linesLeft; }
+                        }
+                        fix.dnProfiles = nullptr;                                                     // (the profiles are not part of the fix that is kept)
+                        fix.pasteChannels = nullptr;                                                  // (nor is the one track's part of a pasted consonant: each file gets its own)
+                        out->ops[gi].spec = fix;
                     }
-                    // a stray consonant: which side of the box the main consonant is on is ONE answer for all the tracks (found on all of them together); it goes with
-                    // the fix so the files are written the same way
-                    if (fix.kind == FixSpec::Kind::Patch && fix.repair.mode == RepairMode::Attenuate && fix.repair.consonant && std::abs (fix.repair.weighting - 0.5) < 0.04 && ! tracks->empty())
-                    {
-                        const long L = (long) (*tracks)[0].size();
-                        std::vector<const std::vector<float>*> tp; for (auto& t : *tracks) tp.push_back (&t);
-                        const auto d = SpectralRepair::consonantSides (tp, rate, (long) juce::jlimit ((juce::int64) 0, (juce::int64) L, t0), (long) juce::jlimit ((juce::int64) 0, (juce::int64) L, t1), fix.f0, fix.f1);
-                        fix.repair.consonantBefore = d.first; fix.repair.consonantEdge = d.second;
-                    }
-                    out->fix = fix;
-                    for (size_t i = 0; i < tracks->size(); ++i)
-                    {
-                        if (j.cancelled()) return "Cancelled.";
-                        j.setProgress ((float) i / (float) tracks->size());
-                        std::vector<std::vector<float>> ch; ch.push_back (std::move ((*tracks)[i]));
-                        auto fi = fix; if (i < dnProf.size()) fi.dnProfiles = dnProf[i];
-                        if (fi.kind == FixSpec::Kind::Paste) audioops::resolvePaste (fi, i < trackIds.size() ? trackIds[i] : juce::Uuid::null());     // (the picture's row: the track's channels, averaged)
-                        audioops::applyFix (ch, rate, (long) t0, (long) t1, fi, (long) (0.02 * rate));
-                        (*tracks)[i] = std::move (ch[0]);
-                        if (fix.kind == FixSpec::Kind::Declick) { const auto r = SpectralRepair::lastDeclickReport(); out->rep.mended += r.mended; out->rep.lines += r.lines; out->rep.linesMended += r.linesMended; out->rep.linesLeft += r.linesLeft; }
-                    }
-                    out->fix.dnProfiles = nullptr;                                                // (the profiles are not part of the fix that is kept)
-                    out->fix.pasteChannels = nullptr;                                             // (nor is the one track's part of a pasted consonant: each file gets its own)
                     out->spec = SpectralRepair::spectrogram (*tracks, rate, 1600, detailN);
                     out->tracks = tracks;
                     return {};
@@ -1880,10 +1967,11 @@ private:
                 {
                     if (self == nullptr) return;
                     if (err.isNotEmpty()) { self->nextNote.clear(); self->pendingNudge = 0; self->pendingLevel = false; self->status.setText (err, juce::dontSendNotification); self->refreshControls(); return; }
-                    // the fix is kept straight away (it stays temporary until "Write back to file"); Undo takes it off again
-                    self->history.push_back ({ self->origTracks, self->origSpec });
-                    self->pvSpec = out->fix;                                             // (with the lost samples found on all the tracks)
-                    self->committed.push_back (RepairOp { self->pvSpec, self->pvT0, self->pvT1, self->pvPlaced });
+                    // the fix is kept straight away (it stays temporary until "Write back to file"); Undo takes it off again - the whole group at once
+                    self->history.push_back ({ self->origTracks, self->origSpec, (int) out->ops.size() });
+                    self->pvSpec = out->ops.back().spec;                                 // (with the lost samples found on all the tracks)
+                    for (auto& o : out->ops) self->committed.push_back (o);
+                    const auto& fixRef = out->ops.back().spec;
                     self->origTracks = out->tracks;
                     self->origSpec = std::make_shared<MergedSpectrogram> (out->spec);
                     self->view.setData (std::move (out->spec), self->seconds(), true);
@@ -1892,26 +1980,26 @@ private:
                     self->changedWhileRunning = false;
                     self->hearBox.setSelectedId (2, juce::dontSendNotification);
                     juce::String lostNote = self->nextNote; self->nextNote.clear();
-                    for (auto& l : out->fix.lost)
-                        lostNote << "Digital dropout at " << juce::String ((double) (self->pvT0 + l.at) / self->ctx.rate, 3) << " s: " << l.count << " samples were missing on every track; put back. ";
-                    if (out->fix.kind == FixSpec::Kind::Patch && out->fix.repair.mode == RepairMode::Gain)
-                        lostNote << "Gain " << (out->fix.repair.gainDb <= -120.0 ? juce::String ("-inf") : (out->fix.repair.gainDb > 0 ? "+" : "") + juce::String (out->fix.repair.gainDb, 1)) << " dB on the box. ";
-                    if (out->fix.kind == FixSpec::Kind::Denoise)
-                        lostNote << "Denoised the box (" << (int) out->fix.f0 << " - " << (int) out->fix.f1 << " Hz, residual " << juce::String (out->fix.dn.residualDb, 0) << " dB). ";
-                    if (out->fix.kind == FixSpec::Kind::Declick)
+                    for (auto& o : out->ops) for (auto& l : o.spec.lost)
+                        lostNote << "Digital dropout at " << juce::String ((double) (o.t0 + l.at) / self->ctx.rate, 3) << " s: " << l.count << " samples were missing on every track; put back. ";
+                    if (fixRef.kind == FixSpec::Kind::Patch && fixRef.repair.mode == RepairMode::Gain)
+                        lostNote << "Gain " << (fixRef.repair.gainDb <= -120.0 ? juce::String ("-inf") : (fixRef.repair.gainDb > 0 ? "+" : "") + juce::String (fixRef.repair.gainDb, 1)) << " dB on the box. ";
+                    if (fixRef.kind == FixSpec::Kind::Denoise)
+                        lostNote << "Denoised the box (" << (int) fixRef.f0 << " - " << (int) fixRef.f1 << " Hz, residual " << juce::String (fixRef.dn.residualDb, 0) << " dB). ";
+                    if (fixRef.kind == FixSpec::Kind::Declick)
                     {
                         const auto& r = out->rep;
                         lostNote << "De-click, all tracks: " << r.linesMended << " vertical line(s) seen in the picture and mended whole, " << r.mended << " click(s) found in the waveform and mended"
                                  << (r.linesLeft > 0 ? ", " + juce::String (r.linesLeft) + " line(s) STILL THERE (try a higher sensitivity, or ReTouch a box round each)" : juce::String (", none left in the picture")) << ". ";
                     }
-                    if (out->fix.kind == FixSpec::Kind::Paste && out->fix.paste != nullptr)
+                    if (fixRef.kind == FixSpec::Kind::Paste && fixRef.paste != nullptr)
                     {
-                        const auto missing = consonants::tracksMissing (*out->fix.paste, self->ctx.trackIds);
-                        int here = 0; for (auto& id : self->ctx.trackIds) if (out->fix.paste->forTrack (id) != nullptr) ++here;
-                        lostNote << "Consonant pasted at " << juce::String ((double) (self->pvT0 + out->fix.paste->lead) / self->ctx.rate, 3) << " s on " << here << (here == 1 ? " track" : " tracks")
-                                 << (std::abs (out->fix.pasteGainDb) >= 0.05 ? ", " + juce::String (out->fix.pasteGainDb, 1) + " dB" : juce::String())
+                        const auto missing = consonants::tracksMissing (*fixRef.paste, self->ctx.trackIds);
+                        int here = 0; for (auto& id : self->ctx.trackIds) if (fixRef.paste->forTrack (id) != nullptr) ++here;
+                        lostNote << "Consonant pasted at " << juce::String ((double) (self->pvT0 + fixRef.paste->lead) / self->ctx.rate, 3) << " s on " << here << (here == 1 ? " track" : " tracks")
+                                 << (std::abs (fixRef.pasteGainDb) >= 0.05 ? ", " + juce::String (fixRef.pasteGainDb, 1) + " dB" : juce::String())
                                  << (self->pvPlaced >= 0 && self->pvT0 != self->pvPlaced ? ", nudged " + self->nudgeText() : juce::String()) << ". ";
-                        int none = 0; for (auto& id : self->ctx.trackIds) if (out->fix.paste->forTrack (id) == nullptr) ++none;
+                        int none = 0; for (auto& id : self->ctx.trackIds) if (fixRef.paste->forTrack (id) == nullptr) ++none;
                         if (none > 0) lostNote << none << (none == 1 ? " track of this window was" : " tracks of this window were") << " not in it and get nothing. ";
                         if (! missing.isEmpty()) lostNote << "(It also has " << missing.joinIntoString (", ") << ", not in this window.) ";
                         lostNote << "Press Play to listen; nudge it with comma / full stop (1 ms) or Shift with them (5 ms), or change Level; Undo takes it off. ";
@@ -1920,9 +2008,9 @@ private:
                         self->followPending();
                         return;
                     }
-                    if (out->fix.kind == FixSpec::Kind::Patch && out->fix.repair.consonant)
+                    if (fixRef.kind == FixSpec::Kind::Patch && fixRef.repair.consonant)
                     {
-                        const auto& r = out->fix.repair;
+                        const auto& r = fixRef.repair;
                         if (r.consonantBefore < 0.0) lostNote << "Stray consonant: matched to the side you chose with Before / After. ";
                         else if (r.consonantEdge > 0) lostNote << "Stray consonant: the main one is just AFTER the box, so every track was matched to the sound before it. ";
                         else if (r.consonantEdge < 0) lostNote << "Stray consonant: the main one is just BEFORE the box, so every track was matched to the sound after it. ";
@@ -1995,8 +2083,8 @@ private:
     {
         if (history.empty() || running) return;
         if (ctx.stop) ctx.stop();
-        origTracks = history.back().tracks; origSpec = history.back().spec; history.pop_back();
-        if (! committed.empty()) committed.pop_back();
+        origTracks = history.back().tracks; origSpec = history.back().spec; const int n = juce::jmax (1, history.back().ops); history.pop_back();
+        for (int k = 0; k < n && ! committed.empty(); ++k) committed.pop_back();
         dropPendingPrepared();
         showingAfter = true;
         if (committed.empty()) hearBox.setSelectedId (1, juce::dontSendNotification);
@@ -2052,6 +2140,8 @@ private:
     SpectrogramView view; juce::ComboBox dirBox, scaleBox, detailBox, methodBox, bandsBox; juce::ToggleButton multiBtn { "Multi-resolution" }, linkBtn { "Link stereo" }; juce::TextButton specBtn { "Spectrogram settings..." };
     std::shared_ptr<std::atomic<bool>> detailCancel; juce::Slider sens, strength, surround, weight, amount, residual;
     juce::TextButton roomBtn { "This box is the room tone [L]" }, denoiseBtn { "Denoise [N]" }; double rtBoxT0 = -1.0, rtBoxT1 = -1.0;
+    std::vector<std::pair<double, double>> rtSpans; bool rtQuietest = false; juce::ToggleButton quietBox;      // 3.29.0: the room tone's stretches; learned from the quietest moments
+    juce::Slider gainSlider; juce::Label gainCap;                                                             // 3.29.0: the Gain tab's amount, in the panel (G applies it at once)
     juce::TextButton playBtn { "Play" }, stopBtn { "Stop" };
     juce::ToggleButton loopBtn { "Loop" };
     juce::Label hearCap; juce::ComboBox hearBox;
@@ -2061,7 +2151,7 @@ private:
     juce::TextButton previewBtn { "ReTouch [R]" }, declickBtn { "De-click [D]" }, compareBtn { "Show before" }, revertBtn { "Undo" }, finishBtn { "Write back to file" }, close { "Cancel" };
     juce::TextButton gainBtn { "Gain [G]" };
     bool gainNext = false; double gainNextDb = 0.0;                // the next fix is a gain change of the box (set by the Gain pop-up)
-    struct Step { std::shared_ptr<std::vector<std::vector<float>>> tracks; std::shared_ptr<MergedSpectrogram> spec; };
+    struct Step { std::shared_ptr<std::vector<std::vector<float>>> tracks; std::shared_ptr<MergedSpectrogram> spec; int ops = 1; };     // ops: how many changes the step made (3.29.0: one per rectangle of the selection)
     std::vector<Step> history;                                     // the state before each fix, for Undo
     bool scanned = false, showingAfter = false;
     std::shared_ptr<std::vector<std::vector<float>>> origTracks;

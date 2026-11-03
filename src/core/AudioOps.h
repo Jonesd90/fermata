@@ -34,6 +34,23 @@ struct FixSpec
         learned from a box of the loaded area ('dnBoxT0 / T1', seconds from the start of the area, both < 0 = the project's). */
     denoise::Params dn;
     double dnBoxT0 = -1.0, dnBoxT1 = -1.0;
+    /** 3.29.0: the room tone learned from several stretches of the area (a selection of several boxes: seconds, as dnBoxT0 / T1, which then span them all).
+        Empty: the one stretch dnBoxT0 .. dnBoxT1. */
+    std::vector<std::pair<double, double>> dnSpans;
+    /** The stretches the room tone is learned from (seconds from the start of the area; empty = the project's room tone). */
+    std::vector<std::pair<double, double>> roomSpans() const
+    {
+        if (! dnSpans.empty()) return dnSpans;
+        if (dnBoxT1 > dnBoxT0) return { { dnBoxT0, dnBoxT1 } };
+        return {};
+    }
+    /** What tells one learned room tone from another (the boxes' cache key): its stretches and the way it is learned. */
+    juce::String roomKey() const
+    {
+        juce::String k;
+        for (auto& sp : roomSpans()) k << juce::String (sp.first, 6) << "-" << juce::String (sp.second, 6) << ";";
+        return k + (dn.quietest ? "q" + juce::String (dn.quietestPercentile, 3) : juce::String ("m"));
+    }
     std::shared_ptr<const std::vector<denoise::Profile>> dnProfiles;
     /** Paste (3.6.0): a kept consonant ADDED on top of the sound, its first sample at s0 (s1 = s0 + its length; s0 may lie before the audio handed over,
         when a pasted consonant reaches across the start of a piece: only the part inside is added). 'paste' holds every track it was copied from; the
@@ -227,6 +244,8 @@ struct DenoiseProfiles
 /** Learns a profile per channel of 'file' from its samples [s0, s1): the part that holds nothing but the room (the first 60 s of it, if longer).
     Empty profiles + 'error' on failure. */
 DenoiseProfiles learnDenoise (juce::AudioFormatManager&, const juce::File&, juce::int64 s0, juce::int64 s1, const denoise::Params&, juce::String& error);
+/** 3.29.0: the same from several stretches of the file (the room-tone boxes of a selection made of several boxes), learned together. */
+DenoiseProfiles learnDenoise (juce::AudioFormatManager&, const juce::File&, const std::vector<std::pair<juce::int64, juce::int64>>& spans, const denoise::Params&, juce::String& error);
 
 /** The take-window version of a fix. Runs on a job thread; makes new files and returns them (the model is changed by the caller). */
 struct TakeFixResult { std::vector<juce::File> newFiles; juce::String error; };

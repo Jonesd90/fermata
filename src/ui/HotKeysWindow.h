@@ -193,7 +193,7 @@ inline const std::vector<Line>& lines()
         // ---------------------------------------------------------------------------------------------------- retouch, declick & denoise (spectral repair)
         { "ReTouch, DeClick & Denoise (Spectral Repair)", "Space", "Play the part of the picture in view (from the red playhead if one is placed), as \"Listen to\" says, or stop." },
         { "ReTouch, DeClick & Denoise (Spectral Repair)", "R", "The ReTouch tab, and ReTouch the box." },
-        { "ReTouch, DeClick & Denoise (Spectral Repair)", "G", "The Gain tab, and the gain of the box (silence to +18 dB)." },
+        { "ReTouch, DeClick & Denoise (Spectral Repair)", "G", "The Gain tab, and the gain set there applied to the box at once (silence to +18 dB; set the amount on the tab's slider, then G for each box)." },
         { "ReTouch, DeClick & Denoise (Spectral Repair)", "D", "The De-click tab, and de-click the box's time (everything, with no box)." },
         { "ReTouch, DeClick & Denoise (Spectral Repair)", "L", "The Denoise tab, and the box becomes the room tone (at least half a second)." },
         { "ReTouch, DeClick & Denoise (Spectral Repair)", "N", "The Denoise tab, and denoise the box with the room tone." },
@@ -216,6 +216,8 @@ inline const std::vector<Line>& lines()
 
         // ---------------------------------------------------------------------------------------------------- spectral repair and noise mode: with the mouse
         { "Spectral Repair and Noise mode: with the mouse", "drag", "The picture, outside the box: draw a new box (time and pitch)." },
+        { "Spectral Repair and Noise mode: with the mouse", "Shift+drag", "Another box added to the selection: ReTouch, Gain, De-click, Denoise and Room tone work on all of it at once (each rectangle on its own, the same settings)." },
+        { "Spectral Repair and Noise mode: with the mouse", "Alt+drag", "The part you draw over is taken out of the selection (a corner cut out of a box, say); where nothing is selected nothing happens." },
         { "Spectral Repair and Noise mode: with the mouse", "drag", "A side of the box: move that side only (left / right: the time, top / bottom: the pitch). A corner: its two sides." },
         { "Spectral Repair and Noise mode: with the mouse", "drag", "Inside the box (the four-way arrow): move the whole box, the same size, in time and pitch. It stops at the start and end and at the top and bottom of the pitch range." },
         { "Spectral Repair and Noise mode: with the mouse", "", "Wherever the mouse is over the picture, the pitch scale shows the frequency at that height (yellow tag), and the line under the picture the exact frequency, the nearest note (at the pitch pipe's A) and the time." },

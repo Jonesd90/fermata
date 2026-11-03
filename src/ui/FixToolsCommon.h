@@ -2,6 +2,7 @@
 // The fix tools' shared parts (3.18.6: FixTools.cpp was split in two; see FixTools.cpp and FixToolsEdits.cpp). Only those two files include this.
 // What was 'static' there is 'inline' here: one copy for both files (gMakeProcessPage and gProcessPage among them).
 #include "WinOwner.h"
+#include <tuple>
 #include "FixTools.h"
 #include "BusyWindow.h"
 #include "../reharmoniser/ReHarmoniserEditor.h"
@@ -622,13 +623,14 @@ inline juce::String attachRoomTone (std::vector<RegionJob>& jobs, const std::vec
     bool any = false; for (auto& o : ops) any = any || o.spec.kind == FixSpec::Kind::Denoise;
     if (! any) return {};
     // each box used as the room tone (usually one), learned once: per track, one profile per channel
-    auto boxes = std::make_shared<std::map<std::pair<double, double>, std::vector<std::vector<denoise::Profile>>>>();
+    auto boxes = std::make_shared<std::map<juce::String, std::vector<std::vector<denoise::Profile>>>>();
     for (auto& o : ops)
     {
         if (o.spec.kind != FixSpec::Kind::Denoise || ! (o.spec.dnBoxT1 > o.spec.dnBoxT0)) continue;
-        const auto key = std::make_pair (o.spec.dnBoxT0, o.spec.dnBoxT1);
+        const auto key = o.spec.roomKey();
         if (boxes->count (key)) continue;
-        SpectralDenoiseSettings s; s.params = o.spec.dn; s.sel = { denoise::SelRect { o.spec.dnBoxT0, o.spec.dnBoxT1, 0.0, 1.0e9, true } };
+        SpectralDenoiseSettings s; s.params = o.spec.dn;
+        for (auto& sp : o.spec.roomSpans()) s.sel.push_back (denoise::SelRect { sp.first, sp.second, 0.0, 1.0e9, true });      // (3.29.0: every stretch of the selection)
         std::vector<std::vector<denoise::Profile>> out;
         const auto err = learnFileProfiles (tp, s, rate, out, j);
         if (err.isNotEmpty()) return err;
@@ -662,7 +664,7 @@ inline juce::String attachRoomTone (std::vector<RegionJob>& jobs, const std::vec
             const auto tid = (*trackOfFile)[k];
             if (spec.dnBoxT1 > spec.dnBoxT0)
             {
-                auto it = boxes->find (std::make_pair (spec.dnBoxT0, spec.dnBoxT1));
+                auto it = boxes->find (spec.roomKey());
                 if (it == boxes->end()) return nullptr;
                 for (size_t i = 0; i < ids->size() && i < it->second.size(); ++i) if ((*ids)[i] == tid && ! it->second[i].empty()) return std::make_shared<const std::vector<denoise::Profile>> (it->second[i]);
                 return nullptr;

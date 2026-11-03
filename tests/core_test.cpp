@@ -12579,6 +12579,75 @@ int main()
         CHECK (existingTrackIndices ({ 1, 1 }, pl).count ("Piece2 AB") == 0 && existingTrackIndices ({ 1, 1 }, pl).size() == 2);
     }
 
+    SECTION ("3.29.0 the selection as rectangles: boxes added and parts taken out; the room tone from the quietest moments of a box with music in it");
+    {
+        using denoise::SelRect; using denoise::selectionRects; using denoise::selected;
+        // one box
+        auto r1 = selectionRects ({ SelRect { 1.0, 3.0, 100.0, 1000.0, true } });
+        CHECK (r1.size() == 1 && r1[0].t0 == 1.0 && r1[0].t1 == 3.0 && r1[0].f0 == 100.0 && r1[0].f1 == 1000.0);
+        // two boxes apart: two rectangles; two that touch in time with the same pitch span: one
+        CHECK (selectionRects ({ SelRect { 1.0, 2.0, 100.0, 1000.0, true }, SelRect { 5.0, 6.0, 200.0, 800.0, true } }).size() == 2);
+        auto r2 = selectionRects ({ SelRect { 1.0, 2.0, 100.0, 1000.0, true }, SelRect { 2.0, 3.0, 100.0, 1000.0, true } });
+        CHECK (r2.size() == 1 && r2[0].t0 == 1.0 && r2[0].t1 == 3.0);
+        // a corner cut out (Alt): the rest stays, as two or three rectangles that together cover exactly the box less the corner
+        std::vector<SelRect> cut { SelRect { 1.0, 3.0, 100.0, 1000.0, true }, SelRect { 2.0, 4.0, 500.0, 2000.0, false } };
+        auto r3 = selectionRects (cut);
+        CHECK (r3.size() >= 2 && r3.size() <= 3);
+        double area = 0.0; for (auto& r : r3) area += (r.t1 - r.t0) * (r.f1 - r.f0);
+        CHECK (std::abs (area - (2.0 * 900.0 - 1.0 * 500.0)) < 1e-6);
+        bool agree = true;                                                        // every point: in the rectangles exactly when the selection says so
+        for (double t = 0.5; t < 4.5; t += 0.125) for (double f = 50.0; f < 2100.0; f += 25.0)
+        {
+            bool inR = false; for (auto& r : r3) inR = inR || (t >= r.t0 && t < r.t1 && f >= r.f0 && f < r.f1);
+            agree = agree && inR == selected (cut, t, f);
+        }
+        CHECK (agree);
+        bool noOverlap = true;
+        for (size_t i = 0; i < r3.size(); ++i) for (size_t j = i + 1; j < r3.size(); ++j)
+            noOverlap = noOverlap && (r3[i].t1 <= r3[j].t0 || r3[j].t1 <= r3[i].t0 || r3[i].f1 <= r3[j].f0 || r3[j].f1 <= r3[i].f0);
+        CHECK (noOverlap);
+        // taking out where nothing is: nothing; taking the whole box out: nothing left; a hole in the middle
+        CHECK (selectionRects ({ SelRect { 1.0, 3.0, 100.0, 1000.0, true }, SelRect { 5.0, 6.0, 100.0, 1000.0, false } }).size() == 1);
+        CHECK (selectionRects ({ SelRect { 1.0, 3.0, 100.0, 1000.0, true }, SelRect { 0.0, 4.0, 50.0, 2000.0, false } }).empty());
+        auto r4 = selectionRects ({ SelRect { 1.0, 3.0, 100.0, 1000.0, true }, SelRect { 1.5, 2.5, 300.0, 600.0, false } });
+        double area4 = 0.0; for (auto& r : r4) area4 += (r.t1 - r.t0) * (r.f1 - r.f0);
+        CHECK (std::abs (area4 - (2.0 * 900.0 - 1.0 * 300.0)) < 1e-6 && r4.size() >= 3);
+        // drawn backwards (t1 < t0) is the same box
+        CHECK (selectionRects ({ SelRect { 3.0, 1.0, 1000.0, 100.0, true } }).size() == 1 && selectionRects ({ SelRect { 3.0, 1.0, 1000.0, 100.0, true } })[0].t0 == 1.0);
+        CHECK (selectionRects ({}).empty());
+
+        // the quietest moments: white noise with a loud note on top for half the time (a note that starts and stops, as music does); the plain profile
+        // has the note in it, the quietest one has not (a note that never stopped would be in both: there are no quiet moments at its pitch then)
+        {
+            const double sr = 48000.0; const int n = (int) (4.0 * sr);
+            juce::Random rng (7); std::vector<float> x ((size_t) n);
+            for (int i = 0; i < n; ++i)
+            {
+                const bool on = ((i / (int) (0.25 * sr)) % 2) == 0;                                   // a quarter of a second on, a quarter off
+                x[(size_t) i] = 0.01f * (rng.nextFloat() * 2.0f - 1.0f) + (on ? 0.3f : 0.0f) * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 1000.0 * i / sr);
+            }
+            denoise::Params plain, quiet; quiet.quietest = true;
+            const auto a = denoise::learnProfile ({ x }, sr, plain), b = denoise::learnProfile ({ x }, sr, quiet);
+            CHECK (a.valid() && b.valid() && a.psd.size() == b.psd.size());
+            const int bins = (int) a.psd.size(); const int kNote = (int) std::lround (1000.0 / sr * a.fftSize);
+            auto medianDb = [] (const std::vector<double>& v) { std::vector<double> c; for (size_t k = 20; k < v.size() - 20; ++k) c.push_back (denoise::detail::dbOf (v[k])); std::sort (c.begin(), c.end()); return c[c.size() / 2]; };
+            const double floorA = medianDb (a.psd), floorB = medianDb (b.psd);
+            CHECK (std::abs (floorA - floorB) < 1.5);                                   // away from the note the two agree (the bias correction is right)
+            CHECK (denoise::detail::dbOf (a.psd[(size_t) kNote]) > floorA + 20.0);               // the plain profile has the note (far above the noise)
+            CHECK (denoise::detail::dbOf (b.psd[(size_t) kNote]) < floorB + 8.0);                // the quietest one has not: the note's bin is near the noise floor (a few dB up: the note is there half the time)
+            juce::ignoreUnused (bins);
+            // the same through the per-cell learner (what the edit's files go through)
+            denoise::ProfileLearner L; L.add (x.data(), (juce::int64) x.size(), sr, quiet, { SelRect { 0.0, 4.0, 0.0, 1.0e9, true } }, 0.0);
+            const auto c = L.finish();
+            std::printf ("   (quietest profile: floor plain %.1f dB, quietest %.1f dB, note bin plain %.1f, quietest %.1f; per-cell learner floor %.1f, note bin %.1f, covered %d of %d)\n",
+                         floorA, floorB, denoise::detail::dbOf (a.psd[(size_t) kNote]), denoise::detail::dbOf (b.psd[(size_t) kNote]), c.valid() ? medianDb (c.psd) : 0.0, c.valid() ? denoise::detail::dbOf (c.psd[(size_t) kNote]) : 0.0, L.covered(), (int) c.psd.size());
+            CHECK (c.valid() && std::abs (medianDb (c.psd) - floorB) < 1.5 && denoise::detail::dbOf (c.psd[(size_t) kNote]) < medianDb (c.psd) + 8.0);
+            // too few frames for a percentile: the mean (no crash, something sensible)
+            std::vector<float> tiny ((size_t) (0.15 * sr), 0.01f);
+            CHECK (denoise::learnProfile ({ tiny }, sr, quiet).valid());
+        }
+    }
+
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;
 }

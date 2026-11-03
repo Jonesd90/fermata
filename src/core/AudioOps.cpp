@@ -574,16 +574,29 @@ namespace td { namespace audioops {
 
 DenoiseProfiles learnDenoise (juce::AudioFormatManager& fm, const juce::File& file, juce::int64 s0, juce::int64 s1, const denoise::Params& p, juce::String& error)
 {
+    return learnDenoise (fm, file, { { s0, s1 } }, p, error);
+}
+DenoiseProfiles learnDenoise (juce::AudioFormatManager& fm, const juce::File& file, const std::vector<std::pair<juce::int64, juce::int64>>& spans, const denoise::Params& p, juce::String& error)
+{
     DenoiseProfiles out;
     auto r = openReader (fm, file);
     if (r == nullptr) { error = "Could not read " + file.getFileName(); return out; }
-    s0 = juce::jmax<juce::int64> (0, s0); s1 = juce::jmin (r->lengthInSamples, s1);
-    if (s1 - s0 < (juce::int64) (0.5 * r->sampleRate)) { error = "The marked room tone is too short (mark at least half a second, better two or more)."; return out; }
-    s1 = juce::jmin (s1, s0 + (juce::int64) (60.0 * r->sampleRate));            // (a minute says everything; the marks may well span a movement)
-    std::vector<std::vector<float>> ch;
-    if (! readRange (*r, s0, s1 - s0, ch)) { error = "Could not read " + file.getFileName(); return out; }
+    std::vector<std::vector<std::vector<float>>> perChannelRegions;              // [channel][span]
+    juce::int64 total = 0;
+    for (auto sp : spans)
+    {
+        juce::int64 s0 = juce::jmax<juce::int64> (0, sp.first), s1 = juce::jmin (r->lengthInSamples, sp.second);
+        if (s1 <= s0) continue;
+        s1 = juce::jmin (s1, s0 + (juce::int64) (60.0 * r->sampleRate));            // (a minute says everything; the marks may well span a movement)
+        std::vector<std::vector<float>> ch;
+        if (! readRange (*r, s0, s1 - s0, ch)) { error = "Could not read " + file.getFileName(); return out; }
+        if (perChannelRegions.size() < ch.size()) perChannelRegions.resize (ch.size());
+        for (size_t c = 0; c < ch.size(); ++c) perChannelRegions[c].push_back (std::move (ch[c]));
+        total += s1 - s0;
+    }
+    if (total < (juce::int64) (0.5 * r->sampleRate)) { error = "The marked room tone is too short (mark at least half a second, better two or more)."; return out; }
     out.sampleRate = r->sampleRate; out.channels = (int) r->numChannels;
-    for (auto& c : ch) out.perChannel.push_back (denoise::learnProfile ({ c }, r->sampleRate, p));
+    for (auto& regions : perChannelRegions) out.perChannel.push_back (denoise::learnProfile (regions, r->sampleRate, p));
     for (auto& pr : out.perChannel) if (! pr.valid()) { error = "The marked room tone is too short for the analysis window."; out = {}; return out; }
     return out;
 }
