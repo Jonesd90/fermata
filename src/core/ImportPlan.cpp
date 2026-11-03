@@ -770,7 +770,16 @@ juce::String copyImportFiles (juce::AudioFormatManager& fm, const ImportPlan& pl
     for (auto& t : plan.takes) totalSamples += t.length * (juce::int64) t.parts.size();
     totalSamples = juce::jmax ((juce::int64) 1, totalSamples);
     std::vector<juce::File> made;
-    auto fail = [&] (const juce::String& m) { for (auto& f : made) f.deleteFile(); files.clear(); return m; };
+    // (3.27.1: the writers still open are closed before their files are deleted - Windows refuses to delete a file that is open for writing, so a
+    // cancelled or failed import used to leave half-written take files behind)
+    std::unique_ptr<juce::AudioFormatWriter>* openOne = nullptr;
+    std::vector<std::unique_ptr<juce::AudioFormatWriter>>* openMany = nullptr;
+    auto fail = [&] (const juce::String& m)
+    {
+        if (openOne != nullptr) openOne->reset();
+        if (openMany != nullptr) openMany->clear();
+        for (auto& f : made) f.deleteFile(); files.clear(); return m;
+    };
     for (size_t ti = 0; ti < plan.takes.size(); ++ti)
     {
         const auto& take = plan.takes[ti];
@@ -786,6 +795,7 @@ juce::String copyImportFiles (juce::AudioFormatManager& fm, const ImportPlan& pl
             const auto dest = audioops::uniqueFile (folder.getChildFile (TakeWindowDef::fileNameFor (takeNumbers[ti], label, part.trackName)));
             auto w = audioops::makeWavWriter (dest, sl.sampleRate, 2, sl.floatData || sr.floatData);
             if (w == nullptr) return fail ("Cannot create " + dest.getFileName());
+            openOne = &w;
             const bool reduces = (! sl.floatData && rl->bitsPerSample > 24) || (! sr.floatData && rr->bitsPerSample > 24);
             DitherOut dout (*w, reduces);
             made.push_back (dest); files[ti][pi] = dest;
@@ -803,7 +813,7 @@ juce::String copyImportFiles (juce::AudioFormatManager& fm, const ImportPlan& pl
                 if (! dout.write (ptrs, 2, cnt)) return fail ("Disk full or write error.");
                 doneSamples += (juce::int64) cnt * 2;
             }
-            w.reset();
+            w.reset(); openOne = nullptr;
             if (const auto e = audioops::checkWrittenLength (&fm, dest, total); e.isNotEmpty()) return fail (e);      // (read back: every sample is in the file, 3.1.3)
         }
         // parts that come from the same polyphonic file are read once, together
@@ -825,7 +835,8 @@ juce::String copyImportFiles (juce::AudioFormatManager& fm, const ImportPlan& pl
             std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (src.file));
             if (reader == nullptr) return fail ("Cannot read " + src.file.getFileName());
             const int nc = (int) reader->numChannels;
-            std::vector<std::unique_ptr<juce::AudioFormatWriter>> writers; std::vector<std::unique_ptr<DitherOut>> douts; std::vector<std::vector<int>> chans;
+            std::vector<std::unique_ptr<DitherOut>> douts; std::vector<std::unique_ptr<juce::AudioFormatWriter>> writers; std::vector<std::vector<int>> chans;   // (douts first: destroyed after the writers they point at)
+            openMany = &writers;
             // 16 and 24 bit sources come across bit for bit; only a source wider than 24 bit (32-bit integer) loses word length and is dithered
             const bool reduces = ! src.floatData && reader->bitsPerSample > 24;
             for (auto pi : kv.second)
@@ -833,6 +844,7 @@ juce::String copyImportFiles (juce::AudioFormatManager& fm, const ImportPlan& pl
                 const auto& part = take.parts[pi];
                 const auto dest = audioops::uniqueFile (folder.getChildFile (TakeWindowDef::fileNameFor (takeNumbers[ti], label, part.trackName)));
                 std::vector<int> cs; if (part.channel >= 0) cs = { part.channel }; else for (int c = 0; c < part.trackChannels && c < nc; ++c) cs.push_back (c);
+                for (int c : cs) if (c >= nc) return fail ("The file " + src.file.getFileName() + " has fewer channels than when it was looked at.");   // (3.27.1: the file changed between the look and the copy)
                 auto w = audioops::makeWavWriter (dest, src.sampleRate, (int) cs.size(), src.floatData);
                 if (w == nullptr) return fail ("Cannot create " + dest.getFileName());
                 writers.push_back (std::move (w)); douts.push_back (std::make_unique<DitherOut> (*writers.back(), reduces)); chans.push_back (cs); files[ti][pi] = dest; made.push_back (dest);
@@ -851,7 +863,7 @@ juce::String copyImportFiles (juce::AudioFormatManager& fm, const ImportPlan& pl
                 }
                 doneSamples += cnt * (juce::int64) writers.size();
             }
-            writers.clear();
+            douts.clear(); writers.clear(); openMany = nullptr;
             for (auto pi : kv.second) if (const auto e = audioops::checkWrittenLength (&fm, files[ti][pi], src.length); e.isNotEmpty()) return fail (e);     // (read back, 3.1.3)
         }
     }

@@ -275,7 +275,12 @@ private:
         {
             std::unique_ptr<juce::AudioFormatReader> r (formats.createReaderFor (f));
             if (r == nullptr || r->numChannels < 1) return nullptr;
-            if (cache.size() > 80) cache.clear();                  // a simple cap on memory
+            while (cache.size() >= 200)                            // the least recently drawn file goes (3.27.1: the whole cache used to be thrown away at 81 files, so a window
+            {                                                      //  showing more than 80 files re-opened and re-read every one of them on every repaint; memory is bounded by trim())
+                auto oldest = cache.begin();
+                for (auto k = cache.begin(); k != cache.end(); ++k) if (k->second.used < oldest->second.used) oldest = k;
+                cache.erase (oldest);
+            }
             Entry e; e.rate = r->sampleRate; e.length = r->lengthInSamples; e.checkedAt = juce::Time::getMillisecondCounter();
             it = cache.emplace (key, std::move (e)).first;
         }

@@ -89,6 +89,8 @@ public:
     /** Message thread, often (a timer): tidies up the takes whose files are now finished. Returns the files of those takes (empty: none finished
         since the last call), so the windows can read their waveforms afresh. */
     std::vector<juce::File> reapFinishedTakes();
+    /** 3.27.1: the takes (window id, take id) whose files refused data while they were finished, since the last call (message thread). */
+    std::vector<std::pair<juce::Uuid, juce::Uuid>> takeFinishFailures() { auto v = std::move (finishFailures); finishFailures.clear(); return v; }
     bool   isRecording() const noexcept   { return rec.load() != nullptr; }
 
     // --- the second recording drive (see BackupCopier) ---
@@ -171,6 +173,10 @@ public:
     void serviceReplacedAutomation();
     /** 3.27.0: a plan replaced while playing may still be applied by the audio thread (what only it drove must not be put back yet). */
     bool hasReplacedAutomation() const noexcept { return ! replacedPlans.empty(); }
+    /** 3.27.1: true while the play running now (its plan, or one it replaced that the audio thread may still apply) drives the control 'it' names - the same
+        fader / pan / send, the same plug-in parameter, or a channel under a VCA lane. A control another play drives is not put back yet (it would be
+        driven straight back, with a blip). Message thread. */
+    bool automationDrives (const AutomationPlan::Item& it) const noexcept;
     /** True while edit 'editId' plays as such, so a change to its automation can be heard at once. Message thread. */
     bool followsAutomationOf (const juce::Uuid& editId) const noexcept
     {
@@ -528,8 +534,10 @@ private:
         std::vector<juce::File> files;
         juce::String report;                                        // the take's line for the log (the finisher adds how long the closing took)
         std::atomic<bool> done { false };
+        std::atomic<bool> failedAtEnd { false };                    // 3.27.1: a file refused what was left in its buffer while it was finished (the drive full, or gone)
     };
     std::vector<std::unique_ptr<Finishing>> finishing;
+    std::vector<std::pair<juce::Uuid, juce::Uuid>> finishFailures;     // (collected by reapFinishedTakes)
     /** Makes the pre-roll memory in the background (see setSessionMode). */
     struct RingBuilder : public juce::Thread
     {

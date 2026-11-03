@@ -31,6 +31,7 @@ inline bool applyRegionJob (EditDef& e, const RegionJob& j, const juce::String& 
     if (i < 0) return applyFail ("the region is no longer in the edit");
     {
         const auto& r = e.regions[(size_t) i];
+        if (r.waiting.active()) return applyFail ("the piece is out in another program (or waiting for corrected audio): bring that back, or cancel it, first");   // (3.27.1: a save coming back would land on the fixed file)
         if (j.a < r.srcIn || j.b > r.srcOut || j.b <= j.a) return applyFail ("the piece " + juce::String (j.a) + ".." + juce::String (j.b) + " is outside the region " + juce::String (r.srcIn) + ".." + juce::String (r.srcOut));
         if (j.results.size() != j.idx.size()) return applyFail ("the corrected files are missing (" + juce::String ((int) j.results.size()) + " of " + juce::String ((int) j.idx.size()) + ")");
         for (auto& res : j.results)
@@ -64,7 +65,11 @@ inline bool applyRegionJob (EditDef& e, const RegionJob& j, const juce::String& 
     // the joins made here are only there to put the fixed audio in: they are not edit points (no number, skipped by next / previous fade in the Trim window)
     if (cutBefore) { mid.fixIn = true; if (i > 0) e.regions[(size_t) i - 1].fixOut = true; }
     if (cutAfter)  { mid.fixOut = true; if (i + 1 < (int) e.regions.size()) e.regions[(size_t) i + 1].fixIn = true; }
-    for (size_t k = 0; k < j.idx.size() && j.idx[k] < mid.files.size(); ++k) { mid.files[j.idx[k]].file = j.results[k].file; mid.files[j.idx[k]].fileStart = j.results[k].from; }
+    for (size_t k = 0; k < j.idx.size() && j.idx[k] < mid.files.size(); ++k)
+    {
+        mid.files[j.idx[k]].file = j.results[k].file; mid.files[j.idx[k]].fileStart = j.results[k].from;
+        mid.files[j.idx[k]].rxFrom = juce::File();                // (3.27.1: the fixed part no longer plays the linked program's copy, so a later save there must not replace it)
+    }
     {   // the corrected files may start / end exactly at the piece: the crossfades of the joins made here must lie where there is audio
         juce::int64 lo = (std::numeric_limits<juce::int64>::min)(), hi = (std::numeric_limits<juce::int64>::max)();
         for (auto& res : j.results) { lo = juce::jmax (lo, res.from); hi = juce::jmin (hi, res.to); }

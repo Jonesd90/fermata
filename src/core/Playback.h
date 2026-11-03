@@ -46,7 +46,7 @@ std::shared_ptr<AutomationPlan> automationPlanFor (Project&, const EditDef&, boo
     canRestore (nothing drives it any more: while the edit plays, once the plan without the lane has taken over); otherwise 'pending' says to try again later.
     'changed': autoBefore changed or a control was put back (the project needs saving). Message thread. */
 struct AutoHoldResult { bool changed = false, pending = false; };
-AutoHoldResult holdAutomatedControls (Project&, EditDef&, bool canRestore);
+AutoHoldResult holdAutomatedControls (Project&, EditDef&, bool canRestore, const std::function<bool (const AutomationPlan::Item&)>& stillDriven = {});   // stillDriven (3.27.1): a control another play drives right now is left for later (pending)
 
 /** One stretch of one file placed on the playback timeline. */
 struct PlaySegment

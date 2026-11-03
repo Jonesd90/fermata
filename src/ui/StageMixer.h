@@ -121,7 +121,9 @@ private:
         Strip (const juce::String& t, const juce::String& sub, bool hasPan) : title (t), subtitle (sub), withPan (hasPan), pan (true)
         {
             fader.setRange (-60.0, 10.0, 0.1); fader.setDoubleClickReturnValue (true, 0.0, juce::ModifierKeys::ctrlModifier);
-            fader.onDoubleClick = [this] { valueentry::ask (fader, "Level in dB (or off)", fader.getValue() <= -59.9 ? juce::String ("off") : juce::String (fader.getValue(), 1), [this] (const juce::String& t) { double db = 0.0; if (valueentry::parseDb (t, -60.0, -60.0, 10.0, db)) fader.setValue (db, juce::sendNotificationSync); }); };
+            // (3.27.1: the boxes hold the slider through a SafePointer - a Stream Deck command can rebuild these strips while a box is open)
+            juce::Component::SafePointer<juce::Slider> safeF (&fader);
+            fader.onDoubleClick = [safeF] { if (safeF != nullptr) valueentry::ask (*safeF, "Level in dB (or off)", safeF->getValue() <= -59.9 ? juce::String ("off") : juce::String (safeF->getValue(), 1), [safeF] (const juce::String& t) { double db = 0.0; if (safeF != nullptr && valueentry::parseDb (t, -60.0, -60.0, 10.0, db)) safeF->setValue (db, juce::sendNotificationSync); }); };
             fader.setTooltip (title + " (" + subtitle + "): level into the talkback speakers. Drag up / down, double-click to type a level (Ctrl + click for 0 dB); all the way down is off.");
             fader.onValueChange = [this] { if (onChange) onChange ((float) fader.getValue(), (float) pan.getValue()); repaint(); };
             addAndMakeVisible (fader);
@@ -129,7 +131,8 @@ private:
             {
                 pan.setRange (-1.0, 1.0, 0.01); pan.setDoubleClickReturnValue (true, 0.0, juce::ModifierKeys::ctrlModifier);
                 pan.setRing (juce::Colour (0xffffd23a));
-                pan.onDoubleClick = [this] { valueentry::ask (pan, "Pan (L30, C, R45 ...)", std::abs (pan.getValue()) < 0.02 ? juce::String ("C") : (pan.getValue() < 0 ? "L" : "R") + juce::String ((int) std::round (std::abs (pan.getValue()) * 100.0)), [this] (const juce::String& t) { double pv = 0.0; if (valueentry::parsePan (t, pv)) pan.setValue (pv, juce::sendNotificationSync); }); };
+                juce::Component::SafePointer<juce::Slider> safeP (&pan);
+                pan.onDoubleClick = [safeP] { if (safeP != nullptr) valueentry::ask (*safeP, "Pan (L30, C, R45 ...)", std::abs (safeP->getValue()) < 0.02 ? juce::String ("C") : (safeP->getValue() < 0 ? "L" : "R") + juce::String ((int) std::round (std::abs (safeP->getValue()) * 100.0)), [safeP] (const juce::String& t) { double pv = 0.0; if (safeP != nullptr && valueentry::parsePan (t, pv)) safeP->setValue (pv, juce::sendNotificationSync); }); };
                 pan.setTooltip ("Pan in the stage speakers (left / right). Double-click to type a position (Ctrl + click for centre).");
                 pan.onValueChange = [this] { if (onChange) onChange ((float) fader.getValue(), (float) pan.getValue()); repaint(); };
                 addAndMakeVisible (pan);

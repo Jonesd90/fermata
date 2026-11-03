@@ -571,10 +571,8 @@ static void bringIn (AppContext& app, const std::vector<juce::String>& paths, Rx
         // copy it (the program goes on owning its file: the edit plays the copy, and each save is a copy of its own)
         const auto copy = copyFor (f);
         if (! f.copyFileTo (copy)) { copy.deleteFile(); notYet (f.getFileName() + ": it could not be copied (is the drive full?), so it was not brought in."); continue; }
-        {
-            auto rc = audioops::openReader (formats(), copy);
-            if (rc == nullptr || rc->lengthInSamples != frames) { rc.reset(); copy.deleteFile(); notYet (f.getFileName() + ": it changed while it was being copied; it was not brought in."); continue; }
-        }
+        // (3.27.1: the copy is checked header against bytes - a body shorter than its header says is a file still being written, and is tried again later)
+        if (const auto e = audioops::checkWrittenLength (&formats(), copy, frames); e.isNotEmpty()) { copy.deleteFile(); notYet (f.getFileName() + ": it changed while it was being copied; it was not brought in."); continue; }
         if (! ticked) { app.project.undoTick (false, true); ticked = true; }       // what was done before is a step of its own
         bool used = false;
         for (auto& s : waiting)
@@ -582,7 +580,12 @@ static void bringIn (AppContext& app, const std::vector<juce::String>& paths, Rx
         for (auto* e : following)
             if (e->useRxSave (f, copy) > 0) { used = true; changedEdits.insert (e); }
         if (used) came.add (f.getFileNameWithoutExtension());
-        else copy.deleteFile();
+        else
+        {
+            copy.deleteFile();
+            if (! waiting.empty())                                                   // (3.27.1: say so - it used to be turned down without a word, and the block stayed "In RX" for ever)
+                problems.add (f.getFileName() + ": the piece it belongs to has changed since it was sent (a track was removed, or it was moved past the files' ends), so it was not brought in. Right-click the block and Cancel, then send it again.");
+        }
         dealt();
     }
     if (! changedEdits.empty())
@@ -610,6 +613,12 @@ public:
         if (app.project.projectFile != projectFile) { watch = RxSaveWatch(); projectFile = app.project.projectFile; }
         if (app.engine.isRecording() || app.undoHold > 0 || app.saveHold > 0) return;            // nothing changes under a take, or a window trying something out
         if (juce::ModalComponentManager::getInstance()->getNumModalComponents() > 0) return;     // nor under an open dialog (some put the edit back as they found it)
+        if (juce::ModifierKeys::getCurrentModifiersRealtime().isAnyMouseButtonDown()) return;    // 3.27.1: nor in the middle of a drag (the Trim window puts the regions back from its mouse-down copy on every drag event)
+        // 3.27.1: with nothing out in a program - only files that came back earlier and are followed for later saves - every fifth second is enough
+        // (every such file is asked about three times a tick otherwise, for the life of the project)
+        bool anyOut = false;
+        for (auto& e : app.project.edits) for (auto& r : e->regions) anyOut = anyOut || (r.waiting.active() && r.waiting.rx);
+        if (! anyOut && ++slowTick % 5 != 0) return;
         std::vector<RxSaveWatch::Look> looks;
         std::set<juce::String> paths;
         auto add = [&] (const juce::File& f)
@@ -622,6 +631,7 @@ public:
         };
         for (auto& e : app.project.edits)
         {
+            if (app.windowIsOpen && app.windowIsOpen ("trim:" + e->id.toString())) continue;   // (3.27.1: its Trim window puts the regions back as they were when it opened; the save comes in once it is closed)
             for (auto& r : e->regions)
             {
                 if (r.waiting.active() && r.waiting.rx) for (auto& f : r.waiting.files) add (f);
@@ -637,6 +647,7 @@ private:
     AppContext& app;
     RxSaveWatch watch;
     juce::File projectFile;
+    int slowTick = 0;
 };
 }
 

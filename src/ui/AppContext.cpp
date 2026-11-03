@@ -38,6 +38,7 @@ AppContext::AppContext()
         juce::MessageManager::callAsync ([this, alive] { if (*alive && saver != nullptr) saver->drain(); });     // (what it wrote is taken in on this thread)
     });
     project.settleBackgroundSaves = [this] { waitForSaves(); };
+    project.beforeInsertsReplaced = [this] (MixerState& m) { closeEditorsOfMixer (m); };
     stallWatch = std::make_unique<StallWatch>();
     messageThreadId = (unsigned long) (juce::pointer_sized_int) juce::Thread::getCurrentThreadId();
     timereadout::shared().fromString (props.getUserSettings()->getValue ("timeReadout"));       // how the time readouts write the time (remembered on this computer)
@@ -55,6 +56,18 @@ AppContext::AppContext()
         if (const auto done = engine.reapFinishedTakes(); ! done.empty())     // a stopped take's files are finished on the disk: draw their real waveforms
         {
             forgetWaveforms (done);
+            for (auto& [wid, gid] : engine.takeFinishFailures())              // 3.27.1: a file that refused the end of the take while it was finished: the take is marked cut short, and the person told
+                if (auto* w = project.findTakeWindow (wid))
+                    if (auto* g = w->findGroup (gid))
+                    {
+                        g->writeFailed = true; project.markDirty();
+                        const auto text = "FILE STOPPED TAKING DATA while " + w->labelFor (*g) + " " + juce::String (g->number) + " was finished: the end of a track is missing (the drive is full, or has gone).";
+                        if (recordMonitor.events.size() >= RecordMonitor::kMaxEvents) recordMonitor.events.erase (recordMonitor.events.begin());
+                        recordMonitor.events.push_back ({ juce::Time::getCurrentTime().formatted ("%H:%M:%S"), text, true });
+                        recordMonitor.writeFailed = true;
+                        setNotice (text);
+                        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Recording", text);
+                    }
             project.sendChangeMessage();
         }
         if (++alignTicks % 3 == 0 && ! engine.isPlaying() && ! engine.isRecording())   // idle: the live inputs are aligned for the piece being worked on
@@ -271,14 +284,16 @@ void AppContext::freeRetiredMixersSoon()
         if (! engine.audioThreadNeverStalled()) return;
         if (engine.isPlaying()) return;                                   // an edit's automation may be moving their faders: stopPlayback calls here again
         for (size_t i = 0; i < count && i < project.retiredMixers.size(); ++i)      // their plug-ins' windows first: a window must never outlive its plug-in
-        {
-            auto& m = *project.retiredMixers[i];
-            auto slots = [this] (InsertSlot* sl, int n) { for (int k = 0; k < n; ++k) plugins.closeEditorsFor (sl[k].getProcessorUnsafe()); };
-            for (auto& st : m.stripPool) { slots (st->slots, kNumSlots); for (auto& sd : st->sends.pool) slots (sd->slots, kSendSlots); slots (st->outSend.slots, kSendSlots); }
-            for (auto& b : m.busPool)    { slots (b->slots, kNumSlots);  for (auto& sd : b->sends.pool) slots (sd->slots, kSendSlots); slots (b->outSend.slots, kSendSlots); }
-        }
+            closeEditorsOfMixer (*project.retiredMixers[i]);
         project.freeRetiredMixers (count);
     });
+}
+
+void AppContext::closeEditorsOfMixer (MixerState& m)
+{
+    auto slots = [this] (InsertSlot* sl, int n) { for (int k = 0; k < n; ++k) plugins.closeEditorsFor (sl[k].getProcessorUnsafe()); };
+    for (auto& st : m.stripPool) { slots (st->slots, kNumSlots); for (auto& sd : st->sends.pool) slots (sd->slots, kSendSlots); slots (st->outSend.slots, kSendSlots); }
+    for (auto& b : m.busPool)    { slots (b->slots, kNumSlots);  for (auto& sd : b->sends.pool) slots (sd->slots, kSendSlots); slots (b->outSend.slots, kSendSlots); }
 }
 
 MixerState* AppContext::findMixer (const juce::Uuid& id) const
@@ -368,8 +383,9 @@ juce::String AppContext::undoCopyMix()
     const double sr = engine.getSampleRate() > 0.0 ? engine.getSampleRate() : 48000.0;
     const int block = engine.getMaxBlock();
     juce::StringArray names;
+    MixParts all; all.clearEmptySlots = true;                                        // (3.27.1: a plug-in the paste added into an empty slot goes again)
     for (auto& [id, snap] : mixUndo)
-        if (auto* m = findMixer (id)) { project.applyMix (*m, snap, sr, block); names.add (m->name); }
+        if (auto* m = findMixer (id)) { project.applyMix (*m, snap, sr, block, all); names.add (m->name); }
     mixUndo.clear();
     project.structure.sendChangeMessage();
     return "Restored " + names.joinIntoString (", ") + " to how it was before the copy.";
@@ -650,7 +666,14 @@ AppContext::Lamp AppContext::mainDriveLamp() const
     Lamp l;
     const auto& m = recordMonitor;
     const auto folder = engine.isRecording() ? engine.recordingFolder() : project.audioFolder();
-    const double gb = folder != juce::File() ? (double) folder.getBytesFreeOnVolume() / 1.0e9 : -1.0;
+    // (3.27.1: the volume is asked at most once a second - every take window's lamps ask five times a second, and a network or sleeping drive answers slowly)
+    const auto nowMs = juce::Time::getMillisecondCounter();
+    if (folder != freeSpaceFolder || nowMs - freeSpaceAtMs > 1000 || freeSpaceAtMs == 0)
+    {
+        freeSpaceFolder = folder; freeSpaceAtMs = nowMs;
+        freeSpaceGb = folder != juce::File() ? (double) folder.getBytesFreeOnVolume() / 1.0e9 : -1.0;
+    }
+    const double gb = freeSpaceGb;
     const juce::String free = gb < 0.0 ? juce::String() : gb >= 1000.0 ? juce::String (gb / 1024.0, 1) + " TB free" : juce::String (juce::roundToInt (gb)) + " GB free";
     if (m.writeFailed) { l.level = 2; l.word = "FAILED"; l.detail = "A file stopped taking data: the recording drive is full, or has gone. " + free; return l; }
     if (m.overruns > 0) { l.level = m.recording ? 2 : 1; l.word = juce::String (m.overruns) + (m.overruns == 1 ? " OVERRUN" : " OVERRUNS"); l.detail = lostText (m.lostSamples, engine.getSampleRate()) + " of audio lost to the disk (silence in its place). " + free; return l; }
@@ -816,6 +839,11 @@ void AppContext::redoStep()
 bool AppContext::saveNow (bool quick, juce::String* errorOut, bool keepAll)
 {
     if (quick && saveHold > 0) return true;              // (a preview's files are in a take's file list: the project file must not say so; the save comes once they are out)
+    if (saveHold > 0)                                    // 3.27.1: nor may a save the person asks for write the preview (Save, Save this window, Save as, the quit box)
+    {
+        if (errorOut != nullptr) *errorOut = "A ReTouch or Pitch window is still trying something out. Write it back or close it first.";
+        return false;
+    }
     if (project.projectFile == juce::File()) return true;
     lastAutosaveMs = juce::Time::getMillisecondCounter();
     if (saver != nullptr) saver->drain();                // (what the saver has finished is taken in first: a failed save is written again)
@@ -1133,6 +1161,7 @@ void AppContext::refreshPreampsFromAneman()
 bool AppContext::newProject (const juce::File& file, double rate)
 {
     if (engine.isRecording()) { showError ("Recording", "Stop recording first."); return false; }
+    if (saveHold > 0) { showError ("A fix is being tried out", "A ReTouch or Pitch window is still trying something out. Write it back or close it first."); return false; }   // (3.27.1: a preview must not be saved as the project)
     stopPlayback();
     engine.auxSounds().click.setRunning (false); engine.auxSounds().pipe.allOff();     // (the click and the pitch pipe belong to the old project's outputs)
     plugins.closeAllEditors();                       // (the old project's plug-ins go with it)
@@ -1182,6 +1211,7 @@ bool AppContext::openBackupProject (const juce::File& bak)
 bool AppContext::openProject (const juce::File& file)
 {
     if (engine.isRecording()) { showError ("Recording", "Stop recording first."); return false; }
+    if (saveHold > 0) { showError ("A fix is being tried out", "A ReTouch or Pitch window is still trying something out. Write it back or close it first."); return false; }   // (3.27.1: a preview must not be saved as the project)
     // The "please wait" window: up at once, told what is being read as it goes, and closed only after the windows have caught up with the new project.
     busy::begin ("Opening project", file.getFileNameWithoutExtension());
     struct Closer { ~Closer() { busy::endAfterPendingMessages(); } } closer;
@@ -1325,6 +1355,7 @@ void AppContext::deleteWindowAndFile (bool isEdit, const juce::Uuid& id)
 bool AppContext::closeProject (bool save)
 {
     if (engine.isRecording()) { showError ("Recording", "Stop recording first."); return false; }
+    if (saveHold > 0) { showError ("A fix is being tried out", "A ReTouch or Pitch window is still trying something out. Write it back or close it first."); return false; }   // (3.27.1: a preview must not be saved as the project)
     stopPlayback();
     engine.auxSounds().click.setRunning (false); engine.auxSounds().pipe.allOff();
     plugins.closeAllEditors();
@@ -1778,9 +1809,19 @@ void AppContext::followAutomation()
         for (auto& ep : project.edits)
         {
             if (ep == nullptr || (ep->lanes.empty() && ep->autoBefore.empty())) continue;
-            const bool driven = follows && ep->id == playInfo.id && (engine.hasReplacedAutomation() || liveAutoSig != lanesSignature (ep->lanes));
-            dirty = holdAutomatedControls (project, *ep, ! driven).changed || dirty;
+            const auto sig = lanesSignature (ep->lanes);
+            const bool driven = follows && ep->id == playInfo.id && (engine.hasReplacedAutomation() || liveAutoSig != sig);
+            // (3.27.1: only when this edit's lanes changed since the last look, or a control was left waiting - the look used to build every lane's key
+            // 20 times a second for every edit with nothing happening)
+            auto& seen = autoHoldSeen[ep->id];
+            if (seen.sig == sig && seen.looked && ! seen.pending && ! driven) continue;
+            // (3.27.1: a control that another play's automation drives right now - another edit's lane on the same control, a disc preview - waits too)
+            const auto r = holdAutomatedControls (project, *ep, ! driven, [this] (const AutomationPlan::Item& it) { return engine.automationDrives (it); });
+            seen.sig = sig; seen.looked = true; seen.pending = r.pending || driven;
+            dirty = r.changed || dirty;
         }
+        if (autoHoldSeen.size() > project.edits.size() + 16)                            // (edits that are gone)
+            for (auto it = autoHoldSeen.begin(); it != autoHoldSeen.end();) it = project.findEdit (it->first) != nullptr ? std::next (it) : autoHoldSeen.erase (it);
         if (dirty) project.markDirty();
     }
     if (! follows) return;

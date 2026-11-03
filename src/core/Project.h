@@ -138,7 +138,7 @@ using InsertFactory = std::function<std::unique_ptr<InsertProcessor> (const juce
 
 /** The whole session: design (inputs / tracks / effects channels / outputs), mixers and take windows. */
 /** Which parts of a mixer a copy takes: faders (levels, mutes, solos, output buttons), sends, pans, plug-in inserts. */
-struct MixParts { bool faders = true, sends = true, pan = true, inserts = true; };
+struct MixParts { bool faders = true, sends = true, pan = true, inserts = true; bool clearEmptySlots = false; };   // clearEmptySlots (3.27.1): a slot the snapshot has empty is emptied (a revert / undo), else left as it is (a paste adds to what is there)
 
 class Project : public juce::ChangeBroadcaster
 {
@@ -479,6 +479,7 @@ public:
     std::map<juce::String, WindowFile> windowFiles;     // window id -> its file (path from the project folder)
     std::vector<juce::var> missingWindowRefs;            // listed by the project file but not readable when it was opened: kept in the list so nothing is forgotten
     std::function<void()> onNewWindow;                   // the program sets this: called when an edit, take window or mixer is made, so its file is written at once
+    std::function<void (MixerState&)> beforeInsertsReplaced;   // 3.27.1: the program sets this: called before applyMix replaces a mixer's plug-ins (their windows must close first)
     juce::StringArray loadNotes;                         // things to tell the person after the project was opened
     /** The program sets this while a project opens: called now and then with what is being read and how far it has got (0..1, < 0 = not known),
         so a "please wait" window can show it. Nothing else depends on it. */
@@ -518,6 +519,10 @@ public:
         'progress' (optional) is told what is being looked at. Every place that used a file is pointed at the file found. The undo history is cleared
         (the relink is not an undo step). */
     RelinkReport relinkAudio (const juce::File& searchFolder, const std::function<void (const juce::String&, double)>& progress = {});
+    /** 3.27.1: renames a take (TakeWindowDef::setLabel - its files on disk too) and points every edit piece, overdub, guide and waiting list that plays
+        those files at their new names (the edits keep their own copies of the paths: they used to be left pointing at files that were gone).
+        False when some file could not be renamed (everything that could be is). */
+    bool renameTake (TakeWindowDef& w, const juce::Uuid& takeId, const juce::String& label);
     /** Removes the edit / take window from the project AND moves its file to the recycle bin. The audio recordings are not touched. The caller closes its windows first. */
     bool deleteEditAndFile (const juce::Uuid&);
     bool deleteTakeWindowAndFile (const juce::Uuid&);
@@ -600,8 +605,8 @@ public:
     /** The take window is snapshotted as it is now, without an undo step: for a change the person did not make and cannot undo - a take starting
         (AudioEngine::startRecording, which first ticks the pending changes into a step of their own). The next tick then sees no change in it (3.1.4). */
     void undoAbsorb (const juce::Uuid& takeWindowId);
-    bool undo (const juce::Uuid& liveTake = {});         // false if there is nothing to undo; a take being recorded is never touched
-    bool redo (const juce::Uuid& liveTake = {});
+    bool undo (const juce::Uuid& liveTake = juce::Uuid::null());     // false if there is nothing to undo; a take being recorded is never touched (3.27.1: null, not a random id, when none)
+    bool redo (const juce::Uuid& liveTake = juce::Uuid::null());
 
     // ---- 3.19.0: "Save this window" - what the person last KEPT of each window, apart from what the automatic saves write ----
     // The automatic saves (and every save) write every window as it is, for safety. Over that, each take window, edit and mixer remembers the

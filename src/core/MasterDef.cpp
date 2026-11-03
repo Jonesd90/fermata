@@ -1,4 +1,5 @@
 #include "MasterDef.h"
+#include <cmath>
 #include <set>
 
 namespace td
@@ -91,6 +92,9 @@ var MasteringDef::toVar() const
     return root;
 }
 
+// 3.27.1: a number read from the file that is not a usable sample rate (garbled, absurd, infinite) means "the project's rate" (0)
+static double saneRate (double r) { return std::isfinite (r) && r >= 8000.0 && r <= 384000.0 ? r : 0.0; }
+
 void MasteringDef::fromVar (const var& root)
 {
     *this = MasteringDef();
@@ -101,14 +105,14 @@ void MasteringDef::fromVar (const var& root)
     const auto s = root["vm"];
     if (s.isObject())
     {
-        vm.format = (MasterFormat) juce::jlimit (0, 4, (int) s["format"]); vm.sampleRate = (double) s["rate"]; vm.bitDepth = (int) s["bits"];
+        vm.format = (MasterFormat) juce::jlimit (0, 4, (int) s["format"]); vm.sampleRate = saneRate ((double) s["rate"]); vm.bitDepth = (int) s["bits"];
         if (vm.bitDepth != 16 && vm.bitDepth != 24 && vm.bitDepth != 32) vm.bitDepth = 24;
         vm.dither = (DitherMode) juce::jlimit (0, 1, (int) s["dither"]);
-        vm.mp3Kbps = (int) s["mp3Kbps"]; vm.mp3Vbr = juce::jlimit (0, 9, (int) s["mp3Vbr"]); vm.oggQuality = juce::jmax (0, (int) s["oggQuality"]);
+        vm.mp3Kbps = juce::jlimit (0, 320, (int) s["mp3Kbps"]); vm.mp3Vbr = juce::jlimit (0, 9, (int) s["mp3Vbr"]); vm.oggQuality = juce::jlimit (0, 10, (int) s["oggQuality"]);
         vm.flacLevel = s["flacLevel"].isVoid() ? 5 : juce::jlimit (0, 8, (int) s["flacLevel"]); vm.extraFormats = juce::jlimit (0, 31, (int) s["extraFormats"]);
-        vm.normalise = s["normalise"].isVoid() ? true : (bool) s["normalise"]; vm.peakDb = s["peak"].isVoid() ? -1.0f : (float) (double) s["peak"];
+        vm.normalise = s["normalise"].isVoid() ? true : (bool) s["normalise"]; vm.peakDb = s["peak"].isVoid() ? -1.0f : juce::jlimit (-60.0f, 0.0f, (float) (double) s["peak"]);
         vm.peakTogether = (bool) s["together"]; vm.numberFiles = s["number"].isVoid() ? true : (bool) s["number"]; vm.feedbackForm = (bool) s["form"]; vm.formAudio = juce::jlimit (0, 2, (int) s["formAudio"]); vm.folder = s["folder"].toString();
-        vm.formRate = s["formRate"].isVoid() ? 0.0 : (double) s["formRate"]; vm.formBits = (int) s["formBits"] == 16 ? 16 : 24; vm.formFolder = s["formFolder"].toString(); vm.formSingle = (bool) s["formSingle"];
+        vm.formRate = s["formRate"].isVoid() ? 0.0 : saneRate ((double) s["formRate"]); vm.formBits = (int) s["formBits"] == 16 ? 16 : 24; vm.formFolder = s["formFolder"].toString(); vm.formSingle = (bool) s["formSingle"];
         vm.loudnessMode = juce::jlimit (0, 2, (int) s["loudnessMode"]);
         vm.targetLufs = s["targetLufs"].isVoid() ? -16.0f : juce::jlimit (-40.0f, 0.0f, (float) (double) s["targetLufs"]);
         vm.ceilingDbTp = s["ceilingDbTp"].isVoid() ? -1.0f : juce::jlimit (-20.0f, 0.0f, (float) (double) s["ceilingDbTp"]);
@@ -130,18 +134,19 @@ void MasteringDef::fromVar (const var& root)
     if (d.isObject())
     {
         ddp.upc = d["upc"].toString(); ddp.title = d["title"].toString(); ddp.performer = d["performer"].toString(); ddp.songwriter = d["songwriter"].toString();
-        ddp.composer = d["composer"].toString(); ddp.arranger = d["arranger"].toString(); ddp.languageCode = d["language"].isVoid() ? 9 : (int) d["language"];
-        ddp.normalise = (bool) d["normalise"]; ddp.peakDb = d["peak"].isVoid() ? -0.3f : (float) (double) d["peak"]; ddp.peakTogether = d["together"].isVoid() ? true : (bool) d["together"];
-        ddp.makeZip = d["zip"].isVoid() ? true : (bool) d["zip"]; ddp.makeCue = d["cue"].isVoid() ? true : (bool) d["cue"]; ddp.folder = d["folder"].toString(); ddp.endPadSectors = juce::jmax (0, (int) d["endPad"]);
+        ddp.composer = d["composer"].toString(); ddp.arranger = d["arranger"].toString(); ddp.languageCode = d["language"].isVoid() ? 9 : juce::jlimit (0, 255, (int) d["language"]);
+        ddp.normalise = (bool) d["normalise"]; ddp.peakDb = d["peak"].isVoid() ? -0.3f : juce::jlimit (-60.0f, 0.0f, (float) (double) d["peak"]); ddp.peakTogether = d["together"].isVoid() ? true : (bool) d["together"];
+        ddp.makeZip = d["zip"].isVoid() ? true : (bool) d["zip"]; ddp.makeCue = d["cue"].isVoid() ? true : (bool) d["cue"]; ddp.folder = d["folder"].toString(); ddp.endPadSectors = juce::jlimit (0, 75 * 600, (int) d["endPad"]);
         if (auto* a = d["clips"].getArray())
             for (auto& v : *a)
             {
                 DdpClip c; c.editId = idOf (v["edit"]); c.include = v["include"].isVoid() ? true : (bool) v["include"];
-                c.gapSectors = juce::jmax (-kMaxOverlapSectors, v["gap"].isVoid() ? 150 : (int) v["gap"]);
+                c.gapSectors = juce::jlimit (-kMaxOverlapSectors, 75 * 3600, v["gap"].isVoid() ? 150 : (int) v["gap"]);
                 c.title = v["title"].toString(); c.performer = v["performer"].toString(); c.songwriter = v["songwriter"].toString();
                 c.composer = v["composer"].toString(); c.arranger = v["arranger"].toString(); c.isrc = v["isrc"].toString();
                 c.preEmphasis = (bool) v["pre"]; c.copyPermitted = (bool) v["copy"];
-                c.index01Shift = (int) v["i01"]; c.index00Shift = v["i00s"].isVoid() ? kIndexAuto : (int) v["i00s"];
+                c.index01Shift = juce::jlimit (-75 * 3600, 75 * 3600, (int) v["i01"]);
+                c.index00Shift = v["i00s"].isVoid() || (int) v["i00s"] == kIndexAuto ? kIndexAuto : juce::jlimit (-75 * 3600, 75 * 3600, (int) v["i00s"]);
                 if (! c.editId.isNull()) ddp.clips.push_back (c);
             }
     }

@@ -452,6 +452,9 @@ public:
     /** One lamp of the monitor. level: -1 off (grey), 0 fine (green), 1 warning (amber), 2 problem (red). word: a few capitals for the lamp; detail: a line for the monitor window. */
     struct Lamp { int level = -1; juce::String word, detail; };
     Lamp mainDriveLamp() const;
+    struct AutoHoldSeen { juce::uint64 sig = 0; bool looked = false, pending = false; };
+    std::map<juce::Uuid, AutoHoldSeen> autoHoldSeen;       // followAutomation: each edit's lanes as last looked at (3.27.1)
+    mutable juce::File freeSpaceFolder; mutable double freeSpaceGb = -1.0; mutable juce::uint32 freeSpaceAtMs = 0;   // (mainDriveLamp's once-a-second look at the drive)
     Lamp secondDriveLamp() const;
     Lamp deviceLamp() const;
     std::function<void()> showRecordMonitor;          // (set by the application) opens the Recording monitor window
@@ -487,6 +490,7 @@ public:
     /** After a plan rebuild: the mixers retired before it (a removed mixer, the mixers of a project that was open before) are freed with their
         plug-ins, a little later on the message thread (once every window has let go of them), if the rebuild freed the old plan. */
     void freeRetiredMixersSoon();
+    void closeEditorsOfMixer (MixerState&);                // every plug-in window of this mixer (before its plug-ins are replaced or freed)
     /** Has a project been chosen (new or opened)? Until then nothing is saved or recorded. */
     bool hasProject() const { return project.projectFile != juce::File(); }
     /** The start-up state: an empty in-memory project that is not saved anywhere, until the user picks where the project goes. */

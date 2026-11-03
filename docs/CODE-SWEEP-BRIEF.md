@@ -1,188 +1,146 @@
-# Fermata - the second deep code sweep (brief for a Fable 5.1 session)
+# Fermata - the third deep code sweep: the whole program (brief for a Fable 5.1 session)
 
 **How it starts.** The person switches this conversation to Fable 5.1 and says **"start the sweep"**. Then:
 - Read this file, then the sections of `docs/DEVELOPMENT-NOTES.md` and `CHANGELOG.md` for the areas you touch.
 - Do **one area per build**, in the order below, starting with area A.
-- Before each build, tell the person in plain words what you found and what you plan to change, and wait for "Build it" / "Yes" (their standing rule: explain first, no code until asked).
+- Before each build, tell the person in plain words what you found and what you plan to change, and wait for "Build it" / "Yes". Their standing rule: explain first, no code until asked.
 - After a build has been tested they say "carry on" (or "next area"): go on to the next area.
 
-**Effort.** Areas A and B (threads / starting / closing, and recording / saving) at **xhigh**; every other area at **high**.
+**Effort.** Areas A, B and C (the audio thread and threads, recording and saving, files that leave Fermata and come back) at **xhigh**; every other area at **high**.
 
 ---
 
 ## What this is
 
-Fermata is a classical-music recording and editing DAW for Windows: JUCE 8, C++17, MSVC, built by GitHub Actions, namespace `td`.
+Fermata is a classical-music recording and editing DAW for Windows: JUCE 8.0.9, C++17, MSVC, built by GitHub Actions, namespace `td`.
 
-The first sweep (areas A-F, versions 3.1.2 to 3.1.7, 26 October 2026) covered everything up to 3.1.1. Since then about 30 builds (3.2.0 to 3.18.0) have added a lot, each tested on its own:
-- the recording monitor, video export, AAF export;
-- J and Find other versions, with take matching (`TakeMatch`, `TakeMatchService`);
-- consonants, Noise mode / denoise, and the live sample-rate converter;
-- the project sample rate, the take chart and coverage colours;
-- CPU core reservation on hybrid CPUs, the Help menu, crash reports and the helper-process freeze report;
-- the closing log and closing safety net, the opening log, and "ignore missing files permanently";
-- "the edit always begins at 0:00" (`EditDef::anchorStart`, `AppContext::anchorEdits`) with "leave space before the first edit";
-- the B / Ctrl+B swap;
-- Rec mode and the Rec | Pre button, the Pre length (1-10 s), and take matching switched on per take window with Pause and progress (3.18.0: `AppContext::setRecMode` / `recModeHolds`, `TakeMatchService::windowsChanged` / `setPaused` / `setRecHeld` / `progress`). Check every heavy job really asks in Rec mode, and that nothing else starts heavy work by itself.
+**This sweep checks EVERYTHING - the person asked for the whole program, not only what is new.** Every source file in `src/` (and `src/reharmoniser/`) belongs to one of the areas below (see "Which files belong to which area"); read each one, old or new. Where an earlier sweep already checked old code and it has not changed since, a lighter read is fine, but nothing is skipped.
 
-This sweep reads across all of it, and back into the older code it leans on.
+The history:
+- First sweep: areas A-F, versions 3.1.2 to 3.1.7 (26 October 2026), everything up to 3.1.1.
+- Second sweep: areas A-E, 3.18.2 / 3.18.3, everything up to 3.18.1; then the clean-up 3.18.5 and 3.18.6.
+- Third sweep: all nine areas at once (3.27.1, 3 November 2026), everything up to 3.27.0 - the findings and what was checked are in the 3.27.1 section of `docs/DEVELOPMENT-NOTES.md`. A fourth sweep starts from there (and from the "Not fuzzed" list in that section).
+- 3.19.0 to 3.27.0 were first swept in 3.27.1 - **the closest look inside their areas** when the next sweep comes round again:
+  - 3.19.0 save this window / the quit list; 3.20.0 the Trim window scroll bar and Match edit; 3.21.x N and V bar keys, the quit list's mixer comparison;
+  - 3.22.0 / 3.24.0 sending to linked programs (RX, Melodyne): `RxLink.*`, `RxWatch.h`, `WaitingPiece::rx` / `program`, `RegionFile::rxFrom`, `Project::rxSeen`, the once-a-second watcher, Export for Processing's menu;
+  - 3.23.0 stereo track from two mono tracks (`StereoJoin.h`, `audioops::joinToStereo`, `keepWindow`, `undoReset`); send dials that do not double the fader (`Project::sendDialBuses` / `faderFeeds`, `MixerComponent::routeSignature`); the ruler far out (`timefmt::rulerSteps`);
+  - 3.25.0 dragging marks 1 / 2 and Ctrl + Alt + click tracks;
+  - 3.26.0 automation heard while it plays (`PlaybackSession::autoNow`, `AudioEngine::replaceAutomation` / `serviceReplacedAutomation` / `handBackAutomation`, `AppContext::followAutomation`, `lanesSignature`); Virtual Master stems (`MasteringDef::stemIds`, `MasterRenderBatch` passes, `resampleFile`); the Export complete box; the mixer's fader line and scrolling top section (`StripLayout`, `fitStrip`, `StripBase::layoutFrame`, `topPane` / `topContent`, `FaderLine`, `MixerComponent::layoutView`);
+  - 3.27.0 automated controls going back (`EditDef::autoBefore`, `holdAutomatedControls`); compressed waveforms (`WaveShape.h`, `CompressWaveButton`).
 
-**Why now.** 3.17.2 fixed a bug that the feature-by-feature tests never saw: a background thread that span for ever when idle. The cause was that **a default-constructed `juce::Uuid` is a new random id, not a null one**. A "no job" check of `job.takeId.isNull()` was therefore never true. The thread "analysed" a made-up take thousands of times a second and filed each one in a map, which ran to 22 GB, kept a core at 100 %, and meant minutes of freeing memory on closing and a crawl on the next opening. Bugs of that kind are what this sweep is for: they live between features, and only show in a long real session.
+**Why sweeps matter.** 3.17.2 fixed a bug no feature test saw: a background thread that span for ever when idle, because **a default-constructed `juce::Uuid` is a new random id, not a null one**. A "no job" check of `job.takeId.isNull()` was never true; a map grew to 22 GB. Bugs of that kind live between features and only show in a long real session.
 
-**Who you work for.** The person records and edits classical sessions with this program. They are a recording engineer, not a programmer, so explain findings briefly and in plain words. Their top values:
+**Who you work for.** The person records and edits classical sessions with this program. They are a recording engineer, not a programmer: explain findings briefly and in plain words. Their top values:
 - **Nothing they recorded or edited is ever lost.**
-- **The program stays snappy:** no stalls on Space, Play or Stop, and it opens and closes quickly.
+- **The program stays snappy:** no stalls on Space, Play or Stop; it opens and closes quickly.
 
 ## Working setup (this sandbox)
 
 - **Paths:**
-  - Repository: `/home/claude/TakeDAW`.
+  - Repository: `/home/claude/jonesd90/fermata` (branch `fermata-3.22.0-edit-in-rx`; commits stay local - the person uploads the zips to GitHub themselves; never push and never ask about it).
   - JUCE: `$S/juce`, where `S=/tmp/claude-0/-home-claude/feb329c0-2bf0-58d6-9292-835ade6decf9/scratchpad`.
   - Downloads: `/home/claude/out`.
-- **Gates.** Run them **one after another, never at the same time** (they share a temporary folder):
-  - `tools/syntax-check-ui.sh $S/juce`
-  - `tools/check-windows-code.sh $S/juce`
-  - `tools/sandbox-check.sh $S/juce`
-- **Quick core test:**
-  - `REBUILD="<names>" bash $S/rt/par.sh`.
-  - When `Project.h` or `Edit.h` change, rebuild **all** core objects, or the test crashes from mismatched objects: `Project Playback AudioEngine Bounce AudioOps DenoiseFft ImportPlan Aaf AafWrite AafExport TakeMatch Ltc MasterDef Ddp MasterExport ReviewPage MasterRender Ravenna CoreReservation CrashReport Retime VideoExport`.
-- **Tool checks.** `tools/tool-checks.sh $S/juce <mode>` provides asan, tsan, fuzz, warnings, tidy, query, valgrind, coverage, rtcheck and longsession; the first sweep's notes (3.0.0, 3.1.x) explain each. Run `asan` and `fuzz` after any change to code that reads files or messages, and `tsan` / `rtcheck` after threading or audio-path changes.
+  - The sweep starts from 3.27.0 (commit `6d417bc`): the first sweep build's zip holds the files changed since that commit.
+- **The machine has 2 cores and 7 GB:** never run two compiles at the same time (out of memory: "Killed signal").
+- **Gates.** One after another, never at the same time (they share a temporary folder; run them with `bash`, in the background, and wait for them):
+  - `bash tools/syntax-check-ui.sh $S/juce` (only the known BounceWindow / PreampSetup warnings are allowed)
+  - `bash tools/check-windows-code.sh $S/juce`
+  - `bash tools/sandbox-check.sh $S/juce`
+  - Do not change a source file while a gate runs; if you must, stop the gates and start them all again.
+  - Windows-only code (`#if JUCE_WINDOWS`) is syntax-checked by copying the file with that line forced to `#if 1` into `$S/wincheck/`.
+- **Quick core test:** `bash $S/rt/par.sh` (compiles the core and `core_test` two at a time, links, runs).
+- **Tool checks.** `bash tools/tool-checks.sh $S/juce <mode>`: asan, tsan, fuzz, warnings, tidy, query, valgrind, coverage, rtcheck, longsession (the 3.0.0 and 3.1.x notes explain each). Run `asan` and `fuzz` after changes to code that reads files or messages, `tsan` / `rtcheck` after threading or audio-path changes.
 - **Delivery, for every build:**
-  - Bump `set(FERMATA_VERSION x.y.z)` in `CMakeLists.txt` (PATCH for fix-only builds).
-  - Zip **only the files changed since the previous zip** (never `.github`) into `/home/claude/out` and send it.
-  - Give a one-line test reminder.
-  - Add a `CHANGELOG.md` entry in the person's language and a section in `docs/DEVELOPMENT-NOTES.md`.
-  - Add a section with tick-box checks to the master test log doc (project `b62e847a-862d-41ec-b531-6d37a613c1e7`, prose node `37c1509e-f944`). Also add the zip to the zip order in its "Before you start" paragraph `mfcnnwc3rqw.319`.
-  - Add a line to the memory file `/areas/fermata-test-list.md`.
-- **Style:**
-  - All sources ASCII only.
-  - Comments in plain English that say why.
-  - No renaming sprees or reformatting.
-  - Diffs a person could review.
-  - Any key added, changed or removed also changes `src/ui/HotKeysWindow.h` in the same build.
+  - Bump `set(FERMATA_VERSION x.y.z)` in `CMakeLists.txt` (PATCH for fix-only builds: 3.27.1, 3.27.2 ...).
+  - Zip **only the files changed since the previous zip** (never `.github`) into `/home/claude/out`, send it, and give a one-line test reminder.
+  - A `CHANGELOG.md` entry in the person's language and a section in `docs/DEVELOPMENT-NOTES.md`.
+  - A section with tick-box checks at the end of the master test log doc (project `b62e847a-862d-41ec-b531-6d37a613c1e7`, prose node `37c1509e-f944`), and the zip added to the upload order in its paragraph `mfcnnwc3rqw.319` (read the doc since its last revision first).
+  - A line in the memory file `/areas/fermata-test-list.md`.
+  - A local commit.
+- **Style:** all sources ASCII only; comments in plain English that say why; no renaming sprees or reformatting; diffs a person could review; any key or mouse action added, changed or removed also changes `src/ui/HotKeysWindow.h` in the same build.
 
-## The cross-cutting checks (do these in every area, for the files of that area)
+## The cross-cutting checks (in every area, for that area's files)
 
-1. **"A default `juce::Uuid` means none."** It does not: `juce::Uuid x;` and `juce::Uuid()` make a random id; only `juce::Uuid::null()` is null. For every `juce::Uuid` member or local declared without `= juce::Uuid::null()`, find out whether anything treats its unset value as "none" (`isNull()`, `== juce::Uuid()`, "not found", "not chosen yet", "no mixer"). If anything does, it is a bug, as in 3.17.2. If nothing does, leave it alone, but add `= juce::Uuid::null()` where "unset" is clearly the intent. Known leads (the full list: `grep -rnE "juce::Uuid\s+\w+\s*;" src`, about 90 places):
-   - `src/core/Playback.h:42`: `automationPlanFor (..., const juce::Uuid& unassignedMixer = juce::Uuid())`. The default is a random id. Check what callers that leave it out get.
-   - Members:
-     - ScopeWindow, MixerWindow and Mixer: `mixerId`, `trackId`, `busId`.
-     - AafExportWindow, VideoExportWindow, VolumeDialog and EditWindow: `editId`.
-     - TakeWindow, BarCoverage and TakeChart: `windowId` (TakeChart also `take`).
-     - Surface: `pin`, `shownMixer`. AlignWindow: `sourceId`.
-     - AppContext: `discToken`, `DiscPlayItem::editId`, `mixClipFrom`.
-     - MasteringWindow: `playToken`. VersionsWindow: `Row::takeId`.
-     - AudioEngine: `currentGroupId`.
-     - `trackId` in ConsonantData, Retime `StreamTrack` and Project `RoomToneTrack`.
-     - MasterRender: `Item::editId`.
-   - `juce::Uuid()` passed where "none" might be meant: look at `Retime.cpp:423` and `FixTools.cpp:6591` and decide whether each is a deliberate new id.
-   - And the reverse: an id loaded from a file or a message that is empty or garbled becomes... what? (`juce::Uuid (juce::String)` on bad text.)
-2. **Every background loop must rest when idle.** For every `run()` (all `juce::Thread` subclasses, `std::thread` bodies, timers that kick off work):
-   - With nothing to do, does it block (wait on an event, or a timeout of a second or so), or can it spin?
-   - Does it stop promptly when asked (`threadShouldExit`, a cancel flag checked inside long work)?
-   - Is it stopped **before** what it uses is destroyed?
-   - Keep the 3.17.2 rule: whether there is work is told by the queue, never by a field of a default-made job.
-3. **Containers that only grow.** Maps, vectors and caches keyed by ids or files:
-   - Are entries removed when the take, edit, window or project goes (closing a project, opening another, deleting a take)?
-   - Is there a ceiling?
-   - In a ten-hour session with hundreds of takes, what is the memory at the end?
-   - Examples to check: `TakeMatchService::known` / `alignments`, the waveform caches, the take chart / coverage data, consonant data, stall-watch / log buffers, the recording monitor's event list, the undo stack.
-4. **Idle cost.** With a big project open and nothing happening, Fermata should use about 0 % CPU and no disk. Timers that do real work every tick (repaints of unchanged things, sweeps over every take, file existence checks) count against it. The minute timing lines in `fermata-log.txt` name the busiest threads: read the 3.15.0 / 3.17.0 notes for what they show.
+1. **"A default `juce::Uuid` means none."** It does not: `juce::Uuid x;` and `juce::Uuid()` are random ids; only `juce::Uuid::null()` is null. For every `juce::Uuid` member or local declared without `= juce::Uuid::null()`, find out whether anything treats its unset value as "none". If so, it is a bug (3.17.2). `grep -rnE "juce::Uuid\s+\w+\s*;" src` lists them. Also the reverse: an id loaded from a file or message that is empty or garbled becomes what?
+2. **Every background loop rests when idle and stops promptly.** Every `juce::Thread::run()`, `std::thread` body and timer that starts work: does it block with nothing to do, check `threadShouldExit` / a cancel flag inside long work, and stop **before** what it uses is destroyed? Whether there is work is told by the queue, never by a field of a default-made job.
+3. **Containers that only grow.** Maps, vectors and caches keyed by ids or files: are entries removed when the take, edit, window or project goes? Is there a ceiling? Memory after a ten-hour session with hundreds of takes? (New ones to look at: `AudioEngine::replacedPlans`, `Project::rxSeen`, `RxSaveWatch::pending` / `tries`, `EditDef::autoBefore`, the stems' temporary renders, the master renders folder.)
+4. **Idle cost.** With a big project open and nothing happening: about 0 % CPU and no disk. Timers doing real work every tick count against it - including the newer ones: `AppContext::liveAutoTicker` (20 Hz, loops over every edit's lanes), the linked-programs watcher (1 s, looks at files on disk), the mixer's 30 Hz / 3 Hz passes (`routeSignature`, `slotsNeeded`).
+5. **The audio callback never locks, allocates or waits** (rtcheck covers part of it).
+6. **Asynchronous gaps.** `this` and pointers from `findEdit` / `findTakeWindow` / `mixerOfEdit` kept across `callAsync`, `showMenuAsync`, `launchAsynchronously`, `enterModalState` callbacks: use `SafePointer` or look things up again by id.
 
 ## The sweep, in order (each area = one build)
 
-### A. Starting, closing and threads (xhigh)
+### A. The audio thread, playback and threads; starting and closing (xhigh)
 
-**Start-up and closing order:**
-- `Main.cpp` (start-up, the crash handler, `--fermata-dump` helper start), `AppContext` construction and destruction order (the `closing::Mark` members show it), `shutdown()`, `afterProjectReplaced`, opening a project (the "Opening:" steps), and closing a project to open another.
-- For each service (TakeMatchService, the waveform readers, Playback, MixerWorkers, PluginHost, RemoteHub / RemoteControl, Ravenna, the control surface, CoreReservation, StallWatch, the autosave / SaveWriter), check:
-  - who starts it, and who stops it;
-  - is it stopped before what it reads is destroyed;
-  - does stopping wait for a bounded time;
-  - what happens if the project is replaced while it works.
-
-**Safety nets:**
-- The closing safety net (`ClosingWatchdog` in `ClosingLog.h`):
-  - can it fire while a save is still being written?
-  - is `endThisProcess` ever reachable before the save?
-- `crashreport::describeThreads`: it suspends threads; can it suspend one that holds the heap lock or the loader lock while the caller allocates?
-- The helper process (`writeViaHelper` / `helperMain`): every handle closed, every wait bounded.
-
-**Plus the first sweep's area-A checks, for code added since 3.1.1:**
-- `SafePointer` and `findEdit` / `findTakeWindow` results kept across an asynchronous gap.
-- `this` captured in `callAsync` / `showMenuAsync` / `confirmAsync` / `launchAsync` lambdas in windows added since then: VersionsWindow, TakeChart, the consonants tab, Noise mode, the recording monitor, HelpMenu, CpuCoresPanel, the ignore-missing dialogs, the EditWindow lead-in boxes.
-- Detached threads.
-- JUCE message-thread calls from other threads.
-
-**The audio callback still never locks, allocates or waits.** Check the rate converter, the consonant paste, the denoise preview and anything else added to the audio path; `rtcheck` covers part of it.
+- **The audio callback** (`AudioEngine::process` and everything it calls): the mixer plan swap and `carryOver`, `MixerWorkers`, the rate bridge, playback sessions, the pre-roll ring, talkback, LTC, the click / pitch pipe, the scope tap, the meters. No lock, allocation or wait anywhere on it.
+- **Live automation (3.26.0 / 3.27.0), closely:** `autoNow` publication and the `blockCounter + 2` rule; `replaceAutomation` (held sends, `rebuildPlan` before publishing); `serviceReplacedAutomation` / `handBackAutomation` (sends and VCA bits handed back only for what the new plan does not drive; several replacements in a row; a stop with replaced plans waiting; a stalled audio thread); `stopPlayback`'s hand-off rule; `followAutomation`'s order (remember controls -> replace the plan) and `holdAutomatedControls`' `canRestore`. Can a control be put back while something still drives it, or never be put back? Any click or stuck fader possible?
+- **Plans and offline renders:** `rebuildPlan` while playing, `AutomationPlan::begin / end`, the Bouncer's own engine and automation.
+- **Start-up and closing order:** `Main.cpp`, `AppContext` construction / destruction (the `closing::Mark`s), `shutdown()`, opening a project, closing it to open another. For each service (TakeMatchService, the waveform readers and colour cache, Playback and its Retirer, MixerWorkers, PluginHost, RemoteHub / RemoteControl, Ravenna, the control surface, CoreReservation, StallWatch, SaveWriter, the linked-programs watcher, the master render / export jobs, the bounce jobs): who starts and stops it, is it stopped before what it reads is destroyed, is the wait bounded, what if the project is replaced while it works.
+- **Safety nets:** the closing watchdog (never before the save is written), `crashreport::describeThreads`, the helper process (`writeViaHelper` / `helperMain`).
 
 ### B. Recording and saving (xhigh)
 
-**Recording:**
-- `TakeWriter` (disk thread, overruns, a full or vanished drive), the second recording drive, the recording monitor's events, and the device stopping or changing rate under a take.
-- The rate converter's "recording refused while converting" path, and the project sample rate checks before Record.
+- **Recording:** `TakeWriter` (the disk thread, overruns, a full or vanished drive), the second drive, the recording monitor, the device stopping or changing rate under a take, Pre-Rec, Rec mode and what it holds back, N / V bar keys during a take.
+- **Saving and loading:** every field in `Project.cpp` save / load - old and new (`autoBefore`, `stemIds`, `rxSeen`, `WaitingPiece::rx` / `program` / `fileFrom` / `fileLen`, `RegionFile::rxFrom`, the stereo-joined tracks, the external programs list in the settings) - with defaults for older files and survival of a damaged or partial file. Is every field in the undo hash and the save hash where it should be, and out where it should not be?
+- `SaveWriter` / the autosave (during closing, a project switch, a crash), "save this window" and the quit list (3.19.0 / 3.21.1), `ProjectCopy`, missing files (relink, ignore permanently, look again), `WavRepair` crash recovery.
+- **For every file write:** full disk, vanished drive, crash half way, read-only folder, long or non-ASCII path, OneDrive folder. Is the person told? Is the previous good file still there?
 
-**Saving and loading:**
-- `Project.cpp` save / load of everything added since 3.1.1, with defaults for older files and survival of a damaged or partial file: `ignoredMissing`, `leadIn` / `leadInSeconds`, the project sample rate, consonants, room tone, take-match settings, the "waiting for corrected audio" marks.
-- Is every new field in the undo hash and the save hash where it should be (and kept out where it should not be)?
-- `SaveWriter.h` / the autosave: a save in progress during closing, during a project switch, or during a crash.
-- `ProjectCopy` (does it take the Consonants and Analysis folders?).
-- Missing files: relink, "Stop waiting for exported files", "Ignore missing files permanently" and "Look for them again".
+### C. Files that leave Fermata and come back (xhigh)
 
-**For every file write:**
-- What happens on a full disk, a vanished drive, a crash half way, a read-only folder, a long or non-ASCII path, or a OneDrive folder?
-- Is the person told?
-- Is the previous good file still there?
+The data-safety heart of the newer features:
+- **Linked programs (`RxLink.*`, `RxWatch.h`):** the files sent (handles, markers, float / 24-bit kept), the watcher (skips while recording / undo / save holds / modal boxes; a file half written; a file replaced by a program that writes a new file and renames; a file deleted; a save while Fermata was closed; `rxSeen` growing), bringing a save in (only the marked part replaced, crossfades, Ctrl+Z), a wrong length / rate / channel count refused, "bring in now", "open again", Cancel. Can a save ever overwrite or lose the person's audio, or land on the wrong piece or track?
+- **Export for Processing and re-linking** (`FixTools*`: `processingJobFolder`, `planSendOut`, `runSimpleJob`, `relinkEdit`), "waiting for corrected audio" blocks, Stop waiting.
+- **The stereo join (`StereoJoin.h`):** plan / write / apply, a take changed between plan and apply, the files it writes, mixers and lanes moved over, `undoReset` / `keepWindow`. It cannot be undone: is every failure path clean?
+- **Imports:** multitrack import (`ImportPlan`), take import, AAF import (`Aaf.*`).
 
-### C. Edit operations and undo since 3.1.1 (high)
+### D. Edit operations and undo, across the whole program (high)
 
-- **Edit start and alignment:**
-  - `EditDef::anchorStart` and its first-region extension (3.17.1);
-  - `AppContext::anchorEdits` and its skip conditions;
-  - with Find other versions "Use this one" (its ripple and "Undo fix");
-  - with J;
-  - with the Trim window.
-- **Consonants:** copy, remove, paste and nudge.
-- **Noise mode / denoise:** write back to the clip.
-- **ReTimEr changes.**
+Every operation that changes takes or edits, old and new: pieces (move, slide, slip, shuffle, delete, insert / replace with 3 / 4 / Shift+4, Find other versions "Use this one", J), joins and the Trim window (fades, crossfades, levels, normalise over next take, close gap, the 3.20.0 scroll), `anchorStart` / `anchorEdits`, marks 1 / 2 (3.25.0 dragging, Ctrl + Alt + click, P), volume changes, automation lanes and points (`resolveAutomation`, rows), snips, consonants, Noise mode / denoise, the fix tools (pitch, repair, ReHarmoniSer, ReTimEr), overdubs, the visual guide, markers and feedback flags, takes' details (bars, duds, names), the take chart.
 
-For each operation, check that it is one clean undo step, that redo is exact, and that a failure leaves the edit as it was. Look for operations that change view state inside undo state, or the reverse.
+For each: one clean undo step, exact redo, a failure leaves the edit as it was, no view state inside undo state (or the reverse).
 
-### D. Files and messages from outside (high)
+### E. The mixers and routing (high)
 
-Every reader and writer added since 3.1.1, plus a fuzz run for each new reader (add them to `tests/fuzz_readers.cpp`):
-- the take-match fingerprint cache (`.fpr`: a truncated or old file must be refused and re-made, never crash);
-- the consonant files;
-- the take sheet PDF / CSV;
-- AAF export (`AafWrite`: Resolve and Pro Tools are the real readers);
-- video export with LTC;
-- crash-report file names and pruning;
-- `cpu-fence.txt`.
+`Mixer.h`, `MixerWindow.*`, `MixerLook.h`, `StageMixer.h`, `MeterBridge.h`, `ScopeWindow.*`, `PluginHost.*` / `PluginManager.h`, `LowCut*`, VCAs, gangs, sends and `sendDialBuses`, cue mixers and Follow Processing Mixer, audition, Copy / Paste mix, Match edit, hidden strips, the control surface (`Surface.*`, `Mcu.h`, `SurfacePanel.h`) and the remote desk (`Remote*`).
+- **The 3.26.0 layout, closely:** `fitStrip` at every window size (tiny, huge, very many buses, no buses, stereo / mono only), the fader line drag (strips rebuilt mid-drag, extra slots held), `topPane` / `topContent` lifetime and clipping, the shared scroll bar and wheel, child components that look for their parent strip, the METERS strip never cut off.
+- Plug-in states saved exactly; a plug-in's delay change re-planned; nothing in the window on the audio path.
 
-The two rules from the first sweep still hold:
-- bytes from outside become text only through `td::textFromBytes`;
-- never index a `juce::var` with a number without checking `getArray()` and its size.
+### F. Mastering, bouncing and exports (high)
 
-### E. Snappiness and a long session (high)
+`MasterDef.*`, `MasterRender.*` (the two-slot render cache, fingerprints, `learnMasterRenderVolatile`, the stems passes - an up-to-date master and its backup never touched), `MasterExport.*` (rates, loudness check, levels, dither, formats, tags, LAME, stems at the master's gain, `resampleFile`, clipped stems), `Ddp.*`, `ReviewPage.*` (listening copies), `Loudness.h`, `MasteringWindow.*` (the Stems list, the Export complete box), `Bounce.*` / `BounceWindow.*`, `AafExport*` / `AafWrite*`, `VideoExport*`, `TakeSheet*`, the work folders and temporary files (always removed, never left half written in the person's folder).
 
-Message-thread cost on a big project: 14 take windows x 26 takes x 40 tracks, edits of 400 pieces x 40 files, 367 takes. Look at:
-- the opening steps (the "Opening:" lines);
-- the take chart and coverage colours, VersionsWindow searches, the sweep timers, repaints and the undo / save snapshots.
+### G. Files and messages from outside (high)
 
-Use `longsession` with the new services running (take matching, the recording monitor, the stall watch) and look for growing memory and drifting timing. Measure before and after. Only change what measurably helps.
+Every reader and writer, plus a fuzz run for each reader (`tests/fuzz_readers.cpp`): the project file and window files, the take-match fingerprint cache, consonant files, feedback / comment files, iXML names, AAF, the remote protocol, the Ravenna discovery, MCU, the settings XML (the external programs list), crash-report files. Rules: bytes from outside become text only through `td::textFromBytes`; never index a `juce::var` with a number without checking `getArray()` and its size.
 
-### F. Clean-up (last, only where tests cover it; no behaviour change at all)
+### H. Snappiness and a long session (high)
 
-- Code left behind by the B / Ctrl+B swap, the removed Trim nudges and older experiments.
-- Duplicated helpers between the newer windows.
-- Dead code.
-- **Splitting `FixTools.cpp`** (left from the first sweep) only if the person can build and run the tools the same day. Ask first.
+Message-thread cost on a big project (14 take windows x 26 takes x 40 tracks, edits of 400 pieces x 40 files, 367 takes): opening, the waveform drawing (now also through `waveshape::apply` - `std::pow` per column), the edit and take window repaints, the mixer rebuilds, the take chart, VersionsWindow searches, the undo / save snapshots, the 20 Hz `followAutomation` loop over all edits. Use `longsession` with the services running and look for growing memory and drifting timing. Measure before and after; only change what measurably helps.
+
+### I. Clean-up (last; only where tests cover it; no behaviour change at all)
+
+Dead code (the `rx` names that now mean "linked program" may stay as they are - renaming is not wanted), duplicated helpers between windows, code left from removed features. Splitting `FixTools.cpp` only if the person agrees first.
+
+## Which files belong to which area
+
+Every file is read in one area (header and source together). Shared headers are read in the first area that lists them.
+- **A:** `Main.cpp`, `AudioEngine.*`, `Playback.*`, `Automation.h`, `MixerWorkers.h`, `RateBridge.h`, `Resampler.h`, `HostTransport.h`, `Ltc.*`, `PitchPipe.h`, `Dither.h`, `Dsp.h`, `CoreReservation.*`, `CrashReport.*`, `SessionClock.h`, `TalkbackKey.h`, `ui/AppContext.*`, `ui/ClosingLog.h`, `ui/StallWatch.h`, `ui/WinOwner.*`, `ui/Splash.h`, `ui/HelpMenu.h`, `ui/CpuCoresPanel.h`, `ui/TalkbackGlow.h`, `ui/ClickWindow.h`, `ui/PitchPipeWindow.*`.
+- **B:** `Project.*`, `Takes.h`, `TakeWriter.h`, `SaveWriter.h`, `FileSync.h`, `WavRepair.h`, `LostSamples.h`, `BackupCopier.h`, `ProjectCopy.h`, `AudioRelink.h`, `Preamp.h`, `PreampMemory.h`, `Ravenna.*`, `Markers.h`, `ui/RecordMonitor.h`, `ui/RecPrePanel.h`, `ui/PreampSetup.h`, `ui/ProjectRateDialog.h`, `ui/MediaWindow.*`, `ui/OrganiserWindow.*`, `ui/DesignWindow.*`, `ui/MainWindow.*`.
+- **C:** `RxWatch.h`, `StereoJoin.h`, `AudioOps.*`, `ImportPlan.*`, `Aaf.*`, `AafModel.h`, `ui/RxLink.*`, `ui/FixTools.*`, `ui/FixToolsCommon.h`, `ui/FixToolsDialogs.h`, `ui/FixToolsEdits.cpp`.
+- **D:** `Edit.h`, `EditFix.h`, `Retime.*`, `Consonants.h`, `ConsonantData.h`, `Denoise.h`, `DenoiseFft.cpp`, `SpectralRepair.h`, `SpectralPicture.h`, `SpectralPyramid.h`, `PitchShift.h`, `Tuning.h`, `TimeAlign.h`, `TakeMatch.*`, `Feedback.h`, `src/reharmoniser/`, `ui/EditWindow.*`, `ui/TakeWindow.*`, `ui/TrimWindow.*`, `ui/TakeDisplay.*`, `ui/TakeChart.h`, `ui/BarCoverage.h`, `ui/VersionsWindow.h`, `ui/RetimerWindow.*`, `ui/AlignWindow.*`, `ui/TakeMatchService.h`, `ui/TakeMatchPanel.h`, `ui/FeedbackUi.h`, `ui/MarkerStrip.h`, `ui/VolumeDialog.h`, `ui/GridEditor.h`.
+- **E:** `Mixer.h`, `LowCut.h`, `Mcu.h`, `RemoteDesk.h`, `RemoteHub.h`, `RemoteProtocol.h`, `ui/MixerWindow.*`, `ui/MixerLook.h`, `ui/StageMixer.h`, `ui/MeterBridge.h`, `ui/ScopeWindow.*`, `ui/PluginHost.*`, `ui/PluginManager.h`, `ui/LowCutPanel.h`, `ui/OutputPicker.h`, `ui/Surface.*`, `ui/SurfacePanel.h`, `ui/RemoteControl.*`, `ui/DeskLook.h`.
+- **F:** `MasterDef.*`, `MasterRender.*`, `MasterExport.*`, `Ddp.*`, `ReviewPage.*` (and `ReviewPageTemplate.inc`), `Loudness.h`, `Bounce.*`, `AafExport.*`, `AafWrite.*`, `VideoExport.*`, `TakeSheet.h`, `Pdf.h`, `ui/MasteringWindow.*`, `ui/BounceWindow.*`, `ui/AafExportWindow.h`, `ui/VideoExportWindow.h`, `ui/TakeSheetExport.h`.
+- **G:** `TextBytes.h`, `AudioFormats.h`, `TimeFormat.h`, `ScreenLayout.h`, `Common.h`, and every reader found in the other areas (fuzz each).
+- **H:** `ui/WaveDraw.h`, `ui/WaveThumb.h`, `ui/WaveStore.h`, `ui/WaveColor.h`, `WaveShape.h`, `ui/PaintProfile.h`, `ui/TimeReadout.h`, `ui/Uikit.h`, `ui/FermataLookAndFeel.h`, `ui/ThemeSwitch.h`, `ui/ColourPicker.h`, `ui/BusyWindow.h`, `ui/ValueEntry.h`, `ui/HotKeysWindow.h`, `ui/FontData*.cpp`, `BoxEdges.h`.
+- **Tests and tools** (`tests/`, `tools/`): kept working in every area; a new test goes with each fix.
+
+If you find a file not in this list, read it in the area it fits best and say so.
 
 ## Ground rules
 
 1. **No silent behaviour changes.** Fix bugs and make things robust; do not redesign features. Anything the person would notice goes in `CHANGELOG.md`. If a fix would change how a feature behaves, ask first.
 2. **A test first where it can be done:** a section in `tests/core_test.cpp` (or `stress_test.cpp`) that fails without the fix. For UI-only fixes, say how you checked them.
-3. **Data safety over everything.** Never make a change that could lose, overwrite or orphan audio, edits or project files. Recorded files are never modified in place. The one exception is crash recovery mending a WAV header (`WavRepair.h`).
+3. **Data safety over everything.** Never make a change that could lose, overwrite or orphan audio, edits or project files. Recorded files are never modified in place (the one exception: crash recovery mending a WAV header, `WavRepair.h`).
 4. **Builds in big chunks:** one build per area, not one per fix.
 5. **Ask** before anything risky or ambiguous: file-format changes, removing anything, or behaviour you are not sure was intended.
 
@@ -193,15 +151,19 @@ Use `longsession` with the new services running (take matching, the recording mo
 - No preamp "Cut" feature anywhere.
 - Play never stops at mark 2; only Loop sends playback back to mark 1.
 - No assignable key commands: the keys are listed in Project > HotKeys. B = the bars box of the take clicked last; Ctrl+B = the meter bridge; Shift+B = the take chart.
-- Markers, listeners' comment flags and the edit window's visual guide are never moved by ripple edits. (The 0:00 anchoring in 3.16.0 moves everything together on purpose: that is a shift of the whole edit, not a ripple.)
-- The edit always begins at 0:00 (or at the "leave space" time). Edit 1's opening fade defines the start.
-- The closing safety net stays as a backstop even though 3.17.2 removed the cause it was added for.
-- Find other versions matching quality waits for the person's written examples: do not retune it in this sweep.
+- Markers, listeners' comment flags and the edit window's visual guide are never moved by ripple edits (the 0:00 anchoring moves everything together on purpose).
+- The edit always begins at 0:00 (or at the "leave space" time).
+- The closing safety net stays as a backstop.
+- Find other versions matching quality waits for the person's written examples: do not retune it.
 - Stereo only for now.
+- Linked programs: files sent to a program come back by themselves when saved; files made with "Create files to edit" never do (they wait to be re-linked). The 2 s handles stay.
+- Automation follows edits live while playing; a control whose lane loses its points goes back where it was.
+- Stems come out at the master's gain, in the master's main format; their working copies are not kept.
+- The mixer's fader line: double-click = the normal size (it never snaps back by itself); the line's setting never makes windows grow.
 
-## The first sweep (for reference)
+## The earlier sweeps (for reference)
 
-The first sweep covered areas A to F in versions 3.1.2 to 3.1.7. Its findings, and what was checked and found sound, are in those sections of `docs/DEVELOPMENT-NOTES.md`; the tool pass behind it is in the 3.0.0 section. Start from those notes rather than repeating that work, except where code has changed since.
+The first sweep (3.1.2-3.1.7, the tool pass in 3.0.0) and the second (3.18.2-3.18.6) are in those sections of `docs/DEVELOPMENT-NOTES.md`, with what was checked and found sound. Use them to save time on old code that has not changed - but this sweep still reads every file.
 
 ## What to hand back each time
 

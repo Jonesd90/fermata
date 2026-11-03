@@ -70,6 +70,30 @@ juce::StringArray learnMasterRenderVolatile (const Project& cp, const EditDef& e
     return found;
 }
 
+MasterRenderParts masterRenderParts (const Project& cp, const EditDef& e, const RenderParams& rp)
+{
+    MasterRenderParts m;
+    g_capture = &m; masterRenderFingerprint (cp, e, rp); g_capture = nullptr;
+    return m;
+}
+
+bool masterRenderOnlyVolatileDiffers (const MasterRenderParts& before, const MasterRenderParts& now, const juce::Uuid& editId)
+{
+    std::set<juce::String> skip;
+    { const juce::ScopedLock sl (storeLock()); auto it = volatileParts().find (editId.toString()); if (it != volatileParts().end()) skip = it->second; }
+    auto differs = [&] (const MasterRenderParts& a, const MasterRenderParts& b)
+    {
+        for (auto& kv : a)
+        {
+            if (skip.count (kv.first) != 0) continue;
+            auto ib = b.find (kv.first);
+            if (ib == b.end() || ib->second != kv.second) return true;        // a part gone or changed (a part only in b is found the other way round)
+        }
+        return false;
+    };
+    return ! differs (before, now) && ! differs (now, before);
+}
+
 juce::String makeRenderParams (const Project& p, const MasteringDef& def, RenderParams& rp)
 {
     rp = RenderParams();
@@ -88,13 +112,16 @@ juce::String masterRenderFingerprint (const Project& cp, const EditDef& e, const
     juce::String text = describe (ev, "E", editId);
 
     // the audio files the pieces use: a file mended in place changes the sound without changing the edit
-    auto addFiles = [&text] (const std::vector<EditRegion>& rs)
+    juce::String files;
+    auto addFiles = [&files] (const std::vector<EditRegion>& rs)
     {
         for (auto& r : rs)
             for (auto& f : r.files)
-                text << "|" << f.file.getFullPathName() << ":" << juce::String (f.file.getSize()) << ":" << juce::String (f.file.getLastModificationTime().toMilliseconds());
+                files << "|" << f.file.getFullPathName() << ":" << juce::String (f.file.getSize()) << ":" << juce::String (f.file.getLastModificationTime().toMilliseconds());
     };
     addFiles (e.regions); addFiles (e.overdubs);
+    text << files;
+    if (g_capture != nullptr) (*g_capture)["~files"] = files;                        // (the parts outside describe() are captured whole, so a comparison of parts sees them too)
 
     // the mixers the sound goes through: the Edit's own (or the one chosen for everything), and any other mixer an automation lane drives
     std::vector<const MixerState*> ms;
@@ -158,10 +185,13 @@ juce::String masterRenderFingerprint (const Project& cp, const EditDef& e, const
     }
 
     // the design (formats, buses) and the render settings
-    for (auto& t : p.tracks) text << "|T:" << t.id.toString() << ":" << (int) t.format << ":" << t.surroundChannels;
-    for (auto& b : p.buses)  text << "|B:" << b.id.toString() << ":" << (b.external ? 1 : 0);
-    text << "|S:" << rp.sourceId.toString() << ":" << juce::String (rp.tailSeconds, 4) << ":" << (rp.ownMixers ? "own" : rp.mixerId.toString());
-    text << "|A:" << p.alignSignature (p.alignOwnerFor (true, e.id));                // the spot-mic delays it plays with
+    juce::String design;
+    for (auto& t : p.tracks) design << "|T:" << t.id.toString() << ":" << (int) t.format << ":" << t.surroundChannels;
+    for (auto& b : p.buses)  design << "|B:" << b.id.toString() << ":" << (b.external ? 1 : 0);
+    design << "|S:" << rp.sourceId.toString() << ":" << juce::String (rp.tailSeconds, 4) << ":" << (rp.ownMixers ? "own" : rp.mixerId.toString());
+    design << "|A:" << p.alignSignature (p.alignOwnerFor (true, e.id));              // the spot-mic delays it plays with
+    text << design;
+    if (g_capture != nullptr) (*g_capture)["~design"] = design;
     // two 64-bit FNV-1a hashes with different starting values (128 bits in all)
     juce::uint64 h1 = 1469598103934665603ull, h2 = 0x9E3779B97F4A7C15ull;
     for (auto c = text.toUTF8(); *c != 0; ++c) { h1 = (h1 ^ (juce::uint8) *c) * 1099511628211ull; h2 = (h2 ^ (juce::uint8) *c) * 0x100000001B3ull + 0x7F4A7C15ull; }
@@ -221,6 +251,7 @@ MasterRenders::Info MasterRenders::check (const juce::Uuid& id, const juce::Stri
 {
     const juce::ScopedLock sl (storeLock());
     auto m = load();
+    const auto before = m;
     auto& e = m[id.toString()];
     Info r;
     if (e.active >= 0 && ! valid (id, e, e.active)) e.active = -1;
@@ -233,11 +264,24 @@ MasterRenders::Info MasterRenders::check (const juce::Uuid& id, const juce::Stri
     else if (! e.stale && e.s[e.active].fp == fp) { r.state = State::Ready; fill (e.active); }
     else if (! e.stale && valid (id, e, 1 - e.active) && e.s[1 - e.active].fp == fp) { e.active = 1 - e.active; r.state = State::Ready; fill (e.active); r.hasBackup = valid (id, e, 1 - e.active); }
     else { r.state = State::Stale; fill (e.active); }
-    save (m);
+    if (changed (m, before)) save (m);                            // (3.27.1: the list used to be rewritten, with an fsync, on every look)
     return r;
 }
 
-void MasterRenders::commit (const juce::Uuid& id, const juce::String& fp, double rate, juce::int64 frames, const juce::File& produced)
+bool MasterRenders::changed (const std::map<juce::String, Entry>& a, const std::map<juce::String, Entry>& b)
+{
+    if (a.size() != b.size()) return true;
+    auto ia = a.begin(); auto ib = b.begin();
+    for (; ia != a.end(); ++ia, ++ib)
+    {
+        if (ia->first != ib->first || ia->second.active != ib->second.active || ia->second.pinned != ib->second.pinned || ia->second.stale != ib->second.stale) return true;
+        for (int i = 0; i < 2; ++i)
+            if (ia->second.s[i].fp != ib->second.s[i].fp || ia->second.s[i].rate != ib->second.s[i].rate || ia->second.s[i].frames != ib->second.s[i].frames) return true;
+    }
+    return false;
+}
+
+bool MasterRenders::commit (const juce::Uuid& id, const juce::String& fp, double rate, juce::int64 frames, const juce::File& produced)
 {
     const juce::ScopedLock sl (storeLock());
     auto m = load();
@@ -245,11 +289,33 @@ void MasterRenders::commit (const juce::Uuid& id, const juce::String& fp, double
     const int target = e.active < 0 ? 0 : 1 - e.active;           // always the OLDER of the two
     const auto dest = slotFile (id, target);
     dest.getParentDirectory().createDirectory();
-    dest.deleteFile();
-    if (! produced.moveFileTo (dest)) { produced.deleteFile(); return; }
+    // the older render is moved aside rather than deleted first, so a move that fails (the slot's file open in another program, an odd drive)
+    // still leaves the backup where it was (3.27.1)
+    const auto aside = dest.getSiblingFile ("mrtmp-aside-" + dest.getFileName());
+    aside.deleteFile();
+    const bool hadOld = dest.existsAsFile();
+    if (hadOld && ! dest.moveFileTo (aside)) return false;
+    if (! produced.moveFileTo (dest)) { if (hadOld) aside.moveFileTo (dest); return false; }
+    aside.deleteFile();
     e.s[target].fp = fp; e.s[target].rate = rate; e.s[target].frames = frames;
     e.active = target; e.pinned = false; e.stale = false;
     save (m);
+    return true;
+}
+
+void MasterRenders::prune (const std::vector<juce::Uuid>& liveEditIds)
+{
+    const juce::ScopedLock sl (storeLock());
+    auto m = load();
+    bool any = false;
+    for (auto it = m.begin(); it != m.end();)
+    {
+        const juce::Uuid id (it->first);
+        if (std::find (liveEditIds.begin(), liveEditIds.end(), id) != liveEditIds.end()) { ++it; continue; }
+        for (int i = 0; i < 2; ++i) slotFile (id, i).deleteFile();
+        it = m.erase (it); any = true;
+    }
+    if (any) save (m);
 }
 
 void MasterRenders::restamp (const juce::Uuid& id, const juce::String& fp)
@@ -301,11 +367,16 @@ MasterRenderBatch::MasterRenderBatch (const Project& live, const std::vector<juc
 {
     MasterRenders store (folder);
     auto& p = const_cast<Project&> (live);
+    {
+        std::vector<juce::Uuid> liveIds;                               // the renders of edits that are gone go too (3.27.1: the folder used to only grow)
+        for (auto& e : p.edits) liveIds.push_back (e->id);
+        store.prune (liveIds);
+    }
     for (auto& id : editIds)
     {
         auto* e = p.findEdit (id);
         if (e == nullptr || e->isEmpty()) continue;
-        Item it; it.editId = id; it.rate = e->sampleRate;
+        Item it; it.editId = id; it.rate = e->sampleRate; it.name = e->name;
         it.fp = masterRenderFingerprint (live, *e, rp);
         if (force) store.markStale (id);
         const auto info = store.check (id, it.fp);
@@ -370,7 +441,8 @@ juce::String MasterRenderBatch::run (std::atomic<float>* progress, const std::at
     {
         if (g.bouncer == nullptr) continue;
         auto br = g.bouncer->render (progress, cancel);
-        g.bouncer.reset();
+        // (the Bouncer, and with it the render copy's plug-in instances, is kept until the batch is destroyed on the message thread: plug-ins
+        // expect to be released on the thread that made them - 3.27.1)
         if (br.cancelled) { store.removeTemps(); return "Cancelled."; }
         if (br.error.isNotEmpty()) { store.removeTemps(); return br.error; }
         const int perItem = (g.master ? 1 : 0) + (int) stems.size();     // (the files come piece by piece, each piece's outputs in the order asked for)
@@ -385,8 +457,13 @@ juce::String MasterRenderBatch::run (std::atomic<float>* progress, const std::at
                 const juce::File produced (br.files[f++]);
                 juce::int64 frames = 0;
                 if (std::unique_ptr<juce::AudioFormatReader> r { fm.createReaderFor (produced) }) frames = r->lengthInSamples;
-                store.commit (it.editId, it.fp, it.rate, frames, produced);
+                const bool stored = store.commit (it.editId, it.fp, it.rate, frames, produced);
                 const auto info = store.check (it.editId, it.fp);
+                if (! stored || info.state != MasterRenders::State::Ready)          // (3.27.1: it used to go on with the OLD render in the slot and say nothing)
+                {
+                    store.removeTemps();
+                    return "The render of \"" + it.name + "\" could not be stored in the Mastering renders folder (is a file there open in another program, or the drive full?).";
+                }
                 it.file = info.file; it.frames = info.frames; it.stale = false; it.previous = false; it.backup = info.hasBackup;
             }
             it.stemFiles.clear();

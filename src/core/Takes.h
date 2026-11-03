@@ -190,24 +190,28 @@ struct TakeWindowDef
         return e;
     }
 
-    /** Rename the take and every file in it. Returns false (and changes nothing it can't) on failure. */
-    bool setLabel (const juce::Uuid& gid, const juce::String& newLabel)
+    /** Rename the take and every file in it. Returns false (and changes nothing it can't) on failure. 'moved' (3.27.1) gets each (old path, new path)
+        actually renamed, so the caller can point everything else that plays those files (the edits) at the new names: Project::renameTake does that. */
+    bool setLabel (const juce::Uuid& gid, const juce::String& newLabel, std::vector<std::pair<juce::File, juce::File>>* moved = nullptr)
     {
         auto* g = findGroup (gid);
         if (g == nullptr) return false;
-        auto oldLabel = g->label;
         g->label = newLabel.trim();
         const auto effective = labelFor (*g);
         bool ok = true;
+        std::vector<juce::File> taken;                                     // (two tracks with the same name: the second file gets " (2)", as the recorder names them)
         for (auto& f : g->files)
         {
             auto target = f.file.getParentDirectory().getChildFile (fileNameFor (g->number, effective, f.trackName));
+            for (int n = 2; std::find (taken.begin(), taken.end(), target) != taken.end(); ++n)
+                target = f.file.getParentDirectory().getChildFile (fileNameFor (g->number, effective, f.trackName + " (" + juce::String (n) + ")"));
+            taken.push_back (target);
             if (target == f.file) continue;
             if (target.existsAsFile()) { ok = false; continue; }
-            if (f.file.moveFileTo (target)) f.file = target; else ok = false;
+            if (f.file.moveFileTo (target)) { if (moved != nullptr) moved->push_back ({ f.file, target }); f.file = target; }
+            else ok = false;
         }
-        if (! ok) { /* labels stay as typed; files that could not be renamed keep their old names */ }
-        juce::ignoreUnused (oldLabel);
+        // (labels stay as typed; files that could not be renamed keep their old names)
         return ok;
     }
 };

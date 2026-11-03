@@ -110,8 +110,11 @@ juce::String writeMany (const juce::File& html, const juce::String& title, const
 
     html.getParentDirectory().createDirectory();
     html.deleteFile();                                           // (a FileOutputStream would append to an old file)
-    juce::FileOutputStream out (html);
+    auto outPtr = std::make_unique<juce::FileOutputStream> (html);
+    auto& out = *outPtr;
     if (out.failedToOpen()) return "Cannot write " + html.getFullPathName();
+    // (3.27.1: the stream is closed before a half-written page is deleted - Windows refuses to delete a file that is still open for writing)
+    auto fail = [&] (const juce::String& why) { outPtr.reset(); html.deleteFile(); return why; };
     out.write (head.toRawUTF8(), head.getNumBytesAsUTF8());
 
     constexpr size_t kRaw = 3000000;                             // a multiple of 3, so every piece is whole base64 with no padding inside
@@ -119,11 +122,11 @@ juce::String writeMany (const juce::File& html, const juce::String& title, const
     for (size_t k = 0; k < pieces.size(); ++k)
     {
         juce::FileInputStream src (pieces[k].audio);
-        if (src.failedToOpen()) { out.flush(); html.deleteFile(); return "Cannot read " + pieces[k].audio.getFullPathName(); }
+        if (src.failedToOpen()) return fail ("Cannot read " + pieces[k].audio.getFullPathName());
         const juce::String open = "<script type=\"text/plain\" data-k=\"" + juce::String ((int) k) + "\" class=\"ch\">";
         for (;;)
         {
-            if (cancel != nullptr && cancel->load()) { out.flush(); html.deleteFile(); return "Cancelled."; }
+            if (cancel != nullptr && cancel->load()) return fail ("Cancelled.");
             const int got = src.read (buf.data(), (int) kRaw);
             if (got <= 0) break;
             const auto b64 = base64 (buf.data(), (size_t) got);
@@ -134,7 +137,8 @@ juce::String writeMany (const juce::File& html, const juce::String& title, const
     }
     out.write (tail.toRawUTF8(), tail.getNumBytesAsUTF8());
     out.flush();
-    if (out.getStatus().failed()) return "Cannot write " + html.getFullPathName() + ": " + out.getStatus().getErrorMessage();
+    if (out.getStatus().failed()) return fail ("Cannot write " + html.getFullPathName() + ": " + out.getStatus().getErrorMessage());
+    outPtr.reset();
     return {};
 }
 } // namespace reviewpage

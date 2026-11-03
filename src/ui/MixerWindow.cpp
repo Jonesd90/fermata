@@ -402,7 +402,11 @@ class SlotCell : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     SlotCell (SlotButtons& o, int i) : owner (o), index (i) { setRepaintsOnMouseActivity (true); }
-    void setLook (const juce::String& n, juce::Colour c, bool loadedNow) { name = n; fill = c; loaded = loadedNow; repaint(); }
+    void setLook (const juce::String& n, juce::Colour c, bool loadedNow)
+    {
+        if (name == n && fill == c && loaded == loadedNow) return;                   // (3.27.1: no repaint when nothing changed)
+        name = n; fill = c; loaded = loadedNow; repaint();
+    }
     void paint (juce::Graphics& g) override;
     void mouseDown (const juce::MouseEvent& e) override { dragging = false; downOnDot = dotArea().contains (e.getPosition()); }
     void mouseDrag (const juce::MouseEvent& e) override;
@@ -414,7 +418,7 @@ public:
     bool dropHighlight = false, dropCopy = false;
 private:
     juce::String name; juce::Colour fill; bool loaded = false, dragging = false, downOnDot = false;
-    SlotCell* hovered = nullptr;
+    juce::Component::SafePointer<SlotCell> hovered;                                  // (the cell under a drag may be in another mixer window, rebuilt meanwhile - 3.27.1)
 };
 
 /** A column of VST3 insert slots (four on a channel, two on a send). */
@@ -1065,6 +1069,7 @@ public:
 
     void paint (juce::Graphics& g) override
     {
+        lastLook = lookKey();
         const auto& t = mixTheme();
         auto b = getLocalBounds();
         const auto c0 = colour();
@@ -1183,6 +1188,16 @@ protected:
     virtual juce::String alignText() const { return {}; }
     /** The VCAs that control this strip (bit n = VCA n+1): they are drawn as glowing numbers on the coloured bar. */
     virtual juce::uint32 vcaMask() const { return 0; }
+    /** Everything paint() draws that can change between two refreshes. */
+    juce::String lookKey() const
+    {
+        return juce::String ((juce::int64) colour().getARGB()) + "|" + bandText() + "|" + plateText() + "|" + juce::String ((juce::int64) vcaMask()) + "|"
+             + juce::String (shownLatency()) + "|" + alignText() + "|" + juce::String (gangLook()) + (mixTheme().ground ? "|g" : "|d");
+    }
+    /** repaint() only when what paint() draws has changed (3.27.1: the 3 Hz pass used to repaint every strip whether or not anything had, so a big mixer
+        was redrawn in full three times a second with nothing happening). A repaint asked for by anything else still happens as before. */
+    void repaintIfLookChanged() { const auto k = lookKey(); if (k != lastLook) { lastLook = k; repaint(); } }
+    juce::String lastLook;
     void setLatencyTip (int own, const MixerState& m)
     {
         if (appPtr == nullptr) return;
@@ -1508,7 +1523,7 @@ public:
                         "Hold Shift + Alt and whatever you do to one selected strip happens to all of them: faders, sends and pans move by the same amount; "
                         "M, S, a send's MUTE / PRE; inserting, removing or bypassing a plug-in (hold the keys as you choose it in the menu, or drop a copy with them held). "
                         "Right-click the name plate to hide strips from this mixer (+ Strip shows them again).");
-        repaint();
+        repaintIfLookChanged();
         slots.refresh();
         lcKey.refresh();
         refreshInputs();
@@ -1525,7 +1540,7 @@ public:
             if ((juce::int64) pans[c]->getProperties().getWithDefault ("arc", (juce::int64) 0) != arc) { pans[c]->getProperties().set ("arc", arc); pans[c]->repaint(); }
         }
         for (auto* d : dials) d->refreshFromModel();
-        repaint();
+        repaintIfLookChanged();
     }
 
     /** "L35", "C" or "R100": the exact pan position. */
@@ -1568,10 +1583,12 @@ public:
             m.addItem ((int) ids.size(), t.name + (s != nullptr && s->active() ? "  (already sent)" : ok ? "" : "  (would loop)"), ok && ! (s != nullptr && s->active()));
         }
         if (ids.empty()) m.addItem (-1, "No other audio tracks", false);
-        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&toTrackButton), [this, ids] (int r)
+        auto* a = &app; const auto mid = mixer.id; const auto tid = trackId;       // (3.27.1: the strip may be rebuilt while the menu is open - by id, not through this)
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&toTrackButton), [a, mid, tid, ids] (int r)
         {
             if (r < 1 || (size_t) r > ids.size()) return;
-            if (app.setSendLevel (mixer, trackId, ids[(size_t) r - 1], 0.0f) != SendResult::Refused) app.project.structureChanged();   // the strip grows a dial
+            if (auto* mx = a->findMixer (mid))
+                if (a->setSendLevel (*mx, tid, ids[(size_t) r - 1], 0.0f) != SendResult::Refused) a->project.structureChanged();   // the strip grows a dial
         });
     }
     int dialCount() const { return dials.size(); }
@@ -1789,10 +1806,12 @@ public:
             panSlider.setRange (-1.0, 1.0, 0.01);
             panSlider.getProperties().set ("pan", true);
             panSlider.setDoubleClickReturnValue (true, 0.0, juce::ModifierKeys::ctrlModifier);       // double-click (or Ctrl + click) = C
-            panClick = std::make_unique<valueentry::ReadoutClick> (panValue, false, [this]
+            juce::Component::SafePointer<juce::Slider> safeS (&panSlider);          // (3.27.1: as the track strips do - the box outlives a rebuilt strip)
+            panClick = std::make_unique<valueentry::ReadoutClick> (panValue, false, [safeS]
             {
-                valueentry::ask (panSlider, "Balance (L30, C, R45 ...)", ChannelStrip::panText ((float) panSlider.getValue()), [this] (const juce::String& t)
-                { double pv = 0.0; if (valueentry::parsePan (t, pv)) panSlider.setValue (pv, juce::sendNotificationSync); });
+                if (safeS == nullptr) return;
+                valueentry::ask (*safeS, "Balance (L30, C, R45 ...)", ChannelStrip::panText ((float) safeS->getValue()), [safeS] (const juce::String& t)
+                { double pv = 0.0; if (safeS != nullptr && valueentry::parsePan (t, pv)) safeS->setValue (pv, juce::sendNotificationSync); });
             });
             panValue.setTooltip ("Click to type a position (L30, C, R45 ...)");
             panSlider.setValue (st.pan.get(), juce::dontSendNotification);
@@ -1833,7 +1852,7 @@ public:
     void refreshFromModel() override
     {
         setLatencyTip (shownLatency(), mixer);
-        repaint();
+        repaintIfLookChanged();
         slots.refresh();
         if (lcKey != nullptr) lcKey->refresh();
         outRow.fill();
@@ -1848,7 +1867,7 @@ public:
             updating = false;
         }
         for (auto* d : dials) d->refreshFromModel();
-        repaint();
+        repaintIfLookChanged();
     }
     void tick() override
     {
@@ -1931,10 +1950,12 @@ private:
             m.addItem ((int) ids.size(), t.name + (s != nullptr && s->active() ? "  (already sent)" : ok ? "" : "  (would loop)"), ok && ! (s != nullptr && s->active()));
         }
         if (ids.empty()) m.addItem (-1, "No audio tracks", false);
-        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&toTrackButton), [this, ids] (int r)
+        auto* a = &app; const auto mid = mixer.id; const auto bid = busId;         // (3.27.1: by id, not through this - the strip may be rebuilt while the menu is open)
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&toTrackButton), [a, mid, bid, ids] (int r)
         {
             if (r < 1 || (size_t) r > ids.size()) return;
-            if (app.setSendLevel (mixer, busId, ids[(size_t) r - 1], 0.0f) != SendResult::Refused) app.project.structureChanged();
+            if (auto* mx = a->findMixer (mid))
+                if (a->setSendLevel (*mx, bid, ids[(size_t) r - 1], 0.0f) != SendResult::Refused) a->project.structureChanged();
         });
     }
     AppContext& app; MixerState& mixer; juce::Uuid busId; BusState& st; bool external; SlotButtons slots; FaderBlock fader; StripOutputRow outRow;
@@ -2064,7 +2085,7 @@ public:
         for (auto& b : mixer.busPool)   if (b->vcaMask.load() & (1u << (number - 1))) ++n;
         countLabel.setText (n == 0 ? juce::String ("controls nothing") : n == 1 ? juce::String ("controls 1 strip") : "controls " + juce::String (n) + " strips", juce::dontSendNotification);
         if (auto* v = app.project.findVca (vcaId); v != nullptr && ! nameEd.hasKeyboardFocus (false)) nameEd.setText (v->name, juce::dontSendNotification);
-        repaint();
+        repaintIfLookChanged();
     }
     void tick() override
     {
@@ -2290,8 +2311,10 @@ private:
         m.addSeparator();
         m.addSubMenu ("Show a hidden audio strip again", shows, ! hiddenTracks.empty());
         const auto mid = mixer;
-        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addStripButton), [this, mid, hidden, hiddenTracks] (int r)
+        auto* a = &app;                                                            // (3.27.1: the METERS strip may be rebuilt while the menu is open: nothing of this is used)
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&addStripButton), [a, mid, hidden, hiddenTracks] (int r)
         {
+            auto& app = *a;
             if (r <= 0) return;
             MixerState* mx2 = nullptr;
             for (auto& mm : app.project.mixers) if (mm->id == mid) mx2 = mm.get();
@@ -2481,7 +2504,7 @@ MixerComponent::MixerComponent (AppContext& a, const juce::Uuid& id) : app (a), 
         if (m == nullptr || app.isEngineerMixer (m->id)) return;
         const auto id = m->id;
         confirmAsync ("Delete cue mixer", "Delete the cue mixer '" + m->name + "'?\n\nIts levels, sends and plug-ins are lost. Nothing else is touched.", "Delete",
-                      [this, id] { app.deleteMixer (id); });
+                      [a = &app, id] { a->deleteMixer (id); });                       // (3.27.1: the window can be closed from the control port while the box is up)
     };
     addChildComponent (deleteButton);
 

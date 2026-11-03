@@ -1,4 +1,5 @@
 #include "WinOwner.h"
+#include <cwchar>
 #if JUCE_WINDOWS
  #ifndef NOMINMAX
   #define NOMINMAX
@@ -61,7 +62,8 @@ bool startProgram (const juce::StringArray& args, juce::String& error)
         cmd << a << ' ';
     }
     cmd = cmd.trimEnd();
-    std::vector<wchar_t> line (cmd.toWideCharPointer(), cmd.toWideCharPointer() + cmd.length() + 1);     // (CreateProcessW may write into it)
+    const wchar_t* wide = cmd.toWideCharPointer();
+    std::vector<wchar_t> line (wide, wide + std::wcslen (wide) + 1);     // (CreateProcessW may write into it; wcslen, not length(): a character outside the BMP takes two wchar_ts - 3.27.1)
     STARTUPINFOW si {}; si.cb = sizeof (si);
     PROCESS_INFORMATION pi {};
     if (! CreateProcessW (nullptr, line.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))      // FALSE: no handles handed on

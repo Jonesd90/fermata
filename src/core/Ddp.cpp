@@ -331,39 +331,42 @@ juce::String writeFileset (const juce::File& folder, const DdpDisc& d, const PqL
                            const juce::File& zipFile, std::atomic<float>* progress, const std::atomic<bool>* cancel)
 {
     if (L.tracks.empty()) return "There are no tracks on the disc.";
-    if (! folder.createDirectory()) return "Cannot create " + folder.getFullPathName();
     juce::String err;
     const auto cdText = buildCdText (d, L, err);
     if (err.isNotEmpty()) return err;
     const auto pq = buildPqDescr (d, L);
-    for (auto n : { "DDPID", "DDPMS", kPqName, kCdTextName, kImageName, "CHECKSUM.MD5" }) folder.getChildFile (n).deleteFile();
+    // 3.27.1: the set is built in a folder beside the real one and only moved in once it is whole, so a Cancel, a full drive or a crash half way
+    // never leaves a DDP folder with some of its files (a plant's checker refuses that), and the previous good set stays until the new one is ready
+    const auto work = folder.getParentDirectory().getNonexistentChildFile (folder.getFileName() + " (writing)", "", false);
+    if (! work.createDirectory()) return "Cannot create " + work.getFullPathName();
+    auto fail = [&work] (const juce::String& why) { work.deleteRecursively(); return why; };
 
     auto writeBlock = [&] (const char* name, const juce::MemoryBlock& b) -> bool
     {
-        return filesync::writeDataChecked (folder.getChildFile (name), b.getData(), b.getSize());      // (checked: a full drive is an error, not a short file - 3.1.3)
+        return filesync::writeDataChecked (work.getChildFile (name), b.getData(), b.getSize());      // (checked: a full drive is an error, not a short file - 3.1.3)
     };
-    if (! writeBlock ("DDPID", buildDdpId (d))) return "Cannot write DDPID.";
-    if (! writeBlock (kPqName, pq)) return "Cannot write PQDESCR.";
-    if (cdText.getSize() > 0 && ! writeBlock (kCdTextName, cdText)) return "Cannot write CDTEXT.BIN.";
-    if (! writeBlock ("DDPMS", buildDdpMs ((int) pq.getSize(), L.leadOut, (int) cdText.getSize()))) return "Cannot write DDPMS.";
+    if (! writeBlock ("DDPID", buildDdpId (d))) return fail ("Cannot write DDPID.");
+    if (! writeBlock (kPqName, pq)) return fail ("Cannot write PQDESCR.");
+    if (cdText.getSize() > 0 && ! writeBlock (kCdTextName, cdText)) return fail ("Cannot write CDTEXT.BIN.");
+    if (! writeBlock ("DDPMS", buildDdpMs ((int) pq.getSize(), L.leadOut, (int) cdText.getSize()))) return fail ("Cannot write DDPMS.");
 
     {
-        juce::FileOutputStream out (folder.getChildFile (kImageName));
-        if (out.failedToOpen()) return "Cannot write IMAGE.DAT.";
-        out.setPosition (0); out.truncate();
+        auto out = std::make_unique<juce::FileOutputStream> (work.getChildFile (kImageName));
+        if (out->failedToOpen()) return fail ("Cannot write IMAGE.DAT.");
+        out->setPosition (0); out->truncate();
         const auto e = streamProgram (L, files, 0, [&] (const juce::int16* data, int frames)
         {
 #if JUCE_BIG_ENDIAN
             std::vector<juce::int16> sw ((size_t) frames * 2);
             for (size_t i = 0; i < sw.size(); ++i) sw[i] = (juce::int16) juce::ByteOrder::swap ((juce::uint16) data[i]);
-            return out.write (sw.data(), (size_t) frames * 4);
+            return out->write (sw.data(), (size_t) frames * 4);
 #else
-            return out.write (data, (size_t) frames * 4);
+            return out->write (data, (size_t) frames * 4);
 #endif
         }, progress, cancel);
-        if (e.isNotEmpty()) { out.flush(); folder.getChildFile (kImageName).deleteFile(); return e; }
-        out.flush();
-        if (out.getStatus().failed()) { folder.getChildFile (kImageName).deleteFile(); return "Cannot write IMAGE.DAT: " + out.getStatus().getErrorMessage(); }     // (3.1.3: the drive is full, or gone)
+        if (e.isNotEmpty()) return fail (e);
+        out->flush();
+        if (out->getStatus().failed()) return fail ("Cannot write IMAGE.DAT: " + out->getStatus().getErrorMessage());     // (3.1.3: the drive is full, or gone)
     }
 
     // CHECKSUM.MD5: the usual md5sum format
@@ -371,24 +374,39 @@ juce::String writeFileset (const juce::File& folder, const DdpDisc& d, const PqL
         juce::String sums;
         for (auto n : { "DDPID", "DDPMS", kPqName, kCdTextName, kImageName })
         {
-            auto f = folder.getChildFile (n);
+            auto f = work.getChildFile (n);
             if (f.existsAsFile()) sums << md5OfFile (f) << " *" << n << "\n";
         }
-        if (! filesync::writeTextChecked (folder.getChildFile ("CHECKSUM.MD5"), sums)) return "Cannot write CHECKSUM.MD5.";
+        if (! filesync::writeTextChecked (work.getChildFile ("CHECKSUM.MD5"), sums)) return fail ("Cannot write CHECKSUM.MD5.");
     }
     if (zipFile != juce::File())
     {
+        if (cancel != nullptr && cancel->load()) return fail ("Cancelled.");
         juce::ZipFile::Builder b;
         for (auto n : { "DDPID", "DDPMS", kPqName, kCdTextName, kImageName, "CHECKSUM.MD5" })
         {
-            auto f = folder.getChildFile (n);
+            auto f = work.getChildFile (n);
             if (f.existsAsFile()) b.addFile (f, 0, n);
         }
-        zipFile.deleteFile();
-        juce::FileOutputStream zo (zipFile);
-        if (zo.failedToOpen()) return "Cannot write " + zipFile.getFullPathName();
-        if (! b.writeToStream (zo, nullptr)) return "Cannot write the zip file.";
+        juce::TemporaryFile tz (zipFile);                                           // (the zip too is whole or absent)
+        {
+            juce::FileOutputStream zo (tz.getFile());
+            if (zo.failedToOpen()) return fail ("Cannot write " + zipFile.getFullPathName());
+            if (! b.writeToStream (zo, nullptr)) return fail ("Cannot write the zip file.");
+            zo.flush();
+            if (zo.getStatus().failed()) return fail ("Cannot write the zip file: " + zo.getStatus().getErrorMessage());
+        }
+        if (! tz.overwriteTargetFileWithTemporary()) return fail ("Cannot write " + zipFile.getFullPathName());
     }
+    // the set is whole: the previous one goes, the new files move in
+    if (! folder.createDirectory()) return fail ("Cannot create " + folder.getFullPathName());
+    for (auto n : { "DDPID", "DDPMS", kPqName, kCdTextName, kImageName, "CHECKSUM.MD5" }) folder.getChildFile (n).deleteFile();
+    for (auto n : { "DDPID", "DDPMS", kPqName, kCdTextName, kImageName, "CHECKSUM.MD5" })
+    {
+        auto f = work.getChildFile (n);
+        if (f.existsAsFile() && ! f.moveFileTo (folder.getChildFile (n))) return fail ("Cannot move " + juce::String (n) + " into " + folder.getFullPathName());
+    }
+    work.deleteRecursively();
     return {};
 }
 

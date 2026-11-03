@@ -17,8 +17,16 @@ Bouncer::Bouncer (const Project& live, const BounceSettings& s) : settings (s)
     if (s.items.empty()) { prepareError = "Nothing to bounce."; return; }
     shadow = live.cloneForRender (s.sampleRate, kBlock);
     // A plug-in that would not start in the render copy used to be left out of the bounce without a word, so the file did not sound like the mix.
-    // Now the bounce is refused and says which (the log says why it would not start).
-    if (const auto missing = live.pluginsMissingFrom (*shadow, s.mixerId); ! missing.isEmpty())
+    // Now the bounce is refused and says which (the log says why it would not start). Every mixer the render goes through is checked: the
+    // one in the settings and each piece's own (3.27.1: with "each piece through its own mixer" only the processing mixer was looked at,
+    // which the master render does not even use, so a plug-in on an edit's mixer that failed to start was left out without a word).
+    std::vector<juce::Uuid> mixersUsed { s.mixerId };
+    for (auto& it : s.items)
+        if (! it.mixerId.isNull() && std::find (mixersUsed.begin(), mixersUsed.end(), it.mixerId) == mixersUsed.end()) mixersUsed.push_back (it.mixerId);
+    juce::StringArray missing;
+    for (auto& mid : mixersUsed) missing.addArray (live.pluginsMissingFrom (*shadow, mid));
+    missing.removeDuplicates (false);
+    if (! missing.isEmpty())
     {
         prepareError = (missing.size() == 1 ? "A plug-in could not be started for the render" : juce::String (missing.size()) + " plug-ins could not be started for the render")
                        + ", so nothing was written (a bounce without " + (missing.size() == 1 ? "it" : "them") + " would not sound like the mix):\n\n   "
@@ -197,6 +205,7 @@ BounceResult Bouncer::render (std::atomic<float>* progress, const std::atomic<bo
                 for (juce::int64 pos = 0; pos < frames; pos += 16384)
                 {
                     const int n = (int) juce::jmin ((juce::int64) 16384, frames - pos);
+                    if (cancel != nullptr && cancel->load()) { out.reset(); in.reset(); finalFile.deleteFile(); cleanUp(); res.cancelled = true; return res; }   // (Cancel need not wait for the whole second pass)
                     in->read (&buf, 0, n, pos, true, true);
                     buf.applyGain (0, n, gain);
                     if (! dout->write (buf, 0, n)) { out.reset(); in.reset(); finalFile.deleteFile(); cleanUp(); res.error = "Could not write " + finalFile.getFileName() + ": the drive did not take it (is it full?)"; return res; }

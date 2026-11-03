@@ -994,7 +994,7 @@ void MainComponent::showProjectMenu()
     m.addItem (2, "Open project...");
     m.addItem (3, "Save");
     // 3.19.0: the window in use (the take window, edit window or mixer that was in front last) is kept as it is; the others are still asked about at quit
-    juce::Uuid saveWindowId; juce::String saveWindowName;
+    juce::Uuid saveWindowId = juce::Uuid::null(); juce::String saveWindowName;      // (3.27.1: null, not a random id - the item is only enabled with a window to save)
     if (app.listWindows)
     {
         int best = -1;
@@ -1069,7 +1069,11 @@ void MainComponent::showProjectMenu()
         if (r == 10) { closeProjectDialog(); return; }
         if (r == 1) newProjectDialog();
         else if (r == 2) openProjectDialog();
-        else if (r == 3) app.saveNow (false, nullptr, true);          // (3.19.0: a save the person asked for keeps every window)
+        else if (r == 3)
+        {
+            if (app.saveHold > 0) { showError ("A fix is being tried out", "A ReTouch or Pitch window is still trying something out. Write it back or close it first, then save."); return; }   // (3.27.1)
+            app.saveNow (false, nullptr, true);                           // (3.19.0: a save the person asked for keeps every window)
+        }
         else if (r == 6) fixtools::copyProject (app, this, true);
         else if (r == 7) fixtools::copyProject (app, this, false);
         else if (r == 4) app.project.projectFile.getParentDirectory().revealToUser();

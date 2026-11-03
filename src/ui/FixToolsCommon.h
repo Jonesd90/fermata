@@ -270,7 +270,7 @@ struct StreamPair : std::enable_shared_from_this<StreamPair>
         if (ok)
         {
             for (int q = 0; q < 2; ++q) { if (commit[q]) commit[q](); if (auto* jb = jobsOf[q] ? jobsOf[q]() : nullptr) for (auto& rj : *jb) rj.results.clear(); }      // (the new files are kept now)
-            if (any) { app->fixUndoLabel = undoLabel; app->fixUndo = [a = app, id = eid, old = base] { if (auto* e = a->project.findEdit (id)) { e->regions = old; a->project.changed(); } }; }
+            if (any) app->armFixUndo (undoLabel, [a = app, id = eid, old = base] { if (auto* e = a->project.findEdit (id)) { e->regions = old; a->project.changed(); } }, true, eid);   // (3.27.1: through armFixUndo, so Undo fix checks THIS edit has not changed since)
         }
         else
         {

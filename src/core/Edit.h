@@ -687,9 +687,12 @@ struct EditDef
         auto left = regions[(size_t) i];
         if (offset <= 0 || offset >= left.length()) return i;
         EditRegion right = left;
-        left.waiting = WaitingPiece(); right.waiting = WaitingPiece();            // a cut piece no longer matches the exported files
+        // 3.27.1: both halves keep waiting for the files the piece sent out (to a linked program, or Export for Processing): each half still lies inside the
+        // take range those files hold, which is all that bringing them back needs. (They used to stop waiting, without a word: a take placed with 4 over
+        // a piece that was in RX meant its save never came back.)
         right.id = juce::Uuid();
         right.fixIn = false; left.fixOut = false;                            // (the new join is an edit; the caller of a fix marks it as a fix join)
+        left.outCurveOwn = false; right.setInCurve (FadeCurve::EqualPower);  // (the new join gets the usual curves on both sides; the right half's own end keeps its curve)
         right.snipIn = false; left.snipOut = false;                          // (the right half keeps the piece's own end, and so its snipOut)
         right.srcIn += offset; right.startSample += offset;
         right.gains.clear();
@@ -798,6 +801,7 @@ struct EditDef
         const auto& r = regions[(size_t) i];
         if (k >= r.waiting.files.size()) return r.files.size();
         if (r.waiting.tracks.empty()) return k < r.files.size() ? k : r.files.size();
+        if (k >= r.waiting.tracks.size()) return r.files.size();           // (3.27.1: a damaged file's lists of different lengths - never read past the shorter)
         for (size_t q = 0; q < r.files.size(); ++q) if (r.files[q].trackId == r.waiting.tracks[k]) return q;
         return r.files.size();
     }

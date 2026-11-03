@@ -594,6 +594,11 @@ public:
         {
             const int x = xOf ((double) editPointSample (*e, k) / rate);
             const bool js = selectedJoin == k;
+            if (x + 12 < clip.getX() || x - 12 > clip.getRight())                                // (3.27.1: a flag off the clip is not drawn - every one used to be, at every playhead frame; the numbers still count)
+            {
+                if (! e->isUnnumberedJoin (k)) ++editNumber;
+                continue;
+            }
             if (e->isUnnumberedJoin (k))                                                         // an offline fix's join ("fx") or a snip ("sn"): no number
             {
                 g.setColour (js ? juce::Colour (0xffc26500) : theme::dimText.withAlpha (0.7f));
@@ -2042,8 +2047,18 @@ private:
         // While it plays only the meters are redrawn here: the playhead moves by itself with the screen (movePlayhead), redrawing just the thin strip
         // it leaves and the one it moves to. Redrawing every waveform 30 times a second is what made it stutter with many tracks.
         if (app.isPlaying()) { updateSize(); followPlayhead(); repaint (viewport.getViewPositionX(), bandH(), kNameW, getHeight()); }
-        else if (app.engine.isRecording() || meterMoving || ++meterTick % 3 == 0) repaint (viewport.getViewPositionX(), bandH(), kNameW, getHeight());
-        else followActive = false;
+        else
+        {
+            // (3.27.1: the name column is repainted when a meter moves or an M / S key changed under it - the mixer's keys are flags with no message - not
+            //  every third tick with nothing happening)
+            juce::uint64 msSig = 1469598103934665603ull;
+            for (auto& t : rowTracks())
+                if (const auto st = msOf (t.id); st.mute != nullptr)
+                { msSig = (msSig ^ (juce::uint64) (st.mute->get() ? 1 : 0)) * 1099511628211ull; msSig = (msSig ^ (juce::uint64) (st.solo->get() ? 2 : 0)) * 1099511628211ull; }
+            if (app.engine.isRecording() || meterMoving || msSig != lastMsSig) repaint (viewport.getViewPositionX(), bandH(), kNameW, getHeight());
+            lastMsSig = msSig;
+            if (! app.engine.isRecording()) followActive = false;
+        }
     }
     bool thumbsChanged = false; juce::uint32 lastThumbRefresh = 0;
 
@@ -2127,7 +2142,7 @@ private:
     }
     int shownPhX = kNoLine;
     double lastHead = 0.0;
-    bool widthDrag = false; int meterTick = 0;
+    bool widthDrag = false; juce::uint64 lastMsSig = 0;
     bool followActive = false; int lastFollowX = 0;
     /** While this edit plays: when the playhead reaches the right edge the view turns a whole page (also beyond the end of the audio). */
     void followPlayhead()
@@ -2731,12 +2746,23 @@ void EditWindowComponent::removeTrackFromEdit (const juce::Uuid& trackId)
     auto strip = [&] (std::vector<EditRegion>& rs)
     {
         for (auto& r : rs)
+        {
+            // 3.27.1: a piece out in a program (or waiting for corrected audio) stops waiting for that track's file only - the others still come back
+            // (it used to be left with a files list the piece no longer matched, so every save was turned down without a word)
+            if (r.waiting.active() && r.waiting.tracks.empty() && r.waiting.files.size() == r.files.size())
+                for (auto& f : r.files) r.waiting.tracks.push_back (f.trackId);
+            if (r.waiting.active() && ! r.waiting.tracks.empty())
+                for (int k = (int) r.waiting.tracks.size() - 1; k >= 0; --k)
+                    if (r.waiting.tracks[(size_t) k] == trackId && (size_t) k < r.waiting.files.size())
+                    { r.waiting.tracks.erase (r.waiting.tracks.begin() + k); r.waiting.files.erase (r.waiting.files.begin() + k); }
+            if (r.waiting.active() && r.waiting.files.empty()) r.waiting = WaitingPiece();
             for (int fi = (int) r.files.size() - 1; fi >= 0; --fi)
                 if (r.files[(size_t) fi].trackId == trackId)
                 {
                     r.files.erase (r.files.begin() + fi);
                     for (auto& g : r.gains) if (fi < (int) g.db.size()) g.db.erase (g.db.begin() + fi);       // the volume changes are lined up with the files
                 }
+        }
     };
     strip (e->regions); strip (e->overdubs);
     e->lanes.erase (std::remove_if (e->lanes.begin(), e->lanes.end(), [&] (const AutoLane& l) { return l.trackId == trackId; }), e->lanes.end());

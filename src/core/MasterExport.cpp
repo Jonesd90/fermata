@@ -488,7 +488,8 @@ MasterExportResult MasterExportJob::executeInner()
     const int nStems = batch->numStems();                                 // 3.26.0: each piece's stems (their renders are in the work folder)
     std::vector<std::vector<juce::File>> stemProc ((size_t) n);
     for (int i = 0; i < n; ++i) for (int st = 0; st < nStems; ++st) stemProc[(size_t) i].push_back (batch->stemFileFor (i, st));
-    batch.reset();
+    // (the batch - and the render copies' plug-in instances inside its Bouncers - is kept until the job is destroyed on the message thread: plug-ins
+    // expect to be released on the thread that made them - 3.27.1)
 
     // ---- 2. sample rate, and the peak of every file
     stage = 1; sub = 0.0f;

@@ -21,6 +21,13 @@ juce::String makeRenderParams (const Project&, const MasteringDef&, RenderParams
 juce::String masterRenderFingerprint (const Project&, const EditDef&, const RenderParams&);
 /** Looks at a piece's description several times over a fraction of a second; whatever changes by itself (not through anything the person did) is left out of the fingerprint from then on. Logged. */
 juce::StringArray learnMasterRenderVolatile (const Project&, const EditDef&, const RenderParams&);
+/** The description behind the fingerprint, part by part (path -> value). Message thread. */
+using MasterRenderParts = std::map<juce::String, juce::String>;
+MasterRenderParts masterRenderParts (const Project&, const EditDef&, const RenderParams&);
+/** 3.27.1: true when the only parts that differ between two descriptions of this Edit are ones known to change by themselves (learnMasterRenderVolatile).
+    A render made from 'before' may then be stamped with the description 'now'; if anything else differs, the person changed the piece while it was
+    rendered, and the render is out of date. */
+bool masterRenderOnlyVolatileDiffers (const MasterRenderParts& before, const MasterRenderParts& now, const juce::Uuid& editId);
 
 /** The renders of the Mastering window, kept in the project's "Mastering renders" folder: at most TWO per Edit (slots A and B).
     The newest one is the one that is used; a new render always replaces the older of the two, so the one before the newest stays as a backup.
@@ -39,8 +46,11 @@ public:
     Info check (const juce::Uuid& editId, const juce::String& fingerprint);
     /** Where a render in progress is written. */
     juce::File tempFile (const juce::Uuid& editId) const { return dir.getChildFile ("mrtmp-" + editId.toString() + ".wav"); }
-    /** A finished render: it takes the place of the older of the two, and becomes the current one. */
-    void commit (const juce::Uuid& editId, const juce::String& fingerprint, double rate, juce::int64 frames, const juce::File& produced);
+    /** A finished render: it takes the place of the older of the two, and becomes the current one. False when the file could not be moved into its
+        slot (the list is then left as it was, and 'produced' stays where it is for removeTemps). */
+    bool commit (const juce::Uuid& editId, const juce::String& fingerprint, double rate, juce::int64 frames, const juce::File& produced);
+    /** 3.27.1: forgets the renders of Edits that are not in 'liveEditIds' any more (deleted edits), files and all; the folder used to only grow. */
+    void prune (const std::vector<juce::Uuid>& liveEditIds);
     /** A render just finished for this Edit: its sound is described by 'fingerprint' as the project stands now (the project can describe itself slightly differently
         after a render, e.g. normalised gains settle), so the newest render takes that description. */
     void restamp (const juce::Uuid& editId, const juce::String& fingerprint);
@@ -58,6 +68,7 @@ private:
     struct Entry { Slot s[2]; int active = -1; bool pinned = false, stale = false; };
     std::map<juce::String, Entry> load() const;
     void save (const std::map<juce::String, Entry>&) const;
+    static bool changed (const std::map<juce::String, Entry>& a, const std::map<juce::String, Entry>& b);
     juce::File slotFile (const juce::Uuid& id, int i) const { return dir.getChildFile (id.toString() + (i == 0 ? "-A.wav" : "-B.wav")); }
     bool valid (const juce::Uuid& id, const Entry& e, int i) const { return e.s[i].fp.isNotEmpty() && slotFile (id, i).existsAsFile(); }
     juce::File dir;
@@ -92,7 +103,7 @@ public:
     int numStems() const { return (int) stems.size(); }
 
 private:
-    struct Item { juce::Uuid editId; juce::String fp; juce::File file; bool stale = false, previous = false, backup = false; double rate = 0.0; juce::int64 frames = 0;
+    struct Item { juce::Uuid editId; juce::String fp, name; juce::File file; bool stale = false, previous = false, backup = false; double rate = 0.0; juce::int64 frames = 0;
                   std::vector<juce::File> stemFiles; };
     struct Group { double rate = 0.0; bool master = true; std::unique_ptr<Bouncer> bouncer; std::vector<int> idx; };     // master: this pass makes the master renders too (else only the stems)
     std::vector<Item> items;

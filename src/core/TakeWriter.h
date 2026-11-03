@@ -42,15 +42,20 @@ public:
         thread.addTimeSliceClient (this);
     }
 
-    /** Message thread: writes what is left (and the silence owed), then finishes the file (the header with its length). */
-    ~TakeWriter() override
+    /** Writes what is left (and the silence owed), then finishes the file (the header with its length). False when the disk refused something -
+        the file then holds what reached it, with a good header (3.27.1: the destructor used to do this and no one could ask how it went). */
+    bool finish()
     {
+        if (finished) return ! failed();
+        finished = true;
         thread.removeTimeSliceClient (this);
         closing = true;
         while (drain() == 0) {}
         payDebt (pendingLost.load (std::memory_order_acquire));            // a drop at the very end: its time is still kept
         writer.reset();                                                     // (the WAV writer's destructor writes the final header)
+        return ! failed();
     }
+    ~TakeWriter() override { finish(); }
 
     // ---- audio thread ----
     /** Hands over one block. False when it did not fit (the disk is more than the buffer behind): the block is lost, and that much silence is
@@ -115,6 +120,7 @@ public:
     }
 
 private:
+    bool finished = false;
     static constexpr int kChunk = 65536;                // the most frames in one disk write
     static constexpr int kMarkers = 256;
 
@@ -161,22 +167,27 @@ private:
             int s1, z1, s2, z2; fifo.prepareToRead (fifo.getNumReady(), s1, z1, s2, z2); fifo.finishedRead (z1 + z2);
             return 10;
         }
+        // How many frames are in the buffer is taken BEFORE the markers are looked at (3.27.1). The audio thread places a marker and THEN pushes the
+        // block it goes in front of; read the other way round, a marker placed between the two looks was missed while its block was drained, 'drained'
+        // passed the marker, and from then on every call asked for a negative number of frames and did nothing: the writer stood still for the rest of
+        // the take, every later block was counted lost, and the audio still in the buffer was thrown away at Stop.
+        const int avail = fifo.getNumReady();
         // silence owed at this point of the file?
         int m1, k1, m2, k2;
         markers.prepareToRead (1, m1, k1, m2, k2);
         const bool haveMark = k1 > 0;
-        if (haveMark && markAt[(size_t) m1] == drained)
+        if (haveMark && markAt[(size_t) m1] <= drained)                                  // (<: a marker behind us can no longer happen; were it to, its silence is due now rather than never)
         {
             const auto lost = markLost[(size_t) m1];
             markers.finishedRead (1);
             payDebt (lost);
             return 0;
         }
-        if (! closing && ! haveMark && fifo.getNumReady() < minWrite) return 20;          // wait until a big piece can be written (see minWriteSamples)
-        int want = kChunk;
+        if (! closing && ! haveMark && avail < minWrite) return 20;                      // wait until a big piece can be written (see minWriteSamples)
+        int want = juce::jmin (kChunk, avail);
         if (haveMark) want = (int) juce::jmin<juce::int64> (want, markAt[(size_t) m1] - drained);
-        int s1, z1, s2, z2;
-        fifo.prepareToRead (want, s1, z1, s2, z2);
+        int s1 = 0, z1 = 0, s2 = 0, z2 = 0;
+        if (want > 0) fifo.prepareToRead (want, s1, z1, s2, z2);
         if (z1 <= 0) { if (closing) { const auto t = tailLost.exchange (0); if (t > 0) payDebt (t); } return 10; }
         convert (s1, z1, 0);
         if (z2 > 0) convert (s2, z2, z1);

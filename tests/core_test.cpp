@@ -4483,8 +4483,10 @@ int main()
         writeWav (elsewhere.getChildFile ("not it - 16 bit.wav"), 16, 1, 24000, 48000.0, {}, 0.4f);           // the same length but 16 bit: not a Fermata recording
         writeWav (elsewhere.getChildFile ("not it - longer.wav"), 24, 1, 24001, 48000.0, {}, 0.5f);
         juce::StringArray steps;
+        rp.keepAllWindows();                                                                                     // (3.27.1: a relink is not a change to let go of at quit)
         const auto rep = rp.relinkAudio (elsewhere, [&steps] (const juce::String& what, double) { steps.add (what); });
         CHECK (rep.byName == 1 && rep.renamed == 2 && rep.unsure == 0 && rep.stillMissing == 0 && rep.found.size() == 3 && ! steps.isEmpty());
+        CHECK (rp.windowsChangedSinceKept().empty());
         CHECK (rp.missingAudioCount() == 0);
         CHECK (tw.groups[0].files[0].file == elsewhere.getChildFile ("sub").getChildFile (g.files[0].file.getFileName()));
         CHECK (tw.groups[0].files[1].file == elsewhere.getChildFile ("spaced renamed.wav") && tw.groups[0].files[2].file == elsewhere.getChildFile ("choir renamed.wav"));
@@ -9771,6 +9773,16 @@ int main()
             Bouncer b (bq, bs);
             CHECK (b.getPrepareError().isEmpty());
         }
+        {   // 3.27.1: a piece through its OWN mixer (the Mastering window's way): that mixer's plug-ins are checked too, not only the one in the settings
+            auto& own = bq.addMixer ("Own");
+            own.stripFor (tt)->slots[0].set (std::make_unique<NamedLat> ("Broken", 10), 48000.0, 512, 2);
+            auto bs2 = bs; bs2.items[0].mixerId = own.id;
+            Bouncer b (bq, bs2);
+            CHECK (b.getPrepareError().contains ("Broken on Violin"));
+            own.stripFor (tt)->slots[0].bypass.set (true);
+            Bouncer b2 (bq, bs2);
+            CHECK (b2.getPrepareError().isEmpty());
+        }
     }
 
     SECTION ("3.1.5 the audio device stops and starts again during a take: at the same rate the take goes on (and says so); at another rate the take is ended with what it has, its files at the old rate");
@@ -11604,7 +11616,7 @@ int main()
             WaitingPiece w2; w2.name = "RX 3 IN"; w2.files = { rxA }; w2.tracks = { A }; w2.rx = true; w2.fileFrom = 7 * S + 5; w2.fileLen = 3 * S - 5; w2.program = "iZotope RX";
             CHECK (e.markWaiting (e.regions[3].id, 8 * S, 9 * S, w2));
             q.rxSeen[rxA.getFullPathName()] = 1234567;
-            q.rxSeen[dir.getChildFile ("gone.wav").getFullPathName()] = 99;           // (a file that is no longer there is not kept)
+            q.rxSeen[dir.getChildFile ("gone.wav").getFullPathName()] = 99;           // (a file no piece waits for or follows is not kept - 3.27.1: by reference, not by whether it is there)
             juce::String err; CHECK (q.save (err));
             Project q2; CHECK (q2.load (q.projectFile, err));
             auto* e2 = q2.edits.empty() ? nullptr : q2.edits.front().get();
@@ -11820,6 +11832,7 @@ int main()
         CHECK (std::abs (ss->gainDb.get() + 3.0f) < 1e-6f && ss->outOn.get() && ss->outDest == vb && ss->sends.find (verb) != nullptr && std::abs (ss->sends.find (verb)->gainDb.get() + 12.0f) < 1e-6f);
         CHECK (! pm.isStripHidden (pl.stereo) && ! pm.isStripHidden (t1));
         CHECK (q.undoDepth() == 0);                                                    // (Ctrl+Z cannot go back to the two mono tracks)
+        CHECK (q.windowsChangedSinceKept().empty());                                   // (3.27.1: nor the quit box - the mixers included, whose kept state had the two mono strips)
         // the project saves and opens again as it is now
         juce::String err; CHECK (q.save (err));
         Project q2; CHECK (q2.load (q.projectFile, err));
@@ -11837,6 +11850,15 @@ int main()
             rw.groups[0].files[1].file = fSpot;                                        // (someone changed it while the files were being written)
             juce::String w2;
             CHECK (! stereojoin::apply (r, p2, w2) && w2.isNotEmpty() && r.tracks.size() == 2 && rw.groups[0].files.size() == 2);
+            // 3.27.1: a take recorded onto one of the two tracks while the files were being written: refused too (its file would be left on a track that is gone)
+            rw.groups[0].files[1].file = f1R;
+            stereojoin::Plan p3;
+            CHECK (stereojoin::plan (r, a, b, "ab", p3).isEmpty() && stereojoin::writeFiles (fm, p3).isEmpty());
+            TakeGroup g2; g2.id = juce::Uuid(); g2.number = 2; g2.lengthSamples = 4 * S; g2.sampleRate = sr;
+            addFile (g2, a, "a", f1L); rw.groups.push_back (g2);
+            juce::String w3;
+            CHECK (! stereojoin::apply (r, p3, w3) && w3.isNotEmpty() && r.tracks.size() == 2 && rw.groups.size() == 2);
+            for (auto& j : p3.jobs) j.dest.deleteFile();
         }
     }
 
@@ -12114,6 +12136,355 @@ int main()
         CHECK (sp.save (er));
         Project sq; CHECK (sq.load (sp.projectFile, er));
         CHECK (sq.edits.size() == 1 && sq.edits[0]->autoBefore.size() == 1 && std::abs (sq.edits[0]->autoBefore["k|fader|m"] + 4.5f) < 1e-4f);
+    }
+
+    SECTION ("3.27.1 the third code sweep: a cut piece keeps waiting for its files; a fix never lands on a piece that is out; a fixed part forgets its program's file; the new join's curves");
+    {
+        const double sr = 48000.0; const juce::int64 S = 48000;
+        auto dir = tmp.getChildFile ("Sweep3"); dir.deleteRecursively(); dir.createDirectory();
+        const auto srcA = makeConstWav (dir.getChildFile ("A.wav"), 0.2, 10);
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear(); q.takeWindows.clear(); q.edits.clear();
+        q.projectFile = dir.getChildFile ("Sweep3.fermata");
+        const auto A = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        auto& w = q.addTakeWindow ("Piece");
+        auto& e = q.addEdit ("Piece edit", w.id);
+        {
+            EditRegion r; r.srcIn = 0; r.srcOut = 10 * S; r.sampleRate = sr; r.sourceLength = 10 * S; r.takeName = "001 - Piece";
+            RegionFile fa; fa.trackId = A; fa.trackName = "A"; fa.file = srcA; fa.numChannels = 1; r.files.push_back (fa);
+            e.insertRegion (r);
+        }
+        const auto rxA = dir.getChildFile ("A - RX 1.wav"); rxA.replaceWithText ("x");
+        WaitingPiece wp; wp.name = "RX 1"; wp.files = { rxA }; wp.rx = true; wp.fileFrom = 2 * S; wp.fileLen = 5 * S;
+        CHECK (e.markWaiting (e.regions[0].id, 4 * S, 6 * S, wp));           // the part is 4 s - 6 s; the files hold 2 s - 7 s
+        CHECK (e.regions.size() == 3 && e.regions[1].waiting.active());
+        // a take placed with 4 inside the piece that is out in RX: both halves still wait (they used to stop, without a word)
+        const int k = e.splitRegion (1, S);                                   // cut at 5 s
+        CHECK (k == 2 && e.regions.size() == 4);
+        CHECK (e.regions[1].waiting.active() && e.regions[1].waiting.rx && e.regions[2].waiting.active() && e.regions[2].waiting.rx);
+        CHECK (e.regions[1].waiting.files.size() == 1 && e.regions[2].waiting.files.size() == 1);
+        // the new join's curves: the left half's new end follows its own curve again (not an old fix join's linear curve), the right half's own end keeps its curve
+        {
+            EditDef f; EditRegion r; r.srcIn = 0; r.srcOut = 4 * S; r.sampleRate = sr; r.sourceLength = 10 * S;
+            RegionFile fa; fa.trackId = A; fa.file = srcA; fa.numChannels = 1; r.files.push_back (fa);
+            r.setOutCurve (FadeCurve::Linear); r.setInCurve (FadeCurve::Linear);
+            f.insertRegion (r);
+            f.splitRegion (0, 2 * S);
+            CHECK (f.regions.size() == 2 && f.regions[0].outCurveValue() == FadeCurve::Linear && f.regions[0].curve == FadeCurve::Linear && ! f.regions[0].outCurveOwn);
+            CHECK (f.regions[1].curve == FadeCurve::EqualPower && f.regions[1].outCurveValue() == FadeCurve::Linear);
+        }
+        // a fix on a piece that is out is refused (its save would have landed on the fixed file)
+        {
+            RegionJob j; j.regionId = e.regions[1].id; j.a = e.regions[1].srcIn; j.b = e.regions[1].srcOut;
+            CHECK (! applyRegionJob (e, j, "repair") && gApplyWhy.contains ("out in another program"));
+        }
+        // the save comes back into both halves
+        const auto cA1 = dir.getChildFile ("A - RX 1 (saved 1).wav");
+        CHECK (e.takeInWaitingFile (1, 0, cA1, rxA) && e.takeInWaitingFile (2, 0, cA1, rxA));
+        CHECK (! e.regions[1].waiting.active() && ! e.regions[2].waiting.active());
+        CHECK (e.regions[1].files[0].file == cA1 && e.regions[1].files[0].fileStart == 2 * S && e.regions[1].files[0].rxFrom == rxA);
+        CHECK (e.regions[2].files[0].file == cA1 && e.regions[2].files[0].fileStart == 2 * S && e.regions[2].files[0].rxFrom == rxA);
+        // a Fermata fix on part of the piece that came back: the fixed part plays its own file and forgets the RX file, so a later RX save leaves it alone
+        {
+            const auto fixFile = makeConstWav (dir.getChildFile ("A fix.wav"), 0.1, 1);
+            RegionJob j; j.regionId = e.regions[1].id; j.a = e.regions[1].srcIn + S / 4; j.b = j.a + S / 2;
+            j.idx = { 0 }; audioops::PieceResult pr; pr.file = fixFile; pr.from = j.a - S / 8; pr.to = j.b + S / 8; pr.ok = true; j.results = { pr };
+            CHECK (applyRegionJob (e, j, "repair"));
+            int fixed = -1;
+            for (int i = 0; i < (int) e.regions.size(); ++i) if (e.regions[(size_t) i].files[0].file == fixFile) fixed = i;
+            CHECK (fixed >= 0);
+            if (fixed >= 0)
+            {
+                CHECK (e.regions[(size_t) fixed].files[0].rxFrom == juce::File());
+                const auto cA2 = dir.getChildFile ("A - RX 1 (saved 2).wav");
+                const int n = e.useRxSave (rxA, cA2);
+                CHECK (n >= 2 && e.regions[(size_t) fixed].files[0].file == fixFile);          // (the parts round it follow the save; the fixed part does not)
+            }
+        }
+        // a damaged file: a waiting list of tracks shorter than its files is read as "every file in order", and the index never runs past the shorter list
+        {
+            EditDef g; EditRegion r; r.srcIn = 0; r.srcOut = 4 * S; r.sampleRate = sr; r.sourceLength = 10 * S;
+            RegionFile fa; fa.trackId = A; fa.file = srcA; fa.numChannels = 1; r.files.push_back (fa);
+            RegionFile fb = fa; fb.trackId = juce::Uuid(); r.files.push_back (fb);
+            r.waiting.name = "x"; r.waiting.from = S; r.waiting.to = 2 * S; r.waiting.files = { rxA, rxA }; r.waiting.tracks = { A };   // (one track for two files)
+            g.regions.push_back (r);
+            CHECK (g.waitingFileIndex (0, 1) == g.regions[0].files.size() && ! g.takeInWaitingFile (0, 1, cA1, rxA));
+            const auto v = q.editToVar (g);
+            Project q2; q2.setInputCount (2); q2.setOutputCount (2); q2.tracks.clear(); q2.addTrack ("A", TrackFormat::Mono, 0);
+            juce::var rootv; { auto* o = new juce::DynamicObject(); juce::Array<juce::var> arr; arr.add (v); o->setProperty ("edits", arr); rootv = juce::var (o); }
+            // (the loader clears a mismatched tracks list: checked through the waiting piece's own reader, below, by way of a project round trip)
+            juce::String err; q.name = "Sweep3"; CHECK (q.save (err));
+            Project q3; CHECK (q3.load (q.projectFile, err));
+        }
+    }
+
+    SECTION ("3.27.1 renaming a take moves every edit piece and guide onto the new file names; an undo never points a piece at a file that is gone");
+    {
+        auto dir = tmp.getChildFile ("Rename"); dir.deleteRecursively(); dir.createDirectory();
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear(); q.takeWindows.clear(); q.edits.clear();
+        q.projectFile = dir.getChildFile ("Rename.fermata");
+        const auto A = q.addTrack ("Vln", TrackFormat::Mono, 0).id, B = q.addTrack ("Vln", TrackFormat::Mono, 1).id;    // (two tracks with the same name)
+        auto& w = q.addTakeWindow ("Piece");
+        TakeGroup g; g.id = juce::Uuid(); g.number = 1; g.lengthSamples = 48000; g.sampleRate = 48000.0;
+        const auto fA = makeConstWav (dir.getChildFile (TakeWindowDef::fileNameFor (1, w.labelFor (g), "Vln")), 0.2, 1);
+        const auto fB = makeConstWav (dir.getChildFile (TakeWindowDef::fileNameFor (1, w.labelFor (g), "Vln (2)")), 0.3, 1);
+        { TakeFile f; f.trackId = A; f.trackName = "Vln"; f.file = fA; f.numChannels = 1; g.files.push_back (f); }
+        { TakeFile f; f.trackId = B; f.trackName = "Vln"; f.file = fB; f.numChannels = 1; g.files.push_back (f); }
+        w.groups.push_back (g);
+        auto& e = q.addEdit ("E", w.id);
+        {
+            EditRegion r; r.takeId = g.id; r.srcIn = 0; r.srcOut = 48000; r.sampleRate = 48000.0; r.sourceLength = 48000;
+            RegionFile ra; ra.trackId = A; ra.file = fA; ra.numChannels = 1; r.files.push_back (ra);
+            RegionFile rb; rb.trackId = B; rb.file = fB; rb.numChannels = 1; r.files.push_back (rb);
+            e.insertRegion (r);
+            e.guide.windowId = w.id; e.guide.takeId = g.id; e.guide.trackId = A; e.guide.file = fA; e.guide.numChannels = 1; e.guide.sampleRate = 48000.0; e.guide.srcIn = 0; e.guide.srcOut = 48000;
+        }
+        q.undoTick (false, true);                                                        // (a step before the rename)
+        CHECK (q.renameTake (w, g.id, "Allegro"));
+        auto* g2 = w.findGroup (g.id);
+        CHECK (g2 != nullptr && g2->files[0].file != fA && g2->files[0].file.existsAsFile() && g2->files[1].file.existsAsFile() && g2->files[0].file != g2->files[1].file);
+        CHECK (! fA.existsAsFile() && ! fB.existsAsFile());
+        CHECK (e.regions[0].files[0].file == g2->files[0].file && e.regions[0].files[1].file == g2->files[1].file && e.guide.file == g2->files[0].file);
+        // Ctrl+Z to before the rename: the pieces keep the files that exist (the snapshot's are gone)
+        q.changed(); q.undoTick (false, true);
+        CHECK (q.undo (juce::Uuid::null()));
+        auto* e2 = q.findEdit (e.id);
+        CHECK (e2 != nullptr && e2->regions.size() == 1 && e2->regions[0].files[0].file.existsAsFile() && e2->regions[0].files[1].file.existsAsFile() && e2->guide.file.existsAsFile());
+    }
+
+    SECTION ("3.27.1 the take window's piece bars come back with Ctrl+Z; a relink and a stereo join keep every window");
+    {
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear(); q.takeWindows.clear(); q.edits.clear();
+        q.projectFile = tmp.getChildFile ("PieceBars.fermata");
+        q.addTrack ("A", TrackFormat::Mono, 0);
+        auto& w = q.addTakeWindow ("Piece");
+        w.pieceBars = 40; q.undoTick (false, true);
+        w.pieceBars = 52; q.changed(); q.undoTick (false, true);
+        CHECK (q.undo (juce::Uuid::null()) && w.pieceBars == 40);
+        CHECK (q.redo (juce::Uuid::null()) && w.pieceBars == 52);
+    }
+
+    SECTION ("3.27.1 a plug-in added since a mixer was kept goes again when the mixer is put back (and Undo of a paste takes a pasted plug-in out again)");
+    {
+        struct Plain : InsertProcessor
+        {
+            void prepare (double, int, int) override {}
+            void process (juce::AudioBuffer<float>&) override {}
+            juce::String getName() const override { return "Plain"; }
+            juce::String getDescription() const override { return "<PLUGIN name=\"Plain\"/>"; }
+        };
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear(); q.takeWindows.clear(); q.edits.clear();
+        q.insertFactory = [] (const juce::String& desc, const juce::String&) -> std::unique_ptr<InsertProcessor> { return desc.contains ("Plain") ? std::make_unique<Plain>() : nullptr; };
+        const auto A = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        auto& m = *q.mixers.front();
+        q.keepAllWindows();
+        m.stripFor (A)->slots[2].set (std::make_unique<Plain>(), 48000.0, 512, 2);
+        CHECK (q.windowsChangedSinceKept().size() == 1);
+        int told = 0; q.beforeInsertsReplaced = [&told] (MixerState&) { ++told; };
+        CHECK (q.revertWindowToKept (m.id, juce::Uuid::null(), 48000.0, 512));
+        CHECK (told == 1 && ! m.stripFor (A)->slots[2].isLoaded() && q.windowsChangedSinceKept().empty());
+        // a paste leaves what the snapshot has empty alone (it adds to what is there); the snapshot with clearEmptySlots does not
+        m.stripFor (A)->slots[1].set (std::make_unique<Plain>(), 48000.0, 512, 2);
+        const auto snap = q.mixSnapshot (m, true);
+        m.stripFor (A)->slots[3].set (std::make_unique<Plain>(), 48000.0, 512, 2);
+        q.applyMix (m, snap, 48000.0, 512, MixParts());
+        CHECK (m.stripFor (A)->slots[1].isLoaded() && m.stripFor (A)->slots[3].isLoaded());
+        MixParts all; all.clearEmptySlots = true;
+        q.applyMix (m, snap, 48000.0, 512, all);
+        CHECK (m.stripFor (A)->slots[1].isLoaded() && ! m.stripFor (A)->slots[3].isLoaded() && told == 3);
+    }
+
+    SECTION ("3.27.1 the Mastering renders: a render that cannot be stored is an error (never the old render passed off as new); renders of edits that are gone go; the list is written only when it changed");
+    {
+        auto dir = tmp.getChildFile ("Renders3"); dir.deleteRecursively(); dir.createDirectory();
+        MasterRenders store (dir);
+        const juce::Uuid id1, id2;
+        auto mk = [&] (const juce::String& name) { return makeConstWav (dir.getChildFile (name), 0.1, 1); };
+        CHECK (store.commit (id1, "fp1", 48000.0, 48000, mk ("mrtmp-r1.wav")));
+        CHECK (store.check (id1, "fp1").state == MasterRenders::State::Ready);
+        CHECK (! store.commit (id1, "fp2", 48000.0, 48000, dir.getChildFile ("not-there.wav")));     // nothing to move: false, the list as it was
+        CHECK (store.check (id1, "fp1").state == MasterRenders::State::Ready && store.check (id1, "fp2").state == MasterRenders::State::Stale);
+        CHECK (store.commit (id2, "fp", 48000.0, 48000, mk ("mrtmp-r2.wav")));
+        store.prune ({ id1 });
+        CHECK (store.check (id1, "fp1").state == MasterRenders::State::Ready && store.check (id2, "fp").state == MasterRenders::State::None);
+        CHECK (dir.findChildFiles (juce::File::findFiles, false, id2.toString() + "*").isEmpty());
+        // a look that changes nothing writes nothing
+        store.check (id1, "fp1");
+        const auto old = juce::Time (1600000000000);
+        CHECK (dir.getChildFile ("renders.json").setLastModificationTime (old));
+        store.check (id1, "fp1");
+        CHECK (dir.getChildFile ("renders.json").getLastModificationTime() == old);
+        store.check (id1, "fp2");                                                    // (a stale look: still nothing to write)
+        CHECK (dir.getChildFile ("renders.json").getLastModificationTime() == old);
+        // the description compared part by part: a change the person made is a change; nothing known to change by itself here, so any difference counts
+        MasterRenderParts a { { "E/x", "1" }, { "~files", "f" } }, b = a, c = a;
+        c["E/x"] = "2";
+        MasterRenderParts d = a; d["E/new"] = "3";
+        CHECK (masterRenderOnlyVolatileDiffers (a, b, id1) && ! masterRenderOnlyVolatileDiffers (a, c, id1) && ! masterRenderOnlyVolatileDiffers (a, d, id1) && ! masterRenderOnlyVolatileDiffers (d, a, id1));
+    }
+
+    SECTION ("3.27.1 a cancelled DDP leaves the previous set whole (nothing half written in the person's folder)");
+    {
+        std::vector<juce::File> files; std::vector<juce::int64> frames;
+        juce::WavAudioFormat wavf;
+        for (int i = 0; i < 2; ++i)
+        {
+            auto f = tmp.getChildFile ("ddpc" + juce::String (i) + ".wav");
+            std::unique_ptr<juce::OutputStream> os (new juce::FileOutputStream (f)); static_cast<juce::FileOutputStream*> (os.get())->setPosition (0); static_cast<juce::FileOutputStream*> (os.get())->truncate();
+            auto wr = wavf.createWriterFor (os, juce::AudioFormatWriterOptions().withSampleRate (44100.0).withNumChannels (2).withBitsPerSample (16));
+            juce::AudioBuffer<float> b (2, 44100); b.clear(); wr->writeFromAudioSampleBuffer (b, 0, 44100); wr.reset();
+            files.push_back (f); frames.push_back (44100);
+        }
+        DdpDisc dd; dd.title = "Album";
+        for (int i = 0; i < 2; ++i) { DdpClip c; c.editId = juce::Uuid(); c.title = "T" + juce::String (i); dd.clips.push_back (c); }
+        auto pq = computePq (dd, frames);
+        const auto folder = tmp.getChildFile ("ddpcancel"); folder.deleteRecursively();
+        CHECK (ddp::writeFileset (folder, dd, pq, files, juce::File(), nullptr, nullptr).isEmpty());
+        juce::String rep; CHECK (ddp::verifyFileset (folder, rep));
+        const auto imageSize = folder.getChildFile ("IMAGE.DAT").getSize();
+        std::atomic<bool> cancel { true };
+        CHECK (ddp::writeFileset (folder, dd, pq, files, juce::File(), nullptr, &cancel) == "Cancelled.");
+        CHECK (ddp::verifyFileset (folder, rep) && folder.getChildFile ("IMAGE.DAT").getSize() == imageSize);
+        CHECK (folder.getParentDirectory().findChildFiles (juce::File::findDirectories, false, "ddpcancel (writing)*").isEmpty());
+    }
+
+    SECTION ("3.27.1 a damaged header that would hang or crash the reader is refused (thousands of channels; an AIFF with 0 bits); a fingerprint cache with a NaN rate is refused");
+    {
+        juce::AudioFormatManager fm; registerAudioFormats (fm);
+        // a WAV whose format chunk says 2000 channels of 24 bits
+        auto wavHeader = [] (juce::uint16 channels, juce::uint16 bits)
+        {
+            juce::MemoryBlock b;
+            auto u32 = [&b] (juce::uint32 v) { b.append (&v, 4); }; auto u16 = [&b] (juce::uint16 v) { b.append (&v, 2); };
+            b.append ("RIFF", 4); u32 (36 + 24); b.append ("WAVE", 4);
+            b.append ("fmt ", 4); u32 (16); u16 (1); u16 (channels); u32 (48000); u32 (48000u * channels * bits / 8); u16 ((juce::uint16) (channels * bits / 8)); u16 (bits);
+            b.append ("data", 4); u32 (24); b.setSize (b.getSize() + 24, true);
+            return b;
+        };
+        const auto bad = tmp.getChildFile ("bad2000.wav"); bad.replaceWithData (wavHeader (2000, 24).getData(), wavHeader (2000, 24).getSize());
+        const auto fine = tmp.getChildFile ("fine2.wav"); fine.replaceWithData (wavHeader (2, 24).getData(), wavHeader (2, 24).getSize());
+        const auto bad2 = tmp.getChildFile ("bad65535.wav"); bad2.replaceWithData (wavHeader (65535, 24).getData(), wavHeader (65535, 24).getSize());   // (JUCE reads the count as a signed short: this arrives as four billion channels)
+        std::unique_ptr<juce::AudioFormatReader> rb (fm.createReaderFor (bad)), rb2 (fm.createReaderFor (bad2)), rf (fm.createReaderFor (fine));
+        CHECK (rb == nullptr && rb2 == nullptr && rf != nullptr && rf->numChannels == 2 && rf->lengthInSamples == 4);
+        // an AIFF whose COMM chunk says 0 bits
+        auto aiff = [] (juce::int16 channels, juce::int16 bits, juce::int32 framesN)
+        {
+            juce::MemoryBlock b;
+            auto be32 = [&b] (juce::uint32 v) { v = juce::ByteOrder::swapIfLittleEndian (v); b.append (&v, 4); };
+            auto be16 = [&b] (juce::uint16 v) { v = juce::ByteOrder::swapIfLittleEndian (v); b.append (&v, 2); };
+            b.append ("FORM", 4); be32 (4 + 26 + 16); b.append ("AIFF", 4);
+            b.append ("COMM", 4); be32 (18); be16 ((juce::uint16) channels); be32 ((juce::uint32) framesN); be16 ((juce::uint16) bits);
+            const juce::uint8 rate48k[10] = { 0x40, 0x0E, 0xBB, 0x80, 0, 0, 0, 0, 0, 0 }; b.append (rate48k, 10);
+            b.append ("SSND", 4); be32 (8); be32 (0); be32 (0);
+            return b;
+        };
+        const auto badAiff = tmp.getChildFile ("bad.aiff"); { auto m = aiff (2, 0, 100); badAiff.replaceWithData (m.getData(), m.getSize()); }
+        const auto negAiff = tmp.getChildFile ("neg.aiff"); { auto m = aiff (1, 16, -5); negAiff.replaceWithData (m.getData(), m.getSize()); }
+        std::unique_ptr<juce::AudioFormatReader> ra (fm.createReaderFor (badAiff)), rn (fm.createReaderFor (negAiff));
+        CHECK (ra == nullptr);
+        CHECK (rn == nullptr || rn->lengthInSamples >= 0);
+        // the fingerprint cache
+        {
+            takematch::Fingerprint fp; fp.fps = 20.0; fp.bins = takematch::Fingerprint::kNotes; fp.chroma.assign ((size_t) (3 * takematch::Fingerprint::kNotes), 0.0f); fp.loudness.assign (3, 0.0f);
+            const auto f = tmp.getChildFile ("nan.fpr");
+            CHECK (takematch::save (fp, f));
+            takematch::Fingerprint back; CHECK (takematch::load (back, f) && std::abs (back.fps - 20.0) < 1e-9);
+            juce::MemoryBlock mb; f.loadFileAsData (mb);
+            const juce::uint64 nan = 0x7ff8000000000000ull; std::memcpy (static_cast<char*> (mb.getData()) + 8, &nan, 8);     // (the rate sits after "FMFP" and the version)
+            const auto f2 = tmp.getChildFile ("nan2.fpr"); f2.replaceWithData (mb.getData(), mb.getSize());
+            takematch::Fingerprint b2; CHECK (! takematch::load (b2, f2));
+        }
+    }
+
+    SECTION ("3.27.1 numbers from a damaged project file stay finite: a fader at 1e400 or 'nan' does not reach the mixer, a sample count past 2^63 does not overflow");
+    {
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear(); q.takeWindows.clear(); q.edits.clear();
+        q.projectFile = tmp.getChildFile ("Finite.fermata");
+        const auto A = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        auto& w = q.addTakeWindow ("Piece");
+        auto& e = q.addEdit ("E", w.id);
+        { AutoLane l; l.id = juce::Uuid(); l.trackId = A; l.param = autoparam::fader; AutoPoint pt; pt.id = juce::Uuid(); pt.time = 0; pt.value = -6.0f; l.pts.push_back (pt); e.lanes.push_back (l); }
+        q.mixers.front()->stripFor (A)->gainDb.set (-3.0f);
+        juce::String err; q.name = "Finite"; CHECK (q.save (err));
+        auto text = q.projectFile.loadFileAsString();
+        // (the mixer is in its own file beside the project file)
+        juce::File mixFile;
+        for (auto& f : q.projectFile.getParentDirectory().findChildFiles (juce::File::findFiles, true, "*")) if (f.loadFileAsString().contains ("\"gainDb\": -3.0")) mixFile = f;
+        CHECK (mixFile != juce::File());
+        if (mixFile != juce::File())
+        {
+            auto mt = mixFile.loadFileAsString();
+            mt = mt.replace ("\"gainDb\": -3.0", "\"gainDb\": 1e400").replace ("\"pan\": 0.0", "\"pan\": \"nan\"");
+            CHECK (mixFile.replaceWithText (mt));
+        }
+        for (auto& f : q.projectFile.getParentDirectory().findChildFiles (juce::File::findFiles, true, "*"))
+        {
+            auto t = f.loadFileAsString();
+            if (t.contains ("\"value\": -6.0")) { t = t.replace ("\"value\": -6.0", "\"value\": 1e999").replace ("\"srcIn\": 0", "\"srcIn\": 1e300"); CHECK (f.replaceWithText (t)); }
+        }
+        Project q2; CHECK (q2.load (q.projectFile, err));
+        auto* st = q2.mixers.front()->stripFor (A);
+        CHECK (std::isfinite (st->gainDb.get()) && st->gainDb.get() <= 60.0f && std::isfinite (st->pan.get()));
+        CHECK (q2.edits.size() == 1 && q2.edits[0]->lanes.size() == 1 && q2.edits[0]->lanes[0].pts.size() == 1 && std::isfinite (q2.edits[0]->lanes[0].pts[0].value));
+    }
+
+    SECTION ("3.27.1 a control another play's automation drives is not put back under it; the disk writer never stands still after an overrun; Play only waits for the files it uses");
+    {
+        // the control: two edits with a fader lane on the same track of the same mixer; the first plays, the second's lane goes
+        {
+            Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear(); q.buses.clear();
+            const auto ta = q.addTrack ("A", TrackFormat::Mono, 0).id;
+            auto& m = *q.mixers.front();
+            auto* st = m.stripFor (ta);
+            st->gainDb.set (0.0f);
+            AudioEngine en (q); en.prepare (48000.0, 256);
+            EditDef e1, e2;
+            auto point = [] (float v) { AutoPoint a; a.time = 0; a.value = v; return a; };
+            e1.addLane (ta, autoparam::fader, m.id).pts = { point (-20.0f) };
+            e2.addLane (ta, autoparam::fader, m.id).pts = { point (-6.0f) };
+            CHECK (holdAutomatedControls (q, e2, true).changed && e2.autoBefore.size() == 1);      // e2 remembers 0 dB
+            std::vector<float> i0 (256, 0.0f), i1 (256, 0.0f), o0 (256), o1 (256);
+            const float* in[2] = { i0.data(), i1.data() }; float* out[2] = { o0.data(), o1.data() };
+            auto ss = std::make_unique<PlaybackSession> (std::vector<int> { 1 }, std::vector<PlaySegment> {}, 0, 60 * 48000, 48000.0, en.getMaxBlock());
+            ss->automation = automationPlanFor (q, e1); ss->editId = e1.id; ss->followsAutomation = true;
+            CHECK (en.startPlayback (std::move (ss)).isEmpty());
+            en.process (in, 2, out, 2, 256);
+            CHECK (std::abs (st->gainDb.get() + 20.0f) < 1e-4f);
+            e2.lanes.clear();                                                       // e2's lane deleted while e1 plays and drives the same fader
+            auto drives = [&en] (const AutomationPlan::Item& it) { return en.automationDrives (it); };
+            auto r = holdAutomatedControls (q, e2, true, drives);
+            CHECK (r.pending && ! r.changed && e2.autoBefore.size() == 1 && std::abs (st->gainDb.get() + 20.0f) < 1e-4f);     // left alone: e1 drives it
+            en.stopPlayback();
+            r = holdAutomatedControls (q, e2, true, drives);
+            CHECK (r.changed && e2.autoBefore.empty() && std::abs (st->gainDb.get()) < 1e-4f);                             // back once nothing drives it
+        }
+        // the writer: blocks pushed from a producer thread much faster than a slow "disk" takes them, so overruns happen; nothing offered is ever lost
+        // without being counted, and the writer keeps draining after every overrun (it used to stand still when a marker slipped between two reads)
+        {
+            std::atomic<juce::int64> written { 0 };                                // (outside the writer: the TakeWriter deletes it when it finishes)
+            struct SlowWriter : juce::AudioFormatWriter
+            {
+                SlowWriter (juce::OutputStream* os, std::atomic<juce::int64>& w) : juce::AudioFormatWriter (os, "slow", 48000.0, 1, 24), written (w) {}
+                bool write (const int** data, int n) override { juce::ignoreUnused (data); juce::Thread::sleep (1); written += n; return true; }
+                std::atomic<juce::int64>& written;
+            };
+            juce::TimeSliceThread tst ("slow writer"); tst.startThread();
+            auto* mo = new juce::MemoryOutputStream();
+            auto sw = std::make_unique<SlowWriter> (mo, written);
+            const int bufferSamples = 4096;
+            juce::int64 offered = 0;
+            {
+                TakeWriter tw (std::move (sw), tst, bufferSamples, 0, 256);
+                std::vector<float> block (512, 0.1f); const float* p = block.data();
+                const auto t0 = juce::Time::getMillisecondCounter();
+                while (juce::Time::getMillisecondCounter() - t0 < 1500)
+                {
+                    tw.write (&p, 512); offered += 512; tst.notify();
+                    if ((offered / 512) % 7 == 0) juce::Thread::sleep (1);          // (now and then the disk catches up, so the marker path runs many times)
+                }
+                CHECK (tw.overruns() > 0);
+            }
+            CHECK (written.load() == offered);                                      // every frame offered reached the "disk": as audio, or as the silence owed for it
+        }
     }
 
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

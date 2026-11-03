@@ -330,7 +330,9 @@ void wavOneWith (const Bytes& d, bool extend)
     if (auto* in = new juce::FileInputStream (f); in->openedOk())
     {
         std::unique_ptr<juce::AudioFormatReader> r (wav.createReaderFor (in, true));
-        if (r != nullptr && r->numChannels > 0 && r->numChannels <= 64)
+        if (r != nullptr && (r->numChannels < 1u || r->numChannels > (unsigned int) checkedformat::kMaxChannels || r->bitsPerSample < 8u || r->bitsPerSample > 32u))
+            finding ("the checked reader handed out a header shape it should refuse (" + juce::String ((int) r->numChannels) + " ch, " + juce::String ((int) r->bitsPerSample) + " bits)");
+        if (r != nullptr && r->numChannels > 0)        // (3.27.1: no "<= 64" guard here any more - it hid the hang a header with thousands of channels caused in JUCE's reader)
         {
             juce::AudioBuffer<float> buf ((int) r->numChannels, 512);
             r->read (&buf, 0, 512, 0, true, true);
@@ -707,6 +709,16 @@ juce::var richProjectSeed (const juce::File& folder)
     { AutoLane l; l.id = juce::Uuid(); l.trackId = a; l.param = autoparam::fader; AutoPoint pt; pt.id = juce::Uuid(); pt.time = 1000; pt.value = -3.0f; l.pts.push_back (pt); pt.id = juce::Uuid(); pt.time = 96000; pt.value = 2.0f; pt.region = e.regions[1].id; l.pts.push_back (pt); e.lanes.push_back (l); }
     { Marker m; m.id = juce::Uuid(); m.seconds = 5.0; m.name = "Alto entry"; e.markers.push_back (m); }
     { FeedbackNote n; n.key = "n1"; n.who = "Anna"; n.bar = "12"; n.text = "Lovely"; n.seconds = 6.5; n.colour = "red"; e.feedback.push_back (n); }
+    // 3.22.0 - 3.27.0: a piece out in a linked program, a file that came back from one, the saves dealt with, where an automated control was, the stems
+    {
+        WaitingPiece rx; rx.name = "RX 1"; rx.from = 48000 * 2; rx.to = 48000 * 4; rx.rx = true; rx.fileFrom = 48000 * 2 - 9600; rx.fileLen = 48000 * 2 + 19200; rx.program = "iZotope RX";
+        for (auto& t : p.tracks) { rx.files.push_back (folder.getChildFile ("Processing Media").getChildFile ("RX 1").getChildFile (t.name + " - RX 1.wav")); rx.tracks.push_back (t.id); }
+        e.regions[1].waiting = rx;
+        e.regions[0].files[0].rxFrom = folder.getChildFile ("Processing Media").getChildFile ("RX 0").getChildFile ("Main - RX 0.wav");
+        p.rxSeen[e.regions[0].files[0].rxFrom.getFullPathName()] = 1700000000123;
+        e.autoBefore[EditDef::laneKey (e.lanes.front())] = -1.5f;
+        p.mastering.stemIds.push_back (p.buses.empty() ? juce::Uuid() : p.buses.front().id);
+    }
     e.guide.windowId = w.id; e.guide.takeId = w.groups[2].id; e.guide.trackId = a; e.guide.takeName = "003"; e.guide.trackName = "Main"; e.guide.file = folder.getChildFile ("Main2.wav");
     e.guide.numChannels = 2; e.guide.sampleRate = 48000.0; e.guide.srcIn = 0; e.guide.srcOut = 48000 * 10; e.guide.start = -24000;
     {

@@ -204,7 +204,9 @@ struct Aaf
     {
         auto it = o.p.find (pid);
         if (it == o.p.end()) return def;
-        if (it->second.size() >= 8) return rd64 (it->second.data());
+        // (3.27.1: kept within +-2^50, as every sample count read from a project file is - the positions and lengths are added up, and a garbled value near the
+        //  limit of a 64-bit number would overflow those sums)
+        if (it->second.size() >= 8) return juce::jlimit ((juce::int64) -(1LL << 50), (juce::int64) (1LL << 50), rd64 (it->second.data()));
         if (it->second.size() >= 4) return (std::int32_t) rd32 (it->second.data());
         return def;
     }

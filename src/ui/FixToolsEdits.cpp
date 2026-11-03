@@ -549,8 +549,9 @@ static void openRepair (AppContext& app, const juce::Uuid& eid, juce::Component*
         // a stream window: the pair puts the corrected pieces of both streams into the edit (always from the original edit), and keeps one undo step for both
         pair->jobsOf[slot] = [st] { return &st->jobs; };
         pair->suffix[slot] = "repair";
-        c.apply = [pair, slot, st] { if (st->jobs.empty()) return false; return pair->put (slot, true); };
-        c.unapply = [pair, slot] { pair->put (slot, false); };
+        // (3.27.1: 'applied' raises the save hold, as the pitch-curve pair does - an automatic save must never write a preview that is only being listened to)
+        c.apply = [pair, slot, st] { if (st->jobs.empty()) return false; st->applied = true; if (pair->put (slot, true)) return true; st->applied = false; return false; };
+        c.unapply = [pair, slot, st] { if (! st->applied) return; st->applied = false; pair->put (slot, false); };
         c.accept = [] {};
         c.pairWritten = [pair, slot] (std::function<bool()> commit) { pair->wrote (slot, std::move (commit)); };
     }

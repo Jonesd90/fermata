@@ -1186,11 +1186,16 @@ private:
         const float laneH = (float) r.getHeight() / (float) nc;
         juce::Graphics::ScopedSaveState clipState (g); g.reduceClipRegion (r);
         setWaveColour (g, juce::Colour (0xffffd6cc));
+        // only the columns inside the clip (3.27.1: the whole take was walked - 14,400 columns of a 20-minute take, per track, 30 times a second - though
+        // only the part on the screen is drawn; the finished waveform's drawers start from the clip the same way)
+        const auto clip = g.getClipBounds().getIntersection (r);
+        if (clip.isEmpty()) return;
+        const int xFirst = clip.getX() - r.getX(), xLast = clip.getRight() - r.getX();
         for (int c = 0; c < nc; ++c)                      // one lane per channel, like the finished waveform
         {
             const float mid = (float) r.getY() + laneH * ((float) c + 0.5f), half = laneH * 0.5f - 1.0f;
             std::vector<float> tops, bots;
-            for (int x = 0; x < r.getWidth(); ++x)
+            for (int x = xFirst; x < xLast; ++x)
             {
                 const int b0 = (int) ((double) x / pixelsPerSecond / binSeconds);
                 if (b0 >= bins) break;
@@ -1204,7 +1209,7 @@ private:
                 tops.push_back (mid - waveshape::apply ((float) hi / 32767.0f, app.waveShape()) * half * app.waveZoom);      // (3.27.0: compressed too, while it records)
                 bots.push_back (mid - waveshape::apply ((float) lo / 32767.0f, app.waveShape()) * half * app.waveZoom);
             }
-            fillEnvelope (g, (float) r.getX(), tops, bots, nullptr, laneH);
+            fillEnvelope (g, (float) (r.getX() + xFirst), tops, bots, nullptr, laneH);
         }
     }
 
@@ -1726,11 +1731,15 @@ private:
         app.project.changed(); repaint();
     }
 
+    /** The take being recorded into right now: its files are open, so it is neither renamed nor removed until Stop (3.27.1). */
+    bool isLiveTake (const juce::Uuid& gid) const { return app.engine.isRecording() && gid == app.engine.currentTakeId(); }
+
     void showSettings (const juce::Uuid& gid, bool asMenu)
     {
         juce::PopupMenu m;
-        m.addItem (1, "Take settings (rename)...");
-        m.addItem (2, "Remove take from this window (the files stay on disk, and any edit using it keeps working)");
+        const bool live = isLiveTake (gid);
+        m.addItem (1, live ? "Take settings (rename)... (stop recording first)" : "Take settings (rename)...", ! live);
+        m.addItem (2, live ? "Remove take from this window (stop recording first)" : "Remove take from this window (the files stay on disk, and any edit using it keeps working)", ! live);
         auto safe = juce::Component::SafePointer<TakeTimeline> (this);
         auto choose = [safe, gid] (int r) { if (safe != nullptr && r != 0) safe->handleMenu (r, gid); };
         if (asMenu) m.showMenuAsync (juce::PopupMenu::Options(), choose);
@@ -1743,6 +1752,7 @@ private:
         if (w == nullptr) return;
         auto* g = w->findGroup (gid);
         if (g == nullptr) return;
+        if (isLiveTake (gid)) { showError ("Take settings", "Stop recording first."); return; }     // (3.27.1: removing it left the recording with no take to belong to)
         if (result == 2)
         {
             if (w->cursorTake == gid) w->cursorTake = juce::Uuid::null();
@@ -1761,7 +1771,7 @@ private:
             if (r == 1 && safe != nullptr)
                 if (auto* w2 = safe->def())
                 {
-                    if (! w2->setLabel (gid, aw->getTextEditorContents ("label")))
+                    if (! safe->app.project.renameTake (*w2, gid, aw->getTextEditorContents ("label")))      // (3.27.1: the edits' pieces follow the renamed files)
                         showError ("Rename", "Some files could not be renamed (a file with that name may already exist).");
                     if (auto* g2 = w2->findGroup (gid))
                         for (auto& e : safe->app.project.edits)
@@ -1843,7 +1853,9 @@ private:
     void updateMeters()
     {
         const auto now = juce::Time::getMillisecondCounter();
-        for (auto* t : shownTracks())
+        bool moved = false;                                      // (3.27.1: the column is repainted only when a bar or its hold mark moved - it used to be repainted 30 times a second with every input silent)
+        const auto shown = shownTracks();
+        for (auto* t : shown)
         {
             auto& m = meterOf (t->id);
             float playL = 0.0f, playR = 0.0f;                    // while a take plays back the bars show what the mixer strip measures (it always keeps measuring, so it is read every time)
@@ -1856,11 +1868,14 @@ private:
                 if (playing) pk = t->channelCount() > 1 ? (c == 0 ? playL : playR) : juce::jmax (playL, playR);
                 else if (juce::isPositiveAndBelow (in, (int) app.inPeaks.size())) pk = app.inPeaks[(size_t) in];
                 auto& lv = m.level[(size_t) c]; auto& hv = m.hold[(size_t) c]; auto& ha = m.holdAt[(size_t) c];
+                const float lv0 = lv, hv0 = hv;
                 lv = juce::jmax (pk, lv * 0.86f);
+                if (lv < 1.0e-4f) lv = 0.0f;                     // (the decay ends, so a silent input stops asking for repaints)
                 if (pk >= hv || now - ha > 1500) { hv = pk >= hv ? pk : lv; ha = now; }
+                if (std::abs (lv - lv0) > 1.0e-4f || std::abs (hv - hv0) > 1.0e-4f) moved = true;
             }
         }
-        repaint (viewport.getViewPositionX(), kRulerH + kLaneH, kNameW, juce::jmax (1, (int) shownTracks().size()) * rowH);
+        if (moved || app.engine.isRecording()) repaint (viewport.getViewPositionX(), kRulerH + kLaneH, kNameW, juce::jmax (1, (int) shown.size()) * rowH);
     }
 
     void timerCallback() override
@@ -1878,7 +1893,16 @@ private:
             followPlayhead();
             auto* w = def(); auto* g = w != nullptr ? w->findGroup (app.engine.currentTakeId()) : nullptr;
             if (g == nullptr) repaint();
-            else { const int x0 = xOf (g->startSeconds) - 4, x1 = xOf (g->startSeconds + app.engine.recordedSeconds()) + 8; repaint (x0, 0, juce::jmax (12, x1 - x0), getHeight()); }
+            else
+            {
+                const int x0 = xOf (g->startSeconds) - 4, x1 = xOf (g->startSeconds + app.engine.recordedSeconds()) + 8;
+                // 3.27.1: once the take is wide, only its growing end is repainted (the end line, the plate's edge and the notes icon live there; the picture
+                // behind never changes once drawn); a narrow take is repainted whole, since the words along its bottom are fitted to its width
+                const int back = 24 + (int) (0.5 * pixelsPerSecond);            // (half a second back: the bins behind the end may still have been arriving when it was last drawn)
+                if (x1 - x0 < 400 || liveEndX == kNoLine || liveEndX > x1 || liveGroup != g->id) repaint (x0, 0, juce::jmax (12, x1 - x0), getHeight());
+                else repaint (liveEndX - back, 0, x1 - (liveEndX - back), getHeight());
+                liveEndX = x1; liveGroup = g->id;
+            }
         }
         else if (app.isPlaying()) followPlayhead();                          // the playhead moves by itself with the screen (movePlayhead)
         else followActive = false;
@@ -1888,6 +1912,7 @@ private:
         leaves and the one it moves to. Redrawing every waveform 30 times a second is what made it stutter with many tracks. (While recording the
         whole window is redrawn by the timer anyway, with the end of the growing take as its playhead.) */
     static constexpr int kNoLine = std::numeric_limits<int>::min();
+    int liveEndX = kNoLine; juce::Uuid liveGroup = juce::Uuid::null();     // where the growing take's end was drawn last, and which take (the recording repaint)
     void movePlayhead()
     {
         const double live = app.engine.isRecording() || ! app.isPlaying() ? -1.0 : livePosition (true);

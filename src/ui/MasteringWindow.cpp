@@ -2253,8 +2253,13 @@ bool MasteringComponent::checkRenders (bool force)
     renderLight.set (juce::Colour (0xff3b8fe0)); renderNowNeeded = false;
     updateRenderButtons(); refreshVm(); refreshDdp (false);
     juce::Component::SafePointer<MasteringComponent> safe (this);
-    renderingIds.clear();
-    for (int i = 0; i < batch->total(); ++i) if (batch->needsRender (i)) renderingIds.push_back (batch->editAt (i));
+    renderingIds.clear(); renderingParts.clear();
+    for (int i = 0; i < batch->total(); ++i)
+        if (batch->needsRender (i))
+        {
+            renderingIds.push_back (batch->editAt (i));
+            if (auto* e = editOf (batch->editAt (i))) renderingParts[e->id.toString()] = masterRenderParts (app.project, *e, rp);   // (what the render is made from: see renderFinished)
+        }
     renderJob = std::make_unique<MasterRenderJob> (std::move (batch), [safe] (juce::String err) { if (safe != nullptr) safe->renderFinished (err); });
     return false;
 }
@@ -2286,18 +2291,24 @@ void MasteringComponent::renderFinished (const juce::String& error)
                     auto fp = masterRenderFingerprint (app.project, *e, rp);
                     const auto before = store.check (id, fp);
                     if (before.state != MasterRenders::State::Stale) continue;
-                    juce::Logger::writeToLog ("Mastering: the description of \"" + e->name + "\" changed while it was rendered; the new render takes it");
-                    store.restamp (id, fp);
-                    if (masterRenderFingerprint (app.project, *e, rp) != fp)                 // still different a moment later: some part of it keeps changing by itself
+                    // 3.27.1: the description differs from the one the render was made from. Only when every differing part is one that changes by
+                    // itself (a plug-in's state that is never the same twice) does the new render take the description as it is now; if the person
+                    // moved a piece or a fader while it rendered, the render is out of date and stays so (the light says "out of date", as it should).
+                    learnMasterRenderVolatile (app.project, *e, rp);
+                    fp = masterRenderFingerprint (app.project, *e, rp);
+                    const auto started = renderingParts.find (id.toString());
+                    const auto now = masterRenderParts (app.project, *e, rp);
+                    if (started != renderingParts.end() && ! masterRenderOnlyVolatileDiffers (started->second, now, id))
                     {
-                        learnMasterRenderVolatile (app.project, *e, rp);
-                        fp = masterRenderFingerprint (app.project, *e, rp);
-                        store.restamp (id, fp);
+                        juce::Logger::writeToLog ("Mastering: \"" + e->name + "\" was changed while it was rendered; its render is out of date");
+                        continue;
                     }
+                    juce::Logger::writeToLog ("Mastering: the description of \"" + e->name + "\" changed by itself while it was rendered; the new render takes it");
+                    store.restamp (id, fp);
                 }
         }
     }
-    renderingIds.clear();
+    renderingIds.clear(); renderingParts.clear();
     renderProgressValue = error.isEmpty() ? 1.0 : 0.0;
     const bool ok = error.isEmpty();
     lookKey.clear(); lookAtRenders();

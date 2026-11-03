@@ -1645,7 +1645,7 @@ void relinkEdit (AppContext& app, const juce::Uuid& eid, const juce::Uuid& rid, 
     if (problems.isNotEmpty()) { say (title, problems + "\nNothing was changed. Fix the files in your other software (same length, sample rate and channels) and try again."); return; }
     const auto old = e->regions;
     auto& m = e->regions[(size_t) i];
-    for (size_t k = 0; k < where.size(); ++k) { m.files[where[k]].file = m.waiting.files[k]; m.files[where[k]].fileStart = m.waiting.from; }
+    for (size_t k = 0; k < where.size(); ++k) { m.files[where[k]].file = m.waiting.files[k]; m.files[where[k]].fileStart = m.waiting.from; m.files[where[k]].rxFrom = juce::File(); }   // (3.27.1: a hand re-link ends any linked-program watch on that track)
     m.takeName = m.takeName.upToFirstOccurrenceOf (" (", false, false) + " (" + m.waiting.name + ")";
     const auto wf = m.waiting.from, wt = m.waiting.to;
     m.waiting = WaitingPiece();
@@ -1875,7 +1875,7 @@ private:
             return true;
         };
         std::map<juce::String, juce::Uuid> aafTrackId;
-        int edits = 0, regionsMade = 0, regionsLost = 0, rateSkipped = 0, shortened = 0; juce::Uuid firstEdit;
+        int edits = 0, regionsMade = 0, regionsLost = 0, rateSkipped = 0, shortened = 0; juce::Uuid firstEdit = juce::Uuid::null();
         for (auto& pc : res.pieces)
         {
             std::vector<EditRegion> regs;

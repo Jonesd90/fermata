@@ -456,7 +456,7 @@ bool load (Fingerprint& fp, const juce::File& file)
     const int frames = in.readInt();
     out.bins = in.readInt();
     out.sourceKey = in.readString();
-    if (out.fps <= 0.0 || frames < 0 || frames > 100000000 || out.bins != Fingerprint::kNotes) return false;
+    if (! std::isfinite (out.fps) || out.fps < 1.0 || out.fps > 1000.0 || frames < 0 || frames > 100000000 || out.bins != Fingerprint::kNotes) return false;   // (3.27.1: a NaN or absurd rate passed "<= 0")
     // (3.18.2) the frames must all be in the file: a garbled count would otherwise have the vectors below ask for gigabytes and end the program
     const juce::int64 need = (juce::int64) frames * ((juce::int64) out.bins + 1) * (juce::int64) sizeof (float);
     if (in.getTotalLength() >= 0 && in.getTotalLength() - in.getPosition() < need) return false;

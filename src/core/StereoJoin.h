@@ -248,6 +248,21 @@ inline bool apply (Project& p, const Plan& plan, juce::String& why)
     };
     for (auto& u : plan.takes)  { TakeGroup* g = nullptr; if (! sameTake (u, g))    { why = "The takes changed while the files were being written."; return false; } }
     for (auto& u : plan.pieces) { EditRegion* r = nullptr; if (! samePiece (u, r)) { why = "An edit changed while the files were being written."; return false; } }
+    // 3.27.1: nothing on the two tracks that the plan does not know of (a take recorded while the files were written, a piece placed meanwhile):
+    // it would be left on tracks that are about to go
+    for (auto& w : p.takeWindows)
+        for (auto& g : w->groups)
+            for (auto& f : g.files)
+                if ((f.trackId == plan.left || f.trackId == plan.right)
+                    && std::none_of (plan.takes.begin(), plan.takes.end(), [&] (const TakeUse& u) { return u.window == w->id && u.take == g.id; }))
+                { why = "The takes changed while the files were being written."; return false; }
+    for (auto& e : p.edits)
+        for (auto* list : { &e->regions, &e->overdubs })
+            for (auto& rg : *list)
+                for (auto& f : rg.files)
+                    if ((f.trackId == plan.left || f.trackId == plan.right)
+                        && std::none_of (plan.pieces.begin(), plan.pieces.end(), [&] (const PieceUse& u) { return u.edit == e->id && u.piece == rg.id; }))
+                    { why = "An edit changed while the files were being written."; return false; }
 
     // the new track, where the left one was: its colour, its spot-mic role, the inputs of both
     TrackDef S;
@@ -349,8 +364,7 @@ inline bool apply (Project& p, const Plan& plan, juce::String& why)
     p.tracks.erase (std::remove_if (p.tracks.begin(), p.tracks.end(), [&] (const TrackDef& t) { return t.id == plan.left || t.id == plan.right; }), p.tracks.end());
     p.structureChanged();
     p.undoReset();                                       // (Ctrl+Z cannot go back to the two tracks: they are gone)
-    for (auto& id : plan.takeWindows) p.keepWindow (id);  // (nor can "keep / revert this window" at quit)
-    for (auto& id : plan.edits) p.keepWindow (id);
+    p.keepAllWindows();                                  // (nor can "keep / revert this window" at quit - 3.27.1: every window, the mixers too: their kept state had the two mono strips, so each one was listed as changed and a revert would have undone the strip settings carried over)
     return true;
 }
 }} // namespace td::stereojoin

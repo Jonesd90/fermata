@@ -3,6 +3,7 @@
 #include "WavRepair.h"
 #include "AudioRelink.h"
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <set>
 #include <tuple>
@@ -146,6 +147,22 @@ var slotsToVar (const InsertSlot* slots, int count = kNumSlots)
     return arr;
 }
 
+// 3.27.1: a number from a file kept finite and within range before it reaches a control the audio thread reads (a damaged file saying "1e400" or "nan"
+// used to put inf / NaN into a fader, and inf into the sound). Fermata's own writer never writes such a value, so nothing it wrote changes.
+inline float finiteFloat (const var& v, float lo, float hi, float fallback = 0.0f)
+{
+    const double d = (double) v;
+    return std::isfinite (d) ? (float) juce::jlimit ((double) lo, (double) hi, d) : fallback;
+}
+inline float dbFromVar (const var& v, float fallback = 0.0f) { return finiteFloat (v, -200.0f, 60.0f, fallback); }
+inline float panFromVar (const var& v) { return finiteFloat (v, -1.0f, 1.0f); }
+/** A sample rate from a file: 0 (= not known) unless it is a finite number between 1 and 1,000,000. */
+inline double rateFromVar (const var& v) { const double d = (double) v; return std::isfinite (d) && d >= 1.0 && d <= 1.0e6 ? d : 0.0; }
+/** A time in seconds from a file (a fade, a ramp): finite and within an hour either way, else 0. */
+inline double secondsFromVar (const var& v) { const double d = (double) v; return std::isfinite (d) ? juce::jlimit (-3600.0, 3600.0, d) : 0.0; }
+
+static thread_local bool g_clearEmptySlots = false;        // 3.27.1: set by applyMix (MixParts::clearEmptySlots): a slot the snapshot has empty is emptied too
+
 void slotsFromVar (InsertSlot* slots, const var& v, const InsertFactory& factory, double sr = 48000.0, int maxBlock = 512, int count = kNumSlots)
 {
     if (! v.isArray()) return;
@@ -154,7 +171,11 @@ void slotsFromVar (InsertSlot* slots, const var& v, const InsertFactory& factory
         auto desc = v[i].getProperty ("desc", {}).toString();
         auto state = v[i].getProperty ("state", {}).toString();
         slots[i].bypass.set ((bool) v[i].getProperty ("bypass", false));
-        if (desc.isEmpty()) continue;
+        if (desc.isEmpty())
+        {
+            if (g_clearEmptySlots && (slots[i].isLoaded() || slots[i].savedDescription.isNotEmpty())) slots[i].clear (sr, maxBlock, 2);
+            continue;
+        }
         std::unique_ptr<InsertProcessor> p;
         if (factory) p = factory (desc, state);
         if (p != nullptr) slots[i].set (std::move (p), sr, maxBlock, 2);
@@ -198,7 +219,7 @@ void sendsFromVar (SendList& l, const var& v, const InsertFactory& factory, doub
             if (levels)
             {
                 const bool muted = sv.hasProperty ("mute") && (bool) sv["mute"];
-                s->gainDb.set ((float) (double) (muted && sv.hasProperty ("mutedGainDb") ? sv["mutedGainDb"] : sv["gainDb"]));
+                s->gainDb.set (dbFromVar (muted && sv.hasProperty ("mutedGainDb") ? sv["mutedGainDb"] : sv["gainDb"], (float) kSendOffDb));
                 s->pre.set ((bool) sv["pre"]); s->followMute.set (sv.hasProperty ("followMute") ? (bool) sv["followMute"] : true);
                 s->mute.set (muted);
             }
@@ -248,11 +269,11 @@ var stripToVar (const StripState& s, const juce::Uuid& trackId, bool inserts)
 
 void stripFromVar (StripState& s, const var& sv, const InsertFactory& factory, double sr, int block, bool inserts, const std::vector<juce::Uuid>& legacyFx, bool faders = true, bool pan = true, bool sendLevels = true)
 {
-    if (pan) { s.pan.set ((float) (double) sv["pan"]); if (sv.hasProperty ("panL")) { s.panL.set ((float) (double) sv["panL"]); s.panR.set ((float) (double) sv["panR"]); } }
+    if (pan) { s.pan.set (panFromVar (sv["pan"])); if (sv.hasProperty ("panL")) { s.panL.set (panFromVar (sv["panL"])); s.panR.set (panFromVar (sv["panR"])); } }
     if (faders)
     {
-        s.gainDb.set ((float) (double) sv["gainDb"]);
-        s.inGainDb.set (sv.hasProperty ("inGainDb") ? (float) (double) sv["inGainDb"] : 0.0f);
+        s.gainDb.set (dbFromVar (sv["gainDb"]));
+        s.inGainDb.set (sv.hasProperty ("inGainDb") ? dbFromVar (sv["inGainDb"]) : 0.0f);
         s.mute.set ((bool) sv["mute"]); s.solo.set ((bool) sv["solo"]);
         s.outOn.set (sv.hasProperty ("outOn") ? (bool) sv["outOn"] : false);          // older projects had no output button: nothing was routed that way
         s.outDest = juce::Uuid (sv["outDest"].toString());
@@ -262,7 +283,7 @@ void stripFromVar (StripState& s, const var& sv, const InsertFactory& factory, d
     else if (sendLevels)
         if (auto* old = sv["sends"].getArray())                   // projects from before buses: one send level per effects channel
         for (int k = 0; k < old->size() && k < (int) legacyFx.size(); ++k)
-            if ((double) (*old)[k] > kSendOffDb) s.sends.get (legacyFx[(size_t) k])->gainDb.set ((float) (double) (*old)[k]);
+            if ((double) (*old)[k] > kSendOffDb) s.sends.get (legacyFx[(size_t) k])->gainDb.set (dbFromVar ((*old)[k], (float) kSendOffDb));
     if (inserts) slotsFromVar (s.slots, sv["slots"], factory, sr, block);
     if (faders) lowCutFromVar (s.lowCut, sv, sr, block);
 }
@@ -284,11 +305,11 @@ var busToVar (const BusState& s, const juce::Uuid& busId, bool inserts, bool wit
 
 void busFromVar (BusState& s, const var& v, const InsertFactory& factory, double sr, int block, bool inserts, bool withOutput, bool faders = true, bool sendLevels = true, bool pan = true)
 {
-    if (pan) s.pan.set (v.hasProperty ("pan") ? (float) (double) v["pan"] : 0.0f);
+    if (pan) s.pan.set (v.hasProperty ("pan") ? panFromVar (v["pan"]) : 0.0f);
     if (faders)
     {
-        s.inGainDb.set (v.hasProperty ("inGainDb") ? (float) (double) v["inGainDb"] : 0.0f);
-        s.gainDb.set ((float) (double) v["gainDb"]); s.mute.set ((bool) v["mute"]); s.solo.set ((bool) v["solo"]);
+        s.inGainDb.set (v.hasProperty ("inGainDb") ? dbFromVar (v["inGainDb"]) : 0.0f);
+        s.gainDb.set (dbFromVar (v["gainDb"])); s.mute.set ((bool) v["mute"]); s.solo.set ((bool) v["solo"]);
         if (withOutput && v.hasProperty ("outFirst")) s.outFirst.store ((int) v["outFirst"]);
         if (withOutput) s.isMain.set ((bool) v.getProperty ("main", false));
         s.outOn.set (v.hasProperty ("outOn") ? (bool) v["outOn"] : false);
@@ -321,7 +342,7 @@ void vcaStatesFromVar (MixerState& m, const var& v)
             const int n = (int) o["number"];
             if (n < 1 || n > kMaxVcas) continue;
             auto& s = m.vcas[n - 1];
-            s.gainDb.set ((float) (double) o["gainDb"]); s.mute.set ((bool) o["mute"]); s.solo.set ((bool) o["solo"]);
+            s.gainDb.set (dbFromVar (o["gainDb"])); s.mute.set ((bool) o["mute"]); s.solo.set ((bool) o["solo"]);
             if ((bool) o["shown"]) m.vcaShown.fetch_or (1u << (n - 1)); else m.vcaShown.fetch_and (~(1u << (n - 1)));
         }
 }
@@ -1189,6 +1210,8 @@ void Project::applyMix (MixerState& to, const var& snap, double sampleRate, int 
 {
     syncMixers();
     const bool withInserts = (bool) snap.getProperty ("inserts", false) && parts.inserts;
+    if (withInserts && beforeInsertsReplaced) beforeInsertsReplaced (to);    // (3.27.1: a plug-in's window never outlives its plug-in - Paste mix, Undo copy, the quit box's revert all come through here)
+    struct ClearFlag { ClearFlag (bool b) { g_clearEmptySlots = b; } ~ClearFlag() { g_clearEmptySlots = false; } } clearFlag (withInserts && parts.clearEmptySlots);
     const std::vector<juce::Uuid> noLegacy;
     if (auto* ss = snap["strips"].getArray())
         for (auto& sv : *ss)
@@ -1260,7 +1283,11 @@ void Project::createFolders() const
 /** A file path as saved: the full path, and (for a file inside the project folder) the path from the project folder, so the whole folder can be moved or copied. */
 /** A sample count or position read from a file (3.18.3): kept within +-2^50 (about 300 years at 96 kHz), so arithmetic on it (lengths, ripples,
     fades) can never overflow - a garbled value near the limits of an int64 did, which is undefined behaviour. */
-static juce::int64 samplesFromVar (const var& v) { return juce::jlimit ((juce::int64) -(1LL << 50), (juce::int64) (1LL << 50), (juce::int64) v); }
+static juce::int64 samplesFromVar (const var& v)
+{
+    if (v.isDouble()) { const double d = (double) v; if (! std::isfinite (d)) return 0; return (juce::int64) juce::jlimit (-(double) (1LL << 50), (double) (1LL << 50), d); }   // (3.27.1: clamped as a double first - a cast past 2^63 is undefined)
+    return juce::jlimit ((juce::int64) -(1LL << 50), (juce::int64) (1LL << 50), (juce::int64) v);
+}
 
 static void putFilePath (var& o, const juce::File& file, const juce::File& base)
 {
@@ -1297,6 +1324,7 @@ static WaitingPiece waitingFromVar (const var& o, const juce::File& base)
     w.name = o["name"].toString(); w.from = samplesFromVar (o["from"]); w.to = samplesFromVar (o["to"]);
     if (auto* fs = o["files"].getArray()) for (auto& fv : *fs) w.files.push_back (getFilePath (fv, base));
     if (auto* ts = o["tracks"].getArray()) for (auto& t : *ts) w.tracks.push_back (juce::Uuid (t.toString()));
+    if (! w.tracks.empty() && w.tracks.size() != w.files.size()) w.tracks.clear();   // (3.27.1: a damaged file - the lists are written as long as each other, or tracks empty = every file)
     if ((bool) o["rx"]) { w.rx = true; w.fileFrom = samplesFromVar (o["fileFrom"]); w.fileLen = juce::jmax ((juce::int64) 0, samplesFromVar (o["fileLen"])); w.program = o["program"].toString(); }
     return w;
 }
@@ -1616,14 +1644,25 @@ var Project::toVar (bool withWindows) const
     if (withWindows) addWindowsToVar (root);
     put (root, "mastering", mastering.toVar());
     if (roomTone.valid()) put (root, "roomTone", roomToneToVar (roomTone));
-    if (! rxSeen.empty())                                                       // 3.22.0: the saves in linked programs already dealt with (files that are gone are left out)
+    if (! rxSeen.empty())                                                       // 3.22.0: the saves in linked programs already dealt with
     {
+        // 3.27.1: an entry is kept while some piece still waits for the file or follows it (whether or not the file is there this moment - a program
+        // that writes a new file and renames it leaves the path missing for an instant, and a save made while Fermata was closed must still be
+        // noticed); entries nothing refers to any more are dropped. (It used to ask the disk about every entry at every save snapshot.)
+        std::set<juce::String> referred;
+        for (auto& e : edits)
+            for (auto* list : { &e->regions, &e->overdubs })
+                for (auto& r : *list)
+                {
+                    if (r.waiting.active() && r.waiting.rx) for (auto& f : r.waiting.files) referred.insert (f.getFullPathName());
+                    for (auto& f : r.files) if (f.rxFrom != juce::File()) referred.insert (f.rxFrom.getFullPathName());
+                }
         const auto base = projectFile.getParentDirectory();
         juce::Array<var> rs;
         for (auto& kv : rxSeen)
         {
             const juce::File f (kv.first);
-            if (! juce::File::isAbsolutePath (kv.first) || ! f.existsAsFile()) continue;
+            if (! juce::File::isAbsolutePath (kv.first) || referred.count (kv.first) == 0) continue;
             var ro = obj(); putFilePath (ro, f, base); put (ro, "seen", (juce::int64) kv.second); rs.add (ro);
         }
         if (! rs.isEmpty()) put (root, "rxSeen", rs);
@@ -1743,7 +1782,7 @@ bool Project::fromVar (const var& root)
         for (auto& v : *a)
         {
             InputChannel i; i.name = v["name"].toString(); i.driverName = v["driverName"].toString();
-            i.preamp.gainDb = (float) (double) v["gainDb"]; i.preamp.phantom = (bool) v["phantom"];
+            i.preamp.gainDb = dbFromVar (v["gainDb"]); i.preamp.phantom = (bool) v["phantom"];
             i.preamp.line = (bool) v["line"]; i.preamp.lowCut = (bool) v["lowCut"]; i.preamp.polarity = (bool) v["polarity"]; i.preamp.boost = (bool) v["boost"]; i.preamp.pad = (bool) v["pad"]; i.preamp.zHigh = (bool) v["zHigh"];
             i.preamp.lowCutHz = v.hasProperty ("lowCutHz") ? (int) v["lowCutHz"] : 80;
             if (i.name == i.driverName) i.name.clear();          // older projects stored the driver name as 'your name'
@@ -1786,9 +1825,9 @@ bool Project::fromVar (const var& root)
     if (auto* ta = root["tbOutputs"].getArray()) { for (auto& v : *ta) tbOutputs.push_back ((int) v); }
     else if (! root["tbOutput"].isVoid() && (int) root["tbOutput"] >= 0) tbOutputs.push_back ((int) root["tbOutput"]);          // older projects: one pair
     stageGainDb.clear(); stagePan.clear();
-    if (auto* sg = root["stageGainDb"].getArray()) for (auto& v : *sg) stageGainDb.push_back ((float) (double) v);
-    if (auto* sp = root["stagePan"].getArray())    for (auto& v : *sp) stagePan.push_back ((float) (double) v);
-    stagePlaybackDb = (float) (double) root.getProperty ("stagePlaybackDb", 0.0); stageOutputDb = (float) (double) root.getProperty ("stageOutputDb", 0.0);
+    if (auto* sg = root["stageGainDb"].getArray()) for (auto& v : *sg) stageGainDb.push_back (dbFromVar (v));
+    if (auto* sp = root["stagePan"].getArray())    for (auto& v : *sp) stagePan.push_back (panFromVar (v));
+    stagePlaybackDb = dbFromVar (root.getProperty ("stagePlaybackDb", 0.0)); stageOutputDb = dbFromVar (root.getProperty ("stageOutputDb", 0.0));
     {   // the Click and Pitch pipe boxes (3.1.1); a project saved by 3.1.0 had one box for both ("stageAuxDb"): it sets both
         const double both = (double) root.getProperty ("stageAuxDb", 0.0);
         stageClickDb = (float) juce::jlimit (-60.0, 10.0, (double) root.getProperty ("stageClickDb", both));
@@ -1905,7 +1944,7 @@ bool Project::fromVar (const var& root)
                     TakeGroup g;
                     g.id = juce::Uuid (gv[key::k_id].toString()); g.number = (int) gv[key::k_number]; g.label = gv[key::k_label].toString();
                     g.startSeconds = (double) gv[key::k_start]; g.lengthSamples = juce::jmax<juce::int64> (0, samplesFromVar (gv[key::k_length]));
-                    g.sampleRate = (double) gv[key::k_rate]; g.recordedAt = juce::Time ((juce::int64) gv[key::k_time]);
+                    g.sampleRate = rateFromVar (gv[key::k_rate]); g.recordedAt = juce::Time ((juce::int64) gv[key::k_time]);
                     if (gv.hasProperty (key::k_fadeIn))  g.fadeInSeconds  = juce::jmax (0.0, (double) gv[key::k_fadeIn]);
                     if (g.fadeInSeconds <= 0.0011 && g.fadeInSeconds > 0.0) g.fadeInSeconds = kDefaultEdgeFade;       // the old 1 ms default becomes the new one
                     if (gv.hasProperty (key::k_fadeOut)) g.fadeOutSeconds = juce::jmax (0.0, (double) gv[key::k_fadeOut]);
@@ -1937,7 +1976,7 @@ bool Project::fromVar (const var& root)
     {
             auto e = std::make_unique<EditDef>();
             e->id = juce::Uuid (v["id"].toString()); e->name = v["name"].toString(); e->windowId = juce::Uuid (v["window"].toString());
-            e->sampleRate = (double) v["rate"]; e->insertIndex = (int) v["insertIndex"];
+            e->sampleRate = rateFromVar (v["rate"]); e->insertIndex = (int) v["insertIndex"];
             if (v.hasProperty ("fixIn")) { e->fixIn = (double) v["fixIn"]; e->fixOut = (double) v["fixOut"]; }
             if (auto* ft = v["fixTracks"].getArray()) for (auto& t : *ft) e->fixTracks.push_back (juce::Uuid (t.toString()));
             auto regionFromVar = [&base] (const var& rv)
@@ -1947,10 +1986,10 @@ bool Project::fromVar (const var& root)
                 r.takeName = rv[key::k_takeName].toString(); r.srcIn = samplesFromVar (rv[key::k_in]); r.srcOut = samplesFromVar (rv[key::k_out]);
                 r.startSample = samplesFromVar (rv[key::k_start]); r.sourceLength = samplesFromVar (rv[key::k_sourceLength]);
                 r.barIn = juce::jmax (0, (int) rv[key::k_barIn]); r.barOut = juce::jmax (0, (int) rv[key::k_barOut]);
-                r.sampleRate = (double) rv[key::k_rate]; r.curve = (FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv[key::k_curve]);
+                r.sampleRate = rateFromVar (rv[key::k_rate]); r.curve = (FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv[key::k_curve]);
                 r.fixIn = (bool) rv[key::k_fixIn]; r.fixOut = (bool) rv[key::k_fixOut]; r.snipIn = (bool) rv[key::k_snipIn]; r.snipOut = (bool) rv[key::k_snipOut]; r.normaliseIn = (bool) rv[key::k_normaliseIn];
                 if (rv.hasProperty (key::k_outCurve)) r.setOutCurve ((FadeCurve) juce::jlimit (0, (int) FadeCurve::Count - 1, (int) rv[key::k_outCurve]));
-                r.inStart = (double) rv[key::k_inStart]; r.inEnd = (double) rv[key::k_inEnd]; r.outStart = (double) rv[key::k_outStart]; r.outEnd = (double) rv[key::k_outEnd];
+                r.inStart = secondsFromVar (rv[key::k_inStart]); r.inEnd = secondsFromVar (rv[key::k_inEnd]); r.outStart = secondsFromVar (rv[key::k_outStart]); r.outEnd = secondsFromVar (rv[key::k_outEnd]);
                 if (auto* fs = rv[key::k_files].getArray())
                     for (auto& fv : *fs)
                     {
@@ -1964,8 +2003,8 @@ bool Project::fromVar (const var& root)
                 if (auto* gs = rv[key::k_gains].getArray())
                     for (auto& gv : *gs)
                     {
-                        GainChange g; g.at = samplesFromVar (gv[key::k_at]); g.ramp = (double) gv[key::k_ramp]; g.autoNorm = (bool) gv[key::k_autoNorm]; g.group = gv[key::k_gainGroup].toString(); g.role = gv.hasProperty (key::k_gainRole) ? juce::jlimit (0, 3, (int) gv[key::k_gainRole]) : 0;
-                        if (auto* dbs = gv[key::k_db].getArray()) for (auto& d : *dbs) g.db.push_back ((float) (double) d);
+                        GainChange g; g.at = samplesFromVar (gv[key::k_at]); g.ramp = secondsFromVar (gv[key::k_ramp]); g.autoNorm = (bool) gv[key::k_autoNorm]; g.group = gv[key::k_gainGroup].toString(); g.role = gv.hasProperty (key::k_gainRole) ? juce::jlimit (0, 3, (int) gv[key::k_gainRole]) : 0;
+                        if (auto* dbs = gv[key::k_db].getArray()) for (auto& d : *dbs) g.db.push_back (dbFromVar (d));
                         g.db.resize (r.files.size(), 0.0f);
                         r.gains.push_back (g);
                     }
@@ -1982,7 +2021,7 @@ bool Project::fromVar (const var& root)
                 gd.windowId = juce::Uuid (gv["window"].toString()); gd.takeId = juce::Uuid (gv["take"].toString()); gd.trackId = juce::Uuid (gv["track"].toString());
                 gd.takeName = gv["takeName"].toString(); gd.trackName = gv["trackName"].toString();
                 gd.file = getFilePath (gv, base); gd.numChannels = juce::jmax (1, (int) gv[key::k_channels]);
-                gd.sampleRate = (double) gv["rate"]; gd.srcIn = samplesFromVar (gv["in"]); gd.srcOut = samplesFromVar (gv["out"]); gd.start = samplesFromVar (gv["start"]);
+                gd.sampleRate = rateFromVar (gv["rate"]); gd.srcIn = samplesFromVar (gv["in"]); gd.srcOut = samplesFromVar (gv["out"]); gd.start = samplesFromVar (gv["start"]);
                 if (! gd.active()) gd = EditGuide();
             }
             e->showGuide = v["showGuide"].isVoid() ? true : (bool) v["showGuide"];
@@ -1996,7 +2035,7 @@ bool Project::fromVar (const var& root)
                         for (auto& pv : *ps)
                         {
                             AutoPoint p; p.id = juce::Uuid (pv["id"].toString()); p.region = juce::Uuid (pv["region"].toString()); p.take = juce::Uuid (pv["take"].toString());
-                            p.srcPos = samplesFromVar (pv["src"]); p.time = samplesFromVar (pv["time"]); p.value = (float) (double) pv["value"];
+                            p.srcPos = samplesFromVar (pv["src"]); p.time = samplesFromVar (pv["time"]); p.value = finiteFloat (pv["value"], -1.0e6f, 1.0e6f);
                             p.floating = (bool) pv["floating"];
                             l.pts.push_back (p);
                         }
@@ -2019,7 +2058,7 @@ bool Project::fromVar (const var& root)
                 }
             if (auto* ab = v["autoBefore"].getArray())
                 for (auto& av : *ab)
-                    if (const auto key = av["lane"].toString(); key.isNotEmpty() && ! av["value"].isVoid()) e->autoBefore[key] = (float) (double) av["value"];
+                    if (const auto key = av["lane"].toString(); key.isNotEmpty() && ! av["value"].isVoid()) e->autoBefore[key] = finiteFloat (av["value"], -1.0e6f, 1.0e6f);
             e->hardenEnds();                                    // older projects: the ends of the edit get their short fades too
             e->clampAll();
             e->commitAllJoins();                                // older projects: the edit points that were moved in the trim window get their pieces' edges moved with them (the sound does not change)
@@ -2048,7 +2087,7 @@ bool Project::fromVar (const var& root)
         {
             ConsonantDef c;
             c.id = juce::Uuid (co["id"].toString()); c.name = co["name"].toString(); c.from = co["from"].toString();
-            c.sampleRate = (double) co["rate"]; c.length = samplesFromVar (co["length"]); c.lead = samplesFromVar (co["lead"]);
+            c.sampleRate = rateFromVar (co["rate"]); c.length = samplesFromVar (co["length"]); c.lead = samplesFromVar (co["lead"]);
             c.made = juce::Time ((juce::int64) co["made"]);
             if (auto* ta = co["tracks"].getArray())
                 for (auto& to : *ta)
@@ -2363,6 +2402,18 @@ bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid
                             if (at != ids.end()) *at = rf.trackId; else ids.push_back (rf.trackId);
                         }
                     }
+            // 3.27.1: a snapshot that points at a file that is gone (the take was renamed since, or its file found again elsewhere) keeps the file the
+            // same piece plays now: an undo never puts a path back that nothing can read
+            std::map<std::pair<juce::Uuid, juce::Uuid>, juce::File> liveFile;                                       // (piece, track) -> the file playing now
+            for (auto* rs : { &live->regions, &live->overdubs })
+                for (auto& r : *rs) for (auto& rf : r.files) liveFile[{ r.id, rf.trackId }] = rf.file;
+            for (auto* rs : { &te->regions, &te->overdubs })
+                for (auto& r : *rs)
+                    for (auto& rf : r.files)
+                        if (! rf.file.existsAsFile())
+                            if (const auto it = liveFile.find ({ r.id, rf.trackId }); it != liveFile.end() && it->second.existsAsFile()) rf.file = it->second;
+            if (te->guide.active() && ! te->guide.file.existsAsFile() && live->guide.file.existsAsFile() && live->guide.takeId == te->guide.takeId && live->guide.trackId == te->guide.trackId)
+                te->guide.file = live->guide.file;
             te->fixIn = live->fixIn; te->fixOut = live->fixOut; te->fixTracks = live->fixTracks;
             te->playheadSeconds = live->playheadSeconds; te->insertIndex = live->insertIndex; te->markers = live->markers; te->feedback = live->feedback; te->showFeedback = live->showFeedback; te->showMarkers = live->showMarkers;
             if (live->insertIndex >= 0 && live->insertIndex < (int) live->regions.size())      // the insert point stays in front of the same piece (2.103: undoing a retime or a snip
@@ -2417,7 +2468,7 @@ bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid
         else live->groups.push_back (tg);                    // a take that was removed from the window comes back
     }
     std::stable_sort (live->groups.begin(), live->groups.end(), [] (const TakeGroup& a, const TakeGroup& b) { return a.number < b.number; });
-    live->targetEdit = tw->targetEdit; live->showLtc = tw->showLtc;
+    live->targetEdit = tw->targetEdit; live->showLtc = tw->showLtc; live->pieceBars = tw->pieceBars;      // (pieceBars: in the undo hash since 3.8.0, put back since 3.27.1)
     live->name = tw->name; live->defaultLabel = tw->defaultLabel;
     live->nextNumber = juce::jmax (live->nextNumber, tw->nextNumber);     // (never back: a take recorded since the snapshot keeps its number to itself - 3.1.4)
     return false;
@@ -2942,7 +2993,8 @@ bool Project::revertWindowToKept (const juce::Uuid& id, const juce::Uuid& liveTa
     {
         if (! k.mix.isObject()) return false;
         const auto parts = k.mixParts;
-        applyMix (*m, k.mix, sampleRate, maxBlock, MixParts());      // (a mixer is not part of the undo history)
+        MixParts all; all.clearEmptySlots = true;                     // (3.27.1: a plug-in added since it was kept goes too - the kept mixer had that slot empty)
+        applyMix (*m, k.mix, sampleRate, maxBlock, all);              // (a mixer is not part of the undo history)
         it->second.mixHash = mixKeepHash (*m, &parts);               // (as it is now: back where it was kept)
         return true;
     }
@@ -3364,6 +3416,28 @@ juce::String Project::RelinkReport::summary() const
     return s.joinIntoString (".\n") + ".";
 }
 
+bool Project::renameTake (TakeWindowDef& w, const juce::Uuid& takeId, const juce::String& label)
+{
+    std::vector<std::pair<juce::File, juce::File>> moved;
+    const bool ok = w.setLabel (takeId, label, &moved);
+    if (moved.empty()) return ok;
+    auto renamed = [&moved] (juce::File& f)
+    {
+        for (auto& m : moved) if (m.first == f) { f = m.second; return; }
+    };
+    for (auto& e : edits)
+    {
+        for (auto* rs : { &e->regions, &e->overdubs })
+            for (auto& r : *rs)
+            {
+                for (auto& rf : r.files) renamed (rf.file);
+                for (auto& wf : r.waiting.files) renamed (wf);
+            }
+        renamed (e->guide.file);
+    }
+    return ok;
+}
+
 Project::RelinkReport Project::relinkAudio (const juce::File& searchFolder, const std::function<void (const juce::String&, double)>& progress)
 {
     RelinkReport rep;
@@ -3469,6 +3543,7 @@ Project::RelinkReport Project::relinkAudio (const juce::File& searchFolder, cons
     });
     structureChanged();
     undoReset();           // not an undo step: Ctrl+Z must never quietly put the missing paths back (the save before is in the project's .bak)
+    keepAllWindows();      // (3.27.1: nor the quit box - the kept copies held the missing paths, so every relinked window was listed as changed, and unticking one put them back)
     return rep;
 }
 

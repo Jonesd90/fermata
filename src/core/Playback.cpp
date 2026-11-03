@@ -595,7 +595,7 @@ bool writeControl (const AutomationPlan::Item& it, float v)
 }
 } // namespace
 
-AutoHoldResult holdAutomatedControls (Project& p, EditDef& e, bool canRestore)
+AutoHoldResult holdAutomatedControls (Project& p, EditDef& e, bool canRestore, const std::function<bool (const AutomationPlan::Item&)>& stillDriven)
 {
     AutoHoldResult r;
     std::set<juce::String> live;
@@ -619,7 +619,10 @@ AutoHoldResult holdAutomatedControls (Project& p, EditDef& e, bool canRestore)
         {
             AutoLane l; l.trackId = juce::Uuid (parts[0]); l.param = parts[1]; l.mixerId = parts[2].isEmpty() ? juce::Uuid::null() : juce::Uuid (parts[2]);
             if (auto plan = planForOneLane (p, e, l); plan != nullptr && ! plan->items.empty())
+            {
+                if (stillDriven && stillDriven (plan->items.front())) { r.pending = true; ++it; continue; }     // (another play's automation holds it: back once that stops)
                 if (! writeControl (plan->items.front(), it->second)) { r.pending = true; ++it; continue; }
+            }
         }
         it = e.autoBefore.erase (it); r.changed = true;
     }

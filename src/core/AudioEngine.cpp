@@ -98,6 +98,12 @@ AudioEngine::~AudioEngine()
     stopThreadOrLog (finisher, 20000);               // (a close still going after that minute is on a drive that is barely answering: a kill mid-flush would cost the take's last moments: 3.1.2, was 5 s)
     for (auto& f : finishing) if (f->rs != nullptr) for (auto& rt : f->rs->tracks) rt.writer.reset();     // (any the finisher did not get to)
     finishing.clear();
+    {   // 3.27.1: the second drive's copies of the last take get their last chunk and their finished header (quitting right after Stop used to cut them
+        // off with the header copied at the start); bounded, and said in the log when the drive does not keep up
+        const auto t0 = juce::Time::getMillisecondCounter();
+        while (backupCopier.busy() > 0 && juce::Time::getMillisecondCounter() - t0 < 10000) juce::Thread::sleep (20);
+        if (backupCopier.busy() > 0) juce::Logger::writeToLog ("Second recording drive: " + juce::String (backupCopier.busy()) + " copies were still being written when Fermata closed");
+    }
     ringBuilder.stopThread (4000);
     stopPlayback();
     running = false;
@@ -1516,7 +1522,13 @@ juce::String AudioEngine::startPlayback (std::unique_ptr<PlaybackSession> s, boo
 {
     if (isRecording()) return "Stop recording before playing back";
     if (zeros.empty()) return "The audio device has not been started";
-    if (! waitForFinishedTakes (15000)) return "The last take's files are still being written to the disk: try again in a moment";
+    {   // the last take's files are still being closed: wait only when this play uses one of them (3.27.1: every play used to wait, up to 15 s on a struggling drive)
+        bool usesFinishing = false;
+        for (auto& f : finishing)
+            if (! f->done.load (std::memory_order_acquire))
+                for (auto& ff : f->files) for (auto& seg : s->getSegments()) usesFinishing = usesFinishing || seg.file == ff;
+        if (usesFinishing && ! waitForFinishedTakes (15000)) return "The last take's files are still being written to the disk: try again in a moment";
+    }
     stopPlayback();
     if (std::abs (s->getSampleRate() - sampleRate) > 0.5)
         return converting.load() ? "The take was recorded at " + juce::String (s->getSampleRate(), 0) + " Hz but this project plays at " + juce::String (sampleRate, 0) + " Hz (the rate of most of its takes)"
@@ -1592,6 +1604,23 @@ bool AudioEngine::replaceAutomation (const juce::Uuid& editId, std::shared_ptr<A
     if (prev != nullptr) replacedPlans.push_back ({ std::move (prev), blockCounter.load() });
     serviceReplacedAutomation();
     return true;
+}
+
+bool AudioEngine::automationDrives (const AutomationPlan::Item& it) const noexcept
+{
+    if (playback.load() == nullptr || playSession == nullptr) return false;
+    auto drivenBy = [&it] (const AutomationPlan& plan)
+    {
+        for (auto& o : plan.items)
+        {
+            if (it.target != nullptr && (o.target == it.target || std::any_of (o.members.begin(), o.members.end(), [&it] (const AutomationPlan::VcaMember& m) { return m.db == it.target; }))) return true;
+            if (it.slot != nullptr && o.slot == it.slot && o.paramIndex == it.paramIndex) return true;
+        }
+        return false;
+    };
+    if (auto* now = playSession->autoNow.load (std::memory_order_acquire)) if (drivenBy (*now)) return true;
+    for (auto& rp : replacedPlans) if (rp.plan != nullptr && drivenBy (*rp.plan)) return true;
+    return false;
 }
 
 void AudioEngine::serviceReplacedAutomation()
@@ -1849,9 +1878,14 @@ void AudioEngine::Finisher::run()
         { const juce::ScopedLock sl (lock); if (! queue.empty()) { f = queue.front(); queue.erase (queue.begin()); } }
         if (f == nullptr) { wait (1000); continue; }                  // (3.18.2: add() wakes it; it used to look five times a second for nothing)
         const auto t0 = juce::Time::getMillisecondCounterHiRes();
-        for (auto& rt : f->rs->tracks) rt.writer.reset();           // writes what is left in the buffer, then the header (the length)
+        for (auto& rt : f->rs->tracks)                              // writes what is left in the buffer, then the header (the length)
+        {
+            if (rt.writer != nullptr && ! rt.writer->finish()) f->failedAtEnd.store (true, std::memory_order_relaxed);
+            rt.writer.reset();
+        }
         for (auto& c : f->copies) BackupCopier::finish (c);         // now the second drive's copies can take the finished files
-        juce::Logger::writeToLog (f->report + "; files finished " + juce::String (juce::roundToInt (juce::Time::getMillisecondCounterHiRes() - t0)) + " ms after Stop");
+        juce::Logger::writeToLog (f->report + "; files finished " + juce::String (juce::roundToInt (juce::Time::getMillisecondCounterHiRes() - t0)) + " ms after Stop"
+                                  + (f->failedAtEnd.load() ? "; A FILE STOPPED TAKING DATA WHILE IT WAS FINISHED (the end of that track is missing)" : ""));
         f->done.store (true, std::memory_order_release);
     }
 }
@@ -1886,6 +1920,7 @@ std::vector<juce::File> AudioEngine::reapFinishedTakes()
         if (finishing[i]->done.load (std::memory_order_acquire))
         {
             files.insert (files.end(), finishing[i]->files.begin(), finishing[i]->files.end());
+            if (finishing[i]->failedAtEnd.load() && finishing[i]->rs != nullptr) finishFailures.push_back ({ finishing[i]->rs->windowId, finishing[i]->rs->groupId });
             finishing.erase (finishing.begin() + (std::ptrdiff_t) i);
         }
     return files;

@@ -513,6 +513,7 @@ public:
         CoreReservation::get().shutdown();                                       // other programs are given all the cores back
         closing::step ("CPU cores handed back");
         windows.clear();
+        audioSettings.reset();                                                    // (3.27.1: before the AppContext - its device chooser lets go of the device manager in its destructor)
         closing::step ("windows closed");
         mainWindow.reset();
         closing::step ("main window closed");
@@ -533,6 +534,11 @@ public:
         if (ctx && ctx->engine.isRecording())
         {
             showError ("Recording in progress", "Stop recording before quitting.");
+            return;
+        }
+        if (ctx && ctx->saveHold > 0)                                            // 3.27.1: a ReTouch / Pitch window has a preview in the edit (the automatic save waits for it; so does the final one)
+        {
+            showError ("A fix is being tried out", "A ReTouch or Pitch window is still trying something out. Write it back or close it first, then quit.");
             return;
         }
         if (quitAsking) return;                                                  // the question is already on screen
