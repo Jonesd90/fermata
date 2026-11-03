@@ -169,6 +169,8 @@ public:
     /** Message thread, often (a timer): the plans replaced while playing that the audio thread has certainly left are freed, and what they held that the
         plan playing now does not hold goes back - a send leaves the mixer plan again, a channel under a VCA lane goes back to the VCA's own fader. */
     void serviceReplacedAutomation();
+    /** 3.27.0: a plan replaced while playing may still be applied by the audio thread (what only it drove must not be put back yet). */
+    bool hasReplacedAutomation() const noexcept { return ! replacedPlans.empty(); }
     /** True while edit 'editId' plays as such, so a change to its automation can be heard at once. Message thread. */
     bool followsAutomationOf (const juce::Uuid& editId) const noexcept
     {

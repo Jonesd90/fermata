@@ -1440,6 +1440,12 @@ var Project::editToVarIn (const EditDef& eref, const juce::File& base)
         }
         if (lr.size() > 0) put (o, "laneRows", lr);
     }
+    if (! e->autoBefore.empty())                                                       // 3.27.0: where the automated controls were before their lanes took them over
+    {
+        juce::Array<var> ab;
+        for (auto& kv : e->autoBefore) { var ao = obj(); put (ao, "lane", kv.first); put (ao, "value", (double) kv.second); ab.add (ao); }
+        put (o, "autoBefore", ab);
+    }
     put (o, "regions", rs);
     return o;
 }
@@ -2011,6 +2017,9 @@ bool Project::fromVar (const var& root)
                         if ((int) dst.size() < EditDef::kMaxLaneRows) dst.push_back (sh);
                     }
                 }
+            if (auto* ab = v["autoBefore"].getArray())
+                for (auto& av : *ab)
+                    if (const auto key = av["lane"].toString(); key.isNotEmpty() && ! av["value"].isVoid()) e->autoBefore[key] = (float) (double) av["value"];
             e->hardenEnds();                                    // older projects: the ends of the edit get their short fades too
             e->clampAll();
             e->commitAllJoins();                                // older projects: the edit points that were moved in the trim window get their pieces' edges moved with them (the sound does not change)
@@ -2189,6 +2198,7 @@ juce::uint64 Project::saveHash (const EditDef& e)
         if (! EditDef::isDefaultRows (kv.second)) { h.add (kv.first); h.count (kv.second.size()); for (auto& sh : kv.second) { h.add (sh.param); h.add (sh.mixer); } }
     h.count (e.feedback.size());
     for (auto& n : e.feedback) { h.add (n.key); h.add (n.who); h.add (n.bar); h.add (n.text); h.add (n.colour); h.add (n.source); h.add (n.seconds); h.add (n.done); }
+    h.count (e.autoBefore.size()); for (auto& kv : e.autoBefore) { h.add (kv.first); h.add (kv.second); }
     return h.h;
 }
 
@@ -2200,7 +2210,7 @@ void strip (const var& o, std::initializer_list<const char*> keys)
 }
 const std::initializer_list<const char*> kTakeViewKeys = { "editTake", "editIn", "editOut", "editTracks", "cursorTake", "cursorSeconds", "playhead", "hiddenTracks", "overdub", "markers", "showMarkers", "takeMatching" };
 const std::initializer_list<const char*> kTakeMachineKeys = { "length", "overruns", "lost", "writeFailed", "verified" };     // per take: the recorder's, not the person's (3.1.4)
-const std::initializer_list<const char*> kEditViewKeys = { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex", "markers", "feedback", "showFeedback", "showMarkers", "laneRows", "showGuide" };
+const std::initializer_list<const char*> kEditViewKeys = { "markIn", "markOut", "fixIn", "fixOut", "fixTracks", "playhead", "insertIndex", "markers", "feedback", "showFeedback", "showMarkers", "laneRows", "showGuide", "autoBefore" };
 }
 
 juce::String Project::undoText (const TakeWindowDef& w) const
@@ -2358,6 +2368,7 @@ bool restorePiece (Project& p, const Project::UndoPiece& piece, const juce::Uuid
             if (live->insertIndex >= 0 && live->insertIndex < (int) live->regions.size())      // the insert point stays in front of the same piece (2.103: undoing a retime or a snip
                 if (const int k = te->indexOf (live->regions[(size_t) live->insertIndex].id); k >= 0) te->insertIndex = k;     //  changes how many pieces there are before it)
             te->laneRows = live->laneRows;                                // (the automation rows shown: a view setting, like the ones above)
+            te->autoBefore = live->autoBefore;                            // (3.27.0: where the automated controls were: an undo that takes a lane's points away puts the control back from here)
             te->showGuide = live->showGuide;                              // (the Guide button: a view; the guide itself is part of undo)
             *live = std::move (*te);
         }

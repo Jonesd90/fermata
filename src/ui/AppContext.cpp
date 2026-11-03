@@ -102,6 +102,8 @@ AppContext::AppContext()
     if (auto* st = props.getUserSettings())
     {
         playheadFollows = st->getBoolValue ("playheadFollows", true);
+        waveCompress = juce::jlimit (0, 3, st->getIntValue ("waveCompress", 0));                          // 3.27.0
+        waveCompressLast = juce::jlimit (1, 3, st->getIntValue ("waveCompressLast", 2));
         trimWaveZoom = juce::jlimit (0.25f, 40.0f, (float) st->getDoubleValue ("trimWaveZoom", 1.0));
         trimSlipLeft = st->getBoolValue ("trimSlipLeft", true);
         trimSlipRight = st->getBoolValue ("trimSlipRight", true);
@@ -776,6 +778,23 @@ juce::uint64 AppContext::fixUndoHashNow (bool isEdit, const juce::Uuid& id, cons
 bool AppContext::fixUndoStillValid()
 {
     return fixUndo != nullptr && fixUndoHash != 0 && fixUndoHashNow (fixUndoIsEdit, fixUndoId, fixUndoGroup) == fixUndoHash;
+}
+
+void AppContext::setWaveCompress (int strength)
+{
+    waveCompress = juce::jlimit (0, 3, strength);
+    if (waveCompress > 0) waveCompressLast = waveCompress;
+    if (auto* st = props.getUserSettings()) { st->setValue ("waveCompress", waveCompress); st->setValue ("waveCompressLast", waveCompressLast); props.saveIfNeeded(); }
+    project.sendChangeMessage();                                          // (the take and edit windows draw again)
+    trimWaveZoomChanged.sendChangeMessage();                              // (and the Trim windows)
+}
+
+void AppContext::showWaveCompressMenu (juce::Component* target)
+{
+    juce::PopupMenu m;
+    m.addSectionHeader ("Compressed waveforms (the picture only, never the sound)");
+    for (int k = 0; k <= 3; ++k) m.addItem (k + 1, waveshape::nameOf (k), true, waveCompress == k);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (target), [this] (int r) { if (r > 0) setWaveCompress (r - 1); });
 }
 
 void AppContext::undoStep()
@@ -1752,7 +1771,19 @@ juce::String AppContext::playEdit (const juce::Uuid& editId, double fromSec, dou
 void AppContext::followAutomation()
 {
     engine.serviceReplacedAutomation();                                   // (plans replaced earlier that the audio thread has left: freed)
-    if (playInfo.kind != PlayInfo::Kind::Edit || ! engine.followsAutomationOf (playInfo.id)) return;
+    const bool follows = playInfo.kind == PlayInfo::Kind::Edit && engine.followsAutomationOf (playInfo.id);
+    {   // 3.27.0: a control taken over by a new lane is remembered where it is (before the plan below drives it); one whose lane has no points any more - deleted,
+        // or taken away by Ctrl+Z - goes back there, once nothing drives it (while its edit plays: once the plan without the lane has taken over)
+        bool dirty = false;
+        for (auto& ep : project.edits)
+        {
+            if (ep == nullptr || (ep->lanes.empty() && ep->autoBefore.empty())) continue;
+            const bool driven = follows && ep->id == playInfo.id && (engine.hasReplacedAutomation() || liveAutoSig != lanesSignature (ep->lanes));
+            dirty = holdAutomatedControls (project, *ep, ! driven).changed || dirty;
+        }
+        if (dirty) project.markDirty();
+    }
+    if (! follows) return;
     auto* e = project.findEdit (playInfo.id);
     if (e == nullptr) return;
     const auto sig = lanesSignature (e->lanes);

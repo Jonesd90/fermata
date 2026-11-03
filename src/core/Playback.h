@@ -41,6 +41,13 @@ struct AutomationPlan
     mono tracks). Whether the lanes are shown makes no difference: what is written plays. */
 std::shared_ptr<AutomationPlan> automationPlanFor (Project&, const EditDef&, bool onProcessingMixer = false, const juce::Uuid& unassignedMixer = juce::Uuid::null());
 
+/** 3.27.0: keeps EditDef::autoBefore. A lane that has just got points has its control's value remembered (it is not driven yet: call this before a plan with the
+    new lane plays). A remembered control whose lane has no points any more (deleted, or taken away by Ctrl+Z) is put back to that value and forgotten - only when
+    canRestore (nothing drives it any more: while the edit plays, once the plan without the lane has taken over); otherwise 'pending' says to try again later.
+    'changed': autoBefore changed or a control was put back (the project needs saving). Message thread. */
+struct AutoHoldResult { bool changed = false, pending = false; };
+AutoHoldResult holdAutomatedControls (Project&, EditDef&, bool canRestore);
+
 /** One stretch of one file placed on the playback timeline. */
 struct PlaySegment
 {

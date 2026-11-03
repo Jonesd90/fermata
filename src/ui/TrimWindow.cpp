@@ -283,6 +283,7 @@ public:
 
     void invalidate() { cacheKey = {}; repaint(); }
     float extraZoom = 1.0f;                                  // the . and , keys
+    float shape = 1.0f;                                      // 3.27.0: compressed waveforms (waveshape; 1 = plain)
 
 private:
     float refX() const { const double vs = juce::jmax (1.0, owner.viewSeconds * (owner.edit() != nullptr && owner.edit()->sampleRate > 0 ? owner.edit()->sampleRate : 48000.0));
@@ -415,14 +416,15 @@ private:
         const double t0 = centre - viewSamples * 0.5;
         for (int x = 0; x < w && (size_t) x < c.lo.size(); ++x)
         {
-            const float lo = c.lo[(size_t) x] * scale * extraZoom * half, hi = c.hi[(size_t) x] * scale * extraZoom * half;
+            const float vlo = c.lo[(size_t) x] * scale, vhi = c.hi[(size_t) x] * scale;
+            const float lo = waveshape::apply (vlo, shape) * extraZoom * half, hi = waveshape::apply (vhi, shape) * extraZoom * half;
             g.setColour (colour.withAlpha (0.22f));                                  // the whole recording, faint
             g.drawVerticalLine (lane.getX() + x, mid - hi, mid - lo + 1.0f);
             const float gain = r.gainAt ((juce::int64) (t0 + (x + 0.5) * viewSamples / w));
-            if (gain > 0.0f)                                                         // what you will hear, scaled by the fades
+            if (gain > 0.0f)                                                         // what you will hear, scaled by the fades (3.27.0: then drawn through the curve)
             {
                 g.setColour (colour);
-                g.drawVerticalLine (lane.getX() + x, mid - hi * gain, mid - lo * gain + 1.0f);
+                g.drawVerticalLine (lane.getX() + x, mid - waveshape::apply (vhi * gain, shape) * extraZoom * half, mid - waveshape::apply (vlo * gain, shape) * extraZoom * half + 1.0f);
             }
         }
         g.setColour (theme::text.withAlpha (0.85f)); g.setFont (12.0f);
@@ -449,7 +451,15 @@ TrimComponent::TrimComponent (AppContext& a, const juce::Uuid& eid, const juce::
     td::registerAudioFormats (formats);
     waves.reset (new TrimWaves (*this));
     waves->extraZoom = app.trimWaveZoom;
+    waves->shape = app.waveShape();
     addAndMakeVisible (*waves);
+    waveCompressBtn.setTooltip ("Compressed waveforms (the picture only, never the sound). Lit: quiet passages are drawn much bigger and loud ones a little smaller. "
+                                "Click: on / off. Right-click: Light, Medium or Strong. (The same in the take, edit and trim windows; remembered.)");
+    waveCompressBtn.onClick = [this] { app.setWaveCompress (app.waveCompress > 0 ? 0 : app.waveCompressLast); };
+    waveCompressBtn.onMenu = [this] { app.showWaveCompressMenu (&waveCompressBtn); };
+    waveCompressBtn.setToggleState (app.waveCompress > 0, juce::dontSendNotification);
+    waveCompressBtn.setWantsKeyboardFocus (false);
+    addAndMakeVisible (waveCompressBtn);
     hScroll.setAutoHide (false);                               // 3.20.0: always there, so it is clear the view can be moved
     hScroll.addListener (this);
     addAndMakeVisible (hScroll);
@@ -786,9 +796,11 @@ void TrimComponent::refreshReaders()
 
 void TrimComponent::changeListenerCallback (juce::ChangeBroadcaster* src)
 {
-    if (src == &app.trimWaveZoomChanged)               // the . / , keys of a Trim window: only the waveform size changed
+    if (src == &app.trimWaveZoomChanged)               // the . / , keys of a Trim window, or (3.27.0) compressed waveforms: only how the waveforms are drawn changed
     {
         waves->extraZoom = app.trimWaveZoom;
+        waves->shape = app.waveShape();
+        waveCompressBtn.setToggleState (app.waveCompress > 0, juce::dontSendNotification);
         waves->invalidate();
         return;
     }
@@ -996,6 +1008,8 @@ void TrimComponent::resized()
     zoomIn.setBounds (r1.removeFromLeft (75).reduced (2)); zoomOut.setBounds (r1.removeFromLeft (75).reduced (2));
     centreButton.setBounds (r1.removeFromLeft (115).reduced (2));
     resetFade.setBounds (r1.removeFromLeft (130).reduced (2));
+    r1.removeFromLeft (6);
+    waveCompressBtn.setBounds (r1.removeFromLeft (34).reduced (0, 2));
 
     auto r2 = row (32);
     acceptButton.setBounds (r2.removeFromLeft (130).reduced (2));

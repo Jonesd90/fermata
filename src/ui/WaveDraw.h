@@ -6,6 +6,7 @@
 #include "WaveColor.h"
 #include "WaveThumb.h"
 #include "../core/Common.h"
+#include "../core/WaveShape.h"
 #include <atomic>
 #include <deque>
 #include <map>
@@ -98,8 +99,10 @@ inline void drawWaitingBlock (juce::Graphics& g, juce::Rectangle<int> area, cons
     g.drawText (words, area.reduced (6, 0), juce::Justification::centred, true);
 }
 
-/** The waveform of a (zoomed-out) thumbnail between t0 and t1 seconds, drawn with fillEnvelope for every channel. */
-inline void drawThumbnailEnvelope (juce::Graphics& g, juce::Rectangle<int> area, const WaveThumb& th, double t0, double t1, float vzoom, const WaveColorData* wc = nullptr)
+/** The waveform of a (zoomed-out) thumbnail between t0 and t1 seconds, drawn with fillEnvelope for every channel. shape: 3.27.0 compressed waveforms
+    (waveshape::exponentFor; 1 = plain). */
+inline void drawThumbnailEnvelope (juce::Graphics& g, juce::Rectangle<int> area, const WaveThumb& th, double t0, double t1, float vzoom, const WaveColorData* wc = nullptr,
+                                   float shape = 1.0f)
 {
     if (area.isEmpty() || t1 <= t0) return;
     const int nCh = juce::jmax (1, th.getNumChannels());
@@ -120,8 +123,8 @@ inline void drawThumbnailEnvelope (juce::Graphics& g, juce::Rectangle<int> area,
             const double a = t0 + (double) (clip.getX() + i - area.getX()) * perPx;
             float mn = 0.0f, mx = 0.0f;
             th.getApproximateMinMax (a, a + perPx, c, mn, mx);
-            tops[(size_t) i] = juce::jlimit (lo, hi, centre - mx * half);
-            bots[(size_t) i] = juce::jlimit (lo, hi, centre - mn * half);
+            tops[(size_t) i] = juce::jlimit (lo, hi, centre - waveshape::apply (mx, shape) * half);
+            bots[(size_t) i] = juce::jlimit (lo, hi, centre - waveshape::apply (mn, shape) * half);
         }
         fillEnvelope (g, (float) clip.getX(), tops, bots, wc != nullptr ? &cols : nullptr, (float) bandH);
     }
@@ -150,7 +153,7 @@ public:
     /** rateHint: the file's sample rate when the caller knows it (> 0). Then nothing is opened unless the view is zoomed in far enough to need it:
         a redraw at an ordinary zoom never touches the disk (opening a file that was only just recorded can wait on Windows' virus scan). */
     bool draw (juce::Graphics& g, juce::Rectangle<int> area, const juce::File& file, double t0, double t1, float vzoom, const WaveColorData* wc = nullptr,
-               double rateHint = 0.0)
+               double rateHint = 0.0, float shape = 1.0f)       // (shape: 3.27.0 compressed waveforms, as drawThumbnailEnvelope)
     {
         if (area.getWidth() < 1 || area.getHeight() < 1 || t1 <= t0) return false;
         if (rateHint > 0.0 && (t1 - t0) * rateHint / (double) area.getWidth() >= kThumbSamplesPerPixelLimit) return false;
@@ -180,7 +183,7 @@ public:
             const float centre = (float) area.getY() + (float) bandH * ((float) c + 0.5f);
             const float half = (float) bandH * 0.5f * vzoom;
             const float lo = (float) area.getY() + (float) bandH * (float) c, hi = lo + (float) bandH;
-            auto yOf = [&] (float v) { return juce::jlimit (lo, hi, centre - v * half); };
+            auto yOf = [&] (float v) { return juce::jlimit (lo, hi, centre - waveshape::apply (v, shape) * half); };
             auto at = [&] (juce::int64 s) -> float
             {
                 const auto i = s - ch.start;

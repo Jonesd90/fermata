@@ -100,6 +100,7 @@ private:
     LoopButton loopToggle;
     PlayheadModeButton playheadMode;
     RainbowButton waveColourBtn;
+    CompressWaveButton waveCompressBtn;                 // 3.27.0: compressed waveforms (the picture only)
     std::unique_ptr<TakeTimeline> timeline;
     std::unique_ptr<juce::Viewport> viewportOwner;
     std::unique_ptr<KeepKeysOnTimeline> keysKeeper;           // declared after the viewport: destroyed first

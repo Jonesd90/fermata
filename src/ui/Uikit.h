@@ -1259,6 +1259,35 @@ public:
     }
 };
 
+/** 3.27.0: the compress-waveforms button: a waveform that swings from loud to quiet - drawn evened out, in the accent colour, when it is on. A click is onClick
+    (switch on / off); a right-click calls onMenu (the strength). */
+class CompressWaveButton : public juce::Button
+{
+public:
+    CompressWaveButton() : juce::Button ({}) { setClickingTogglesState (false); }
+    std::function<void()> onMenu;
+    void mouseDown (const juce::MouseEvent& e) override { if (e.mods.isPopupMenu()) { menuPress = true; if (onMenu) onMenu(); return; } juce::Button::mouseDown (e); }
+    void mouseUp (const juce::MouseEvent& e) override { if (menuPress) { menuPress = false; return; } juce::Button::mouseUp (e); }
+    void paintButton (juce::Graphics& g, bool over, bool down) override
+    {
+        auto b = getLocalBounds().toFloat().reduced (0.5f);
+        const bool on = getToggleState();
+        g.setColour (on ? theme::button.brighter (0.35f) : down ? theme::button.brighter (0.2f) : over ? theme::button.brighter (0.1f) : theme::button); g.fillRoundedRectangle (b, 4.0f);
+        g.setColour (on ? theme::accent : theme::border); g.drawRoundedRectangle (b, 4.0f, on ? 1.6f : 1.0f);
+        static const float levels[] = { 0.55f, 0.95f, 0.75f, 1.0f, 0.85f, 0.12f, 0.2f, 0.09f, 0.16f, 0.07f, 0.13f };     // a loud burst, then a quiet one
+        const int n = (int) (sizeof (levels) / sizeof (levels[0]));
+        const float full = juce::jmin (8.5f, b.getHeight() * 0.38f), cy = b.getCentreY(), x0 = b.getCentreX() - (float) (n - 1);
+        g.setColour (on ? theme::accent : theme::text.withAlpha (0.8f));
+        for (int i = 0; i < n; ++i)
+        {
+            const float h = juce::jmax (0.8f, full * (on ? std::pow (levels[i], 0.4f) : levels[i]));
+            g.fillRect (juce::Rectangle<float> (x0 + 2.0f * (float) i - 0.6f, cy - h, 1.2f, 2.0f * h));
+        }
+    }
+private:
+    bool menuPress = false;
+};
+
 /** The Loop button: two arrows chasing each other round a circle. Grey when off, bright orange when on. */
 class LoopButton : public juce::Button
 {

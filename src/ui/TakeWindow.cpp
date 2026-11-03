@@ -510,8 +510,8 @@ public:
                     auto* th = thumbnailFor (tf.file);
                     const double total = th != nullptr ? th->getTotalLength() : 0.0;
                     const auto wcd = app.waveColourOf (tf.file);
-                    if (total > 0.0 && ! directWave.draw (g, r.reduced (1), tf.file, 0.0, total, app.waveZoom, wcd.get(), grp.sampleRate))
-                        drawThumbnailEnvelope (g, r.reduced (1), *th, 0.0, total, app.waveZoom, wcd.get());
+                    if (total > 0.0 && ! directWave.draw (g, r.reduced (1), tf.file, 0.0, total, app.waveZoom, wcd.get(), grp.sampleRate, app.waveShape()))
+                        drawThumbnailEnvelope (g, r.reduced (1), *th, 0.0, total, app.waveZoom, wcd.get(), app.waveShape());
                 }
                 if (! live)                                                                          // parts sent out with "Export for Processing": no waveform, a hatched block
                     for (auto& wp : grp.waiting)
@@ -1201,8 +1201,8 @@ private:
                     lo = juce::jmin (lo, (int) data[((size_t) b * (size_t) nc + (size_t) c) * 2]);
                     hi = juce::jmax (hi, (int) data[((size_t) b * (size_t) nc + (size_t) c) * 2 + 1]);
                 }
-                tops.push_back (mid - (float) hi / 32767.0f * half * app.waveZoom);
-                bots.push_back (mid - (float) lo / 32767.0f * half * app.waveZoom);
+                tops.push_back (mid - waveshape::apply ((float) hi / 32767.0f, app.waveShape()) * half * app.waveZoom);      // (3.27.0: compressed too, while it records)
+                bots.push_back (mid - waveshape::apply ((float) lo / 32767.0f, app.waveShape()) * half * app.waveZoom);
             }
             fillEnvelope (g, (float) r.getX(), tops, bots, nullptr, laneH);
         }
@@ -2061,6 +2061,13 @@ TakeWindowComponent::TakeWindowComponent (AppContext& a, const juce::Uuid& wid) 
     waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification);
     waveColourBtn.setWantsKeyboardFocus (false);
     addAndMakeVisible (waveColourBtn);
+    waveCompressBtn.setTooltip ("Compressed waveforms (the picture only, never the sound). Lit: quiet passages are drawn much bigger and loud ones a little smaller, so music that swings from fff to ppp shows both. "
+                                "Click: on / off. Right-click: Light, Medium or Strong. (The same in the take, edit and trim windows; remembered.)");
+    waveCompressBtn.onClick = [this] { app.setWaveCompress (app.waveCompress > 0 ? 0 : app.waveCompressLast); };
+    waveCompressBtn.onMenu = [this] { app.showWaveCompressMenu (&waveCompressBtn); };
+    waveCompressBtn.setToggleState (app.waveCompress > 0, juce::dontSendNotification);
+    waveCompressBtn.setWantsKeyboardFocus (false);
+    addAndMakeVisible (waveCompressBtn);
     loopToggle.setTooltip ("Loop: when lit, Play repeats the marked area (the marks 1 and 2) over and over until you press Stop. Key L.");
     loopToggle.onClick = [this] { loopChanged(); };
     loopToggle.setWantsKeyboardFocus (false);
@@ -2219,7 +2226,7 @@ void TakeWindowComponent::resized()
     // the picture buttons: to the right of the time readout, on as many lines as they need (two fit in the readout's height)
     const std::vector<FlowItem> items
     {
-        { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
+        { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &waveCompressBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
         { &editInButton, IW, IH, 2 }, { &editOutButton, IW, IH, 6 }, { &toEditButton, IW, IH, 2 }, { &toEditAtButton, IW, IH, 2 }, { &overdubBox, IW, IH, 6 }, { &markersToggle, IW, IH, 14 },
         { &editWindowButton, IW, IH, 2 }, { &bounceButton, IW, IH, 14 },
         { &ltcButton, 74, grid::btnH, 14 }, { &armAllButton, IW, IH, 2 }, { &armNoneButton, IW, IH, 14 },
@@ -2568,6 +2575,7 @@ void TakeWindowComponent::timerCallback()
     recordButton.setButtonText (rec ? "STOP [Space]" : "REC [R]");
     if (playheadMode.getToggleState() != app.playheadFollows) playheadMode.setToggleState (app.playheadFollows, juce::dontSendNotification);
     if (waveColourBtn.getToggleState() != app.waveColour) { waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification); repaint(); }
+    if (waveCompressBtn.getToggleState() != (app.waveCompress > 0)) { waveCompressBtn.setToggleState (app.waveCompress > 0, juce::dontSendNotification); repaint(); }
     if (hereRec) { recStart = def()->findGroup (app.engine.currentTakeId()) != nullptr ? def()->findGroup (app.engine.currentTakeId())->startSeconds : recStart; wasRecordingHere = true; }
     else if (wasRecordingHere && ! rec)                                 // a recording just ended: park the playhead at the start of that take, so Space reviews it
     {

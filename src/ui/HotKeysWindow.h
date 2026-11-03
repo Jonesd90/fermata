@@ -95,6 +95,7 @@ inline const std::vector<Line>& lines()
         { "Take window: with the mouse", "drag", "Mark 1 or mark 2 - its flag at the top, or its line over the tracks (a left-right arrow shows): move that mark. The tracks marked with Ctrl + Alt stay as they are." },
         { "Take window: with the mouse", "Ctrl+Shift+drag", "A take's clip up or down: move the clips on that track to another track (those of all the selected takes, if this take is one of them)." },
         { "Take window: with the mouse", "click", "A bar on the bar strip (under the head): the takes that have it are framed and the playhead goes to it. BARS at its left: the take chart." },
+        { "Take window: with the mouse", "click / right-click", "The compress-waveforms button (beside the rainbow WaveColour button): compressed waveforms on / off - quiet passages drawn bigger, the picture only / how strong (Light, Medium, Strong). The same in the edit and trim windows." },
         { "Take window: with the mouse", "right-click", "The bar strip: how many bars the piece has (the strip is red until you enter it)." },
         { "Take window: with the mouse", "double-click", "A take's audio: its bars and notes box." },
         { "Take window: with the mouse", "double-click", "The strip above a take's tracks: Take settings (rename the take and its files)." },
@@ -136,6 +137,7 @@ inline const std::vector<Line>& lines()
         { "Edit window: with the mouse", "Alt+drag", "Over the audio: a lasso. Every piece it touches is selected, overdubs too; the playhead stays where it is." },
         { "Edit window: with the mouse", "Alt+click", "Select only the piece under the mouse (or none)." },
         { "Edit window: with the mouse", "Ctrl+Alt+drag", "Over the audio: marks 1 and 2 on only the tracks the drag covers." },
+        { "Edit window: with the mouse", "click / right-click", "The compress-waveforms button (beside the rainbow WaveColour button): compressed waveforms on / off - quiet passages drawn bigger, the picture only / how strong (Light, Medium, Strong). The same in the take and trim windows." },
         { "Edit window: with the mouse", "Ctrl+Alt+click", "A track inside marks 1 - 2 (no drag): mark only that track - the first click - or add one more, or take one out again; the last one out marks every track again." },
         { "Edit window: with the mouse", "drag", "The line of mark 1 or mark 2 (a left-right arrow shows within a few pixels of it): move that mark - it snaps to a piece's start or end, and never passes the other mark. The tracks marked with Ctrl + Alt stay as they are." },
         { "Edit window: with the mouse", "Shift+drag", "A track's clip up or down: move that clip to another track (it swaps with a clip already there; mono to mono, stereo to stereo)." },
@@ -153,6 +155,7 @@ inline const std::vector<Line>& lines()
 
         // ---------------------------------------------------------------------------------------------------- trim window
         { "Trim window", "F2", "Audition the join (press again to stop)." },
+        { "Trim window", "click / right-click", "The compress-waveforms button (right of Reset crossfade): compressed waveforms on / off / how strong. The same setting as the take and edit windows." },
         { "Trim window", "Space", "Stop what is playing." },
         { "Trim window", "Enter", "Keep the changes and go back to the edit window." },
         { "Trim window", "[ / ]", "Keep this fade and go to the join on the left / on the right." },

@@ -304,6 +304,11 @@ struct EditDef
     /** The rows of every track / bus / VCA, by its id (text). The first is the node's own row (for a track the one with its audio), the rest are extra rows under it. No entry = one
         row showing the fader. Saved with the project; not part of undo (it is a view). */
     std::map<juce::String, std::vector<LaneShown>> laneRows;
+    /** 3.27.0: the value each control driven by a lane of this edit had before the lane got its first point (laneKey -> value: dB, pan, 0..1), so that when the lane has no
+        points any more - deleted, or taken away by Ctrl+Z - the control goes back to it (holdAutomatedControls). Saved with the project; not part of undo (an undo must not
+        forget where a control was). */
+    std::map<juce::String, float> autoBefore;
+    static juce::String laneKey (const AutoLane& l) { return l.trackId.toString() + "|" + l.param + "|" + l.mixerId.toString(); }
     std::vector<LaneShown>& laneRowsOf (const juce::Uuid& node) { auto& v = laneRows[node.toString()]; if (v.empty()) v.push_back (LaneShown()); return v; }
     int laneRowCount (const juce::Uuid& node) const { auto it = laneRows.find (node.toString()); return it == laneRows.end() || it->second.empty() ? 1 : (int) it->second.size(); }
     /** True for the rows every node has when nothing was chosen: one row showing the fader (such an entry is not kept or saved). */

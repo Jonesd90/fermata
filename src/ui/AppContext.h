@@ -3,6 +3,7 @@
 #include "../core/PreampMemory.h"
 #include "Uikit.h"
 #include "WaveColor.h"
+#include "../core/WaveShape.h"
 #include "PluginHost.h"
 #include "../core/SessionClock.h"
 #include "../core/SaveWriter.h"
@@ -41,6 +42,14 @@ struct AppContext : private juce::Timer, private juce::ChangeListener
     /** How much the drawn waveforms are enlarged (the . and , keys in the take, edit and trim windows). Display only: the audio is never touched. */
     float waveZoom = 1.0f;
     void changeWaveZoom (float factor) { waveZoom = juce::jlimit (0.25f, 40.0f, waveZoom * factor); project.sendChangeMessage(); }
+
+    /** 3.27.0: compressed waveforms (display only: never what is heard) - 0 off, 1 light, 2 medium, 3 strong (see waveshape). The same in the take, edit and trim windows;
+        remembered on this computer. 'waveCompressLast': the strength a click on the button switches on. */
+    int waveCompress = 0, waveCompressLast = 2;
+    void setWaveCompress (int strength);
+    float waveShape() const noexcept { return waveshape::exponentFor (waveCompress); }
+    /** The compress-waveforms button's right-click menu: Off, Light, Medium, Strong. */
+    void showWaveCompressMenu (juce::Component* target);
 
     /** WaveColour: the waveforms are coloured by what is in them (pitch = hue, tonal = vivid, a thump below 100 Hz = black). Off by default; the rainbow button in the take and edit windows. */
     bool waveColour = false;

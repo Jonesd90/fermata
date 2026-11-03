@@ -95,6 +95,7 @@ private:
     juce::Label gapLabel;
     juce::ScrollBar hScroll { false };                      // 3.20.0: left and right at any zoom
     juce::ToggleButton loopToggle { "Loop" }, slipLeftToggle { "Slip Left" }, slipRightToggle { "Slip Right" };
+    CompressWaveButton waveCompressBtn;                     // 3.27.0: compressed waveforms (the picture only; the same setting as the take and edit windows)
     bool wasAuditioning = false, updatingControls = false;
 };
 } // namespace td

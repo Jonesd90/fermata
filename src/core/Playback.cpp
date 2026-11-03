@@ -570,6 +570,62 @@ std::shared_ptr<AutomationPlan> automationPlanFor (Project& p, const EditDef& e,
     return plan->items.empty() ? nullptr : plan;
 }
 
+namespace
+{
+/** The control lane 'l' of edit 'e' drives, found as automationPlanFor finds it (the same mixer, track, bus, VCA or plug-in): a plan of one item, or null. */
+std::shared_ptr<AutomationPlan> planForOneLane (Project& p, const EditDef& e, const AutoLane& l)
+{
+    EditDef one; one.id = e.id;                                          // (the same id: a lane that names no mixer drives this edit's own mixer)
+    AutoLane copy = l; copy.pts.assign (1, AutoPoint());
+    one.lanes.push_back (std::move (copy));
+    return automationPlanFor (p, one);
+}
+bool readControl (const AutomationPlan::Item& it, float& v)
+{
+    if (it.target != nullptr) { v = it.target->get(); return true; }
+    if (it.slot != nullptr)
+        if (auto* pr = it.slot->getProcessorUnsafe(); pr != nullptr && it.paramIndex < pr->numParams()) { v = pr->getParamNorm (it.paramIndex); return true; }
+    return false;
+}
+bool writeControl (const AutomationPlan::Item& it, float v)
+{
+    if (it.target != nullptr) { it.target->set (v); return true; }
+    if (it.slot != nullptr) return it.slot->setParamNorm (it.paramIndex, v);         // (false while the slot is busy: tried again next time)
+    return false;
+}
+} // namespace
+
+AutoHoldResult holdAutomatedControls (Project& p, EditDef& e, bool canRestore)
+{
+    AutoHoldResult r;
+    std::set<juce::String> live;
+    for (auto& l : e.lanes)
+    {
+        if (l.pts.empty()) continue;
+        const auto key = EditDef::laneKey (l);
+        if (! live.insert (key).second || e.autoBefore.count (key) != 0) continue;
+        if (auto plan = planForOneLane (p, e, l); plan != nullptr && ! plan->items.empty())      // a lane that has just got its points: where its control is now
+        {
+            float v = 0.0f;
+            if (readControl (plan->items.front(), v)) { e.autoBefore[key] = v; r.changed = true; }
+        }
+    }
+    for (auto it = e.autoBefore.begin(); it != e.autoBefore.end();)
+    {
+        if (live.count (it->first) != 0) { ++it; continue; }
+        if (! canRestore) { r.pending = true; ++it; continue; }
+        juce::StringArray parts; parts.addTokens (it->first, "|", "");
+        if (parts.size() == 3)                                             // no points any more: the control goes back (one whose control is gone is simply forgotten)
+        {
+            AutoLane l; l.trackId = juce::Uuid (parts[0]); l.param = parts[1]; l.mixerId = parts[2].isEmpty() ? juce::Uuid::null() : juce::Uuid (parts[2]);
+            if (auto plan = planForOneLane (p, e, l); plan != nullptr && ! plan->items.empty())
+                if (! writeControl (plan->items.front(), it->second)) { r.pending = true; ++it; continue; }
+        }
+        it = e.autoBefore.erase (it); r.changed = true;
+    }
+    return r;
+}
+
 std::vector<PlaySegment> segmentsForEdit (const Project& p, const EditDef& e)
 {
     std::vector<PlaySegment> v;

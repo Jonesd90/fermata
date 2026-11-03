@@ -50,6 +50,7 @@
 #include "../src/core/TextBytes.h"
 #include "../src/core/RxWatch.h"
 #include "../src/core/StereoJoin.h"
+#include "../src/core/WaveShape.h"
 #include "../src/ui/TakeMatchService.h"
 #include "../src/ui/WaveThumb.h"
 #include <cstdio>
@@ -12030,6 +12031,89 @@ int main()
             CHECK (d3.stemIds.empty() && ! none.toVar().hasProperty ("stems"));
         }
         folder.deleteRecursively();
+    }
+
+    SECTION ("3.27.0 compressed waveforms: the drawn size only - quiet passages bigger, full level still full, the sign kept");
+    {
+        CHECK (waveshape::exponentFor (0) == 1.0f && waveshape::exponentFor (9) == 1.0f);
+        CHECK (waveshape::apply (0.3f, 1.0f) == 0.3f && waveshape::apply (-0.3f, waveshape::exponentFor (0)) == -0.3f);          // off: unchanged
+        for (int k = 1; k <= 3; ++k)
+        {
+            const float e = waveshape::exponentFor (k);
+            CHECK (std::abs (waveshape::apply (1.0f, e) - 1.0f) < 1e-6f && waveshape::apply (0.0f, e) == 0.0f);                 // full level stays full, silence stays silent
+            CHECK (std::abs (waveshape::apply (-0.5f, e) + waveshape::apply (0.5f, e)) < 1e-6f);                               // the same both ways
+            bool rises = true; float prev = 0.0f;
+            for (int i = 1; i <= 100; ++i) { const float v = waveshape::apply ((float) i / 100.0f, e); rises = rises && v > prev && v >= (float) i / 100.0f; prev = v; }
+            CHECK (rises);                                                                                                      // louder is always drawn bigger; nothing smaller than plain
+        }
+        const float ppp = std::pow (10.0f, -40.0f / 20.0f);                                                                   // 40 dB down
+        CHECK (waveshape::apply (ppp, waveshape::exponentFor (1)) < waveshape::apply (ppp, waveshape::exponentFor (2))
+               && waveshape::apply (ppp, waveshape::exponentFor (2)) < waveshape::apply (ppp, waveshape::exponentFor (3)));
+        CHECK (std::abs (waveshape::apply (ppp, waveshape::exponentFor (2)) - 0.158f) < 0.01f && std::abs (waveshape::apply (ppp, waveshape::exponentFor (3)) - 0.316f) < 0.01f);
+    }
+
+    SECTION ("3.27.0 a control taken over by automation goes back where it was when its lane loses its points (deleted, or Ctrl+Z)");
+    {
+        struct FakeFx : InsertProcessor
+        {
+            float val[2] { 0.25f, 0.5f };
+            void prepare (double, int, int) override {}
+            void process (juce::AudioBuffer<float>&) override {}
+            juce::String getName() const override { return "Fake"; }
+            int numParams() const override { return 2; }
+            juce::String paramName (int i) const override { return "P" + juce::String (i); }
+            bool paramAutomatable (int) const override { return true; }
+            float getParamNorm (int i) const override { return val[i]; }
+            void setParamNorm (int i, float v) override { val[i] = v; }
+        };
+        Project q; q.setInputCount (2); q.setOutputCount (2); q.tracks.clear(); q.buses.clear();
+        const auto ta = q.addTrack ("A", TrackFormat::Mono, 0).id;
+        auto& m = *q.mixers.front();
+        auto* st = m.stripFor (ta);
+        auto fx = std::make_unique<FakeFx>(); auto* fxp = fx.get();
+        st->slots[1].set (std::move (fx), 48000.0, 256, 2);
+        st->gainDb.set (0.0f); st->pan.set (-0.3f);
+        EditDef ed;
+        auto point = [] (float v) { AutoPoint a; a.time = 0; a.value = v; return a; };
+        ed.addLane (ta, autoparam::fader, juce::Uuid::null()).pts = { point (-6.0f) };
+        ed.addLane (ta, autoparam::pan, juce::Uuid::null()).pts = { point (0.8f) };
+        ed.addLane (ta, autoparam::plugin (1, 0), juce::Uuid::null()).pts = { point (1.0f) };
+        ed.addLane (ta, autoparam::gain, juce::Uuid::null());                         // (a lane without points takes nothing over)
+        auto r = holdAutomatedControls (q, ed, true);
+        CHECK (r.changed && ! r.pending && ed.autoBefore.size() == 3);                 // where each control was, before its lane drives it
+        CHECK (std::abs (ed.autoBefore[EditDef::laneKey (ed.lanes[0])]) < 1e-6f && std::abs (ed.autoBefore[EditDef::laneKey (ed.lanes[1])] + 0.3f) < 1e-6f);
+        CHECK (std::abs (ed.autoBefore[EditDef::laneKey (ed.lanes[2])] - 0.25f) < 1e-6f);
+        CHECK (! holdAutomatedControls (q, ed, true).changed);                        // (nothing new: nothing done)
+        if (auto plan = automationPlanFor (q, ed)) plan->apply (0);                    // the automation plays: the controls follow their lanes
+        CHECK (std::abs (st->gainDb.get() + 6.0f) < 1e-4f && std::abs (st->pan.get() - 0.8f) < 1e-4f && fxp->val[0] == 1.0f);
+        const auto keep = ed.lanes;
+        ed.lanes.clear();                                                              // Ctrl+Z: the points are gone again
+        r = holdAutomatedControls (q, ed, false);                                      // still driven (the plan with the lanes is still playing): not yet
+        CHECK (r.pending && ! r.changed && ed.autoBefore.size() == 3 && std::abs (st->gainDb.get() + 6.0f) < 1e-4f);
+        r = holdAutomatedControls (q, ed, true);
+        CHECK (r.changed && ! r.pending && ed.autoBefore.empty());
+        CHECK (std::abs (st->gainDb.get()) < 1e-4f && std::abs (st->pan.get() + 0.3f) < 1e-4f && fxp->val[0] == 0.25f);       // back where they were
+        ed.lanes = keep;                                                               // Ctrl+Y: the automation again, and the same "before"
+        CHECK (holdAutomatedControls (q, ed, true).changed && std::abs (ed.autoBefore[EditDef::laneKey (ed.lanes[0])]) < 1e-6f);
+        ed.lanes[0].pts.clear();                                                       // one lane's points deleted: only that control goes back
+        st->gainDb.set (-6.0f); st->pan.set (0.8f);
+        CHECK (holdAutomatedControls (q, ed, true).changed && std::abs (st->gainDb.get()) < 1e-4f && std::abs (st->pan.get() - 0.8f) < 1e-4f && ed.autoBefore.size() == 2);
+        // a lane whose control has gone is simply forgotten
+        ed.autoBefore[juce::Uuid().toString() + "|fader|" + juce::Uuid::null().toString()] = -3.0f;
+        ed.lanes.clear();
+        CHECK (holdAutomatedControls (q, ed, true).changed && ed.autoBefore.empty());
+        // saved with the project, not part of undo (an undo must not forget where a control was)
+        Project sp; sp.setInputCount (2); sp.setOutputCount (2); sp.tracks.clear();
+        sp.addTrack ("A", TrackFormat::Mono, 0);
+        auto& e1 = sp.addEdit ("E", juce::Uuid::null());
+        const auto u0 = Project::undoHash (e1), s0 = Project::saveHash (e1);
+        e1.autoBefore["k|fader|m"] = -4.5f;
+        CHECK (Project::undoHash (e1) == u0 && Project::saveHash (e1) != s0);
+        CHECK (! sp.undoText (e1).contains ("autoBefore"));
+        juce::String er; sp.name = "autobefore"; sp.projectFile = tmp.getChildFile ("autobefore.fermata");
+        CHECK (sp.save (er));
+        Project sq; CHECK (sq.load (sp.projectFile, er));
+        CHECK (sq.edits.size() == 1 && sq.edits[0]->autoBefore.size() == 1 && std::abs (sq.edits[0]->autoBefore["k|fader|m"] + 4.5f) < 1e-4f);
     }
 
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

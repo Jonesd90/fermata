@@ -356,8 +356,8 @@ public:
             setWaveColour (g, juce::Colour (0xffdfe3e8));
             juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (rr.reduced (1));
             const double f0 = (double) gd.srcIn / gr + (visStart - startSec), f1 = (double) gd.srcOut / gr;       // (seconds in the file)
-            if (! directWave.draw (g, rr.reduced (1), gd.file, f0, f1, app.waveZoom, nullptr, gr))
-                if (auto* th = thumbnailFor (gd.file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, f0, f1, app.waveZoom, nullptr);
+            if (! directWave.draw (g, rr.reduced (1), gd.file, f0, f1, app.waveZoom, nullptr, gr, app.waveShape()))
+                if (auto* th = thumbnailFor (gd.file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, f0, f1, app.waveZoom, nullptr, app.waveShape());
         }
         g.setColour (grey.withAlpha (0.95f));
         g.drawRect (rr.withTrimmedLeft (startSec < 0.0 ? 2 : 0), 1);
@@ -567,8 +567,8 @@ public:
                     setWaveColour (g, chan::waveColour (tc));
                     juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (rr.reduced (1));
                     const auto wcd = app.waveColourOf (rf->file);
-                    if (! directWave.draw (g, rr.reduced (1), rf->file, (double) (srcA - rf->fileStart) / rate, (double) (srcB - rf->fileStart) / rate, app.waveZoom, wcd.get(), rate))
-                        if (auto* th = thumbnailFor (rf->file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, (double) (srcA - rf->fileStart) / rate, (double) (srcB - rf->fileStart) / rate, app.waveZoom, wcd.get());
+                    if (! directWave.draw (g, rr.reduced (1), rf->file, (double) (srcA - rf->fileStart) / rate, (double) (srcB - rf->fileStart) / rate, app.waveZoom, wcd.get(), rate, app.waveShape()))
+                        if (auto* th = thumbnailFor (rf->file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, (double) (srcA - rf->fileStart) / rate, (double) (srcB - rf->fileStart) / rate, app.waveZoom, wcd.get(), app.waveShape());
                 }
                 g.setColour (selected ? juce::Colour (0xffc26500) : tc.withAlpha (0.9f));         // the selected piece gets an orange frame
                 g.drawRect (rr, selected ? 2 : 1);
@@ -641,8 +641,8 @@ public:
                     setWaveColour (g, chan::waveColour (tc));
                     juce::Graphics::ScopedSaveState ss (g); g.reduceClipRegion (rr.reduced (1));
                     const auto wcd = app.waveColourOf (rf->file);
-                    if (! directWave.draw (g, rr.reduced (1), rf->file, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom, wcd.get(), rate))
-                        if (auto* th = thumbnailFor (rf->file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom, wcd.get());
+                    if (! directWave.draw (g, rr.reduced (1), rf->file, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom, wcd.get(), rate, app.waveShape()))
+                        if (auto* th = thumbnailFor (rf->file)) drawThumbnailEnvelope (g, rr.reduced (1), *th, (double) (r.srcIn - rf->fileStart) / rate, (double) (r.srcOut - rf->fileStart) / rate, app.waveZoom, wcd.get(), app.waveShape());
                 }
                 g.setColour (selected ? juce::Colour (0xffc26500) : juce::Colour (0xff6a4cc2)); g.drawRect (rr, selected ? 2 : 1);
             }
@@ -2393,6 +2393,13 @@ EditWindowComponent::EditWindowComponent (AppContext& a, const juce::Uuid& id) :
     waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification);
     waveColourBtn.setWantsKeyboardFocus (false);
     addAndMakeVisible (waveColourBtn);
+    waveCompressBtn.setTooltip ("Compressed waveforms (the picture only, never the sound). Lit: quiet passages are drawn much bigger and loud ones a little smaller, so music that swings from fff to ppp shows both. "
+                                "Click: on / off. Right-click: Light, Medium or Strong. (The same in the take, edit and trim windows; remembered.)");
+    waveCompressBtn.onClick = [this] { app.setWaveCompress (app.waveCompress > 0 ? 0 : app.waveCompressLast); };
+    waveCompressBtn.onMenu = [this] { app.showWaveCompressMenu (&waveCompressBtn); };
+    waveCompressBtn.setToggleState (app.waveCompress > 0, juce::dontSendNotification);
+    waveCompressBtn.setWantsKeyboardFocus (false);
+    addAndMakeVisible (waveCompressBtn);
     loopToggle.setTooltip ("Loop: when lit, Play repeats the area between marks 1 and 2 (the same marks the pitch and repair tools use) over and over until you press Stop. Key L.");
     loopToggle.onClick = [this] { loopChanged(); };
     loopToggle.setWantsKeyboardFocus (false);
@@ -2415,7 +2422,7 @@ void EditWindowComponent::resized()
     // the picture buttons: to the right of the time readout, on as many lines as they need (two fit in the readout's height)
     const std::vector<FlowItem> items
     {
-        { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
+        { &startButton, IW, IH, 2 }, { &backButton, IW, IH, 2 }, { &playButton, IW, IH, 2 }, { &fwdButton, IW, IH, 2 }, { &endTransportButton, IW, IH, 6 }, { &playheadMode, 34, grid::btnH, 2 }, { &waveColourBtn, 34, grid::btnH, 2 }, { &waveCompressBtn, 34, grid::btnH, 2 }, { &loopToggle, 34, grid::btnH, 14 },
         { &trimButton, IW, IH, 2 }, { &deleteButton, IW, IH, 14 },
         { &leftButton, IW, IH, 2 }, { &rightButton, IW, IH, 6 }, { &endButton, IW, IH, 14 },
         { &bounceButton, IW, IH, 2 }, { &videoButton, IW, IH, 2 }, { &aafButton, IW, IH, 2 }, { &mixerButton, IW, IH, 6 }, { &ltcButton, 74, grid::btnH, 6 }, { &guideToggle, IW, IH, 14 },
@@ -3026,6 +3033,7 @@ void EditWindowComponent::timerCallback()
     playButton.setButtonText (app.isPlaying() ? "Stop [Space]" : "Play [Space]");
     if (playheadMode.getToggleState() != app.playheadFollows) playheadMode.setToggleState (app.playheadFollows, juce::dontSendNotification);
     if (waveColourBtn.getToggleState() != app.waveColour) { waveColourBtn.setToggleState (app.waveColour, juce::dontSendNotification); repaint(); }
+    if (waveCompressBtn.getToggleState() != (app.waveCompress > 0)) { waveCompressBtn.setToggleState (app.waveCompress > 0, juce::dontSendNotification); repaint(); }
     if (app.windowIsOpen)         // Trim and Bounce Out are lit only while their window is open (closing the Bounce Out window also ends a bounce that is running)
     {
         const bool trimOpen = app.windowIsOpen ("trim:" + editId.toString()), bounceOpen = app.windowIsOpen ("bounce:" + editId.toString());
