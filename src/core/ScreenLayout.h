@@ -329,6 +329,7 @@ struct PlacedWindow
     (its right / bottom edge stays where the cell's is, so it stays on the screen: Windows used to enlarge it from its left edge instead, and the extra
     went off the right of the screen with the close box) and the neighbour whose cell ends where this one starts is made narrower / shorter to leave
     it room. Nothing is ever placed outside the area (ax, ay, aw, ah). Returns how many windows needed more than their part. */
+constexpr int kLeastW = 160, kLeastH = 100;      // the least a window with no size limit of its own is made when a neighbour takes its room
 inline int placeInCells (std::vector<PlacedWindow>& wins, int ax, int ay, int aw, int ah)
 {
     int grown = 0;
@@ -347,8 +348,10 @@ inline int placeInCells (std::vector<PlacedWindow>& wins, int ax, int ay, int aw
             if (j == i) continue;
             auto& o = wins[j];
             const bool rows = o.y < w.bottom() && o.bottom() > w.y, cols = o.x < w.right() && o.right() > w.x;     // the cells share rows / columns
-            if (needW > w.w && rows && o.right() <= w.x + 1 && o.pright() > w.px) o.pw = std::max (o.minW > 0 ? std::min (o.minW, o.pw) : 1, w.px - o.px);   // the neighbour on the left gives way (never below its own smallest)
-            if (needH > w.h && cols && o.bottom() <= w.y + 1 && o.pbottom() > w.py) o.ph = std::max (o.minH > 0 ? std::min (o.minH, o.ph) : 1, w.py - o.py);  // the one above likewise
+            // the neighbour on the left gives way, never below its own smallest - or, for a window that has no limit of its own (a take or edit window), below
+            // a usable size (3.30.1: it used to be allowed down to one pixel); the one above likewise
+            if (needW > w.w && rows && o.right() <= w.x + 1 && o.pright() > w.px) o.pw = std::max (std::min (o.minW > 0 ? o.minW : kLeastW, o.pw), w.px - o.px);
+            if (needH > w.h && cols && o.bottom() <= w.y + 1 && o.pbottom() > w.py) o.ph = std::max (std::min (o.minH > 0 ? o.minH : kLeastH, o.ph), w.py - o.py);
         }
     }
     return grown;

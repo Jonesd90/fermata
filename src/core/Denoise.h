@@ -369,8 +369,10 @@ inline bool selected (const std::vector<SelRect>& s, double t, double f)
     return in;
 }
 /** 3.29.0: the selection as non-overlapping rectangles (seconds, Hz; all 'add'): every box added, less every box taken out, in the order they were drawn
-    (a box with a corner cut out comes back as two or three rectangles). The grid of every box's edges is tested cell by cell, then the cells are joined:
-    up each column of time, then across columns with the same pitch span. Each rectangle is processed on its own by the repair tools. */
+    (a box with a corner cut out comes back as two rectangles). The grid of every box's edges is tested cell by cell, then the cells are joined: along
+    each strip of pitch first (so every rectangle is as long in TIME as it can be: 3.30.1 - the tools fade in and out at a rectangle's ends in time, so a
+    seam in time would dip the fix for a moment in the middle of one shape; a seam in pitch lies where the tools are feathered anyway), then strips with
+    the very same time span are joined up the pitch axis. Each rectangle is processed on its own by the repair tools. */
 inline std::vector<SelRect> selectionRects (const std::vector<SelRect>& boxes)
 {
     std::vector<SelRect> out;
@@ -381,35 +383,35 @@ inline std::vector<SelRect> selectionRects (const std::vector<SelRect>& boxes)
     auto tidy = [] (std::vector<double>& v) { std::sort (v.begin(), v.end()); v.erase (std::unique (v.begin(), v.end()), v.end()); };
     tidy (ts); tidy (fs);
     if (ts.size() < 2 || fs.size() < 2) return out;
-    // the columns: in each, the runs of selected cells up the pitch axis
-    struct Run { double f0, f1; };
-    std::vector<std::vector<Run>> cols (ts.size() - 1);
-    for (size_t i = 0; i + 1 < ts.size(); ++i)
+    // the strips of pitch: in each, the runs of selected cells along time
+    struct Run { double t0, t1; };
+    std::vector<std::vector<Run>> rows (fs.size() - 1);
+    for (size_t j = 0; j + 1 < fs.size(); ++j)
     {
-        const double tc = 0.5 * (ts[i] + ts[i + 1]);
-        for (size_t j = 0; j + 1 < fs.size(); ++j)
+        const double fc = 0.5 * (fs[j] + fs[j + 1]);
+        for (size_t i = 0; i + 1 < ts.size(); ++i)
         {
-            if (! selected (s, tc, 0.5 * (fs[j] + fs[j + 1]))) continue;
-            if (! cols[i].empty() && cols[i].back().f1 == fs[j]) cols[i].back().f1 = fs[j + 1]; else cols[i].push_back ({ fs[j], fs[j + 1] });
+            if (! selected (s, 0.5 * (ts[i] + ts[i + 1]), fc)) continue;
+            if (! rows[j].empty() && rows[j].back().t1 == ts[i]) rows[j].back().t1 = ts[i + 1]; else rows[j].push_back ({ ts[i], ts[i + 1] });
         }
     }
-    // across the columns: a run continues into the next column when that column has the very same run
-    std::vector<std::vector<bool>> used (cols.size());
-    for (size_t i = 0; i < cols.size(); ++i) used[i].assign (cols[i].size(), false);
-    for (size_t i = 0; i < cols.size(); ++i)
-        for (size_t k = 0; k < cols[i].size(); ++k)
+    // up the strips: a run continues into the strip above when that strip has the very same run
+    std::vector<std::vector<bool>> used (rows.size());
+    for (size_t j = 0; j < rows.size(); ++j) used[j].assign (rows[j].size(), false);
+    for (size_t j = 0; j < rows.size(); ++j)
+        for (size_t k = 0; k < rows[j].size(); ++k)
         {
-            if (used[i][k]) continue;
-            used[i][k] = true;
-            const Run r = cols[i][k]; size_t last = i;
-            for (size_t n = i + 1; n < cols.size(); ++n)
+            if (used[j][k]) continue;
+            used[j][k] = true;
+            const Run r = rows[j][k]; size_t last = j;
+            for (size_t n = j + 1; n < rows.size(); ++n)
             {
                 bool found = false;
-                for (size_t m = 0; m < cols[n].size(); ++m) if (! used[n][m] && cols[n][m].f0 == r.f0 && cols[n][m].f1 == r.f1) { used[n][m] = true; found = true; break; }
+                for (size_t m = 0; m < rows[n].size(); ++m) if (! used[n][m] && rows[n][m].t0 == r.t0 && rows[n][m].t1 == r.t1) { used[n][m] = true; found = true; break; }
                 if (! found) break;
                 last = n;
             }
-            out.push_back ({ ts[i], ts[last + 1], r.f0, r.f1, true });
+            out.push_back ({ r.t0, r.t1, fs[j], fs[last + 1], true });
         }
     return out;
 }

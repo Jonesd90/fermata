@@ -1202,9 +1202,18 @@ private:
     {
         std::vector<RepairOp> ops;
         if (! view.hasSelection()) { ops.push_back ({ spec, 0, length }); return ops; }
+        if (spec.kind == FixSpec::Kind::Declick)
+        {   // 3.30.1: De-click pays no heed to pitch: one change per stretch of time (rectangles stacked in pitch over one stretch used to de-click it once each,
+            // and the lost samples found for both were put back twice)
+            for (auto& sp : view.selectionSpans()) ops.push_back ({ spec, (juce::int64) std::llround (sp.first * rate), (juce::int64) std::llround (sp.second * rate) });
+            return ops;
+        }
+        // 3.30.1: "a box round a click" is decided from the whole shape drawn, not from each rectangle (a sliver left by a cut-out is no click box)
+        const bool clickBox = audioops::findsLost (spec, rate, (juce::int64) std::llround (view.selT0() * rate), (juce::int64) std::llround (view.selT1() * rate));
         for (auto& r : view.selectionRects())
         {
             auto sp = spec; sp.f0 = r.f0; sp.f1 = r.f1;
+            if (! clickBox) { sp.lostKnown = true; sp.lost.clear(); }
             ops.push_back ({ sp, (juce::int64) std::llround (r.t0 * rate), (juce::int64) std::llround (r.t1 * rate) });
         }
         return ops;

@@ -372,8 +372,8 @@ inline void closeDialogOf (juce::Component* c)
 
 inline juce::AudioFormatManager& formats()
 {
-    static juce::AudioFormatManager fm; static bool done = false;
-    if (! done) { td::registerAudioFormats (fm); done = true; }
+    // (3.30.1: registered inside the static's own initialisation, which the language runs once under a lock: it is now called from several worker threads at once)
+    static juce::AudioFormatManager& fm = [] () -> juce::AudioFormatManager& { static juce::AudioFormatManager m; td::registerAudioFormats (m); return m; }();
     return fm;
 }
 
@@ -497,6 +497,7 @@ inline juce::String runRegionJob (RegionJob& j, AudioJob& job, float p0, float p
     // 3.30.0: the piece's files side by side, on as many threads as the machine has to spare (each file's work is its own: its reader, its ops, its new file)
     std::vector<audioops::PieceResult> made (j.src.size());
     std::atomic<int> done { 0 };
+    const int threads = workers::threadsForMemory ((int) j.src.size(), 2 * (j.outTo - j.outFrom + (juce::int64) (16.0 * 96000.0)) * 40);     // (3.30.1: within the memory)
     const auto err = workers::forEach ((int) j.src.size(), [&] (int ki) -> juce::String
     {
         const size_t k = (size_t) ki;
@@ -509,7 +510,7 @@ inline juce::String runRegionJob (RegionJob& j, AudioJob& job, float p0, float p
         made[k] = res;
         job.setProgress (p0 + (p1 - p0) * (float) (done.fetch_add (1) + 1) / (float) j.src.size());
         return {};
-    }, [&job] { return job.cancelled(); });
+    }, [&job] { return job.cancelled(); }, threads);
     if (err.isNotEmpty()) { for (auto& r : made) if (r.ok) r.file.deleteFile(); return err; }
     for (auto& r : made) j.results.push_back (r);
     return {};
@@ -730,6 +731,12 @@ inline juce::String findLostTogether (std::vector<RegionJob>& jobs, double rate,
             }
             op.spec.lost = std::move (lost); op.spec.lostKnown = true;
         }
+    // 3.30.1: two changes of one piece over the very same stretch (rectangles stacked in pitch) found the same lost samples twice, and the piece then had
+    // them put back twice (a double time squeeze): the second and later ones get nothing to put back
+    for (auto& rj : jobs)
+        for (size_t a = 0; a < rj.ops.size(); ++a)
+            for (size_t b = a + 1; b < rj.ops.size(); ++b)
+                if (! rj.ops[a].spec.lost.empty() && rj.ops[b].s0 == rj.ops[a].s0 && rj.ops[b].s1 == rj.ops[a].s1) { rj.ops[b].spec.lost.clear(); rj.ops[b].spec.lostKnown = true; }
     return {};
 }
 

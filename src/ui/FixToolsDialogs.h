@@ -598,7 +598,7 @@ public:
     const std::vector<denoise::SelRect>& selectionRects() const { return rects; }
     /** The stretches of time the selection covers (seconds; merged): what the room tone is learned from. */
     std::vector<std::pair<double, double>> selectionSpans() const { return denoise::selectedSpans (rects); }
-    int boxCount() const { return (int) rects.size(); }
+    int boxCount() const { int n = 0; for (auto& b : boxes) if (b.add) ++n; return n; }     // (3.30.1: the boxes drawn, not the rectangles they come to)
     /** Shows the sound around the box that the repair learns from (dotted): 'pct' is a % of the box, 'direction' 0 = left and right, 1 = up and down, 2 = both. */
     void setSurround (bool show, double pct, int direction, double afterWeight = 0.5) { showSurround = show; surroundPct = pct; surroundDir = direction; surroundAfter = juce::jlimit (0.0, 1.0, afterWeight); repaint(); }
     // the whole selection's extent (3.29.0: of every rectangle together; one box = that box)
@@ -825,7 +825,7 @@ public:
         }
         if (! pl.contains (e.getPosition())) return;
         if (alt && boxes.empty()) return;                                      // nothing is selected: nothing to take out
-        if (! shift && ! alt) boxes.clear();                                   // a plain drag starts afresh
+        if (! shift && ! alt) { boxes.clear(); rects.clear(); hasSel = false; }     // a plain drag starts afresh (3.30.1: the old shape goes at once, as before 3.29.0)
         drawAdd = ! alt; drawing = true;
         mode = Mode::select; a = toTF (e.getPosition()); b = a; repaint();
     }
@@ -920,14 +920,18 @@ public:
         if (m == Mode::pan || m == Mode::pitchPan) { note(); return; }
         if (m == Mode::move)                                                     // (a click in the box: nothing changes)
         {
-            if ((a != moveA || b != moveB) && editing >= 0 && editing < (int) boxes.size()) { writeBack (editing); selectionChanged (true); }
+            if (a != moveA || b != moveB)                                        // (3.30.1: told even when the box slid wholly under a take-out and the selection emptied under the drag)
+            {
+                if (editing >= 0 && editing < (int) boxes.size()) writeBack (editing);
+                editing = -1; selectionChanged (true);
+            }
             editing = -1; return;
         }
         if (m == Mode::resize) { if (editing >= 0 && editing < (int) boxes.size()) writeBack (editing); editing = -1; selectionChanged (true); return; }
         if (m != Mode::select) return;
         drawing = false;
-        const double t0 = juce::jmin (a.x, b.x), t1 = juce::jmax (a.x, b.x);
-        if (t1 - t0 >= 0.002) boxes.push_back (denoise::SelRect { t0, t1, juce::jmin (a.y, b.y), juce::jmax (a.y, b.y), drawAdd });
+        const double t0 = juce::jmin (a.x, b.x), t1 = juce::jmax (a.x, b.x), f0 = juce::jmin (a.y, b.y), f1 = juce::jmax (a.y, b.y);
+        if (t1 - t0 >= 0.002 && f1 > f0) boxes.push_back (denoise::SelRect { t0, t1, f0, f1, drawAdd });     // (3.30.1: a flat box selects nothing and is not kept)
         selectionChanged (true);
     }
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
@@ -976,6 +980,19 @@ private:
     {
         rects = denoise::selectionRects (boxes);
         if (rects.empty()) boxes.clear();
+        else if (tell)
+        {   // 3.30.1: a box that shows nothing any more (wholly under a later take-out, or a take-out that took nothing) is dropped - it could still be grabbed and
+            // moved as an invisible ghost. Only at the end of a drag ('tell'): in the middle of one 'editing' points into the list.
+            auto shows = [this] (const denoise::SelRect& b)
+            {
+                for (auto& r : rects) if (juce::jmin (b.t1, r.t1) > juce::jmax (b.t0, r.t0) && juce::jmin (b.f1, r.f1) > juce::jmax (b.f0, r.f0)) return true;
+                return false;
+            };
+            const size_t before = boxes.size();
+            boxes.erase (std::remove_if (boxes.begin(), boxes.end(), [&] (const denoise::SelRect& b) { return ! shows (b); }), boxes.end());
+            if (boxes.size() != before) rects = denoise::selectionRects (boxes);
+            editing = -1;
+        }
         hasSel = ! rects.empty();
         repaint();
         if (tell && onSelection) onSelection();
@@ -1385,7 +1402,7 @@ public:
     bool mayClose()
     {
         if (committed.empty() || accepted) return true;
-        const int n = (int) committed.size();
+        const int n = (int) history.size();                                     // (3.30.1: fixes, not rectangles - a fix over several boxes is one)
         juce::Component::SafePointer<RepairDialog> self (this);
         confirmAsync ("Spectral Repair", juce::String (n) + (n == 1 ? " fix has" : " fixes have") + " not been written back to the file yet. Close the window and throw "
                       + (n == 1 ? "it" : "them") + " away? (Write back to file keeps " + (n == 1 ? "it" : "them") + ".)",
@@ -1793,9 +1810,9 @@ private:
         if (view.hasSelection())
             info.setText ("Selected: " + (view.boxCount() > 1 ? juce::String (view.boxCount()) + " boxes, " : juce::String()) + juce::String (view.selT0(), 3) + " - " + juce::String (view.selT1(), 3) + " s  ("
                           + juce::String ((view.selT1() - view.selT0()) * 1000.0, 0) + " ms),  " + juce::String ((int) view.selF0()) + " - " + juce::String ((int) view.selF1()) + " Hz"
-                          + (committed.empty() ? juce::String() : juce::String ("      ") + juce::String ((int) committed.size()) + " fix(es) made"), juce::dontSendNotification);
+                          + (committed.empty() ? juce::String() : juce::String ("      ") + juce::String ((int) history.size()) + " fix(es) made"), juce::dontSendNotification);
         else info.setText (juce::String ("Nothing selected")
-                           + (committed.empty() ? juce::String() : juce::String ("      ") + juce::String ((int) committed.size()) + " fix(es) made"), juce::dontSendNotification);
+                           + (committed.empty() ? juce::String() : juce::String ("      ") + juce::String ((int) history.size()) + " fix(es) made"), juce::dontSendNotification);
         const bool ready = scanned && ! running;
         playBtn.setEnabled (ready); stopBtn.setEnabled (ready); loopBtn.setEnabled (ready); hearBox.setEnabled (ready);
         previewBtn.setEnabled (ready && view.hasSelection()); declickBtn.setEnabled (ready); gainBtn.setEnabled (ready && view.hasSelection());
@@ -1858,17 +1875,31 @@ private:
     {
         if (! scanned || running || origTracks == nullptr) return;
         if (what == 2 && ! haveRoomTone()) { status.setText ("No room tone: draw a box over a part that is only room and press L, or use the edit window's Room tone button first.", juce::dontSendNotification); return; }
+        if (what != 1 && ! view.hasSelection()) return;                            // (3.30.1: only De-click works without a box)
         juce::int64 t0 = 0, t1 = 0; const auto spec = buildSpec (t0, t1, what);
-        // 3.29.0: one change per rectangle of the selection (several boxes, or a box with parts taken out), the same settings each; De-click with no box: the whole stretch
+        startFixes (opsOverSelection (spec, t0, t1));
+    }
+    /** 3.29.0: one change per rectangle of the selection (several boxes, or a box with parts taken out), the same settings each; no selection: the whole stretch.
+        3.30.1: De-click pays no heed to pitch, so it gets one change per STRETCH OF TIME the selection covers (rectangles stacked in pitch over the same
+        stretch used to de-click it once each, on the already mended sound). And whether a ReTouch is "a box round a click" (which looks for lost samples and
+        puts them back instead of repairing) is decided from the whole shape that was drawn, not from each rectangle: a sliver left by a cut-out is not a click box. */
+    std::vector<RepairOp> opsOverSelection (const FixSpec& spec, juce::int64 t0, juce::int64 t1) const
+    {
         std::vector<RepairOp> group;
-        if (view.hasSelection())
-            for (auto& r : view.selectionRects())
-            {
-                auto sp = spec; sp.f0 = r.f0; sp.f1 = r.f1;
-                group.push_back ({ sp, (juce::int64) std::llround (r.t0 * ctx.rate), (juce::int64) std::llround (r.t1 * ctx.rate) });
-            }
-        else group.push_back ({ spec, t0, t1 });
-        startFixes (group);
+        if (! view.hasSelection()) { group.push_back ({ spec, t0, t1 }); return group; }
+        if (spec.kind == FixSpec::Kind::Declick)
+        {
+            for (auto& sp : view.selectionSpans()) group.push_back ({ spec, (juce::int64) std::llround (sp.first * ctx.rate), (juce::int64) std::llround (sp.second * ctx.rate) });
+            return group;
+        }
+        const bool clickBox = audioops::findsLost (spec, ctx.rate, (juce::int64) std::llround (view.selT0() * ctx.rate), (juce::int64) std::llround (view.selT1() * ctx.rate));
+        for (auto& r : view.selectionRects())
+        {
+            auto sp = spec; sp.f0 = r.f0; sp.f1 = r.f1;
+            if (! clickBox) { sp.lostKnown = true; sp.lost.clear(); }           // (nothing to look for: the shape is no click box, whatever this piece of it is)
+            group.push_back ({ sp, (juce::int64) std::llround (r.t0 * ctx.rate), (juce::int64) std::llround (r.t1 * ctx.rate) });
+        }
+        return group;
     }
     /** Makes one change on a job thread - on the picture's sound as it is now (every fix so far), track by track - and keeps it as the next fix (Undo takes it
         off). 'placed': a pasted consonant, where it was first put (a nudge keeps it, so the window can say how far it has been moved). */
@@ -1946,6 +1977,7 @@ private:
                         }
                         // 3.30.0: the tracks side by side, on as many threads as the machine has to spare (each track's audio, settings and declick report are its own)
                         std::atomic<int> doneTracks { 0 }; std::mutex repLock;
+                        const int threads = workers::threadsForMemory ((int) tracks->size(), (t1 - t0 + (juce::int64) (20.0 * rate)) * 40);     // (3.30.1: within the memory)
                         const auto err = workers::forEach ((int) tracks->size(), [&] (int ti) -> juce::String
                         {
                             const size_t i = (size_t) ti;
@@ -1957,7 +1989,7 @@ private:
                             if (fix.kind == FixSpec::Kind::Declick) { const auto r = SpectralRepair::lastDeclickReport(); std::lock_guard<std::mutex> g (repLock); out->rep.mended += r.mended; out->rep.lines += r.lines; out->rep.linesMended += r.linesMended; out->rep.linesLeft += r.linesLeft; }
                             j.setProgress (((float) gi + (float) (doneTracks.fetch_add (1) + 1) / (float) tracks->size()) / (float) group.size());
                             return juce::String();
-                        }, [&j] { return j.cancelled(); });
+                        }, [&j] { return j.cancelled(); }, threads);
                         if (err.isNotEmpty()) return err;
                         fix.dnProfiles = nullptr;                                                     // (the profiles are not part of the fix that is kept)
                         fix.pasteChannels = nullptr;                                                  // (nor is the one track's part of a pasted consonant: each file gets its own)
@@ -2020,7 +2052,7 @@ private:
                         else if (r.consonantEdge < 0) lostNote << "Stray consonant: the main one is just BEFORE the box, so every track was matched to the sound after it. ";
                         else lostNote << "Stray consonant: no main consonant right next to the box, so both sides were used (" << juce::roundToInt (r.consonantBefore * 100.0) << " % before). ";
                     }
-                    self->status.setText (lostNote + "Fix " + juce::String ((int) self->committed.size()) + " done (not written yet). Press Play to listen to it. If it worked, draw a box round the next problem and press ReTouch or De-click again, or press Write back to file. If not, press Undo and try again.", juce::dontSendNotification);
+                    self->status.setText (lostNote + "Fix " + juce::String ((int) self->history.size()) + " done (not written yet). Press Play to listen to it. If it worked, draw a box round the next problem and press ReTouch or De-click again, or press Write back to file. If not, press Undo and try again.", juce::dontSendNotification);
                     self->refreshControls();
                 });
         for (auto* b : { &nudgeL5, &nudgeL1, &nudgeR1, &nudgeR5 }) b->setEnabled (pasteRunning);     // (a nudge pressed now follows when this one is made)
@@ -2093,7 +2125,7 @@ private:
         showingAfter = true;
         if (committed.empty()) hearBox.setSelectedId (1, juce::dontSendNotification);
         view.setData (*origSpec, seconds(), true);
-        status.setText (committed.empty() ? "Undone: back to the original. Nothing is changed." : "Last fix undone (" + juce::String ((int) committed.size()) + " fix(es) left).", juce::dontSendNotification);
+        status.setText (committed.empty() ? "Undone: back to the original. Nothing is changed." : "Last fix undone (" + juce::String ((int) history.size()) + " fix(es) left).", juce::dontSendNotification);
         refreshControls();
     }
     /** Finish: everything between the marks is rendered again in one go, with every accepted change, and put back. */

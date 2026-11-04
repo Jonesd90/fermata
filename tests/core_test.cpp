@@ -39,6 +39,7 @@
 #include "../src/core/Loudness.h"
 #include "../src/core/ScreenLayout.h"
 #include "../src/core/Workers.h"
+#include <stdexcept>
 #include "../src/core/Tuning.h"
 #include "../src/core/PitchPipe.h"
 #include "../src/core/TimeAlign.h"
@@ -12678,6 +12679,33 @@ int main()
             CHECK (err == "Cancelled." && started.load() < 100);
         }
         CHECK (workers::forEach (0, [] (int) { return juce::String ("never"); }, [] { return false; }).isEmpty());
+    }
+
+    SECTION ("3.30.1 the fourth sweep: an exception in a worker is an error, not the end of the program; the rectangles are as long in time as they can be; a neighbour without a size limit keeps a usable size; the memory cap");
+    {
+        // (both of these ended the test program before 3.30.1)
+        const auto e1 = workers::forEach (8, [] (int i) -> juce::String { if (i == 3) throw std::bad_alloc(); return {}; }, [] { return false; }, 4);
+        CHECK (e1.contains ("memory"));
+        const auto e2 = workers::forEach (8, [] (int i) -> juce::String { if (i == 5) throw std::runtime_error ("x"); return {}; }, [] { return false; }, 2);
+        CHECK (e2 == "Something went wrong while processing.");
+        CHECK (workers::threadsForMemory (12, 0) == workers::threadsFor (12));
+        CHECK (workers::threadsForMemory (12, (juce::int64) 1 << 50) == 1);        // a petabyte an item: one at a time
+
+        // a corner cut out: the rectangles are long in time (the seam lies in pitch, where the tools are feathered), never a seam in time inside the band they share
+        using denoise::SelRect; using denoise::selectionRects;
+        const auto r = selectionRects ({ SelRect { 1.0, 3.0, 100.0, 1000.0, true }, SelRect { 2.0, 4.0, 500.0, 2000.0, false } });
+        CHECK (r.size() == 2);
+        bool longOne = false; for (auto& x : r) longOne = longOne || (x.t0 == 1.0 && x.t1 == 3.0 && x.f0 == 100.0 && x.f1 == 500.0);
+        CHECK (longOne);
+        // a hole in the middle: the strips above and below the hole run the whole length
+        const auto h = selectionRects ({ SelRect { 1.0, 3.0, 100.0, 1000.0, true }, SelRect { 1.5, 2.5, 300.0, 600.0, false } });
+        int full = 0; for (auto& x : h) if (x.t0 == 1.0 && x.t1 == 3.0) ++full;
+        CHECK (full == 2 && h.size() == 4);
+
+        // the Organiser: three columns on a 1600 screen with a mixer (1096 at least) on the right: the middle window keeps a usable width, the mixer ends at the edge
+        std::vector<PlacedWindow> w (3);
+        w[0] = { 0, 0, 533, 900, 0, 0 }; w[1] = { 533, 0, 534, 900, 0, 0 }; w[2] = { 1067, 0, 533, 900, 1096, 0 };
+        CHECK (placeInCells (w, 0, 0, 1600, 900) == 1 && w[2].pright() == 1600 && w[2].pw == 1096 && w[1].pw >= 160 && w[1].px == 533 && w[0].pw == 504);     // (the left one ends where the mixer now starts)
     }
 
     std::printf (failures == 0 ? "\nALL TESTS PASSED\n" : "\n%d FAILURE(S)\n", failures);

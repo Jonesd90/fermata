@@ -162,6 +162,7 @@ public:
         existingBox.setVisible (! app.project.tracks.empty());
         if (app.project.tracks.empty()) existingBox.setToggleState (false, juce::dontSendNotification);
         if (existingBox.getToggleState()) byNameBox.setToggleState (false, juce::dontSendNotification);
+        refreshSummary();                                                   // (3.30.1: the summary was built by setBase() before the two boxes had their remembered states, so it described the wrong plan)
         addAndMakeVisible (copyBox); addAndMakeVisible (linkBox);
         copyBox.setButtonText ("Copy the audio into this project's folder (recommended)"); linkBox.setButtonText ("Use the audio files where they are (nothing is copied)");
         copyBox.setRadioGroupId (4711); linkBox.setRadioGroupId (4711);

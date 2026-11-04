@@ -458,15 +458,17 @@ bool OrganiserComponent::screenMatchesPicture() const
             if (uni <= 0.0f || inter / uni < 0.9f) return false;          // more than a little out: the person moved it
         }
     }
-    return compared > 0 || now.windows.size() <= 1;                       // (none of the picture's windows on the screen: nothing to compare - keep the picture)
+    juce::ignoreUnused (compared);
+    return true;                                                          // (none of the picture's windows on the screen, or every one where the picture has it: keep the picture)
 }
 
 void OrganiserComponent::saveAs()
 {
+    const auto defaultName = loadedBuiltIn || loadedName.isEmpty() ? juce::String ("My layout") : loadedName;     // (3.30.1: read before the screen is read in, which clears the loaded name)
     bool readFirst = false;
     if (! screenMatchesPicture()) { saveFromScreen(); readFirst = true; }
     auto* aw = new juce::AlertWindow ("Save layout", "A name for this layout (saved with the project):", juce::MessageBoxIconType::NoIcon);
-    aw->addTextEditor ("n", loadedBuiltIn || loadedName.isEmpty() ? juce::String ("My layout") : loadedName);
+    aw->addTextEditor ("n", defaultName);
     aw->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
     aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
     juce::Component::SafePointer<OrganiserComponent> safe (this);

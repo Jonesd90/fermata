@@ -557,6 +557,9 @@ TakeFixResult fixTakeFiles (juce::AudioFormatManager& fm, const std::vector<juce
     // 3.30.0: the files side by side, on as many threads as the machine has to spare (each file's work is its own: its reader, its ops, its new file)
     std::vector<juce::File> made (sources.size());
     std::atomic<int> done { 0 };
+    // (3.30.1: no more threads than the memory allows - about 40 bytes a sample a channel for the stretch read and worked on, two channels at most in a take file)
+    juce::int64 span = 0; for (auto& o : ops) span = juce::jmax (span, o.s1 - o.s0);
+    const int threads = workers::threadsForMemory ((int) sources.size(), 2 * (span + (juce::int64) (16.0 * 96000.0)) * 40);
     r.error = workers::forEach ((int) sources.size(), [&] (int i) -> juce::String
     {
         juce::String err;
@@ -568,7 +571,7 @@ TakeFixResult fixTakeFiles (juce::AudioFormatManager& fm, const std::vector<juce
         made[(size_t) i] = f;
         if (job != nullptr) job->setProgress ((float) (done.fetch_add (1) + 1) / (float) juce::jmax ((size_t) 1, sources.size()));
         return {};
-    }, [job] { return job != nullptr && job->cancelled(); });
+    }, [job] { return job != nullptr && job->cancelled(); }, threads);
     for (auto& f : made) if (f != juce::File()) r.newFiles.push_back (f);
     if (r.error.isNotEmpty()) { for (auto& f : r.newFiles) f.deleteFile(); r.newFiles.clear(); }
     return r;
